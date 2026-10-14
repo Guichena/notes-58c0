@@ -1,0 +1,62 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>生产事件可靠触达与智能维修闭环 · Guichena</title>
+<meta name="description" content="制造业生产事件的可靠通知与智能维修闭环：Outbox + RabbitMQ 可靠触达、分级治理、隔离式分析 Agent、人工审批维修工单。">
+<meta property="og:type" content="article"><meta property="og:title" content="生产事件可靠触达与智能维修闭环"><meta property="og:description" content="可靠触达 · 分级治理 · 分析 Agent · HITL 工单"><meta property="og:url" content="https://guichena.github.io/notes-58c0/project/">
+<meta name="robots" content="noindex,nofollow"><style>:root{--bg:#f7f6f2;--fg:#1c1b18;--mu:#6b685f;--ac:#3553d1;--card:#fff;--ln:#e6e4dc}
+*{box-sizing:border-box}body{margin:0;font:16px/1.75 "PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
+header{border-bottom:1px solid var(--ln);background:#fff}nav,main,footer{max-width:960px;margin:auto;padding:0 20px}
+nav{display:flex;gap:20px;align-items:center;height:56px}nav b{margin-right:auto}
+main{padding-top:40px;padding-bottom:40px}h1{font-size:2rem;margin:.2em 0}h2{margin-top:2.2em;border-left:4px solid var(--ac);padding-left:10px}
+.mu{color:var(--mu)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:12px;padding:18px 20px}.card h3{margin:.1em 0 .4em}
+.tags span{display:inline-block;font-size:13px;background:#eef1fc;color:#2a43ad;border-radius:6px;padding:1px 8px;margin:3px 4px 0 0}
+figure{margin:20px 0;background:#fff;border:1px solid var(--ln);border-radius:12px;padding:12px;overflow-x:auto}figure img{display:block;width:100%;min-width:640px;height:auto}
+table{border-collapse:collapse;width:100%;background:#fff;font-size:15px}td,th{border:1px solid var(--ln);padding:8px 10px;text-align:left;vertical-align:top}
+.tw{overflow-x:auto}footer{color:var(--mu);font-size:14px;padding-bottom:40px}
+@media(max-width:600px){h1{font-size:1.6rem}nav{gap:14px;font-size:15px}main{padding-top:24px}}
+</style></head><body>
+<header><nav><b><a href="../">← 学习笔记</a></b><a href="#arch">架构</a><a href="#modules">模块</a><a href="#tradeoffs">取舍</a></nav></header>
+<main>
+<h1>生产事件可靠触达与智能维修闭环</h1>
+<p class="mu">工厂设备告警、质量异常等生产事件的通知与维修闭环系统。试点项目，我负责下面四个核心模块的方案设计与主要实现。</p>
+<p><b>要解决的问题：</b>关键告警要可靠送到对的人，不丢、不重；告警风暴时不能把值班人员和下游渠道打爆；值班人员拿到告警后，需要基于历史案例和 SOP 快速得到有依据的诊断建议；维修工单的创建必须由人把关，且不能重复建单。</p>
+<div class="tags"><span>Java / Spring Boot</span><span>MySQL</span><span>RabbitMQ（Confirm / Return、仲裁队列）</span><span>Redis（Lua）</span><span>XXL-Job</span><span>PostgreSQL + pgvector</span><span>LLM</span></div>
+
+<h2 id="arch">整体架构</h2>
+<p>两个 Spring Boot 服务：<b>触达服务</b>负责受理、治理和通知投递；<b>分析服务</b>负责 Agent 分析、工单审批与执行、经验回流。两者通过 RabbitMQ 事件协作，MySQL 是事实的唯一来源，PostgreSQL 向量索引只是可重建的检索投影。</p>
+<figure><img src="arch.svg" alt="整体架构图：上游受理、Outbox 发布、RabbitMQ、通知消费、分析 Agent、人工审批、CMMS 建单、关单回流" loading="lazy"></figure>
+
+<h2 id="modules">四个核心模块</h2>
+<div class="grid">
+<div class="card"><h3>① 通知可靠触达</h3><ul>
+<li>受理时在同一个本地事务里写业务任务和 Outbox 事件，提交后才返回“已受理”，避免“库写了消息没发”。</li>
+<li>Relay 双路径：提交后立即发布的快路径 + 定时扫描兜底；用 Publisher Confirm / Return 判断是否真正入队。</li>
+<li>消费端用消费账本 + 稳定请求号做幂等，重复投递只会被挡下，不会重复通知。</li>
+<li>渠道调用超时记为“结果未知”，交给对账补偿判定，而不是盲目重发。</li></ul></div>
+<div class="card"><h3>② 分级治理与流量保护</h3><ul>
+<li>按事件级别分级：高等级事件不合并、不限流降级，低价值重复告警在时间窗口内去重合并。</li>
+<li>Redis Lua 实现原子的去重窗口与令牌桶，保护企业微信 / 短信等下游渠道配额。</li>
+<li>带滞回的降级档位：升档快、降档慢，避免在阈值附近来回抖动。</li></ul></div>
+<div class="card"><h3>③ 隔离式分析 Agent</h3><ul>
+<li>分析请求异步落库后由 worker 执行，模型故障不影响通知主链路。</li>
+<li>先冻结事件快照，再做关键词、向量、结构化三路检索并用 RRF 融合，输出必须逐条引用证据。</li>
+<li>四层校验（格式、字段、引用、规则）不通过就降级为“仅证据卡”，宁缺勿错。</li>
+<li>Prompt / 模型的每次变更都要过离线评测集 + 红队用例门禁，再按产线单元灰度。</li>
+<li>模型只能调用只读工具，不直接写任何外部系统。</li></ul></div>
+<div class="card"><h3>④ HITL 维修工单</h3><ul>
+<li>Agent 只生成工单草稿，由值班人员审批；审批用版本号 CAS，审批结果和执行意图同事务落库。</li>
+<li>CMMS 本身不提供幂等，幂等收在我们这边：唯一请求号 + 执行状态机，请求号写入工单外部参考号。</li>
+<li>调用结果不明时先按请求号回查再决定，查不清就转人工，宁可慢一点也不重复建单。</li>
+<li>关单后的维修经验经人工审核进入案例库，回流到检索。</li></ul></div>
+</div>
+
+<h2 id="tradeoffs">关键技术取舍</h2>
+<div class="tw"><table><tr><th>选择</th><th>没选</th><th>原因</th></tr>
+<tr><td>本地事务 + Outbox</td><td>XA / 分布式事务、CDC</td><td>只需保证“本库写入与发消息”最终一致，Outbox 实现简单、可观测，不引入额外组件。</td></tr>
+<tr><td>RabbitMQ</td><td>Kafka / RocketMQ</td><td>业务是任务型消息，需要按消息确认、死信与延迟重试；吞吐要求不高，团队运维也更熟。</td></tr>
+<tr><td>PostgreSQL + pgvector</td><td>专门的向量库 / ES</td><td>案例库规模不大，一个库同时做关键词、向量和结构化过滤，运维成本最低；索引可从 MySQL 全量重建。</td></tr>
+<tr><td>XXL-Job 补偿</td><td>Temporal 等工作流引擎</td><td>补偿逻辑是分钟级扫描对账，用现成调度即可，避免为试点引入重型基础设施。</td></tr>
+<tr><td>人工审批后再执行</td><td>Agent 直接建单</td><td>写操作有外部副作用，必须可追溯、可拒绝；模型只给建议。</td></tr>
+</table></div>
+</main><footer>© 2026 Guichena · <a href="../">返回学习笔记</a> · <a href="https://guichena.github.io/">Guichena</a></footer></body></html>
