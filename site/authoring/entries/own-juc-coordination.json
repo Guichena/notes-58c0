@@ -1,0 +1,462 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-coordination",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 并发与 JUC",
+  "category": "顺序协作、队列与线程池手写",
+  "title": "顺序协作、队列与线程池手写",
+  "tags": [
+    "Java",
+    "JUC",
+    "Java21教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-juc-cyclic-ordering",
+      "order": 2787,
+      "question": "三线程打印 ABC 一百轮 还有无限 123？",
+      "shortAnswer": "顺序打印需要显式的轮次状态，公平锁本身不编码输出顺序。可以把 turn 设为 A、B、C，线程在自己的条件成立时输出，完成后再把 turn 交给下一位；检查和更新必须由同一同步协议保护。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14 顺序打印题 先定义协议 再选工具"
+        },
+        {
+          "type": "paragraph",
+          "text": "顺序打印需要显式的轮次状态，公平锁本身不编码输出顺序。可以把 turn 设为 A、B、C，线程在自己的条件成立时输出，完成后再把 turn 交给下一位；检查和更新必须由同一同步协议保护。"
+        },
+        {
+          "type": "paragraph",
+          "text": "三线程 ABCABC 输出 100 轮是有限协议：每个角色恰好执行 100 次。无限 123 是另一种生命周期：循环直到外部取消，取消必须唤醒等待者并结束所有角色。若题目只说“两线程交替”，输出内容、轮数和谁先开始并未确定，应先问清，不能自行把它改成奇偶数题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用 Condition 写时，每个角色都在 while 中重查 turn：通知只是让它有机会醒来，不能替代条件判断；虚假唤醒或醒来后条件再次改变，都不能让它越过自己的轮次。多个角色共用一个条件，用 signalAll 容易验证；换成每角色一条 Condition 可以定向通知，但退出或失败时仍要叫醒所有可能等待的人。wait/notifyAll 则是同一谓词协议的监视器版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "换成 Semaphore，正常路径可由初始许可 1、0、0 串起来，最后一位再释放给第一位。接着改变条件：如果 B 异常退出，交棒链就断了，其余角色可能永久等许可。因此还必须单独设计整组取消，不能只展示正常输出的 ABC。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的 TurnGate 把失败视为整组终止：回调失败或等待中断会标记取消并唤醒同伴。回调在锁内执行，以确保一项输出完成后才交棒；因此回调必须短小、不可重入，不能在其中执行任意网络调用。cancel 也可能等待正在运行的回调释放锁，它不是强制终止器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/TurnGate.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.CancellationException;\nimport java.util.concurrent.locks.Condition;\nimport java.util.concurrent.locks.ReentrantLock;\n\n/** A small, fail-stop coordinator; callbacks must be short and non-reentrant. */\npublic final class TurnGate {\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition changed = lock.newCondition();\n    private int turn;\n    private boolean cancelled;\n\n    public TurnGate(int firstTurn) { turn = firstTurn; }\n\n    public void cancel() {\n        lock.lock();\n        try { cancelled = true; changed.signalAll(); }\n        finally { lock.unlock(); }\n    }\n\n    public void step(int expected, int next, Runnable action)\n            throws InterruptedException {\n        try { lock.lockInterruptibly(); }\n        catch (InterruptedException ex) { cancel(); throw ex; }\n        try {\n            // A notification is only a hint. Always recheck the predicate.\n            while (!cancelled && turn != expected) changed.await();\n            if (cancelled) throw new CancellationException(\"coordinator cancelled\");\n            action.run();              // Finish this output before publishing next turn.\n            turn = next;\n            changed.signalAll();       // Several roles share the same condition.\n        } catch (InterruptedException ex) {\n            cancelled = true;\n            throw ex;                 // The method propagates interruption to its owner.\n        } catch (RuntimeException | Error ex) {\n            cancelled = true;\n            throw ex;\n        } finally {\n            if (cancelled) changed.signalAll();\n            lock.unlock();\n        }\n    }\n}\n",
+          "label": "code/TurnGate.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-ordering-problem-contracts",
+      "order": 2846,
+      "question": "first second third FooBar 与零奇偶？",
+      "shortAnswer": "这些题共享“条件成立才执行，执行结束再通知下一角色”的结构，但每题的次数和转换图不同。first/second/third 每个角色调用一次，FooBar 往返 n 轮，ZeroEvenOdd 则是 0、奇数、0、偶数，直到 n；不能只替换打印字符串而忽略终止边界。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "这些题共享“条件成立才执行，执行结束再通知下一角色”的结构，但每题的次数和转换图不同。first/second/third 每个角色调用一次，FooBar 往返 n 轮，ZeroEvenOdd 则是 0、奇数、0、偶数，直到 n；不能只替换打印字符串而忽略终止边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FooLatch 展示单次依赖的最小门闩解法，它不包含整组失败传播，适用于明确保证回调成功的基础题。面试追问异常或中断时，切换到共享取消状态的版本，并解释为什么不能在失败后仍 countDown 假装前置业务成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/Foo.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "public final class Foo {\n    private final TurnGate gate = new TurnGate(1);\n    public void first(Runnable printFirst) throws InterruptedException {\n        gate.step(1, 2, printFirst);\n    }\n    public void second(Runnable printSecond) throws InterruptedException {\n        gate.step(2, 3, printSecond);\n    }\n    public void third(Runnable printThird) throws InterruptedException {\n        gate.step(3, 4, printThird);\n    }\n    public void cancel() { gate.cancel(); }\n}\n",
+          "label": "code/Foo.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/FooLatch.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.CountDownLatch;\n\n/** The judge version assumes one call per role and successful callbacks. */\npublic final class FooLatch {\n    private final CountDownLatch firstDone = new CountDownLatch(1);\n    private final CountDownLatch secondDone = new CountDownLatch(1);\n    public void first(Runnable print) {\n        print.run();\n        firstDone.countDown();\n    }\n    public void second(Runnable print) throws InterruptedException {\n        firstDone.await();\n        print.run();\n        secondDone.countDown();\n    }\n    public void third(Runnable print) throws InterruptedException {\n        secondDone.await();\n        print.run();\n    }\n}\n",
+          "label": "code/FooLatch.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/FooBar.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "public final class FooBar {\n    private final int n;\n    private final TurnGate gate = new TurnGate(0);\n    public FooBar(int n) {\n        if (n < 0) throw new IllegalArgumentException(\"n must be nonnegative\");\n        this.n = n;\n    }\n    public void foo(Runnable printFoo) throws InterruptedException {\n        for (int i = 0; i < n; i++) gate.step(0, 1, printFoo);\n    }\n    public void bar(Runnable printBar) throws InterruptedException {\n        for (int i = 0; i < n; i++) gate.step(1, 0, printBar);\n    }\n    public void cancel() { gate.cancel(); }\n}\n",
+          "label": "code/FooBar.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ZeroEvenOdd.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.function.IntConsumer;\n\npublic final class ZeroEvenOdd {\n    private final int n;\n    private final TurnGate gate = new TurnGate(0);\n    public ZeroEvenOdd(int n) {\n        // This teaching implementation avoids int loop-counter overflow.\n        if (n < 0 || n == Integer.MAX_VALUE)\n            throw new IllegalArgumentException(\"0 <= n < Integer.MAX_VALUE\");\n        this.n = n;\n    }\n    public void zero(IntConsumer out) throws InterruptedException {\n        for (int i = 1; i <= n; i++) {\n            gate.step(0, (i & 1) == 1 ? 1 : 2, () -> out.accept(0));\n        }\n    }\n    public void odd(IntConsumer out) throws InterruptedException {\n        for (long i = 1; i <= n; i += 2) {\n            final int value = (int) i;\n            gate.step(1, 0, () -> out.accept(value));\n        }\n    }\n    public void even(IntConsumer out) throws InterruptedException {\n        for (long i = 2; i <= n; i += 2) {\n            final int value = (int) i;\n            gate.step(2, 0, () -> out.accept(value));\n        }\n    }\n    public void cancel() { gate.cancel(); }\n}\n",
+          "label": "code/ZeroEvenOdd.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-inclusive-alternation",
+      "order": 2950,
+      "question": "两个线程从 0 到 100 交替输出，末尾为什么不是对称次数？",
+      "shortAnswer": "先把范围定成包含 0 和 100，再按偶数、奇数两个角色交棒：偶数线程输出 51 次，奇数线程输出 50 次。 不能把两边都写成循环 50 次，也不能套用“0、奇数、0、偶数”的 ZeroEvenOdd，那是另一道题。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先把范围定成包含 0 和 100，再按偶数、奇数两个角色交棒：偶数线程输出 51 次，奇数线程输出 50 次。 不能把两边都写成循环 50 次，也不能套用“0、奇数、0、偶数”的 ZeroEvenOdd，那是另一道题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里沿用本章上方完整的 TurnGate：turn=0 允许偶数，turn=1 允许奇数，最后输出 100 后进入终态 2。奇数在 99 之后结束，但先把控制权交还给偶数，所以 100 不会丢失；也不需要奇数再等待一次不存在的 101。先启动奇数线程仍应等待条件，不能靠启动顺序或 sleep 保证 0 先输出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的 InclusiveAlternator.java 与同章 TurnGate.java 放在同一目录编译。一个实例只允许各调用一次 even 和 odd，回调短小、非阻塞且不可重入；若需要任意数量的参与者或可重用多轮实例，应另定义注册与代际合同。回调在 TurnGate 锁内执行，所以输出、交棒和同伴可见性遵守同一同步协议。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.Objects;\nimport java.util.function.IntConsumer;\n\n/** One call to even() and one to odd(); callbacks must be short, nonblocking, non-reentrant. */\npublic final class InclusiveAlternator {\n    private final TurnGate gate = new TurnGate(0);\n    private final IntConsumer out;\n    public InclusiveAlternator(IntConsumer out) { this.out = Objects.requireNonNull(out); }\n    public void even() throws InterruptedException {\n        for (int i = 0; i <= 100; i += 2) {\n            final int value = i;\n            gate.step(0, value == 100 ? 2 : 1, () -> out.accept(value));\n        }\n    }\n    public void odd() throws InterruptedException {\n        for (int i = 1; i < 100; i += 2) {\n            final int value = i;\n            gate.step(1, 0, () -> out.accept(value));\n        }\n    }\n    public void cancel() { gate.cancel(); }\n}\n",
+          "label": "code/InclusiveAlternator.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "任一角色等待中断或回调抛错，TurnGate 将整组设为取消并唤醒同伴；调用者保留原异常，不把只输出一段前缀误报为完成。取消不会回滚已经输出的数字，也不能强制终止任意卡死的外部回调。下面测试入口在同一个总等待期限内 join 两个角色，并验证正常结果与异常终止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "将测试保存为 InclusiveAlternatorTest.java；默认检查完整序列和线程归属，带 --demo 参数时由两个工作线程实际逐行输出 0 到 100。正常路径也要检查工作线程异常，单纯 join 返回不代表任务成功。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicReference;\n\npublic final class InclusiveAlternatorTest {\n    private static int checks;\n    private static void check(boolean value) {\n        checks++;\n        if (!value) throw new AssertionError(\"check \" + checks);\n    }\n    @FunctionalInterface private interface Role { void run() throws InterruptedException; }\n    private record Worker(Thread thread, AtomicReference<Throwable> error) {}\n    private static Worker worker(String name, Role role, CountDownLatch entered) {\n        AtomicReference<Throwable> error = new AtomicReference<>();\n        Thread t = new Thread(() -> {\n            entered.countDown();\n            try { role.run(); }\n            catch (InterruptedException ex) { error.set(ex); Thread.currentThread().interrupt(); }\n            catch (RuntimeException | Error ex) { error.set(ex); }\n        }, name);\n        return new Worker(t, error);\n    }\n    // One deadline covers both joins. Test callbacks are bounded; this cannot stop arbitrary hung I/O.\n    private static void join(InclusiveAlternator task, Worker a, Worker b) throws InterruptedException {\n        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);\n        for (Worker w : List.of(a, b)) {\n            long left = deadline - System.nanoTime();\n            if (left > 0) TimeUnit.NANOSECONDS.timedJoin(w.thread(), left);\n        }\n        if (a.thread().isAlive() || b.thread().isAlive()) {\n            a.thread().interrupt(); b.thread().interrupt(); task.cancel();\n            a.thread().join(1000); b.thread().join(1000);\n            throw new AssertionError(\"role failed to terminate\");\n        }\n        check(!a.thread().isAlive() && !b.thread().isAlive());\n    }\n    private static void normal(boolean oddFirst, boolean print) throws InterruptedException {\n        List<Integer> values = new ArrayList<>(); List<String> owners = new ArrayList<>();\n        InclusiveAlternator task = new InclusiveAlternator(value -> {\n            values.add(value); owners.add(Thread.currentThread().getName());\n            if (print) System.out.println(value);\n        });\n        CountDownLatch entered = new CountDownLatch(2);\n        Worker even = worker(\"even\", task::even, entered), odd = worker(\"odd\", task::odd, entered);\n        if (oddFirst) { odd.thread().start(); even.thread().start(); }\n        else { even.thread().start(); odd.thread().start(); }\n        join(task, even, odd);\n        check(even.error().get() == null && odd.error().get() == null);\n        check(values.size() == 101 && values.get(100) == 100);\n        int evenCount = 0, oddCount = 0;\n        for (int i = 0; i <= 100; i++) {\n            check(values.get(i) == i);\n            check(owners.get(i).equals((i & 1) == 0 ? \"even\" : \"odd\"));\n            if ((i & 1) == 0) evenCount++; else oddCount++;\n        }\n        check(evenCount == 51 && oddCount == 50);\n    }\n    public static void main(String[] args) throws InterruptedException {\n        if (args.length == 1 && args[0].equals(\"--demo\")) { normal(true, true); return; }\n        for (int i = 0; i < 100; i++) normal((i & 1) == 0, false);\n        try { new InclusiveAlternator(null); throw new AssertionError(\"null accepted\"); }\n        catch (NullPointerException expected) { checks++; }\n        InclusiveAlternator cancelled = new InclusiveAlternator(v -> { throw new AssertionError(\"must not output\"); });\n        cancelled.cancel();\n        Worker ce = worker(\"even\", cancelled::even, new CountDownLatch(0));\n        Worker co = worker(\"odd\", cancelled::odd, new CountDownLatch(0));\n        co.thread().start(); ce.thread().start(); join(cancelled, ce, co);\n        check(ce.error().get() instanceof CancellationException && co.error().get() instanceof CancellationException);\n        InclusiveAlternator activeCancel = new InclusiveAlternator(v -> { throw new AssertionError(\"must not output\"); });\n        Worker ao = worker(\"odd\", activeCancel::odd, new CountDownLatch(0));\n        ao.thread().start();\n        long waitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);\n        while (ao.thread().getState() != Thread.State.WAITING && System.nanoTime() < waitDeadline) Thread.sleep(1);\n        check(ao.thread().getState() == Thread.State.WAITING);\n        activeCancel.cancel();\n        Worker ae = worker(\"even\", activeCancel::even, new CountDownLatch(0));\n        ae.thread().start(); join(activeCancel, ae, ao);\n        check(ae.error().get() instanceof CancellationException && ao.error().get() instanceof CancellationException);\n        // Odd starts without an even worker, then is interrupted before it could output.\n        InclusiveAlternator interrupted = new InclusiveAlternator(v -> { throw new AssertionError(\"must not output\"); });\n        CountDownLatch entered = new CountDownLatch(1);\n        Worker io = worker(\"odd\", interrupted::odd, entered);\n        io.thread().start(); check(entered.await(5, TimeUnit.SECONDS)); io.thread().interrupt();\n        io.thread().join(5000); check(!io.thread().isAlive());\n        Worker ie = worker(\"even\", interrupted::even, new CountDownLatch(0));\n        ie.thread().start(); join(interrupted, ie, io);\n        check(io.error().get() instanceof InterruptedException);\n        check(ie.error().get() instanceof CancellationException);\n        List<Integer> prefix = new ArrayList<>();\n        InclusiveAlternator failed = new InclusiveAlternator(v -> {\n            if (v == 17) throw new IllegalStateException(\"injected callback failure\");\n            prefix.add(v);\n        });\n        Worker fe = worker(\"even\", failed::even, new CountDownLatch(0));\n        Worker fo = worker(\"odd\", failed::odd, new CountDownLatch(0));\n        fo.thread().start(); fe.thread().start(); join(failed, fe, fo);\n        check(fo.error().get() instanceof IllegalStateException);\n        check(fe.error().get() instanceof CancellationException);\n        check(prefix.size() == 17);\n        for (int i = 0; i < 17; i++) check(prefix.get(i) == i);\n        System.out.println(\"PASS \" + checks + \" checks; 100 schedules, inclusive 0..100, role ownership, pre-cancel, active cancellation, interruption and callback failure.\");\n    }\n}\n",
+          "label": "code/InclusiveAlternatorTest.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "复杂度按输出数量为 O(n)，协调器自身额外空间 O(1)；测试为了检查完整序列额外保存 O(n) 记录。控制台输出本身的阻塞属于外部回调限制，不把本地调度测试当作任意 I/O 都有硬终止期限的保证。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-molecule-generations",
+      "order": 3095,
+      "question": "两氢一氧成组输出 为什么需要代际隔离？",
+      "shortAnswer": "H2O 要求每组三个参与者恰好两氢一氧，还要明确是否允许下一组输出穿插。只有分别给氢两个许可、氧一个许可，并不能独立保证上一组全部输出完才重置下一组。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "H2O 要求每组三个参与者恰好两氢一氧，还要明确是否允许下一组输出穿插。只有分别给氢两个许可、氧一个许可，并不能独立保证上一组全部输出完才重置下一组。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一组的生命周期有两道边界：先凑齐两氢一氧，再等这三次输出全部结束。下面在同一把锁内记录已到达的氢氧数、组装完成标记和已执行回调数。凑齐以后阻止下一组进入；直到第三个回调完成才把本组清零。这样“已凑齐”就不会被误当成“已经输出完”，下一组也不能穿插过来。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果一个参与者中断或回调失败，剩下的人再等也凑不出完整成功结果，因此取消整个协调器并唤醒同伴。回调必须短小；已经发生的任意外部副作用，协调器不能替它回滚。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/H2O.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.CancellationException;\nimport java.util.concurrent.locks.Condition;\nimport java.util.concurrent.locks.ReentrantLock;\n\n/** One generation admits exactly 2 H and 1 O, then completes all three outputs. */\npublic final class H2O {\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition changed = lock.newCondition();\n    private int hydrogens, oxygens, completed;\n    private boolean formed, cancelled;\n\n    public void hydrogen(Runnable releaseH) throws InterruptedException {\n        atom(true, releaseH);\n    }\n    public void oxygen(Runnable releaseO) throws InterruptedException {\n        atom(false, releaseO);\n    }\n    public void cancel() {\n        lock.lock();\n        try { cancelled = true; changed.signalAll(); }\n        finally { lock.unlock(); }\n    }\n    private void atom(boolean hydrogen, Runnable out) throws InterruptedException {\n        try { lock.lockInterruptibly(); }\n        catch (InterruptedException ex) { cancel(); throw ex; }\n        try {\n            // No next-generation admission while this generation is printing.\n            while (!cancelled && (formed || (hydrogen ? hydrogens == 2 : oxygens == 1)))\n                changed.await();\n            checkActive();\n            if (hydrogen) hydrogens++; else oxygens++;\n            if (hydrogens == 2 && oxygens == 1) {\n                formed = true;\n                changed.signalAll();\n            }\n            // Admitted atoms wait for the remaining partners.\n            while (!cancelled && !formed) changed.await();\n            checkActive();\n            out.run();                 // Short callback, serialized for an atomic log entry.\n            completed++;\n            if (completed == 3) {\n                hydrogens = oxygens = completed = 0;\n                formed = false;        // Only the last output opens the next generation.\n                changed.signalAll();\n            }\n        } catch (InterruptedException ex) {\n            cancelled = true;\n            throw ex;\n        } catch (RuntimeException | Error ex) {\n            cancelled = true;\n            throw ex;\n        } finally {\n            if (cancelled) changed.signalAll();\n            lock.unlock();\n        }\n    }\n    private void checkActive() {\n        if (cancelled) throw new CancellationException(\"molecule coordinator cancelled\");\n    }\n}\n",
+          "label": "code/H2O.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下测试包括 ABC 一百轮、无限 123 的合作停止、Semaphore 替代、first/second/third、FooBar、零奇偶、成组 H2O 和失败唤醒。所有观察等待都有外部上界；控制线程中断后还要等待工作线程结束，不能以 Future 被取消代替停止证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/OrderingLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class OrderingLab {\n    @FunctionalInterface interface Action { void run() throws Exception; }\n    static void together(Action... actions) throws Exception {\n        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();\n        try {\n            List<Future<?>> futures = new ArrayList<>();\n            for (Action action : actions) futures.add(executor.submit(() -> { action.run(); return null; }));\n            for (Future<?> future : futures) Checks.get(future);\n        } finally { Checks.stop(executor); }\n    }\n    static void semaphoreAbc(StringBuffer output) throws Exception {\n        Semaphore[] turns = {new Semaphore(1), new Semaphore(0), new Semaphore(0)};\n        AtomicBoolean cancelled = new AtomicBoolean();\n        Action[] actions = new Action[3];\n        for (int role = 0; role < 3; role++) {\n            int id = role;\n            actions[id] = () -> {\n                try {\n                    for (int n = 0; n < 100; n++) {\n                        turns[id].acquire();\n                        if (cancelled.get()) throw new CancellationException();\n                        output.append((char) ('A' + id));\n                        turns[(id + 1) % 3].release();\n                    }\n                } catch (Exception | Error failure) {\n                    cancelled.set(true);\n                    for (Semaphore semaphore : turns) semaphore.release();\n                    throw failure;\n                }\n            };\n        }\n        together(actions);\n    }\n    public static void main(String[] args) throws Exception {\n        StringBuffer abc = new StringBuffer(); TurnGate gate = new TurnGate(0);\n        Action[] actions = new Action[3];\n        for (int role = 0; role < 3; role++) {\n            int id = role;\n            actions[id] = () -> { for (int n = 0; n < 100; n++) gate.step(id, (id + 1) % 3,\n                    () -> abc.append((char) ('A' + id))); };\n        }\n        together(actions); Checks.that(abc.toString().equals(\"ABC\".repeat(100)), \"100 ABC cycles\");\n        StringBuffer sem = new StringBuffer(); semaphoreAbc(sem);\n        Checks.that(sem.toString().equals(abc.toString()), \"semaphore alternative\");\n        Foo foo = new Foo(); StringBuffer sequence = new StringBuffer();\n        together(() -> foo.third(() -> sequence.append('3')), () -> foo.second(() -> sequence.append('2')),\n                () -> foo.first(() -> sequence.append('1')));\n        Checks.that(sequence.toString().equals(\"123\"), \"first/second/third\");\n        FooLatch latch = new FooLatch(); StringBuffer latchOutput = new StringBuffer();\n        together(() -> latch.third(() -> latchOutput.append('3')), () -> latch.first(() -> latchOutput.append('1')),\n                () -> latch.second(() -> latchOutput.append('2')));\n        Checks.that(latchOutput.toString().equals(\"123\"), \"latch baseline\");\n        FooBar fooBar = new FooBar(20); StringBuffer fb = new StringBuffer();\n        together(() -> fooBar.foo(() -> fb.append(\"foo\")), () -> fooBar.bar(() -> fb.append(\"bar\")));\n        Checks.that(fb.toString().equals(\"foobar\".repeat(20)), \"FooBar\");\n        ZeroEvenOdd zeo = new ZeroEvenOdd(10); StringBuffer numbers = new StringBuffer();\n        together(() -> zeo.even(numbers::append), () -> zeo.odd(numbers::append), () -> zeo.zero(numbers::append));\n        StringBuilder expected = new StringBuilder();\n        for (int n = 1; n <= 10; n++) expected.append(0).append(n);\n        Checks.that(numbers.toString().equals(expected.toString()), \"zero/odd/even\");\n        H2O water = new H2O(); StringBuffer molecules = new StringBuffer(); Action[] atoms = new Action[30];\n        for (int i = 0; i < atoms.length; i++) atoms[i] = i < 10\n                ? () -> water.oxygen(() -> molecules.append('O'))\n                : () -> water.hydrogen(() -> molecules.append('H'));\n        together(atoms);\n        Checks.that(molecules.length() == 30, \"all atoms output\");\n        for (int i = 0; i < molecules.length(); i += 3) {\n            String group = molecules.substring(i, i + 3);\n            Checks.that(group.chars().filter(c -> c == 'H').count() == 2, \"each group has two H\");\n        }\n        TurnGate infinite = new TurnGate(0); StringBuffer prefix = new StringBuffer();\n        CountDownLatch enough = new CountDownLatch(1);\n        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();\n        try {\n            List<Future<?>> loops = new ArrayList<>();\n            for (int role = 0; role < 3; role++) {\n                int id = role;\n                loops.add(executor.submit(() -> {\n                    try { for (;;) infinite.step(id, (id + 1) % 3, () -> {\n                        prefix.append((char) ('1' + id)); if (prefix.length() >= 300) enough.countDown();\n                    }); }\n                    catch (CancellationException expectedCancellation) { }\n                    catch (InterruptedException e) { Thread.currentThread().interrupt(); }\n                }));\n            }\n            Checks.await(enough); infinite.cancel();\n            for (Future<?> f : loops) Checks.get(f);\n            for (int i = 0; i < prefix.length(); i++) Checks.that(prefix.charAt(i) == '1' + i % 3, \"infinite prefix order\");\n            TurnGate failing = new TurnGate(0);\n            Future<?> waiter = executor.submit(() -> {\n                try { failing.step(1, 0, () -> { throw new AssertionError(\"must not print\"); }); }\n                catch (CancellationException expectedCancellation) { return; }\n                catch (InterruptedException e) { throw new AssertionError(e); }\n                throw new AssertionError(\"expected cancellation\");\n            });\n            try { failing.step(0, 1, () -> { throw new IllegalStateException(\"output failed\"); }); }\n            catch (IllegalStateException expectedFailure) { }\n            Checks.get(waiter);\n            TurnGate interrupted = new TurnGate(0); AtomicReference<Throwable> error = new AtomicReference<>();\n            Thread blocked = Checks.thread(\"turn-waiter\", error, () -> {\n                try { interrupted.step(1, 0, () -> {}); throw new AssertionError(\"unexpected success\"); }\n                catch (InterruptedException expectedInterruption) { }\n            });\n            blocked.start(); blocked.interrupt(); Checks.join(blocked); Checks.rethrow(error);\n            try { interrupted.step(0, 1, () -> {}); throw new AssertionError(\"group still active\"); }\n            catch (CancellationException expectedCancellation) { }\n            H2O cancelledWater = new H2O(); cancelledWater.cancel();\n            try { cancelledWater.hydrogen(() -> {}); throw new AssertionError(\"cancelled water active\"); }\n            catch (CancellationException expectedCancellation) { }\n        } finally { infinite.cancel(); Checks.stop(executor); }\n        Checks.that(DeadlockExamples.demonstrateAndRecover(), \"controlled recoverable deadlock\");\n        System.out.println(\"OrderingLab OK\");\n    }\n}\n",
+          "label": "code/OrderingLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-monitor-deadlock-isolation",
+      "order": 3293,
+      "question": "必发的 synchronized 死锁怎样安全演示？",
+      "shortAnswer": "主进程启动自己编译的子进程，子进程确认两把第一阶段锁都已被持有，再进入不可打破的锁环；主进程验证它没有正常退出后强制回收整个子进程。这证明的是控制交错下的必发死锁，不是建议在业务中依靠杀进程处理每次锁竞争。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "主进程启动自己编译的子进程，子进程确认两把第一阶段锁都已被持有，再进入不可打破的锁环；主进程验证它没有正常退出后强制回收整个子进程。这证明的是控制交错下的必发死锁，不是建议在业务中依靠杀进程处理每次锁竞争。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/MonitorDeadlockLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.io.*;\nimport java.nio.file.*;\nimport java.util.concurrent.*;\n\n/** An unavoidable monitor deadlock is demonstrated only in an isolated subprocess. */\npublic final class MonitorDeadlockLab {\n    static void child() {\n        Object a = new Object(), b = new Object();\n        CountDownLatch held = new CountDownLatch(2);\n        Runnable left = () -> { synchronized (a) {\n            held.countDown();\n            try { Checks.await(held); } catch (InterruptedException e) { throw new AssertionError(e); }\n            System.out.println(\"BOTH_HELD\"); System.out.flush();\n            synchronized (b) { throw new AssertionError(\"unreachable\"); }\n        }};\n        Runnable right = () -> { synchronized (b) {\n            held.countDown();\n            try { Checks.await(held); } catch (InterruptedException e) { throw new AssertionError(e); }\n            synchronized (a) { throw new AssertionError(\"unreachable\"); }\n        }};\n        new Thread(left, \"left\").start(); new Thread(right, \"right\").start();\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length == 1 && args[0].equals(\"child\")) { child(); return; }\n        String java = Path.of(System.getProperty(\"java.home\"), \"bin\", \"java\").toString();\n        Process process = new ProcessBuilder(java, \"-cp\", System.getProperty(\"java.class.path\"),\n                MonitorDeadlockLab.class.getName(), \"child\").redirectErrorStream(true).start();\n        ExecutorService reader = Executors.newSingleThreadExecutor();\n        try {\n            Future<String> line = reader.submit(() -> new BufferedReader(new InputStreamReader(process.getInputStream())).readLine());\n            Checks.that(\"BOTH_HELD\".equals(Checks.get(line)), \"both first locks held\");\n            Checks.that(!process.waitFor(100, TimeUnit.MILLISECONDS), \"child remains deadlocked\");\n        } finally {\n            process.destroyForcibly();\n            Checks.that(process.waitFor(5, TimeUnit.SECONDS), \"child reaped\");\n            Checks.stop(reader);\n        }\n        System.out.println(\"MonitorDeadlockLab OK\");\n    }\n}\n",
+          "label": "code/MonitorDeadlockLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-producer-consumer",
+      "order": 3344,
+      "question": "先回答容量 交接和结束协议？",
+      "shortAnswer": "生产者消费者模型把生产速度与处理速度解耦，但队列必须有容量、过载和结束协议。纯 Java 原生方案可以采用 ArrayBlockingQueue，也可以自己用 ReentrantLock + Condition 或 synchronized + wait/notifyAll 实现；不需要引入外部中间件才能说明线程间交接。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "15 生产者消费者与可关闭队列"
+        },
+        {
+          "type": "paragraph",
+          "text": "生产者消费者模型把生产速度与处理速度解耦，但队列必须有容量、过载和结束协议。纯 Java 原生方案可以采用 ArrayBlockingQueue，也可以自己用 ReentrantLock + Condition 或 synchronized + wait/notifyAll 实现；不需要引入外部中间件才能说明线程间交接。"
+        },
+        {
+          "type": "paragraph",
+          "text": "生产者入队之前的动作 happens-before 消费者从 BlockingQueue 获得该元素后的动作，这提供交接可见性；交接后双方继续并发修改同一可变元素，仍需另行保护。一个生产者并不意味着无锁：多个消费者还会竞争队头，生产者与消费者也会共享容量和索引。SPSC、MPSC、MPMC 是不同前提，不能把单生产者单消费者算法直接扩成多方版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有限任务的结束可以沿最后一项数据来设计：先确认所有生产者成功结束，再由协调者发送与消费者数量相同的终止消息，让每个消费者都有退出机会。终止标记必须与普通数据区分，不能把某个合法值碰巧当作结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果其中一个生产者失败，不能继续等一个永远不会到齐的成功计数；应中断整组，并处理尚未消费的数据。这个内存协议只说明任务被队列接收，不等于已经持久化。若要求宕机后恢复且不丢业务，还需要持久任务记录、幂等处理和重试状态机。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/MonitorQueue.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.ArrayDeque;\nimport java.util.Objects;\n\n/** Close rejects puts; takes drain existing elements, then return null. */\npublic final class MonitorQueue<E> {\n    private final ArrayDeque<E> queue = new ArrayDeque<>();\n    private final int capacity;\n    private boolean closed;\n    public MonitorQueue(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"capacity must be positive\");\n        this.capacity = capacity;\n    }\n    public synchronized void put(E value) throws InterruptedException {\n        Objects.requireNonNull(value, \"null is reserved for closed-and-drained\");\n        while (!closed && queue.size() == capacity) wait();\n        if (closed) throw new IllegalStateException(\"queue closed\");\n        queue.addLast(value);            // put linearizes here, while holding the monitor.\n        notifyAll();\n    }\n    public synchronized E take() throws InterruptedException {\n        while (!closed && queue.isEmpty()) wait();\n        if (queue.isEmpty()) return null;\n        E value = queue.removeFirst();  // take linearizes here.\n        notifyAll();\n        return value;\n    }\n    public synchronized int size() { return queue.size(); }\n    public synchronized void close() { closed = true; notifyAll(); }\n}\n",
+          "label": "code/MonitorQueue.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一环形结构还可以用一把 ReentrantLock 配合 notEmpty、notFull 两条 Condition，分别唤醒对应角色。关闭时两侧都要 signalAll，否则满队列上的生产者也可能永久等待。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ConditionQueue.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.locks.*;\n\n/** Bounded MPMC ring; close rejects puts and drains already accepted values. */\npublic final class ConditionQueue<E> {\n    private final Object[] items;\n    private int head, tail, size;\n    private boolean closed;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notEmpty = lock.newCondition(), notFull = lock.newCondition();\n    public ConditionQueue(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(); items = new Object[capacity];\n    }\n    public void put(E value) throws InterruptedException {\n        Objects.requireNonNull(value); lock.lockInterruptibly();\n        try {\n            while (!closed && size == items.length) notFull.await();\n            if (closed) throw new IllegalStateException(\"closed\");\n            items[tail] = value; tail = (tail + 1) % items.length; size++; notEmpty.signal();\n        } finally { lock.unlock(); }\n    }\n    public E take() throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while (!closed && size == 0) notEmpty.await();\n            if (size == 0) return null;\n            @SuppressWarnings(\"unchecked\") E value = (E) items[head];\n            items[head] = null; head = (head + 1) % items.length; size--; notFull.signal(); return value;\n        } finally { lock.unlock(); }\n    }\n    public void close() {\n        lock.lock();\n        try { closed = true; notEmpty.signalAll(); notFull.signalAll(); }\n        finally { lock.unlock(); }\n    }\n    public static void main(String[] args) throws Exception {\n        ConditionQueue<Integer> queue = new ConditionQueue<>(1); ExecutorService pool = Executors.newFixedThreadPool(2);\n        try {\n            queue.put(0); CountDownLatch started = new CountDownLatch(1);\n            Future<?> full = pool.submit(() -> {\n                started.countDown();\n                try { queue.put(1); throw new AssertionError(\"closed put succeeded\"); }\n                catch (IllegalStateException expected) { }\n                return null;\n            });\n            Checks.await(started); queue.close(); Checks.get(full);\n            Checks.that(queue.take() == 0 && queue.take() == null, \"drain closed ring\");\n            ConditionQueue<Integer> interruptedQueue = new ConditionQueue<>(1);\n            CountDownLatch entered = new CountDownLatch(1), done = new CountDownLatch(1);\n            Future<?> wait = pool.submit(() -> {\n                entered.countDown();\n                try { interruptedQueue.take(); throw new AssertionError(\"expected interrupt\"); }\n                catch (InterruptedException expected) { }\n                finally { done.countDown(); }\n            });\n            Checks.await(entered); wait.cancel(true); Checks.await(done);\n            ConditionQueue<Integer> wake = new ConditionQueue<>(1);\n            Future<Integer> waiting = pool.submit(wake::take); wake.close();\n            Checks.that(Checks.get(waiting) == null, \"close wakes empty side\");\n        } finally { queue.close(); Checks.stop(pool); }\n        System.out.println(\"ConditionQueue OK\");\n    }\n}\n",
+          "label": "code/ConditionQueue.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ProducerConsumerLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\n/** Finite producer/consumer lifecycle with a typed terminal message. */\npublic final class ProducerConsumerLab {\n    record Message(boolean end, int value) {\n        static Message item(int value) { return new Message(false, value); }\n        static Message stop() { return new Message(true, 0); }\n    }\n    public static void main(String[] args) throws Exception {\n        int producers = 2, consumers = 3, perProducer = 1000;\n        BlockingQueue<Message> queue = new ArrayBlockingQueue<>(16);\n        ExecutorService executor = Executors.newFixedThreadPool(producers + consumers);\n        Set<Integer> seen = ConcurrentHashMap.newKeySet();\n        List<Future<?>> producerTasks = new ArrayList<>(), consumerTasks = new ArrayList<>();\n        try {\n            for (int c = 0; c < consumers; c++) consumerTasks.add(executor.submit(() -> {\n                for (;;) {\n                    Message item = queue.take();\n                    if (item.end()) return null;\n                    Checks.that(seen.add(item.value()), \"duplicate item\");\n                }\n            }));\n            for (int p = 0; p < producers; p++) {\n                int base = p * perProducer;\n                producerTasks.add(executor.submit(() -> {\n                    for (int i = 0; i < perProducer; i++) queue.put(Message.item(base + i));\n                    return null;\n                }));\n            }\n            for (Future<?> task : producerTasks) Checks.get(task);\n            // Only the coordinator sends terminal messages, after every producer succeeded.\n            for (int c = 0; c < consumers; c++) {\n                if (!queue.offer(Message.stop(), 5, TimeUnit.SECONDS)) throw new AssertionError(\"terminal offer timeout\");\n            }\n            for (Future<?> task : consumerTasks) Checks.get(task);\n            Checks.that(seen.size() == producers * perProducer && queue.isEmpty(), \"all accepted work consumed\");\n            MonitorQueue<Integer> monitor = new MonitorQueue<>(1);\n            monitor.put(0); monitor.close();\n            Checks.that(monitor.take() == 0 && monitor.take() == null, \"monitor drain then end\");\n            try { monitor.put(1); throw new AssertionError(\"closed monitor accepted\"); }\n            catch (IllegalStateException expected) { }\n            System.out.println(\"ProducerConsumerLab OK\");\n        } finally {\n            // Failure path interrupts blocked puts/takes; accepted work may remain and is not claimed durable.\n            for (Future<?> f : producerTasks) f.cancel(true);\n            for (Future<?> f : consumerTasks) f.cancel(true);\n            Checks.stop(executor);\n        }\n    }\n}\n",
+          "label": "code/ProducerConsumerLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-closeable-ring",
+      "order": 3516,
+      "question": "固定容量 O(1) 队列 close 和计数如何设计？",
+      "shortAnswer": "固定数组环形队列通过 head、tail、count 区分队头、下一写位和元素数，每次入出队只修改常数个位置。head 让出队不必搬动余下元素；空与满不能仅凭 head == tail 区分，可以另设 count，或牺牲一个槽位。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "固定数组环形队列通过 head、tail、count 区分队头、下一写位和元素数，每次入出队只修改常数个位置。head 让出队不必搬动余下元素；空与满不能仅凭 head == tail 区分，可以另设 count，或牺牲一个槽位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先看一个元素从接收到关闭的去向。push 在队列满或关闭时返回 false，不等待空位；pop 可以限时等待，并把“拿到元素”“等超时”“关闭且已空”分别表示为 ITEM、TIMEOUT、CLOSED。0 和 false 都是合法值，不能拿来代替失败；null 则被本实现禁止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "close 可以重复调用，效果是拒绝新写入，让已经接收的元素继续排空，直到空且已关闭才返回 CLOSED。若需求改成“关闭时立即丢弃库存”，也可以设计，但必须改名或明确说明，并交代那些已接受任务由谁处理；不能在同一个名字下悄悄换掉承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "成功与失败计数和队列状态在同一把锁下改变，快照也是同一临界区。非法参数不算有效 push；成功计数、失败计数用精确加法检查 long 上界，在溢出前抛错而不是悄悄回绕。O(1) 描述队列数据操作，并不承诺竞争下每个调用都在常数墙钟时间内完成；获取 mutex 仍可能等待。"
+        },
+        {
+          "type": "paragraph",
+          "text": "锁粒度覆盖检查、写入、索引和统计的整体不变量，但不在锁内执行业务处理。直接把这把锁换成自旋锁未必更快：竞争和调度会延长持有时间，忙等可能消耗更多 CPU。下面还验证满队列、重复关闭、排空、假值、超时、中断及多生产者多消费者的无重复交接。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/CloseableRing.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.concurrent.locks.*;\n\n/** Fixed storage, O(1) queue mutation. Null is invalid; zero/false are ordinary values. */\npublic final class CloseableRing<E> {\n    public enum Status { ITEM, TIMEOUT, CLOSED }\n    public record Pop<E>(Status status, E value) {}\n    public record Stats(int size, long successfulPushes, long failedPushes, boolean closed) {}\n    private final Object[] data;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notEmpty = lock.newCondition();\n    private int head, tail, count;\n    private long successes, failures;\n    private boolean closed;\n    public CloseableRing(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"capacity > 0\");\n        data = new Object[capacity];\n    }\n    /** Nonblocking with respect to capacity. Acquiring the short mutex can still wait. */\n    public boolean push(E value) {\n        Objects.requireNonNull(value);\n        lock.lock();\n        try {\n            if (closed || count == data.length) { failures = Math.incrementExact(failures); return false; }\n            long next = Math.incrementExact(successes); // Validate before changing the queue.\n            data[tail] = value; tail = (tail + 1) % data.length; count++; successes = next;\n            notEmpty.signal(); return true;\n        } finally { lock.unlock(); }\n    }\n    /** Timeout covers lock acquisition plus condition waiting, measured with nanoTime. */\n    public Pop<E> pop(long timeout, TimeUnit unit) throws InterruptedException {\n        if (timeout < 0) throw new IllegalArgumentException(\"timeout >= 0\");\n        long budget = unit.toNanos(timeout), start = System.nanoTime();\n        if (!lock.tryLock(budget, TimeUnit.NANOSECONDS)) return new Pop<>(Status.TIMEOUT, null);\n        try {\n            long remaining = budget - (System.nanoTime() - start);\n            while (count == 0 && !closed) {\n                if (remaining <= 0) return new Pop<>(Status.TIMEOUT, null);\n                notEmpty.awaitNanos(remaining);\n                remaining = budget - (System.nanoTime() - start);\n            }\n            if (count == 0) return new Pop<>(Status.CLOSED, null);\n            @SuppressWarnings(\"unchecked\") E value = (E) data[head];\n            data[head] = null; head = (head + 1) % data.length; count--;\n            return new Pop<>(Status.ITEM, value);\n        } finally { lock.unlock(); }\n    }\n    /** Reject future pushes, wake consumers, and allow already accepted items to drain. */\n    public void close() {\n        lock.lock();\n        try { closed = true; notEmpty.signalAll(); }\n        finally { lock.unlock(); }\n    }\n    public Stats stats() {\n        lock.lock();\n        try { return new Stats(count, successes, failures, closed); }\n        finally { lock.unlock(); }\n    }\n    public static void main(String[] args) throws Exception {\n        CloseableRing<Integer> small = new CloseableRing<>(1);\n        Checks.that(small.push(0) && !small.push(1), \"zero accepted, full rejected\");\n        small.close(); small.close();\n        Checks.that(!small.push(2), \"closed rejects push\");\n        Checks.that(small.pop(0, TimeUnit.NANOSECONDS).value() == 0, \"drain after close\");\n        Checks.that(small.pop(0, TimeUnit.NANOSECONDS).status() == Status.CLOSED, \"closed distinct from value\");\n        Checks.that(small.stats().successfulPushes() == 1 && small.stats().failedPushes() == 2, \"atomic counters\");\n        try { small.push(null); throw new AssertionError(\"null accepted\"); } catch (NullPointerException expected) { }\n        CloseableRing<Integer> queue = new CloseableRing<>(8);\n        Set<Integer> seen = ConcurrentHashMap.newKeySet(); ExecutorService pool = Executors.newFixedThreadPool(8);\n        try {\n            List<Future<?>> consumers = new ArrayList<>(), producers = new ArrayList<>();\n            for (int i = 0; i < 4; i++) consumers.add(pool.submit(() -> {\n                try {\n                    for (;;) {\n                        Pop<Integer> item = queue.pop(5, TimeUnit.SECONDS);\n                        if (item.status() == Status.CLOSED) return;\n                        Checks.that(item.status() == Status.ITEM && seen.add(item.value()), \"no loss/duplicate\");\n                    }\n                } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }\n            }));\n            for (int i = 0; i < 4; i++) {\n                int base = i * 1000;\n                producers.add(pool.submit(() -> {\n                    long start = System.nanoTime();\n                    for (int n = base; n < base + 1000; n++) while (!queue.push(n)) {\n                        if (Thread.currentThread().isInterrupted() || System.nanoTime() - start > TimeUnit.SECONDS.toNanos(5))\n                            throw new AssertionError(\"producer deadline\");\n                        Thread.yield(); // Only this finite test retries push; production should choose backpressure.\n                    }\n                }));\n            }\n            for (Future<?> producer : producers) Checks.get(producer);\n            queue.close(); for (Future<?> consumer : consumers) Checks.get(consumer);\n            Checks.that(seen.size() == 4000 && queue.stats().successfulPushes() == 4000 && queue.stats().size() == 0, \"MPMC drain\");\n            CloseableRing<Integer> empty = new CloseableRing<>(1);\n            Checks.that(empty.pop(0, TimeUnit.NANOSECONDS).status() == Status.TIMEOUT, \"zero-time poll\");\n            CountDownLatch entered = new CountDownLatch(1), stopped = new CountDownLatch(1);\n            Future<?> waiting = pool.submit(() -> {\n                entered.countDown();\n                try { empty.pop(1, TimeUnit.DAYS); throw new AssertionError(\"expected interrupt\"); }\n                catch (InterruptedException expected) { }\n                finally { stopped.countDown(); }\n            });\n            Checks.await(entered); waiting.cancel(true); Checks.await(stopped);\n            Future<Pop<Integer>> closing = pool.submit(() -> empty.pop(1, TimeUnit.DAYS));\n            empty.close(); Checks.that(Checks.get(closing).status() == Status.CLOSED, \"close wakes waiting consumers\");\n        } finally { queue.close(); Checks.stop(pool); }\n        System.out.println(\"CloseableRing OK\");\n    }\n}\n",
+          "label": "code/CloseableRing.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-bounded-pool",
+      "order": 3699,
+      "question": "线程池骨架要能回答哪些追问？",
+      "shortAnswer": "最小可用线程池不仅需要 worker 循环和队列，还要明确接收任务的线性化点、饱和拒绝、任务异常隔离、关闭排空、立即停止和等待终止。运行用户任务时不能持有队列锁，否则所有提交和消费都被任务耗时串行化。 启动失败还要保证已启动线程可追踪，存活计数只扣减一次。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "启动异常安全反例：下方 BoundedPool 先启动线程、再登记线程。worker.start() 成功后 workers.add(worker) 若失败，同一 catch 会扣减 alive，worker 的 finally 又扣减一次；该 worker 也未登记到中断清单。因此，“构造失败会停止已启动 worker”并不能覆盖这条路径。这段实现保留用于分析失败过程，不应直接用于完整线程池实现。关联知识“完整运行支持与版本边界”中的“线程池启动异常安全：实现与测试”给出了 BoundedPoolTeaching：先完成登记，再启动，并用确定性失败注入验证计数与线程退出。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "16 手写有界线程池"
+        },
+        {
+          "type": "paragraph",
+          "text": "最小可用线程池不仅需要 worker 循环和队列，还要明确接收任务的线性化点、饱和拒绝、任务异常隔离、关闭排空、立即停止和等待终止。运行用户任务时不能持有队列锁，否则所有提交和消费都被任务耗时串行化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面固定 worker 数，队列容量独立给定。submit 在同一个 gate 内检查 RUNNING 和容量并入队，拒绝直接抛异常，因此不会返回一个永远没有执行者的 Future。worker 取出任务后在锁外执行 FutureTask，业务异常保存在结果中；接下来一个任务不会继承前一个任务遗留的中断标记。"
+        },
+        {
+          "type": "paragraph",
+          "text": "关闭时沿着任务所在的位置处理。shutdown 停止接收新任务，但继续排空已接受任务；shutdownNow 则取消仍在队列里的 Future，并请求运行线程中断。任务一旦被 worker 从队列取走，即使还没进入 run，也已归 worker 所有，不能再保证它会出现在返回的“未开始列表”里。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这条所有权边界也解释了为什么立即停止不是硬杀：用户代码若忽略中断，终止仍可能延迟。调用方必须检查 awaitTermination 的 false，不能在发出停止请求时就对外宣布所有任务已经结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "构造阶段若线程启动失败，本例会停止已启动 worker 并重新抛出失败；不能假装完整池已经建立。教学池没有实现动态扩缩容、钩子、线程工厂和完备运行指标，也没有替任务提供持久化。实践优先使用成熟 ThreadPoolExecutor，手写用于展示状态机和不变量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/BoundedPool.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Fixed workers, bounded FIFO, explicit rejection, graceful/immediate shutdown. */\npublic final class BoundedPool {\n    private enum State { RUNNING, SHUTDOWN, STOP }\n    private final Object gate = new Object();\n    private final ArrayDeque<FutureTask<?>> queue = new ArrayDeque<>();\n    private final List<Thread> workers = new ArrayList<>();\n    private final int capacity;\n    private State state = State.RUNNING;\n    private int alive;\n    public BoundedPool(int workerCount, int queueCapacity) {\n        if (workerCount <= 0 || queueCapacity <= 0) throw new IllegalArgumentException();\n        capacity = queueCapacity;\n        try {\n            for (int i = 0; i < workerCount; i++) {\n                Thread worker = Thread.ofPlatform().name(\"bounded-\" + i).unstarted(this::work);\n                synchronized (gate) { alive++; }\n                try { worker.start(); workers.add(worker); }\n                catch (RuntimeException | Error failure) {\n                    synchronized (gate) { alive--; gate.notifyAll(); }\n                    throw failure;\n                }\n            }\n        } catch (RuntimeException | Error failure) { shutdownNow(); throw failure; }\n    }\n    public <T> Future<T> submit(Callable<T> job) {\n        FutureTask<T> future = new FutureTask<>(Objects.requireNonNull(job));\n        synchronized (gate) {\n            if (state != State.RUNNING || queue.size() == capacity)\n                throw new RejectedExecutionException(\"closed or saturated\");\n            queue.addLast(future); gate.notifyAll();\n        }\n        return future;\n    }\n    private void work() {\n        try {\n            for (;;) {\n                FutureTask<?> task;\n                synchronized (gate) {\n                    while (queue.isEmpty() && state == State.RUNNING) {\n                        try { gate.wait(); }\n                        catch (InterruptedException ignored) { /* Recheck pool state under gate. */ }\n                    }\n                    if (state == State.STOP || (state == State.SHUTDOWN && queue.isEmpty())) return;\n                    // A previous task can leave its worker interrupted. Do not leak that status to the next task.\n                    Thread.interrupted();\n                    task = queue.removeFirst();\n                }\n                task.run(); // FutureTask captures ordinary task exceptions; no queue lock around user code.\n            }\n        } finally { synchronized (gate) { alive--; gate.notifyAll(); } }\n    }\n    public void shutdown() {\n        synchronized (gate) { if (state == State.RUNNING) state = State.SHUTDOWN; gate.notifyAll(); }\n    }\n    public List<Future<?>> shutdownNow() {\n        List<Future<?>> abandoned = new ArrayList<>();\n        synchronized (gate) {\n            state = State.STOP;\n            while (!queue.isEmpty()) abandoned.add(queue.removeFirst());\n            gate.notifyAll();\n        }\n        for (Future<?> future : abandoned) future.cancel(false);\n        for (Thread worker : workers) worker.interrupt();\n        return List.copyOf(abandoned);\n    }\n    public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {\n        if (timeout < 0) throw new IllegalArgumentException();\n        long budget = unit.toNanos(timeout), start = System.nanoTime();\n        synchronized (gate) {\n            while (alive != 0) {\n                long remaining = budget - (System.nanoTime() - start);\n                if (remaining <= 0) return false;\n                TimeUnit.NANOSECONDS.timedWait(gate, remaining);\n            }\n            return true;\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        BoundedPool pool = new BoundedPool(1, 1);\n        CountDownLatch running = new CountDownLatch(1), release = new CountDownLatch(1);\n        try {\n            Future<Integer> first = pool.submit(() -> { running.countDown(); Checks.await(release); return 1; });\n            Checks.await(running); Future<Integer> next = pool.submit(() -> 2);\n            try { pool.submit(() -> 3); throw new AssertionError(\"overflow accepted\"); }\n            catch (RejectedExecutionException expected) { }\n            pool.shutdown(); release.countDown();\n            Checks.that(Checks.get(first) == 1 && Checks.get(next) == 2, \"graceful drain\");\n            Checks.that(pool.awaitTermination(5, TimeUnit.SECONDS), \"graceful termination\");\n            try { pool.submit(() -> 4); throw new AssertionError(\"closed accepted\"); }\n            catch (RejectedExecutionException expected) { }\n        } finally { release.countDown(); pool.shutdownNow(); Checks.that(pool.awaitTermination(5, TimeUnit.SECONDS), \"pool stopped\"); }\n        BoundedPool stopped = new BoundedPool(1, 1);\n        CountDownLatch entered = new CountDownLatch(1), cleaned = new CountDownLatch(1);\n        try {\n            Future<?> active = stopped.submit(() -> {\n                entered.countDown(); try { new CountDownLatch(1).await(); }\n                finally { cleaned.countDown(); }\n                return null;\n            });\n            Checks.await(entered); Future<?> waiting = stopped.submit(() -> 9);\n            Checks.that(stopped.shutdownNow().size() == 1 && waiting.isCancelled(), \"queued future cancelled\");\n            Checks.await(cleaned); Checks.that(stopped.awaitTermination(5, TimeUnit.SECONDS), \"active task stopped\");\n            try { Checks.get(active); throw new AssertionError(\"expected interrupted task\"); }\n            catch (ExecutionException e) { Checks.that(e.getCause() instanceof InterruptedException, \"active interrupt\"); }\n        } finally { stopped.shutdownNow(); Checks.that(stopped.awaitTermination(5, TimeUnit.SECONDS), \"stop joined\"); }\n        BoundedPool isolated = new BoundedPool(1, 2);\n        try {\n            Checks.get(isolated.submit(() -> { Thread.currentThread().interrupt(); return 1; }));\n            Checks.that(!Checks.get(isolated.submit(() -> Thread.currentThread().isInterrupted())), \"worker interrupt state reset\");\n            Future<?> failed = isolated.submit(() -> { throw new IllegalArgumentException(\"task\"); });\n            try { Checks.get(failed); throw new AssertionError(\"lost failure\"); } catch (ExecutionException expected) { }\n            Checks.that(Checks.get(isolated.submit(() -> 7)) == 7, \"failure isolated\");\n        } finally { isolated.shutdownNow(); Checks.that(isolated.awaitTermination(5, TimeUnit.SECONDS), \"isolated pool stopped\"); }\n        System.out.println(\"BoundedPool OK\");\n    }\n}\n",
+          "label": "code/BoundedPool.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

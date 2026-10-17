@@ -1,0 +1,280 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-exact-window-ranking",
+  "order": 111,
+  "question": "怎样实现精确的过去五分钟排行榜，并在分片后合并 TopK？",
+  "shortAnswer": "为每次事件保留可撤销贡献，固定时间截点与迟到策略，再按同一全序合并合法分片结果；分桶不能悄悄改变窗口语义。",
+  "commonPhrasings": [
+    "主播礼物榜怎样幂等与撤销？",
+    "局部 Top100 何时包含全局 Top100？",
+    "精确窗口和简单跳表怎样用 Java 验证？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "五、主播礼物数榜：先定身份，再接查询链路"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果设计一个按主播 ID 查询的礼物榜，我会用稳定 hostId 做 member，用本期有效礼物件数做 score，例如 gift:rank:{tenant:period}。不要把礼物数当 member，否则两位同分主播会争用同一身份；昵称会重复、会改名，也不适合做主键。资料仍从权威用户记录或独立资料缓存取得。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 ID 查询可以拆成三件事：ZSCORE 得到分数；ZREVRANK 得到降序位置，展示时加一；资料服务提供昵称、头像和当前状态。ZSCORE 返回不存在不等于业务上的零分，零礼物主播是否预先入榜，需要产品定义。主播存在但没参加本期、已经注销或被禁播，也要有明确展示和过滤分支。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取 TopK 时先校验 0≤K≤业务上限，K=0 直接返回空列表，正数 K 才转成结束下标 K−1。把 0 错转成 ZRANGE 的终点 −1，会变成取到最后。先批量取 ID 与分数，再批量补齐资料，避免 K 次串行回源。结果保留 ID 消歧，再按接口约定投影为 name、score；资料缺失时可使用受控占位，不能让某个头像查询失败把整个榜挂住。"
+    },
+    {
+      "type": "paragraph",
+      "text": "默认位置排名为每个成员给出唯一位置。若产品想让两人并列第一，下一个人到底第二还是第三，要明确：dense rank 是 1、1、2；competition rank 是 1、1、3。ZRANK/ZREVRANK 不是这两种并列排名。降序 competition rank 可由“严格高于当前 score 的成员数 + 1”计算，例如 ZCOUNT 的下界使用开区间；但读取 score 和计数要处在同一观察快照，否则中间有人改分会混用两个状态。dense rank 需要统计更高的不同分数层级，不能直接拿成员数代替；可另建分数频次索引，但也要原子维护。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求同分先达到者优先，需明确“达到当前分数的时间”还是“首次入榜时间”，以及扣分后再次达到如何处理。不能用默认 member 次序冒充这个规则。可以设计独立的有序复合键或排名服务，保证比较与更新一致；不应默认用 double 小数位编码全部信息。如果改成金额榜，应先约定最小货币单位和金额上界，再判断整数分数是否仍能精确表示。若分数确实可能超出 double 的精确整数范围，权威统计可保留大整数，再选择能精确表示复合顺序的索引方案，说明它的写入与查询成本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "礼物事件的幂等与撤销"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZINCRBY 的一次增分是原子的，但同一个礼物事件投递两次会加两次。需要稳定 gift_event_id 和可靠的礼物事实，消费方把去重检查、登记与增分联动。同槽短脚本可以在一个 Redis 执行边界内完成这些步骤，但它不等于数据库、Redis 和所有榜单一起提交，也不等于 Redis 重启或故障切换后事实绝不丢失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "退款或撤销必须关联原礼物，并只执行一次相应抵扣；拒绝没有来源的重复负增量，限制有效计数不被错误减成负数。撤销先于礼物投影到达时，可以记录待关联状态或依靠可靠事件顺序再处理，不能为了“最终会到”先无条件减一。重建时从权威事件/统计恢复，保留幂等身份与处理进度，避免重放把旧榜再加一遍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "日榜、周榜、总榜使用独立周期身份。业务时区、事件归属时间、跨日边界、迟到和撤销应该在事件契约中明确：迟到礼物通常回到原 period 修正，而不是按处理当天随手记账。TTL 应覆盖展示、迟到和恢复所需时间；周期结束可以冻结或归档，不能用清空旧榜代替审计记录。不同周期 key 可能跨 slot，普通 Lua 不能把任意跨槽的日榜与总榜更新包装成全局原子事务，应使用可重试的投影进度和对账，或改变同槽布局并承担热点取舍。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一个单 key 仍是一个热点"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Cluster 不会自动把一个 ZSet 拆到多台机器。榜单写热时，可以按租户、游戏或赛区分榜，批量聚合更新，或者由可靠事件流生成带版本的榜单快照。批量化会增加延迟，快照会降低瞬时实时性，需要产品接受。拿到 K 个榜项的成本还要加 O(K) 输出和资料补齐，不能只报一次 ZINCRBY 的复杂度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "动态榜的分页也有陷阱。第一批取 A、B 后，C 涨分挤到前面，下一次按位置从 2 开始可能又看到 B，并漏掉别的成员。使用 (score, member) 游标可以明确位置，但成员分数可变时仍可能穿过游标，无法凭游标保证完整、不重不漏。若需要稳定翻页，应读取冻结周期、版本化快照或有明确一致性协议的游标；普通实时榜则明确“每页是当时状态”，不要承诺一次全榜快照。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "六、过去五分钟：必须给每次点击保留可撤销贡献"
+    },
+    {
+      "type": "paragraph",
+      "text": "先约定一个精确问题：使用服务端接收时间，窗口 W=300000 毫秒，查询 t 的有效事件范围是 (t−W,t]；每次有效点击加一，同分按稳定 ASCII 用户 ID 倒字典序，最多返回 100 个活跃用户。昵称只负责展示，可重复、可变化，ID 仍保留。空榜返回空列表，计数为零的用户退出这个活跃榜。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为什么整榜 EXPIRE 300 不行？它控制整个 key 的寿命，不控制每一次点击。0 秒和 299 秒的两次点击，应该分别在 300 秒和 599 秒退出；一个统一 TTL 不会完成两次独立扣减。按用户最后活动时间续期，也会让不断活跃的用户保留很久以前的累计分。每自然五分钟建一个 key 是固定窗，查询 12:04:59 与 12:05:01 会落在两个桶，不能表示任意时刻的最近五分钟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此 score 只能负责“用户当前窗口内点击数”；另一个时间索引负责“哪些事件该退出”。不能在同一个 score 上既放点击时间，又放累计次数。每个事件至少有 eventId、userId、可信时间；同一毫秒允许很多事件，时间索引的 member 必须能唯一标识事件，不能直接把时间戳当 member 造成覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个 Redis 设计可以维护三类状态：时间 ZSet 的 member=eventId、score=接收毫秒；Hash 保存 eventId→userId；排名 ZSet 保存 userId→有效点击数。示例键 events:{game:board}、owners:{game:board}、rank:{game:board} 使用相同 hash tag；附加的去重、水位或版本状态也必须遵守共同的原子边界。脚本使用的全部 key 应显式通过 KEYS 传入，不把任意跨槽键藏在动态拼接里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写入时先校验时间、ID、容量与状态，再在同一个原子执行边界内判断是否重复、记录事件和所属用户、给排名加一。重复 eventId 若属于同一用户，是重试；若属于不同用户，是身份冲突，应拒绝。需要更强业务去重时，还要核对原始时间或负载摘要，而不是只比较 userId。只做窗口内 eventId 去重意味着事件出窗后 ID 可再次出现，更长时间的消息重投必须由独立的可靠幂等历史处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "到期时找出 timestamp≤t−W 的事件，读取所属用户，给该用户减一；减到零就从排名删除，再移除事件和归属状态。三者必须保持一致。只 ZREMRANGEBYSCORE 删除旧事件而不减榜单分数，会留下累计分；先删除映射再去找用户，会丢掉撤销依据。每个事件的贡献应当恰好增加一次、撤销一次。到期批次重放、工作进程超时、重试必须依据事件是否仍待处理判断，不能重复扣分。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这套模型的正确性来自一个不变量：每个用户的分数，等于尚未出窗且已接纳的事件中属于它的数量；时间索引与归属索引包含同一批待撤销事件。插入同步加一，清理同步减一并删掉同一事件，零分同步退出榜。即使某个用户不再点击，查询和后台清理也要推动时间前进，否则它的分数会永久冻结。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "七、精确查询还需要一个一致的时间截点"
+    },
+    {
+      "type": "paragraph",
+      "text": "“后台每秒清一次”只能说明存在一个清理周期，不能直接声称每次读取都精确到当前毫秒。查询 t 前，所有 timestamp≤t−W 的事件都必须已经撤销；同时参与计分的事件不能混入 t 之后的状态。若清理积压没有追到 t，直接读 rank 得到的是混合时间状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "流量小而积压有严格上界时，可以在一次受控原子操作内完成所需清理和 Top100 读取。流量大时不能让一个 Lua 脚本无限扫描五分钟的事件。每次只处理有界批次，限制事件数、执行预算和返回量，让其他请求有运行机会。Lua 的原子执行表示中间不被别的命令插入，不代表所有错误都会回滚，也不代表一次执行已经持久化到所有副本；需要在修改前验证可预见的类型和参数错误，并为故障恢复保留可靠事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分批清理期间，新事件还在到达，怎样避免边清边改出一个混合时间的榜？一种可说明白的方案，是按榜单顺序处理已确认接收的日志：先在一个接收序列位置建立查询屏障，固定查询时间 t 和序列边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "屏障后的事件可以继续进入有界队列，但暂时不能修改这份排名。构建者分批撤销该快照中所有到期贡献，完成后取 Top100、标注版本，再推进屏障后的事件。这样才能说明每一分属于屏障哪一侧。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接收时间必须在这个可信顺序点确定，不能让多个应用服务器随意回拨时钟，也不能把尚未接纳的客户端事件算进“已收到”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个方案的代价是查询屏障期间更新延迟和排队压力，需要背压、超时与恢复协议。若要继续高并发更新，就需要额外的版本化状态或快照隔离设计，不能仅加一个 watermark 字段便自动成立。控制屏障的执行者还应有可恢复的所有权与 fencing/版本检查，避免旧执行者恢复后越过新一轮清理。这里给的是设计契约，不是可直接部署的完整集群脚本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "响应可以有三种明确选择：等待清理追到目标截点再返回精确榜；返回带 asOf/watermark 的较旧榜；积压或容量越界时拒绝当前精确查询。第三种比悄悄返回累计榜更诚实。后台“最老待清理事件时间”、清理积压、入口积压与榜单快照版本，要成为可观测状态。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "八、乱序、容量、分桶与分片的边界"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "接收时间与事件时间是两种产品"
+    },
+    {
+      "type": "paragraph",
+      "text": "接收时间严格单调时，可以用 FIFO 队列清理到期事件；同一时间戳的多个事件仍按接收序列处理。按业务发生时间统计时，网络迟到和乱序会破坏 FIFO 的到期顺序，要使用按时间排序的结构，并定义允许迟到 L、watermark、未来时间上限和重算规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迟到但仍落在查询窗口内的事件，可以补入并修订结果；已经出窗的事件应按约定丢弃或归档，记录指标。发布过的榜是“可修订的当前观测”，还是等 watermark 后发布的最终结果，需要预先讲清。不能信任客户端传来的任意未来时间，否则一个异常时间可能推动清理，把正常历史全部踢出窗口。即便选择服务端时间，也要约束时钟倒退和突跳；多机时钟与日志接纳顺序的关系必须统一。固定窗口同样需要定义时区、边界、迟到归属，只是它解决的是另一个问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "精确性有内存与清理成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "设每秒 λ 次有效点击，稳定运行时精确事件量约 E≈λ×300，活跃用户数为 U。还要额外保存事件 ID、用户归属、排名、去重历史和积压；真实内存受 ID 长度、分配器、紧凑编码与故障期间积压影响，不只是 E 个整数。更长去重窗口会单独增加状态，不能算完五分钟日志就宣布所有状态都有界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用时间 ZSet 与排名 ZSet 时，一次事件插入或到期通常要 O(log E + log U) 级索引工作。清理 M 个事件要累计这些操作，单次 O(1) 的说法不成立；同一用户的扣减可以在批次内聚合减少排名更新次数，但每条事件的归属和撤销仍须处理。清理完成后取 K 项通常 O(log U + K)，再加资料与网络成本。单 JVM 队列模型不需要每次维护时间树，所以它与 Redis 模型的成本式不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设置 maxEvents、ID 长度、批次大小与最大积压，容量满时明确拒绝或背压；不能静默丢掉旧贡献还把结果称为精确。长时间无人访问后，一次读可能承担大批清理；每个事件总共进出一次给出的是摊还认识，不是每次查询的低延迟承诺。用真实流量、窗口长度、突发和恢复积压测 P95/P99，不能由 O(log N) 推出固定 QPS。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分桶节省状态，但不能偷偷换时间语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以按秒或更粗粒度聚合每个用户的桶内贡献，桶退出时整体减去。这能减少大量逐事件状态，但通常只对离散桶边界精确。任意毫秒查询穿过两端桶时，会纳入本应排除的事件或漏掉本应保留的事件；若仍要求毫秒级精确，需要保留边界桶里的精细时间贡献，不能只拿一个桶总数猜。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每桶只存 Top100 再求和也不可靠：用户 x 在两个桶中各有 60 分，而每个桶分别有 100 个不同用户各得 61 分。x 在两桶都排第 101，会被两次局部 Top100 丢掉，但跨桶总分 120，高于所有只在一个桶得 61 分的用户。要精确跨桶聚合，需要保留足够的完整贡献；近似算法可以另谈误差承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "局部 Top100 合成全局 Top100 的成立条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果按 userId 稳定分片，同一用户在整个五分钟窗口的完整分数只由一片维护，各片采用同一个截点和同一套总排序规则，那么从每片取 Top100 再合并，足以得到全局 Top100。证明很直接：某个用户若在它所属片已经有 100 人排在前面，全局至少也有这 100 人在它前面，它就不可能挤进全局前 100。一般 TopK 同理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个结论要求成员唯一归属。若一个用户的贡献分散在多片，它可能在每片都没进候选，合计却最高；各片采用不同水位，也无法把候选合成同一时刻的榜。迁移分片时还要确保用户不被双算或漏算，旧片、新片与路由版本一致。同分如果允许“第 100 名并列全部返回”，结果可能超过 100 个，此时每片固定只取 100 个也需重新检查截断规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "S 个分片最多返回 S×K 个候选，网络量随 S×K 增长。已经有序的局部结果可用堆做多路合并，取全局 K 项的合并工作可做到 O(S + K log S)，但预先拉取每片 K 项的网络和反序列化成本仍然存在；也可对全部候选排序或维护大小 K 的堆，分别支付相应成本。求某个用户的全局名次则要汇总各片严格排在它前面的数量，结合同分规则和一致快照，不能只拿所属片的 rank。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "九、Java：先把精确窗口的不变量跑通"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是完整的单 JVM 接收时间模型。Deque 保存待到期事件，HashMap 保存窗口内去重身份与用户计数，TreeSet 保存不可变 (score,user) 排名节点。改计数时先删旧节点再加新节点，不能把已经放在 TreeSet 中、参与比较的字段就地改掉，否则树的顺序不变量会失效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "click、top 都在同一把进程内锁下推进时钟和状态。时间必须非负、不得倒退；使用 now−event.time()≥windowMillis 判断出窗，在这组非负、有序时间前提下避免 event.time()+W 的溢出。容量由正整数 maxEvents 限制，计数不会超过它。窗口内同 ID 同用户不加分，异用户冲突拒绝；出窗后去重身份也被清掉，所以它不保证跨窗口消息幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "top 只接受 0 到 100，返回不可变列表；姓名表必须是事先加载的不可变快照，锁内不进行网络查询。该模型只接受 ASCII 字母、数字、下划线和连字符，最长 128 字符，因此它的倒序字符串比较与这里约定的 Redis 字节序一致。这个约束不意味着所有真实系统的用户 ID 都必须如此。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次清理 M 条事件的成本约 O(M log(U+1))；TreeSet 迭代器还要找到首节点，再输出 K 项，合计按 O(M log(U+1)+log(U+1)+K) 估算，U 取本次处理期间的活跃用户上界，哈希操作按平均常数计。空间 O(E+U)。每事件入队和出队各一次，但一次长空闲后的 top 仍可能很重。synchronized 只协调这个对象所在 JVM，既不持久化，也不实现 Redis Lua、跨实例水位或集群快照。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.ArrayDeque;\nimport java.util.ArrayList;\nimport java.util.Comparator;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.TreeSet;\n\n/** Exact receipt-time window in one JVM. No Redis, durability, or event-time watermark. */\npublic final class WindowLeaderboard {\n    public record Entry(String userId, String name, long score) { }\n    private record Event(String id, String user, long time) { }\n    private record Rank(String user, long score) { }\n    private final long windowMillis;\n    private final int maxEvents;\n    private long lastTime;\n    private final ArrayDeque<Event> events = new ArrayDeque<>();\n    private final Map<String, Event> activeIds = new HashMap<>();\n    private final Map<String, Long> counts = new HashMap<>();\n    // ASCII IDs only: reverse lexical tie order matches Redis ZRANGE ... REV.\n    private final TreeSet<Rank> ranks = new TreeSet<>(\n            Comparator.comparingLong(Rank::score).reversed()\n                    .thenComparing(Rank::user, Comparator.reverseOrder()));\n\n    public WindowLeaderboard(long windowMillis, int maxEvents) {\n        if (windowMillis <= 0 || maxEvents <= 0)\n            throw new IllegalArgumentException(\"positive window and capacity required\");\n        this.windowMillis = windowMillis;\n        this.maxEvents = maxEvents;\n    }\n\n    /** Same ID/same user while still in the window is a retry, not another click. */\n    public synchronized boolean click(String eventId, String userId, long now) {\n        identifier(eventId); identifier(userId);\n        expire(now);\n        Event old = activeIds.get(eventId);\n        if (old != null) {\n            if (!old.user().equals(userId))\n                throw new IllegalArgumentException(\"event ID reused by a different user\");\n            return false;\n        }\n        if (events.size() == maxEvents)\n            throw new IllegalStateException(\"window event capacity exceeded\");\n        Event event = new Event(eventId, userId, now);\n        change(userId, 1);\n        events.addLast(event);\n        activeIds.put(eventId, event);\n        return true;\n    }\n\n    /** Names must be an already-loaded, immutable snapshot; no network lookup under this lock. */\n    public synchronized List<Entry> top(int k, long now, Map<String, String> names) {\n        if (k < 0 || k > 100) throw new IllegalArgumentException(\"k must be 0..100\");\n        Objects.requireNonNull(names);\n        expire(now);\n        List<Entry> result = new ArrayList<>(k);\n        for (Rank rank : ranks) {\n            if (result.size() == k) break;\n            result.add(new Entry(rank.user(), names.getOrDefault(rank.user(), rank.user()), rank.score()));\n        }\n        return List.copyOf(result);\n    }\n\n    private void expire(long now) {\n        if (now < 0 || now < lastTime)\n            throw new IllegalArgumentException(\"nonnegative nondecreasing receipt clock required\");\n        lastTime = now;\n        // Nonnegative timestamps: subtraction cannot overflow. Window is (now-W, now].\n        while (!events.isEmpty() && now - events.peekFirst().time() >= windowMillis) {\n            Event event = events.removeFirst();\n            activeIds.remove(event.id());\n            change(event.user(), -1);\n        }\n    }\n\n    private void change(String user, long delta) {\n        long old = counts.getOrDefault(user, 0L);\n        if (old != 0) ranks.remove(new Rank(user, old));\n        long next = old + delta; // Bounded by maxEvents, an int.\n        if (next == 0) counts.remove(user);\n        else {\n            counts.put(user, next);\n            ranks.add(new Rank(user, next));\n        }\n    }\n\n    private static void identifier(String text) {\n        if (text == null || text.isEmpty() || text.length() > 128)\n            throw new IllegalArgumentException(\"identifier length must be 1..128\");\n        for (int i = 0; i < text.length(); i++) {\n            char c = text.charAt(i);\n            if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z')\n                    && !(c >= '0' && c <= '9') && c != '_' && c != '-')\n                throw new IllegalArgumentException(\"ASCII letters, digits, underscore or hyphen required\");\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十一、追问到缓存、数据库和项目时，怎样把边界接上"
+    },
+    {
+      "type": "paragraph",
+      "text": "常用类型可以先用访问语义串起来：String 适合整体值或计数；Hash 适合按字段读写；List 保留顺序和重复、适合两端操作；Set 做精确去重和成员判断；ZSet 在成员唯一基础上按 score 排序。编码与类型是两层概念：一个小 ZSet 采用 listpack，不会让它变成 List。选择榜单结构解决的是查询和更新路径，不能顺带证明数据库一致性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若把 Redis 看成数据库事实的可重建投影，普通旁路缓存读未命中再查库回填，写常用“先提交数据库，再删除缓存”。先删后写的反例是：A 删除缓存，B 读到旧数据库并回填，A 才提交新值，缓存就留下旧值。先提交后删能减少这个窗口，但 B 若更早已读到旧值，在 A 提交并删缓存后才回填，旧值仍可能复活；删除失败也需要处理。固定 sleep 的延迟双删不能覆盖任意暂停的读请求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "允许短暂陈旧时，可以使用有界 TTL、可靠失效事件和重试、受控回填与对账，并说明故障期间是返回旧值还是回源。要阻止旧版本覆盖新版本，需要持久的版本比较依据；DEL 后如果连版本基准都没了，仅在 value 中放 version 仍不足以挡旧回填。严格决策应依赖权威事务和约束，不能把一次 Redis 原子增分等同于跨数据库强一致。榜单允许的滞后、事件去重保留期、重建截点要共同定义，恢复才有可检验的目标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果面试官要求联系真实经历，先说确实做过的工作及自己负责的边界，再说明“如果给它增加排行或窗口统计，我会怎样设计”。通知出口的令牌桶与五分钟点击榜都涉及时间和原子读改写，但一个按速率补充令牌，一个需要逐步撤销历史贡献，不能因为会讲 Lua 就把两个算法混成一种。任何尚未实施的排行榜、缓存治理、数据库选型和容量指标，都应保留为设计推演。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十二、把验收标准说成具体场景"
+    },
+    {
+      "type": "paragraph",
+      "text": "礼物榜要覆盖同分、空榜、K=0、资料缺失、重复礼物、重复退款、撤销先到、跨期迟到、2^53 附近的精度和重放恢复。多次命令查询 score 与名次之间有人改分时，应验证接口究竟接受实时变化还是需要同一快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "五分钟榜要覆盖 t−W 恰好出窗、t−W+1 仍有效、同毫秒多个事件、零计数退出、查询推动清理、重复不延长原事件寿命、容量上限、时钟倒退、长空闲、迟到与未来时间、清理崩溃重放、快照屏障和不同分片水位。按桶近似和跨片局部候选的反例，也应成为设计验收条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证 Java 实现时，可以构造 100 组各 1000 步的随机历史，与独立全量扫描排序结果逐步比较；再检查精确边界、重放与冲突、容量、Long.MAX_VALUE 附近时间、四类内部状态清空，以及 8 个线程竞争同一批 1000 个事件。还可以构造 100 组完整用户归属分片的 TopK 合并对照，并检查 Java UTF-16/UTF-8 字节序差异和动态排名分页的反例。上面简单跳表的 main 入口会执行 30000 次 TreeMap 对照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Long.MAX_VALUE 附近的测试只验证 Java long 模型的差值计算；Redis 时间 score 仍受 double 精确范围约束，不能据此接收任意 long 时间戳。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些验证通过的是 Java 状态模型与结构不变量。真实 Redis 的紧凑编码转换、Lua 执行错误、服务故障恢复、跨片一致快照和线上尾延迟，仍需在选定部署版本上做集成与故障测试；这里没有用模型结果承诺生产 QPS 或完整集群协议。面试里把“原理能说明”“模型已验证”和“部署还需验证”分清，回答才经得住继续追问。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

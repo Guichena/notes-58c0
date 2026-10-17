@@ -1,0 +1,1296 @@
+{
+  "status": "preparatory review; final integrated hash and presentation revalidation required",
+  "snapshotAt": "2026-10-15T16:34:25Z",
+  "base": "198-test expanded integration admitted; algorithm corrections not yet applied",
+  "module": "design",
+  "batch": 3,
+  "entries": [
+    {
+      "entryId": "scenario-message-queue",
+      "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+      "sha256": "dcc28852bea102e6adab6bc9416795c65b46b9cdc5e49f476622845a50eba18d",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-message-queue",
+        "number": "场景 23",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "idea": "MQ 选型先比较日志回放、路由、延迟投递、事务边界、顺序单位与现有运维条件，再用相同负载和确认配置测试 Kafka、RocketMQ、RabbitMQ；不能按产品名固定性能排名。",
+        "description": "设计消息队列：高吞吐、低延迟、高可用、支持事务、支持延迟消息、支持顺序消息。",
+        "metrics": "待验证目标：QPS 100w+、延迟 < 10ms；须固定负载、确认条件、版本和统计窗口，可靠性另定义故障边界。",
+        "components": "Kafka / RocketMQ / RabbitMQ / ZooKeeper / NameServer",
+        "requirements": [
+          "高吞吐 QPS 100w+",
+          "低延迟 < 10ms",
+          "消息不丢失",
+          "支持事务消息",
+          "支持延迟消息",
+          "支持顺序消息"
+        ],
+        "capacityPlan": [
+          "QPS = 业务峰值 × 消息倍数",
+          "存储 = 消息大小 × 保留时间 × 副本数",
+          "带宽 = QPS × 消息大小"
+        ],
+        "architecture": [
+          "Kafka：分区 + 副本 + ISR",
+          "RocketMQ：NameServer + Broker + CommitLog + ConsumeQueue",
+          "RabbitMQ：Exchange + Queue + Binding",
+          "事务消息：RocketMQ 半消息 + 回查",
+          "延迟消息须固定版本：RocketMQ 4.x 经典模型按延迟等级；5.0 定时消息按时间戳与范围约束；Kafka 链路需额外持久调度。"
+        ],
+        "dataFlow": [
+          "Producer → Broker → CommitLog → ConsumeQueue → Consumer",
+          "事务消息：Producer → 半消息 → 本地事务 → 提交/回滚",
+          "延迟消息：Producer → Broker → 延迟队列 → 定时投递"
+        ],
+        "consistency": [
+          "消息不丢失：Producer 确认 + Broker 持久化 + Consumer ACK",
+          "顺序消息：同一 key 发到同一分区"
+        ],
+        "failureModes": [
+          "Broker 宕机 → 副本切换",
+          "Consumer 宕机 → 消息重试进死信",
+          "Producer 失败 → 重试 + 本地消息表"
+        ],
+        "keyPoints": [
+          "Kafka 高吞吐来自顺序写 + 零拷贝 + 批量",
+          "RocketMQ 事务消息用半消息 + 回查",
+          "RabbitMQ Exchange 支持 direct/topic/fanout/headers",
+          "消息不丢失需要三环节配合",
+          "顺序消息需要同一 key 到同一分区"
+        ],
+        "observability": [
+          "监控 QPS、延迟、堆积量、消费成功率",
+          "积压告警结合最老年龄、生产/完成速率、保留窗口与恢复能力；100w 只能是需验证的示例阈值。"
+        ],
+        "tradeoffs": [
+          "Kafka 与 RocketMQ 按日志回放、事务及延迟接口的具体版本能力比较，吞吐必须在同负载与确认配置下测试。",
+          "RabbitMQ 与 Kafka 按路由/队列模型、日志回放、确认条件和运维约束比较，不能笼统称前者性能一般。"
+        ],
+        "security": [
+          "消息 TLS 加密传输",
+          "敏感消息加密存储",
+          "Topic 级别权限"
+        ],
+        "followups": [
+          "Kafka 为什么快？",
+          "RocketMQ 事务消息怎么实现？",
+          "RabbitMQ 和 Kafka 性能差异？",
+          "如何保证消息不丢失？",
+          "如何实现顺序消息？"
+        ],
+        "code": "",
+        "interviewAnswer": "我先明确工作负载、回放与路由需求、延迟范围、顺序单位和业务效果边界，再比较 Kafka、RocketMQ 与 RabbitMQ 的版本能力和运维成本。可靠性沿生产意图、Broker 确认和消费效果逐段解释；性能用同一负载与确认配置验证，不把示例目标当成项目成绩。",
+        "scenario": true,
+        "kind": "scenario",
+        "group": "场景题",
+        "topic": "消息队列",
+        "patternIdx": 0,
+        "explainIdx": 0,
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s3551\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">5.26 没有现成MQ时从头实现有哪些方案，怎样写一个诚实的持久日志核心</h2><p class=\"md-p\">从零做MQ先确定可靠性范围，持久日志核心须校验记录边界、刷盘后确认并安全恢复，其他Broker职责逐层补齐。</p><p class=\"md-p\">常见问法：没有MQ可以怎样实现；怎样写持久日志核心；断电后如何区分尾写和损坏。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">比较进程队列、数据库任务表和持久日志Broker，Java示例只实现单进程日志核心，不含网络、消费游标、复制或共识。</p><h3 class=\"md-h md-h3\">按需要的保证逐级选择</h3><p class=\"md-p\">只需同进程异步且允许重启丢任务，可用有界阻塞队列+worker，明确满队列拒绝/背压；它没有持久受理或跨服务订阅。需要可靠低中等量任务可用DB任务表，业务与待办同事务、索引小批领取、租约/epoch、重试和独立订阅进度，第5.11节已完整解释，不能把轮询删除一行当广播给所有下游。</p><p class=\"md-p\">需要高吞吐追加、长保留、独立消费组与回放，再考虑自己做分区日志Broker。代价包括文件恢复、复制、控制面、客户端SDK、升级、观测和安全，不只是ConcurrentLinkedQueue加Socket。按业务强顺序单位分区，不同分区并行，同分区内序号是日志位置而非全局时间。</p><h3 class=\"md-h md-h3\">存储和生产确认</h3><p class=\"md-p\">每个分区将长度、版本、序号、稳定eventId、payload及校验写到segment/WAL，稀疏offset索引支持定位；写满滚段，旧段按保留与订阅契约回收，索引可从日志重建。批写和顺序IO摊低开销，group commit改善吞吐但改变等待窗口。长度在分配缓冲前校验，CRC检测意外损坏而非恶意篡改。</p><p class=\"md-p\">ACK必须定义为内存接受、本地force完成还是已安全复制。单机刷盘不抵御盘毁，多副本需安全选主、epoch、提交水位与恢复规则；仅复制TCP发出去不等于对端持久。生产确认丢失时同eventId重发，去重账应与日志的可恢复状态一起存在；不要先在内存记seen再写文件。</p><h3 class=\"md-h md-h3\">消费、重试与保留是另一半Broker</h3><p class=\"md-p\">工作队列可用持久消息状态+visibility lease，过期重投；日志订阅则每个group独立位置，业务处理后才提交安全连续前缀，异步完成不能跳过洞。owner切换用generation/epoch防旧提交，业务端仍需inbox幂等。ACK丢失导致重投是正常情况。</p><p class=\"md-p\">重试有次数/期限/退避、死信保留原因和恢复责任；严格业务key顺序下前序失败不能任意放行后序。保留策略考虑离线消费者、最老必要offset与容量，不承诺永远等失联group；超过保留窗口明确缺口/重建。消息TTL、队列长度和回放都属于契约，不能静默删后仍显示已完成。</p><h3 class=\"md-h md-h3\">网络、集群和运维必须补齐</h3><p class=\"md-p\">协议需分帧、请求ID、版本、最大长度、超时、错误类别和背压；认证、topic/租户ACL、TLS、连接与速率配额保障隔离。控制面存topic/partition、成员/leader、策略与版本；数据面负责追加、复制、拉取与确认，二者分开。副本跨故障域、安全成员变更、备份恢复和升级兼容都要演练。</p><p class=\"md-p\">MQ积压仍按第5.15节测λ、μ和B/(μ−λ)，扩消费者受分区/顺序/下游限制。设计先写出故障模型和SLO，再由测试证明局部保证，不能把成熟MQ几行特征表当已完成产品。</p><h3 class=\"md-h md-h3\">单文件教学版本：12 字节帧头的 SegmentJournal</h3><p class=\"md-p\">SegmentJournal在同一类加载器内先串行检查真实路径及文件系统fileKey，再打开唯一通道并获取FileChannel锁；在支持稳定fileKey的本地文件系统和协作调用方假设下，通过真实路径与fileKey登记拒绝相同文件的重复打开。只用tryLock再关闭失败通道不够：某些系统关闭同文件任一通道会释放本JVM的全部原生文件锁。实例synchronized串行追加；frame采用12字节头：4字节长度、4字节长度头CRC、4字节主体CRC；主体包含seq、UTF-8事件ID和payload。恢复必须先核对长度头CRC和范围，再按该长度读取主体并校验。同ID相同payload返回原seq，不同payload拒绝；force(true)返回后才更新内存索引并返回，IO失败后poisoned，必须重开扫描。</p><p class=\"md-p\">日志恢复先校验，再决定能不能截尾。依次检查长度头、完整主体和连续序号，重建索引；在约定的追加撕裂模型下，可以截去不完整尾记录，但完整头或主体校验错误，应拒绝打开且不改文件。</p><p class=\"md-p\">长度字段若不单独校验，损坏后的偏大长度可能把完整已确认记录误当撕裂尾部，这要用回归测试防住。截尾正确性仍依赖错误模型：未完成尾写和已有数据被截断，仅靠字节无法区分；已确认数据真丢了，需要副本或备份检测，示例不声称解决盘毁。</p><p class=\"md-p\">所有权假设必须明确：使用支持稳定fileKey和FileLock的普通本地文件；缺少fileKey则拒绝。协作方共用本类的单一类加载器，持有期间不另开/关闭同文件通道，不替换、删除或重绑路径；外部不遵守协议的程序仍能绕过advisory lock。多类加载器、网络文件系统及外部命名空间竞争不在保证内。构造恢复失败先关通道再清登记；正常close先完全释放资源再注销，重复close不能删掉新owner；清理出现IO错误则保留登记并拒绝自动重开。</p><h3 class=\"md-h md-h3\">测试与未实现范围</h3><p class=\"md-p\">测试覆盖并发同ID去重、不同ID顺序、输入输出副本保护、payload冲突、关闭重开、第二frame各截断位置、完整记录CRC损坏拒绝以及长度头位翻转。CRC用于检测意外损坏，不能防恶意同时改内容与校验。FileChannel.force实际调用仍不证明断电与硬件缓存均满足所需耐久合同。</p><p class=\"md-p\">示例最多10000不同ID、单record主体1MiB，达到边界明确拒绝；保存所有payload/ID索引使内存O(日志总字节)，恢复O(文件字节)，追加写O(本条字节)加同步IO/锁等待。没有滚段、稀疏索引、消费游标、过期裁剪、网络、复制/共识，不能当生产MQ或吞吐基准。扩展这些能力需分别写恢复协议与故障测试。</p><h3 class=\"md-h md-h3\">单文件教学版本的代码：SegmentJournal.java（12 字节帧头）</h3><p class=\"md-p\">本实现是12字节头格式，与8字节头格式不兼容。它没有magic或显式版本字段，也没有旧格式自动识别和迁移；只允许打开按本格式建立的文件，升级必须在受控离线流程中读取旧格式并生成经校验的新文件。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-mq-scenario-message-queue\">消息队列手册：机制、具体条件与可靠性边界</h2><h3 class=\"md-h md-h3\">Q43 从零实现一个消息队列 要回答到哪一层</h3><p class=\"md-p\">先确认是进程内队列、操作系统 IPC，还是分布式 broker，它们的持久性、故障模型和接口完全不同。</p><p class=\"md-p\">Java 进程内生产者消费者可用 ArrayBlockingQueue，或 ReentrantLock + 两个 Condition 管理环形数组；有界容量提供背压，close/中断必须唤醒等待者。时间复杂度可做到入队出队 O(1)，内存 O(capacity)，但 JVM 退出消息消失。</p><p class=\"md-p\">操作系统消息队列由内核管理消息边界、权限、阻塞与唤醒；与管道字节流、共享内存同步和 socket 不同。这里的“消息队列如何实现”不是默认让你部署 Kafka。C++ 条件变量题保留 mutex、condition_variable、RAII 与内存可见性的语言语义；只有一个 producer 也不能在多个 consumer 修改共享计数时省掉同步。</p><p class=\"md-p\">分布式 broker 还需要协议与认证、追加日志、索引、持久确认、复制选主、消费进度、重投、配额、保留、管理与观测。可先实现单节点追加日志和手动确认，再解释如何逐步加入恢复、复制和分区；不能把内存 BlockingQueue 改成 Socket 服务就称生产级 MQ。</p><p class=\"md-p\">Go channel 题需要按 Go 的 close、发送到已关闭通道、接收结束和 goroutine 语义回答；不能把 Java interrupt 当成 Go 原语。JavaScript 异步题要讨论 Promise、事件循环与背压，Promise.all 本身不限制并发，也不等于数据库事务。这些语言差异不改变稳定事件身份、持久完成再确认等分布式原则。</p><p class=\"md-p\">前端/全栈追问“为什么选 Cloudflare Workers Queues、为什么 Markdown 转 HTML 放到后端异步”时，应保留这个平台语境。可选择它来解耦请求与渲染，减少每次 SSR 重复消耗 CPU，并利用托管队列缓冲突发；代价是排队延迟、平台限制、调用成本和额外状态管理。若内容很小、更新少且同步渲染已满足延迟目标，异步链路未必划算。Serverless 冷启动和首屏慢仍需各自测量，放入队列不会自动改善所有页面指标。</p><p class=\"md-p\">Cloudflare Queues 的公开接口约定默认至少一次，且不保证按发布顺序投递。因此用文档 ID + 内容版本标识渲染任务，重复任务复用不可变产物；更新最新指针时以版本条件写入，避免旧渲染覆盖新稿。Markdown 输入与 HTML 输出都需限制资源并处理不可信内容，展示前按允许列表净化 HTML。数据库中的内容变更与入队意图仍需可靠衔接；页面读取明确的 PENDING/READY/FAILED 状态，不能把等待 promise 当持久任务记录。</p><p class=\"md-p\">在 Workers 的 JavaScript/TypeScript 消费回调中，只对已经持久完成的单条消息调用 ack()；其余按错误类别重试，达到上限进入配置好的 DLQ。批次局部成功需要显式确认策略，不能因后面一条失败把前面的外部副作用无保护地再执行。平台配额和运行限制按实际部署核对，不能套用 Kafka 分区数或 Java 线程数估算。</p><h3 class=\"md-h md-h3\">AI旁路和不可信脚本怎样隔离</h3><p class=\"md-p\">制造业场景中，基础告警、规则判定与可靠触达应独立于AI诊断。AI有自己的持久任务、上下文快照、队列、线程/连接/模型预算和最大等待；证据不足或超时返回可解释降级，不阻断基础告警。仅拆一个topic却共享满载执行池，不算隔离。正式工单写入由规则与人工审批控制，审批版本CAS和CMMS稳定请求号各保护不同边界。</p><p class=\"md-p\">分布式脚本服务先定义鉴权、不可变脚本hash、输入引用、总deadline和结果接口，再考虑调度。控制面不得直接把上传内容拼成宿主shell命令。执行环境按威胁模型使用加强沙箱、微虚机或专用节点，最小权限、只读授权输入、默认禁网，限制CPU、内存、进程数、磁盘、文件描述符、输出字节与时间。普通容器并不是敌对多租户场景的充分隔离证明。</p><p class=\"md-p\">完整Go示例保留Submit、Claim、Complete、Expire、Cancel、Reconcile、Get与竞争测试，模型是有界单进程内存控制面，不提供HTTP鉴权、共享持久库、心跳、真实沙箱或宿主执行。它和Java日志模型是两种实验，不能用Java测试结果声称Go服务已跑通。Go中核对成功允许保留“取消请求发生前后外部实际成功”的结果，说明取消不具备回滚外界的魔法。</p><h3 class=\"md-h md-h3\">博客Markdown异步渲染为什么可用托管队列</h3><p class=\"md-p\">若博客提交后可先显示渲染中，而渲染耗时、依赖外部资源，Cloudflare Workers Queues可以提供托管消费与重试，减少自管broker负担。Cloudflare Queues采用至少一次交付，应假设重复且不依赖全局顺序。选型还要核对当时平台的CPU、墙钟、内存、消息大小、批量、保留和费用限制，不能沿用未经验证的旧数值。</p><p class=\"md-p\">任务固定文章ID、源版本/hash、渲染器和模板版本，生成不可变产物后条件更新发布指针。v2先完成、v1晚到不能倒退；文章删除保留墓碑。渲染失败显示原因、可重试或保留上一个有效版本，输出还要防注入、错误资源URL与不受信HTML。存源文与发队列仍有双写窗口，需同一可靠责任或可恢复扫描，而不是因用了托管服务就省掉一致性设计。</p><p class=\"md-p\">追问“为什么这个项目用了某MQ”时，按工作负载、已有基础设施、团队运维能力和失败合同解释，再说明比较成本。不能从组件名字推出低延迟、零丢失或最优性能，也不能把教学选型改写成做过的生产决策。</p><p class=\"md-p\">下面转入另一份独立的分段日志教学版本：它同样命名为 SegmentJournal，但使用 v2 的 20 字节帧头、专属目录和段轮转，与前面的 12 字节单文件版本不是同一实现，文件格式不可互换。两者都只是持久日志核心，不是完整生产 MQ。</p><h3 class=\"md-h md-h3\">按需要的保证逐级实现</h3><p class=\"md-p\">单进程内存队列适合可丢或可重建工作；数据库任务表适合依赖现有事务和到期索引的持久任务；自建日志broker适合确有需要且能承担协议、复制、运维复杂度的场景。不要从一道面试题直接跳到“复刻Kafka”。先说谁接收、成功返回代表什么、崩溃恢复从哪里开始、重复如何辨认。</p><p class=\"md-p\">下面完整SegmentJournal使用JDK 21、本地普通文件和单写权威。调用append传入稳定ID与不可变payload，完整写入并force成功后才返回序号；同ID同内容返回原序号，同ID不同内容拒绝。它没有网络、认证、订阅、消费者游标、消费ACK、重试队列、复制或自动保留清理，其他章节只是复用它实现单机控制面实验。</p><h3 class=\"md-h md-h3\">帧格式与边界校验</h3><p class=\"md-p\">先看一帧怎样被解析。实验使用 v2、大端格式，分头部和 body：</p><ul class=\"md-list\"><li>头部共 20 字节：4 字节 magic、2 字节版本、2 字节 flags、4 字节 body 长度、4 字节 body CRC32C、4 字节 header CRC32C。</li><li>header CRC 覆盖前 16 字节。先核对固定值、版本、flags、长度边界和独立 CRC，才能信任 body 长度；否则，已确认帧的合法长度被改大，可能被误认成半帧并静默截掉。</li><li>body 依次是 8 字节序号、4 字节 key 长度、UTF-8 key、4 字节 payload 长度、payload；body CRC 覆盖整个 body。</li></ul><p class=\"md-p\">CRC 用于检测常见损坏，不是防篡改认证。发现 v1 数据会拒绝打开，不做隐式转换；要保留旧数据，须用对应旧格式读取器核验，再显式迁移到新目录。实验使用新建专属目录。若需抵御恶意修改，还要密码学认证、权限和密钥管理。</p><p class=\"md-p\">恢复先检查文件总量、段大小和长度上限，再分配缓冲。不能直接new byte[磁盘里读出的长度]，否则坏数据可导致超大分配。UTF-8严格解码，Java输入也严格拒绝未配对代理字符，避免替换字符把两个不同ID折叠成同一身份。payload和返回记录做防御性复制，外部修改数组不能改变已接受内容。</p><p class=\"md-p\">教学上限为单body 1MiB、key 1024字节、最多10,000记录、日志总量16MiB，默认段2MiB。内存索引保留所有已恢复payload，空间复杂度与有界日志体积同阶，适合实验而非海量broker。任务层还有最多500任务、每租户身份配额；终态身份仍占去重容量，满了拒绝新受理，没有假装实现安全GC。</p><h3 class=\"md-h md-h3\">尾部写一半与完整坏帧，恢复策略不同</h3><p class=\"md-p\">最后活跃段末尾只有部分头，或通过完整头校验后发现body尚未写全，恢复在“已确认字节不会被截短”的存储假设下可以截断到最后完整帧并force。若介质会截短已确认数据，仅靠现有字节无法区分它与未确认尾写，必须靠外部提交证据、副本或备份恢复；CRC碰撞也仍可能发生。已经封存的非最后段如果不完整，拒绝打开；完整帧CRC错误、非法长度、未知版本或序号不连续，也拒绝，不把“损坏”当成可随意丢弃的未确认尾巴。</p><p class=\"md-p\">若完整帧写完但ACK前进程退出，恢复可能读到这条未被调用方确认的记录；客户端以相同ID重试可返回原序号。这是确认丢失带来的允许重复入口。若写入/force报错，实例进入poisoned状态，不再继续追加掩盖不确定尾部；关闭后重新打开，由恢复过程确定有效前缀。测试中的afterWrite故障钩子模拟这个窗口，不证明真实断电时磁盘固件如何工作。</p><p class=\"md-p\">CRC不能单独判断所有损坏；错误恰巧改成另一份合法记录、攻击者重算CRC、硬件同时损坏多个副本都需要更强措施。若故障可能影响已确认记录，需备份、副本、存储校验及人工恢复，不能通过“遇错就truncate”偷换不丢承诺。</p><h3 class=\"md-h md-h3\">段轮转与索引重建</h3><p class=\"md-p\">段名由首条记录序号组成，恢复按序排列并验证连续性。追加前判断下一帧是否放得下；放不下先force并关闭旧段，再以CREATE_NEW创建新段，同步必要的文件与目录元数据。新段创建后崩溃留下空的最后段可以继续，空的封存段不合法。恢复顺序扫描各段，从文件内容重建ID到记录索引，不依赖一个可能与数据不同步的旁路索引文件。</p><p class=\"md-p\">简化索引的代价是启动需扫描全部日志，随机按ID查询依赖内存；生产可用稀疏索引、checkpoint和后台压实，但checkpoint本身也需版本、校验和原子发布协议。不能先删日志再希望索引证明历史去重。记录/段保留还受最慢消费者、重放与幂等窗口约束，这份日志不实现删除策略。</p><h3 class=\"md-h md-h3\">文件锁、同JVM所有权与关闭</h3><p class=\"md-p\">构造器要求专用、已存在的目录，解析真实路径并取得独占lock文件锁。JVM内还用文件系统身份注册表，在打开第二个同目标锁文件通道前拒绝重复构造；原因是部分系统关闭同inode的任意通道可能释放进程持有的锁，不能只依赖捕获OverlappingFileLockException。实验覆盖同路径、符号链接、lock文件硬链接别名及子进程争锁。</p><p class=\"md-p\">保证以单classloader、合作进程、受支持本地文件系统和稳定目录命名空间为前提。它不防敌对进程替换目录/段文件，不支持把不同目录硬链接同一数据段后当独立日志，也不能推论NFS等远程文件系统锁与force完全相同。真实部署需验证文件系统身份、原子创建、锁和目录同步行为。</p><p class=\"md-p\">close互斥且幂等，正常状态force、关闭活跃段和锁通道，再释放JVM内预约；清理失败采取失败封闭，不能为了继续服务悄悄允许第二写者。旧对象重复close不得撤销后来新实例的所有权。任务/业务模型通过AutoCloseable按同一生命周期持有日志，测试在finally清理专属临时目录。</p><h3 class=\"md-h md-h3\">从日志到broker还缺什么</h3><p class=\"md-p\">生产协议要有帧上限、版本协商、请求ID、鉴权、流控、连接超时和明确ACK；网络发送完成不是持久ACK。复制要定义领导权、日志任期、法定人数、提交水位、故障选主和fencing，不能把“复制到两个文件”叫高可用。控制面要负责元数据与分片迁移，数据面处理追加和读取。</p><p class=\"md-p\">消费协议要有group/partition游标、领取与可见性、重投、幂等接口、死信和管理操作。提交游标要与业务完成/持久接管一致，重平衡保留旧owner竞态处理。运营还需要磁盘水位拒绝、备份恢复、版本升级、审计、租户隔离、保留和监控。每加一项，都应列出确认前后崩溃时谁还有责任。</p><h3 class=\"md-h md-h3\">如何设计故障验收</h3><p class=\"md-p\">JournalTests用于检查严格编码、帧损坏、所有第二帧部分尾切点、完整CRC损坏不截断、非法序号、段轮转、封存段不完整、并发同ID、错误后poison、真实子进程锁竞争、重复关闭与临时文件清理。任务与业务测试覆盖四阶段重放、取消/版本、UNKNOWN、恢复扫描、规则槽和禁言变更。</p><p class=\"md-p\">这些是有时限、有限内存、专用临时文件的本地实验，不提供断电、磁盘故障、跨主机复制或真实broker集成的验收。通过若干断言只说明这些有限路径通过，不能用断言数量推出“消息绝不丢”。完整源码在本节，依赖和通用运行脚本在 Q31，修改后应按相同命令重新验证。</p><h3 class=\"md-h md-h3\">Go控制面代码</h3><p class=\"md-p\">go-script内是完整的Go单权威内存状态机与测试，没有宿主exec、网络服务或沙箱。go.mod固定语言基线Go 1.23.0，使用Go 1.23.12工具链可执行go test -race -timeout 15s ./...。Go测试是独立验收项，不能将Java/H2测试结果迁移成Go验证。</p><p class=\"md-p\">Go的生产实现必须把状态转移迁移到共享持久存储，补鉴权、输入/输出体积限制、沙箱资源隔离与真实核对。示例保留UNKNOWN与CANCEL_REQUESTED，就是为了不把“失联”伪装成“没有执行”。</p><h3 class=\"md-h md-h3\">C++、Go 与前端题的语言边界</h3><p class=\"md-p\">如果题目原本要求 C++ 有界队列，除 Q56 的 Java 解法，还应说明 RAII 锁所有权、std::condition_variable 的谓词等待、虚假唤醒、关闭后唤醒全部等待者，以及返回状态不能和元素值 0 混淆。不能把 Java 的 InterruptedException 原样搬成 C++ 语义。Go 的 context.Context 是协作取消信号，关闭 channel、发送者所有权和 goroutine 退出需另外设计；下方 Go 控制面保留原生代码，不借 Java 模型证明其运行行为。</p><p class=\"md-p\">前端 JavaScript 的并发请求调度、依赖批次、Worker 最新结果与主动让出事件循环，完整实现见 Q50。JS 单线程事件循环中的 Promise 并发不是 CPU 并行；Worker 消息到达不代表业务已经持久提交。异步硬编码扫描的 Go 岗题可用“任务输入版本 → 扫描结果身份 → CAS 写回”解释锁身份，AI 上下文只读最小必要代码并脱敏，不得把待扫描仓库内容当成可以执行的指令。</p><p class=\"md-p\">目标与实现边界：这里的百万 QPS、10ms 与固定堆积阈值是题设或待验证目标，不能当项目成果。RocketMQ 18 级只适用于相应旧版模型；事务回查未知时不能一律 ROLLBACK，传统 4.9.8 枚举拼写为 UNKNOW。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li></ul>"
+      }
+    },
+    {
+      "entryId": "scenario-log-system",
+      "title": "海量日志收集与分析系统设计",
+      "sha256": "f73fdaa0ce3042ab46b13eefb70f80b0877856670cfbf08b0c22f0af894132b2",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-log-system",
+        "number": "场景 26",
+        "title": "海量日志收集与分析系统设计",
+        "idea": "采集用 Filebeat/Fluentd；传输用 Kafka；存储用 Elasticsearch/ClickHouse；分析用 Kibana/Grafana。难点在高吞吐、实时性和成本控制。",
+        "description": "设计海量日志收集与分析系统：支持 1000+ 应用的日志采集、实时分析、告警。要求高吞吐（100w EPS）、低延迟（秒级）、高可用。",
+        "metrics": "EPS 100w+；延迟 < 5s；存储成本可控",
+        "components": "Filebeat / Kafka / Elasticsearch / ClickHouse / Kibana / Grafana",
+        "requirements": [
+          "高吞吐：EPS 100w+",
+          "低延迟：秒级可查",
+          "高可用：不丢日志",
+          "实时分析：支持聚合、过滤、告警",
+          "成本控制：存储成本可控"
+        ],
+        "capacityPlan": [
+          "EPS = 应用数 × 单应用日志量",
+          "存储 = EPS × 单条大小 × 保留时间",
+          "带宽 = EPS × 单条大小"
+        ],
+        "architecture": [
+          "采集：Filebeat 轻量级，Fluentd 功能全",
+          "传输：Kafka 高吞吐，削峰填谷",
+          "存储：Elasticsearch 全文检索，ClickHouse 分析查询，HDFS 冷存储",
+          "分析：Kibana 可视化，Grafana 监控告警",
+          "告警：ElastAlert / Prometheus Alertmanager"
+        ],
+        "dataFlow": [
+          "应用 → Filebeat → Kafka → Logstash → Elasticsearch → Kibana",
+          "应用 → Filebeat → Kafka → Flink → ClickHouse → Grafana",
+          "Kafka → 冷数据 → HDFS → 离线分析"
+        ],
+        "consistency": [
+          "日志不丢失：Filebeat ACK + Kafka 副本",
+          "索引按天分割，便于过期删除"
+        ],
+        "failureModes": [
+          "Kafka 宕机 → 副本切换",
+          "ES 宕机 → 主从切换",
+          "Filebeat 宕机 → 重启续传"
+        ],
+        "keyPoints": [
+          "Filebeat 比 Logstash 轻量，适合边缘节点",
+          "Kafka 的分区数决定并发度",
+          "ES 的索引按天分割，便于过期删除",
+          "ClickHouse 的物化视图可以预聚合",
+          "日志采样可以减少 90% 的存储成本"
+        ],
+        "observability": [
+          "监控 EPS、延迟、存储使用率",
+          "告警：存储使用率 > 80%"
+        ],
+        "tradeoffs": [
+          "Filebeat vs Fluentd：Filebeat 轻量但功能简单",
+          "ES vs ClickHouse：ES 全文检索强，ClickHouse 分析强"
+        ],
+        "security": [
+          "日志加密传输（TLS）",
+          "敏感日志脱敏"
+        ],
+        "followups": [
+          "Filebeat 和 Fluentd 的区别？",
+          "Kafka 的分区数怎么选？",
+          "ES 的索引怎么设计？",
+          "ClickHouse 和 ES 的性能差异？",
+          "如何设计日志告警？"
+        ],
+        "code": "",
+        "interviewAnswer": "我会先明确日志系统的核心是采集、传输、存储、分析。然后给出方案：Filebeat 采集，Kafka 传输，ES 全文检索，ClickHouse 分析查询。最后讨论成本控制和告警设计。关键要能说出 Filebeat 和 Logstash 的区别，以及 ES 索引的设计。",
+        "scenario": true,
+        "kind": "scenario",
+        "group": "场景题",
+        "topic": "日志系统",
+        "patternIdx": 0,
+        "explainIdx": 0,
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施"
+      }
+    },
+    {
+      "entryId": "scenario-gray-release",
+      "title": "灰度发布设计（Canary / Blue-Green）",
+      "sha256": "7ca1bce82f9e371fb8d7ac188572d451aa3d75b9c38184d48cf7a53c76607d94",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-gray-release",
+        "number": "场景 33",
+        "title": "灰度发布设计（Canary / Blue-Green）",
+        "idea": "灰度发布核心是流量染色、分批发布、快速回滚。Canary 用少量用户验证，Blue-Green 用两套环境切换。难点在流量控制和数据兼容。",
+        "description": "设计灰度发布系统：支持 Canary、Blue-Green、Feature Flag。要求流量控制精确、数据兼容、快速回滚。",
+        "metrics": "发布成功率 > 99%；回滚时间 < 1min",
+        "components": "Canary / Blue-Green / Feature Flag / Gateway / Service Mesh",
+        "requirements": [
+          "流量染色：按用户/设备/地域分批",
+          "分批发布：5% → 20% → 50% → 100%",
+          "快速回滚：一键回滚",
+          "数据兼容：新旧版本数据兼容"
+        ],
+        "capacityPlan": [
+          "流量 = 业务峰值 × 灰度比例",
+          "存储 = 配置数 × 配置大小"
+        ],
+        "architecture": [
+          "Canary：少量用户验证",
+          "Blue-Green：两套环境切换",
+          "Feature Flag：功能开关",
+          "Gateway：流量染色",
+          "Service Mesh：Istio 流量管理"
+        ],
+        "dataFlow": [
+          "用户 → Gateway → 流量染色 → 灰度版本",
+          "用户 → Gateway → 流量染色 → 正式版本"
+        ],
+        "consistency": [
+          "数据兼容：新旧版本数据兼容"
+        ],
+        "failureModes": [
+          "灰度版本异常 → 快速回滚",
+          "数据不兼容 → 数据迁移"
+        ],
+        "keyPoints": [
+          "Canary 用少量用户验证，Blue-Green 用两套环境切换",
+          "Feature Flag 可以动态开关功能",
+          "流量染色可以按用户/设备/地域",
+          "数据兼容是关键"
+        ],
+        "observability": [
+          "监控发布成功率、回滚率",
+          "告警：发布成功率 < 99%"
+        ],
+        "tradeoffs": [
+          "Canary vs Blue-Green：Canary 节省资源但风险高，Blue-Green 资源多但风险低"
+        ],
+        "security": [
+          "灰度版本要做安全测试"
+        ],
+        "followups": [
+          "Canary 和 Blue-Green 的区别？",
+          "如何设计流量染色？",
+          "如何设计数据兼容？",
+          "如何设计快速回滚？",
+          "如何设计 Feature Flag？"
+        ],
+        "code": "",
+        "interviewAnswer": "我会先明确灰度发布的核心是流量染色、分批发布、快速回滚。然后给出方案：Canary 用少量用户验证，Blue-Green 用两套环境切换，Feature Flag 动态开关功能。最后讨论数据兼容和快速回滚。关键要能说出流量染色的方法和数据兼容的设计。",
+        "scenario": true,
+        "kind": "scenario",
+        "group": "场景题",
+        "topic": "灰度发布",
+        "patternIdx": 0,
+        "explainIdx": 0,
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s5492\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">7.7 灰度发布怎样设计，ETL或SDK变更要额外检查什么</h2><p class=\"md-p\">灰度发布要固定版本与分流口径，比较业务质量和系统指标，保留可执行回滚并处理已产生的数据变化。</p><p class=\"md-p\">常见问法：灰度发布怎样做；ETL变更如何回滚；SDK升级怎样兼容老调用方。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">灰度按身份、租户、地域或流量比例定义观察组，ETL和SDK变更还会影响持久数据格式和调用兼容。</p><h3 class=\"md-h md-h3\">稳定分组和可比观测</h3><p class=\"md-p\">先规定版本兼容与回滚目标，再用可信用户/租户/业务键稳定hash分桶，少量内部用户→小比例→扩大。随机每次路由会让同一流程跨版本来回跳，导致状态兼容问题；读写同一业务实体时应传播版本/实验标记，不能信任外部任意Header选择特权版本。</p><p class=\"md-p\">同时对比错误率、p95/p99、资源、业务成功及数据质量，按同地域/请求类型/时间段分层，避免只看新版本总平均且样本极少。阈值、最短观测周期和自动停止规则在发布前定义，不能看到流量正常就跳过周期性任务与慢批次。</p><h3 class=\"md-h md-h3\">协议与数据的回滚难于流量</h3><p class=\"md-p\">先扩展兼容字段/表结构，让旧新代码均能工作，再上线新行为，确认旧客户端退出后才收缩。消息字段/枚举、默认值、SDK方法签名、序列化及数据语义都要兼容；新版本写出旧版本无法理解的数据时，仅切回旧服务不能恢复。</p><p class=\"md-p\">ETL 灰度要比数据，也要隔离副作用。用同一冻结输入双跑，输出分开，对比行集合、schema、金额精度、排序和摘要；影子任务不能重复发送真实通知，也不能覆盖正式 OSS 对象。</p><p class=\"md-p\">最终 manifest 或消费者版本的切换，是独立原子发布点。配置先灰度再全量，并保留上个有效版本；但回滚配置不会撤销已经发生的付款等外部效果。</p><h3 class=\"md-h md-h3\">失败与验收</h3><p class=\"md-p\">测试新版本启动失败、半路回滚、跨版本RPC/MQ、数据库迁移、缓存旧schema和SDK升级滞后。安全漏洞需要快速扩散修复而不是机械长期灰度；重大不兼容变更可采用版本化接口与迁移窗口。滚动升级的连接排空与健康检查详见第7.8节，两者一个控制流量比例、一个控制实例替换过程。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul>"
+      }
+    },
+    {
+      "entryId": "scenario-service-prewarm",
+      "title": "服务启动时的数据预热设计",
+      "sha256": "e37ba5a0573c53a5edfa6f11e154a76b307523c230b90a6ea90745e6c339c5a3",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-service-prewarm",
+        "number": "场景 6",
+        "title": "服务启动时的数据预热设计",
+        "slug": "",
+        "category": "架构场景题",
+        "source": "场景题补充 · 服务预热",
+        "scenario": true,
+        "idea": "把“进程可启动”和“缓存已完全预热”解耦：小而关键的数据同步加载，大体量数据后台并行分批预热；使用版本/快照保证一致性，用超时、限速、重试和降级保证预热失败不拖垮启动。",
+        "description": "设计一个场景：服务启动时需要把一批数据预热到内存中。需要同时考虑启动速度、预热期间的数据一致性、数据库或远程服务不可用时的容错，以及多实例同时启动造成的惊群。",
+        "metrics": "启动时间可控；预热命中率可观测；数据版本明确；预热失败不阻塞服务恢复",
+        "components": "Snapshot/DB / Warmup Loader / Local Cache / Version or CDC / Readiness Probe / Metrics",
+        "requirements": [
+          "先把数据分成“没有它就不能正确服务的强依赖数据”和“只是提升命中率的优化数据”，两类不能用同一种启动策略。",
+          "启动过程中不能因为一次全量扫描把数据库打满，尤其是发布或故障恢复时多个实例会同时重启。",
+          "预热快照必须有版本边界，避免加载到一半时数据变化导致内存中出现前后两个版本的混合状态。",
+          "远端数据源超时、部分分片失败或预热任务自身异常时，服务需要有明确的 readiness 与降级策略。"
+        ],
+        "architecture": [
+          "关键小数据在启动主流程中同步加载，并设置严格超时；只有加载成功后才允许实例进入 Ready。",
+          "大数据使用后台线程池分片加载，限制并发 QPS 和批大小；实例可以先以低容量/回源模式对外，再逐步提高流量权重。",
+          "一致性采用“快照版本 + 增量追赶”：先读取一个 snapshotVersion，对应数据全量加载完成后，再消费该版本之后的 CDC/变更日志，最后原子切换 activeCache。",
+          "为避免重启惊群，实例随机抖动启动、通过协调器领取不同预热分片，或复用 Redis/对象存储中的共享快照，而不是每个实例都扫主库。",
+          "缓存采用双缓冲：newCache 构建完成并通过校验后一次性替换引用；不要边加载边覆盖正在服务的旧缓存。"
+        ],
+        "dataFlow": [
+          "进程启动 → 读取配置与上一次可用快照元数据。",
+          "同步加载最小必需数据 → 成功后进入 WARMING；失败则保持 NotReady 或按业务策略使用旧快照。",
+          "后台按分片并行加载 snapshotVersion 对应数据，同时记录成功率、耗时和缺失分片。",
+          "全量完成 → 消费 snapshotVersion 之后的增量变更 → 校验数量/校验和。",
+          "原子切换 activeCache → readiness 提升 → 流量权重逐步恢复到 100%。"
+        ],
+        "keyPoints": [
+          "启动速度：不要“全量预热完成后才监听端口”。更实用的是分层预热 + readiness/流量权重控制。",
+          "一致性：直接一页页扫实时库可能读到不同时间点的数据。更稳的是 MVCC 快照、带版本导出、binlog/CDC offset 或业务版本号。",
+          "容错：预热失败时优先保留上一版本可用缓存；如果旧数据不可接受，则实例保持 NotReady，而不是带着半份缓存接全量流量。",
+          "防惊群：发布 100 个实例时，如果每个实例都在启动阶段做相同全量 SQL，会把数据库当成压测工具。必须有抖动、限流、共享快照或分片领取。",
+          "内存安全：新旧两份缓存并存会瞬间翻倍内存，应提前做容量预算；超大缓存可按 segment 滚动替换。"
+        ],
+        "followups": [
+          "如果预热需要 10 分钟，但发布要求 1 分钟内扩容成功，怎样设计？",
+          "数据库没有一致性快照能力时，如何用 version/updated_at + CDC 尽量构造一致视图？",
+          "某个分片预热失败，是全局回滚还是允许局部回源？怎样定义 readiness？",
+          "多个机房如何预热？共享一个中心快照还是每个机房独立构建？"
+        ],
+        "code": "",
+        "capacityPlan": [
+          "先估算缓存总字节、对象膨胀系数、加载 QPS、数据库可承受预热带宽和目标 Ready 时间；双缓冲意味着峰值内存可能接近 2×。",
+          "发布/扩容时按实例批次、随机抖动和全局 warmup QPS budget 控制，不能让 100 个实例同时扫主库。"
+        ],
+        "consistency": [
+          "关键是建立 snapshotVersion：全量读取同一快照，再从该版本后的 CDC/变更日志追平，最后原子切 activeCache。",
+          "如果数据源不能提供快照，就用 version/updated_at + 二次扫描/CDC 尽量收敛，并明确只能做到哪一级一致性。"
+        ],
+        "failureModes": [
+          "关键数据加载失败则保持 NotReady；优化型缓存失败可继续以旧快照/受控回源服务。",
+          "新缓存校验失败不能覆盖 last-known-good；恢复后可重试单个分片，而不是每次全部重来。"
+        ],
+        "observability": [
+          "监控 warmup duration、loaded/expected records、snapshot lag、失败分片、回源 QPS、峰值内存与 Ready 时间。"
+        ],
+        "interviewAnswer": "我会把预热分层：小而关键的数据同步加载，大数据后台分片限速；一致性用快照版本+CDC 追平，构建新缓存后原子切换。失败时保留 last-known-good 或保持 NotReady，同时用抖动/共享快照避免多实例重启惊群。",
+        "tradeoffs": [
+          "全量同步预热后再 Ready 一致性最直观，但启动慢、扩容慢；分阶段预热能快速接流量，但必须定义未命中 fallback 和最大陈旧时间。",
+          "双缓冲快照能原子切换且读路径简单，但切换期会同时占两份内存，需要容量预算。"
+        ],
+        "security": [
+          "快照/配置来源必须认证并校验 checksum/version；不要把敏感缓存通过调试接口暴露，预热日志也避免输出密钥/PII。"
+        ],
+        "kind": "scenario",
+        "group": "场景设计",
+        "boundaryCases": [
+          "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-practice-cbbdfad77b34d6f9\">Java服务为什么需要流量预热，怎样区别JIT、缓存预热和渐进放量</h2><p class=\"md-p\">不能仅凭示例中的测试数量、性能数字、PASS 文本与预期输出，认定已在当前环境复验或取得个人项目业绩。运行练习前须核对版本、依赖、输入条件与代码完整性；算法和手写实现如有节选，以注明的范围为准。</p><h3 class=\"md-h md-h3\">Java服务为什么需要流量预热，怎样区别JIT、缓存预热和渐进放量</h3><p class=\"md-p\">JIT预热、缓存预热和渐进放量分别解决计算路径、数据冷启动和准入容量问题；readiness通过不表示新实例已经具备热态满负荷能力。</p><p class=\"md-p\">也可能这样问：</p><p class=\"md-p\">- Java里面的流量预热了解吗</p><h4 class=\"md-h md-h4\">冷服务与热服务的容量不同</h4><p class=\"md-p\">Java进程启动后，类加载/初始化、JIT热点编译、连接建立、TLS、线程/连接池和缓存仍可能冷；第一批请求平均和尾延迟可能高于稳定运行。readiness通过只说明满足接流前提，不必然表示已达到满额吞吐；新实例瞬间接全部流量会排队、超时和重试放大。</p><p class=\"md-p\">可以用新实例刚上线这个场景区分三种预热。数据还冷，就提前加载高价值、可授权且足够新鲜的数据；计算路径还冷，就执行代表性路径，让 JIT 积累运行信息；实例还不能接满量，就逐步提高可接请求或负载权重。</p><p class=\"md-p\">三者可以结合，但要分别验证效果。一次跑满假请求不能保证所有动态分支都已经优化好。</p><h4 class=\"md-h md-h4\">可落地步骤与安全边界</h4><p class=\"md-p\">先完成必要配置/连接/必需数据检查，再用隔离合成请求或无副作用健康旅程触达常用路径，设置CPU/IO/缓存容量预算。不可用真实下单、支付或发通知来“预热”，不能把用户私有数据批量缓存到共享key。</p><p class=\"md-p\">新实例以低权重/小并发启动，按成功完成、p99、池等待/队列、CPU/GC和下游余量逐步升高，有退回/停止阈值；调度按每实例启动年龄与实测而不是只看集群总QPS。新实例大量同时上线时要错峰，预热也不能把DB/模型配额冲垮。</p><h4 class=\"md-h md-h4\">框架与测试</h4><p class=\"md-p\">如果面试官指Sentinel Warm Up，它是按冷启动规则逐渐允许更多流量的一种流控策略；若指RPC provider warmup，则可能是负载均衡权重随启动时间变化。具体公式/默认时间由产品版本决定，不能凭“Java预热”断言采用某参数。</p><p class=\"md-p\">比较冷启动与热态，在相同开放到达率下测达到目标容量所需时间、错误/拒绝、p99和资源，同时验证缓存失效/旧权限及扩缩容恢复。</p>"
+      }
+    },
+    {
+      "entryId": "scenario-external-dependency-isolation",
+      "title": "外部合作方服务不可用时如何避免拖垮自己",
+      "sha256": "c072b82c8bd123d41191c374f5640f8b98a428061ac9e30525d7b39a039b26af",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-external-dependency-isolation",
+        "number": "场景 7",
+        "title": "外部合作方服务不可用时如何避免拖垮自己",
+        "slug": "",
+        "category": "架构场景题",
+        "source": "场景题截图补充",
+        "scenario": true,
+        "idea": "所有外部依赖都按“不可靠”设计：连接/读取超时、有限重试、熔断、隔离舱、并发上限和降级；把同步调用的故障域限制在一个小资源池里，避免线程、连接和队列被耗尽。",
+        "description": "系统需要调用第三方/合作方接口。对方可能高延迟、超时、返回错误甚至长时间不可用，要求保证自身核心服务不会因为外部依赖故障产生级联雪崩。",
+        "metrics": "核心接口延迟受控；故障域隔离；可降级；恢复后自动探测",
+        "components": "Timeout / Retry Budget / Circuit Breaker / Bulkhead / Rate Limit / Fallback / Metrics",
+        "requirements": [
+          "所有远程调用必须有连接超时、请求超时和总体 deadline，不能无限等待。",
+          "重试只用于幂等且可能瞬时恢复的错误，并采用指数退避 + jitter；重试次数属于统一 retry budget。",
+          "不同外部合作方使用独立线程池、连接池与并发信号量，避免一家挂掉耗尽全局资源。",
+          "非核心能力要准备缓存值、默认值、异步补偿或直接关闭功能等降级路径。"
+        ],
+        "architecture": [
+          "入口请求先计算剩余 deadline，再调用 Dependency Client。",
+          "Client 内部有 Bulkhead 并发上限；请求超时/错误率超过阈值后 Circuit Breaker 打开，快速失败。",
+          "熔断期间少量 half-open 探针测试恢复，不让所有请求同时回流。",
+          "成功结果可按业务语义缓存；需要可靠送达的写请求使用本地 Outbox/MQ 异步重试，而不是在线请求无限重试。"
+        ],
+        "dataFlow": [
+          "请求进入 → 判断功能是否可降级。",
+          "获取外部依赖并发许可 → 带 deadline 调用。",
+          "可重试错误在预算内退避重试；不可重试错误立即失败。",
+          "连续失败达到阈值 → 熔断 → 后续请求走 fallback。",
+          "恢复探针成功 → 逐步关闭熔断并限制恢复流量。"
+        ],
+        "keyPoints": [
+          "超时是第一道防线，没有超时，熔断器都可能等不到失败统计。",
+          "重试会放大下游压力，三个服务每层重试 3 次可能形成指数级调用风暴，所以通常只在一层重试。",
+          "Bulkhead 的目标是资源隔离：外部 A 卡死时，不能占满外部 B 和核心请求共用的线程池。",
+          "降级必须区分读写：读可以返回缓存/旧值，写要考虑是否允许异步接受、拒绝或补偿。"
+        ],
+        "followups": [
+          "如何设置超时时间？根据固定值还是下游 P99/P999 与上游 deadline 动态计算？",
+          "如果第三方接口不是幂等的，网络超时后你不知道对方是否已经执行，如何重试？",
+          "熔断器部署在每个实例本地还是全局共享？",
+          "依赖恢复后如何防止瞬间流量把对方再次打挂？"
+        ],
+        "code": "",
+        "capacityPlan": [
+          "为每个第三方依赖设置独立连接池、并发上限和 timeout budget；上限应小于本服务线程/连接总资源，避免一个依赖吃光全部容量。",
+          "重试会放大流量，容量估算必须把 retry rate 算进去，并设置 retry budget。"
+        ],
+        "consistency": [
+          "对有副作用的第三方调用使用幂等键/requestId；超时只表示“响应未知”，不代表对方一定没执行。",
+          "需要补偿的业务保存调用状态机，后续查询/对账确认最终状态。"
+        ],
+        "failureModes": [
+          "短超时 + 有界重试 + 指数退避抖动 + 熔断 + bulkhead；熔断后按业务选择缓存、默认值、异步补偿或失败返回。",
+          "第三方恢复时 half-open 少量探测，避免所有实例同时放量。"
+        ],
+        "observability": [
+          "按合作方维度监控成功率、P95/P99、timeout、breaker state、重试倍数和线程/连接池占用。"
+        ],
+        "interviewAnswer": "核心是隔离和快速失败：第三方必须有独立资源池、严格 timeout、有限重试和熔断，不能占满本服务线程。带副作用调用用幂等键，超时进入状态机/对账；恢复时 half-open 渐进放量。",
+        "tradeoffs": [
+          "短 timeout/少重试可保护自己但可能降低第三方成功率；更长等待能提高单请求成功率，却会吞噬线程和延迟预算。",
+          "Fail-open 提高可用性但可能违反业务/安全规则；Fail-close 更安全但会放大依赖故障影响。"
+        ],
+        "security": [
+          "第三方凭据放 secret manager，出站域名白名单、TLS 校验、响应大小限制；重试不能绕过权限和风控。"
+        ],
+        "kind": "scenario",
+        "group": "场景设计",
+        "boundaryCases": [
+          "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s12758\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">服务挂了怎样尽量让用户少受影响</h2><p class=\"md-p\">无状态入口可以快速切到健康实例，持久长任务则从已有状态继续，但任何系统都不应把未核实副作用伪装成无感成功。</p><p class=\"md-p\">服务故障后能续跑，前提是任务责任不依附于某个请求处理线程。创建任务只有在持久受理后才算成功，客户端拿taskId查询或订阅；页面关闭或SSE断开，不删除任务。</p><p class=\"md-p\">重启从任务账和检查点继续，不让客户端换新请求从头执行。短只读请求可以在剩余期限内换健康节点重试；非幂等写请求则必须复用稳定意图ID。</p><p class=\"md-p\">熔断故障依赖，限制排队与在途数，避免健康实例被故障转移流量压垮；保留只读查询或已验证结果的降级路径。外部动作已开始但结果未知时，展示处理中或待核实，查询可信回执后再完成。无法保持原SLO时应明确失败或延迟，不能通过吞掉错误保住表面成功率。</p><p class=\"md-p\">恢复体验可以透明到无需用户重新输入目标和约束，但不意味着任何远端任务都可任意重试。测试响应丢失、租约过期旧执行者返回、发布成功检查点缺失、客户端重连和取消竞争，检查没有漏责任、重复不可逆效果或跨会话污染。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-practice-b51873c8989a7e55\">外部服务慢了怎样不拖垮自己</h2><p class=\"md-p\">不能仅凭示例中的测试数量、性能数字、PASS 文本与预期输出，认定已在当前环境复验或取得个人项目业绩。运行练习前须核对版本、依赖、输入条件与代码完整性；算法和手写实现如有节选，以注明的范围为准。</p><h3 class=\"md-h md-h3\">外部服务慢了怎样不拖垮自己</h3><p class=\"md-p\">用总期限、独立资源池、有界准入和按业务语义定义的降级，限制一个慢依赖的影响。 限流限制单位时间次数，并发限制在途数量；100 QPS 不等于最多 100 个并发。客户端超时也不证明远端没有执行。</p><h4 class=\"md-h md-h4\">实时调用的保护链</h4><p class=\"md-p\">入口 deadline 要覆盖排队、连接、TLS、写入、读取及处理，每一跳只能领取剩余预算。这样前面已经花掉的时间，不会在下一跳重新获得一份完整超时。</p><p class=\"md-p\">再隔离资源：不同外部机构使用独立连接/线程或并发舱，队列有界，拒绝和超时可观测。重试仅用于允许的瞬时故障，并受总次数、费用、退避与抖动约束。检查整条链谁会重试；若 SDK、网关和业务层各重试三次，请求量可能相乘放大，单看本层次数就会漏掉风险。</p><p class=\"md-p\">例如聚合叫车需要并行查询多个平台，可给单平台受总预算约束的两秒上限，并在足够结果到达后汇总。某平台超时先标未确认，不能宣称对方一定停止派车。流量选择可参考成功率、延迟和容量，但不能让动态权重形成震荡。</p><p class=\"md-p\">熔断根据最小样本、失败/慢调用比例和观测窗暂停调用，半开阶段少量探测，恢复后渐进放量。降级可把非关键昵称显示为“用户名加载中”，或暂不展示某支付渠道；付款、库存资格和审核通过则不能伪造成功。降级损失要对用户可见，并符合业务契约。</p><h4 class=\"md-h md-h4\">异步与批次交互</h4><p class=\"md-p\">运费险投保若合同和业务时效允许延后，可持久记录待办再异步调用，削峰但不丢投保责任。没有这种允许，不能凭“用户不会很快退货”断言晚几小时无损。异步队列有最大容量、最老年龄、业务过期和失败对账，不能无期限无限重试。</p><p class=\"md-p\">快递单号可按双方协议预领批次，发货后批量回传使用事实。文件方式同样需要鉴权、传输保护、校验和、批次 ID、部分失败回执和幂等重传，不能因为放到文件服务器就免去可靠性义务。批次成功要定义是接收、解析还是全部业务落地。</p><p class=\"md-p\">副作用超时要沿原 operationId 查询，保持 UNKNOWN 直到确认。换线程、关闭 Future 或换服务商不会自动撤销旧动作；只有明确未执行或目的端支持稳定幂等键时才安全重做。</p>"
+      }
+    },
+    {
+      "entryId": "scenario-lan-distribute-500gb",
+      "title": "30 台同局域网设备最快下载 500GB 应用",
+      "sha256": "c20943d8bfcd265c8f479c54acb92ef1b3dad43ad5f898f316a726c1195b376a",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-lan-distribute-500gb",
+        "number": "场景 3",
+        "title": "30 台同局域网设备最快下载 500GB 应用",
+        "slug": "",
+        "category": "架构场景题",
+        "source": "本批场景题",
+        "scenario": true,
+        "idea": "把 500GB 文件切块，外网只拉尽量少的副本；30 台设备在局域网内用 P2P/分块交换扩散数据，让 WAN 不成为 30 倍重复下载瓶颈。",
+        "description": "服务端有约 500GB 的应用，30 台设备处于同一局域网并共享一台路由器，目标是让 30 台尽快全部下载完成。核心不是让 30 台各自从公网重复拉 500GB，而是区分 WAN 和 LAN 两种带宽，尽量让每个字节只跨 WAN 一次，再在局域网内扩散。",
+        "metrics": "总完成时间最短；WAN 传输接近 500GB；可断点续传与校验",
+        "components": "Chunk Server / Piece Hash / P2P Swarm / LAN Discovery / Local Cache",
+        "requirements": [
+          "先测公网下行总带宽、局域网交换能力和每台设备网卡速度，明确真正瓶颈。",
+          "所有设备最终必须得到完整 500GB，允许边下载边给其他设备上传。",
+          "设备可能中途掉线，因此需要分块校验、断点续传和重新调度。"
+        ],
+        "architecture": [
+          "把大文件切成固定大小块（例如 4~64MB），每块带 content hash；服务端暴露 manifest 和 chunk 下载接口。",
+          "30 台设备组成局域网 swarm。初始阶段让不同设备从公网优先下载不同 chunk，而不是 30 台都下载相同前缀。",
+          "设备拿到并校验一个 chunk 后立刻成为该 chunk 的局域网 seed；其他设备优先从 LAN peer 获取缺失块。",
+          "调度使用 rarest-first/带宽感知策略，避免某些块只有一个副本；若 LAN 支持高效组播，也可让本地分发节点对公共块做 multicast。",
+          "完成后按 manifest 校验整文件；失败块仅重传对应 chunk。"
+        ],
+        "dataFlow": [
+          "设备先拉 manifest，发现同网段 peers。",
+          "Coordinator 把不同 chunk 的首份公网下载分散给不同设备。",
+          "每个 chunk 下载完成并校验后，立即通过 LAN 向其他设备提供。",
+          "所有设备持续从“公网 + 多个局域网 peer”并行拉缺失块，直到块集合完整。"
+        ],
+        "keyPoints": [
+          "理论下界受最慢资源约束。如果公网出口最慢，理想情况是整个局域网只需跨 WAN 传约 500GB，而不是 30×500GB。",
+          "如果只让一台机器完整下完再分发，会浪费“下载期间”的 LAN 上传能力；分块 swarm 可以边下边传。",
+          "P2P 会增加路由器/交换机内部流量，要限制每台 peer 的并发上传，避免 LAN 自己被打满导致抖动。",
+          "安全上要校验 chunk hash / 签名，不能信任任意 peer 提供的数据。"
+        ],
+        "followups": [
+          "如果公网带宽 10Gbps、LAN 只有 1Gbps，方案还应该以 P2P 为主吗？",
+          "如果 30 台设备的磁盘写入速度差异很大，怎么做带宽调度？",
+          "如果其中 10 台设备不断掉线，怎样避免某些 chunk 只存在于掉线节点？",
+          "如果同一办公网有多个房间/交换机，是否需要分层 seed 或本地缓存节点？"
+        ],
+        "code": "",
+        "capacityPlan": [
+          "先测 WAN、LAN、单机磁盘和网卡吞吐，完成时间下界由最慢瓶颈决定。理想情况下公网只需要传约 500GB 一份，而不是 30 份。",
+          "chunk 大小要平衡调度开销与并行度；LAN 并发上传要限速，避免交换机/无线 AP 被打满。"
+        ],
+        "consistency": [
+          "manifest 固定文件版本，每个 chunk 带 cryptographic hash；只有校验通过的块才能向其他 peer 宣告。",
+          "最终按整体 hash/签名校验，防止版本混用和恶意 peer 注入。"
+        ],
+        "failureModes": [
+          "peer 离线后调度器重新选择 source；稀有块要保证多个副本，避免最后卡在单一失联 peer。",
+          "支持断点续传，origin 作为最终兜底源；P2P 失效时退化为中心分发。"
+        ],
+        "observability": [
+          "监控 WAN/LAN 吞吐、chunk availability、peer 上传/下载率、校验失败率和整体完成时间分布。"
+        ],
+        "interviewAnswer": "我会做 BitTorrent 类似的分块 swarm：不同设备先从公网拿不同 chunk，拿到后立即在局域网互传；manifest+hash 保证正确，rarest-first 防止尾部缺块。这样 WAN 只承担接近一份文件的数据量，LAN 承担扩散。",
+        "tradeoffs": [
+          "中心服务器逐台下发最简单，但 WAN 重复流量巨大；P2P 省公网带宽，却要处理 peer 发现、块可用性与可信校验。",
+          "块越小并行度越高但元数据/调度开销越大；块越大开销小但慢节点与尾部效应更明显。"
+        ],
+        "security": [
+          "manifest 与安装包使用签名/hash；peer 只接受授权设备，避免局域网中的恶意节点投毒。"
+        ],
+        "kind": "scenario",
+        "group": "场景设计",
+        "boundaryCases": [
+          "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施"
+      }
+    },
+    {
+      "entryId": "scenario-cross-site-sso",
+      "title": "A 网站登录后，B 网站如何自动登录（SSO）",
+      "sha256": "280e730a794af6178691dd63622c1f76aef7d05da4001253864d39e47410eb6f",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-cross-site-sso",
+        "number": "场景 8",
+        "title": "A 网站登录后，B 网站如何自动登录（SSO）",
+        "slug": "",
+        "category": "架构场景题",
+        "source": "场景题截图补充",
+        "scenario": true,
+        "idea": "A、B 不共享业务 Cookie，而是共同信任统一身份提供方 IdP；B 通过 OIDC/OAuth2 Authorization Code + PKCE 或企业 SAML 完成单点登录。已有 IdP 会话时，B 的登录跳转可以无感完成。",
+        "description": "用户已经登录 A 网站，访问 B 网站时希望自动识别身份并登录。需要考虑跨域 Cookie 限制、票据安全、退出登录、账号映射以及防止伪造/重放。",
+        "metrics": "不共享密码；短时票据；可撤销；跨域安全",
+        "components": "Identity Provider / Authorization Endpoint / Token Endpoint / A / B / Session Store",
+        "requirements": [
+          "不要让 A 直接把自己的 session cookie 复制给 B；跨域业务应该共同信任一个身份提供方（IdP/OP），而不是共享业务 Cookie。",
+          "A、B 分别注册 client_id 与精确 redirect_uri；浏览器走 OIDC Authorization Code Flow，避免把 ID/Access Token 暴露在前端 URL。",
+          "必须校验 state（CSRF 绑定）、ID Token 的 issuer/audience/signature/exp；使用 nonce 时校验 nonce 防止 ID Token 重放。公共客户端必须使用 PKCE，机密 Web 客户端也可叠加 PKCE 作为额外防护。",
+          "A/B 各自建立本地 session，并定义单点退出、token 撤销、账号映射和 IdP 不可用时的降级行为。"
+        ],
+        "architecture": [
+          "用户在 A 登录时实际建立 IdP 会话，A 再获得自己的本地 session。",
+          "用户访问 B；B 没有本地 session 时 302 到 IdP authorization endpoint。",
+          "浏览器携带 IdP 域的登录 Cookie。IdP 发现已有会话，因此无需再次输入密码，签发一次性 code 并重定向回 B。",
+          "B 后端使用 code + PKCE/client credential 换取 ID Token/Access Token，验证后映射本地账号并创建 B session。"
+        ],
+        "dataFlow": [
+          "A → IdP 完成登录。",
+          "访问 B → B 重定向 IdP。",
+          "IdP 复用已有登录态 → 返回一次性 code。",
+          "B 后端换 token、验签、校验 state/nonce → 建立 B 本地登录态。"
+        ],
+        "keyPoints": [
+          "跨域 SSO 的核心是“共同信任身份提供方”，不是让两个业务域直接共享 Cookie。",
+          "不要把 access token 放 URL query 长时间传播；authorization code 必须短时、一次性，并严格绑定 redirect_uri。",
+          "B 必须校验 token 的 iss/aud/exp/nonce/signature，不能只 decode JWT 就当成可信。",
+          "企业内系统常见 OIDC 或 SAML；新系统优先 OIDC，浏览器/移动端推荐 Authorization Code + PKCE。"
+        ],
+        "followups": [
+          "如果 A、B 属于同一父域，能否直接共享父域 Cookie？为什么通常仍不推荐？",
+          "单点退出怎么做？B 的本地 session 和 IdP session 如何联动？",
+          "如果 B 不信任 A，但两者都信任 IdP，为什么仍然可以 SSO？",
+          "如何防 CSRF、登录重放和 token 被窃取？"
+        ],
+        "code": "",
+        "capacityPlan": [
+          "认证流量通常远小于业务请求，但要估登录峰值、token endpoint QPS、JWKS 缓存和 session 存储；IdP 是关键基础设施，需要多副本。"
+        ],
+        "consistency": [
+          "A/B 各自维护本地 session；身份事实来自 IdP 的签名 ID Token/用户目录。全局退出通常是最终一致，需要 back-channel/front-channel logout 或短 session TTL。",
+          "authorization code 一次性使用；state 绑定浏览器会话，nonce 绑定 ID Token，PKCE 绑定发起授权的客户端实例。"
+        ],
+        "failureModes": [
+          "IdP 暂时不可用时，已有本地 session 可按有效期继续服务；新登录失败应快速返回，不要无限重试。",
+          "JWKS 轮换要缓存并在 kid miss 时刷新，避免密钥轮换导致全站认证失败。"
+        ],
+        "observability": [
+          "监控登录成功率、code exchange 失败、state/nonce 校验失败、token 验签失败、IdP P99 和 session 创建量。"
+        ],
+        "interviewAnswer": "A、B 不共享业务 Cookie，而是共同信任 IdP。B 未登录时走 OIDC Authorization Code Flow，IdP 复用已有登录会话后给 B 一次性 code，B 后端换 token、严格验签/state/nonce 并建立自己的 session。",
+        "tradeoffs": [
+          "中心 IdP 简化身份一致性，但也成为关键基础设施；需要多副本、缓存公钥和明确故障策略。",
+          "共享 Cookie 看似简单却强耦合域名和会话语义；标准 OIDC 多一次重定向/Token 交换，但隔离性与可演进性更好。"
+        ],
+        "security": [
+          "严格校验 redirect_uri、state、nonce、issuer/audience/signature/exp；Token 不放 URL，Cookie 使用 Secure/HttpOnly/SameSite。"
+        ],
+        "kind": "scenario",
+        "group": "场景设计",
+        "boundaryCases": [
+          "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "登录与安全",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-network-scenario-cross-site-sso\">网络手册：协议机制、适用条件与设计边界</h2><h3 class=\"md-h md-h3\">SSO 为什么不等于共享一枚 Cookie</h3><p class=\"md-p\">SSO（单点登录）让多个业务应用依赖同一身份提供方。用户访问应用 A 时完成身份提供方登录，A 验证授权码流程和身份结果后建立自己的本地会话；再访问应用 B，B 仍走自己的受控认证流程，但身份提供方已有会话时通常无需再次输入密码。不同域名的应用不必也不应靠任意共享 Cookie 实现这一点。</p><p class=\"md-p\">身份提供方会话、A 的会话、B 的会话和各自令牌相互独立。本站退出不天然等于全局退出；是否实现前通道或后通道登出、撤销通知以及失效时效，应按身份协议和实际产品能力说明。OAuth 提供授权框架，OIDC 等协议补身份认证；“用了 JWT”本身不等于做了 SSO。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-network-source-guide\">适用版本与练习条件</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-practice-b866530011926ab1\">不同网站怎样实现单点登录</h2><p class=\"md-p\">不能仅凭示例中的测试数量、性能数字、PASS 文本与预期输出，认定已在当前环境复验或取得个人项目业绩。运行练习前须核对版本、依赖、输入条件与代码完整性；算法和手写实现如有节选，以注明的范围为准。</p><h3 class=\"md-h md-h3\">不同网站怎样实现单点登录</h3><p class=\"md-p\">多个站点接入可信统一身份提供方，浏览器在身份方已有登录会话时，经标准认证流程让新站点建立自己的会话。 JWT 是令牌格式，Redis 是会话存储，它们各自都不是完整的跨站 SSO 协议。</p><p class=\"md-p\">同一可设置父域下的受信子域，例如 a.example.com 和 b.example.com，可按 Domain、Path、Secure、HttpOnly、SameSite 等属性共享适当 Cookie。它们仍是不同源，共享扩大信任面；不相关注册域不能设置同一父域 Cookie。浏览器也不会因为在 A 登录，就自动把 A 的 Authorization 头带给 B。</p><p class=\"md-p\">可以沿用户第一次访问 B 的过程解释跨站登录：B 先查自己的本地会话，未登录就重定向到身份方；身份方复用已有登录态，返回绑定客户端和回调地址的授权结果；B 完成受保护交换、验证身份，才创建自己的会话。</p><p class=\"md-p\">采用 OIDC 时，验证要覆盖签名算法、可信密钥、issuer、audience、有效期、nonce、state 和回调地址，并按流程使用 PKCE。OAuth 的访问授权不能直接充当身份认证，access token 与 ID token 的用途也要分清。复述这条路径时，指出每次会话到底属于身份方还是 B，就不会把“统一登录”理解成任意站点共用一个令牌。</p><p class=\"md-p\">共享 Redis Session 只统一了服务端数据，仍需安全获得、验证正确会话凭证，不能绕过浏览器域限制。Token 只传给对应受众和获准服务，不放 URL、日志或任意外站；读取 payload 不等于签名和声明验证。签发与刷新、盗用检测、撤销需完整会话策略。</p><p class=\"md-p\">CAS 是 Central Authentication Service，不是并发 Compare-And-Swap。客户端重定向 CAS，拿到票据后向 CAS 服务验证，再建立业务会话；具体协议按所用实现核对。统一认证只负责“是谁”，业务系统仍要决定“可操作哪条数据”。</p><p class=\"md-p\">统一登录的成本包括身份方高可用、可信密钥轮换、会话固定攻击防护、跨站登出、权限变更传播和故障依赖。退出一个站点是否同时退出身份方和其他站点必须明示，不能默认一个 Cookie 清除就完成所有注销。</p>"
+      }
+    },
+    {
+      "entryId": "scenario-oauth-login",
+      "title": "第三方登录设计（OAuth 2.0 / 微信 / 支付宝）",
+      "sha256": "c94e1f2e28573b541efe096db1674b14d8f2d5999d244afc0a1731ac8fdb1a1b",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-oauth-login",
+        "number": "场景 25",
+        "title": "第三方登录设计（OAuth 2.0 / 微信 / 支付宝）",
+        "idea": "OAuth 2.0 授权码模式 + state 防 CSRF + PKCE 防拦截 + 令牌刷新。流程：跳转授权页 → 用户同意 → 回调拿 code → 换 access_token → 拿用户信息 → 绑定/注册本地账号。",
+        "description": "设计第三方登录：支持微信、支付宝、GitHub。要求安全（防 CSRF、令牌加密）、用户体验好（一键登录）、支持账号绑定。",
+        "metrics": "登录成功率 > 99%；令牌安全；防 CSRF",
+        "components": "OAuth 2.0 / PKCE / JWT / Redis / State",
+        "requirements": [
+          "采用授权码流程并结合 PKCE、严格回调校验和预期发行方绑定；安全性取决于完整协议与实现，不能仅按流程名称排名。",
+          "防 CSRF：state 参数校验",
+          "令牌安全：access_token 加密存储",
+          "账号绑定：openid/unionid 映射到本地 user_id"
+        ],
+        "capacityPlan": [
+          "登录 QPS = DAU × 登录频率",
+          "Redis 存储 state 和令牌"
+        ],
+        "architecture": [
+          "授权码模式：跳转授权页 → 回调拿 code → 换 access_token → 拿用户信息",
+          "PKCE：code_verifier 和 code_challenge 防拦截",
+          "state 参数：随机字符串 + Redis 存储 + 回调校验",
+          "令牌刷新：access_token 过期前用 refresh_token 换新",
+          "账号绑定：openid + unionid 映射到本地 user_id"
+        ],
+        "dataFlow": [
+          "用户 → 点击第三方登录 → 跳转授权页",
+          "用户同意 → 回调拿 code",
+          "后端 → code 换 access_token",
+          "后端 → access_token 拿用户信息",
+          "后端 → 绑定/注册本地账号 → 返回 JWT"
+        ],
+        "consistency": [
+          "state 一次性，防重放",
+          "access_token 加密存储"
+        ],
+        "failureModes": [
+          "state 校验失败 → 拒绝登录",
+          "access_token 过期 → 用 refresh_token 换新",
+          "用户信息获取失败 → 重试 + 降级"
+        ],
+        "keyPoints": [
+          "采用授权码流程并结合 PKCE、严格回调校验和预期发行方绑定；安全性取决于完整协议与实现，不能仅按流程名称排名。",
+          "PKCE 适合移动端和 SPA，防止授权码被拦截",
+          "state 参数必须随机且一次性",
+          "unionid 是微信生态的唯一标识，openid 是单个应用的"
+        ],
+        "observability": [
+          "监控登录成功率、令牌刷新率",
+          "告警：登录成功率 < 99%"
+        ],
+        "tradeoffs": [
+          "授权码模式 vs 隐式模式：授权码安全但流程复杂",
+          "JWT vs Session：完全离线验签且不查询在线状态时，JWT 通常要等到过期；撤销表、会话版本或在线检查可提供相应的主动失效时效。"
+        ],
+        "security": [
+          "state 防 CSRF",
+          "PKCE 防拦截",
+          "access_token 加密存储",
+          "敏感操作要二次验证"
+        ],
+        "followups": [
+          "OAuth 2.0 四种模式分别是什么？",
+          "PKCE 的原理？",
+          "如何防止授权码被拦截？",
+          "access_token 和 refresh_token 的区别？",
+          "如何设计账号绑定？"
+        ],
+        "code": "",
+        "interviewAnswer": "我会先明确第三方登录的核心是 OAuth 2.0 授权码模式。然后给出流程：跳转授权页 → 用户同意 → 回调拿 code → 换 access_token → 拿用户信息 → 绑定/注册本地账号。最后讨论安全措施：state 防 CSRF，PKCE 防拦截，access_token 加密存储。关键要能说出 state 参数的作用和 PKCE 的原理。",
+        "scenario": true,
+        "kind": "scenario",
+        "group": "场景题",
+        "topic": "第三方登录",
+        "patternIdx": 0,
+        "explainIdx": 0,
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "登录与安全",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-network-scenario-oauth-login\">网络手册：协议机制、适用条件与设计边界</h2><h2 class=\"md-h md-h2\">A10　OAuth、扫码登录与权限边界</h2><p class=\"md-p\">第三方登录先证明外部身份，再映射本站账户，最后建立本站会话；OAuth 授权、身份认证和业务授权必须分别说明。</p><p class=\"md-p\">常见换问：OAuth 是登录协议吗？授权码为什么不能直接当 Token？扫码后网页如何知道已登录？怎样避免串号和二维码劫持？注销第三方账户会让本站立刻退出吗？RBAC 和资源权限有什么关系？</p><h3 class=\"md-h md-h3\">授权码流程中的角色和凭据</h3><p class=\"md-p\">OAuth 解决客户端在一定范围内取得资源访问授权的问题。身份登录通常在其上采用 OpenID Connect 等身份协议，不能把随便一个 access token 直接解释为用户身份证明。客户端、授权服务器、资源服务器和用户各有角色，token 的 audience 和 scope 也有适用范围。</p><p class=\"md-p\">浏览器发起授权请求，服务器校验登录与授权后把短期授权码送回严格匹配的 redirect URI，客户端再到令牌端点兑换。采用 PKCE，把授权请求与兑换端的证明绑定，减少授权码被截获后独立兑换的风险。state 用于关联请求、防止相应的跨站请求混淆，OIDC 中还要按协议验证 ID Token 和 nonce 等要求。它们解决的问题不同，不宜背成“有一个随机串就全安全”。</p><p class=\"md-p\">公开客户端无法真正保守静态 client secret，不应把前端打包的字符串当秘密。后端也不能据回调中任意 issuer 或 token 地址发请求，必须绑定预期发行方，避免混淆和 SSRF。授权码通常一次性且短期有效，token 仍须按上一章的验证边界使用。</p><h3 class=\"md-h md-h3\">第三方账户绑定不能只认一个邮箱</h3><p class=\"md-p\">优先使用发行方稳定提供、语义明确的身份主键，例如 OIDC 的 (iss, sub) 组合映射本站身份。昵称、头像、未验证邮箱均不能作稳定主键；即便邮箱已验证，也要明确跨发行方合并账户的策略。</p><p class=\"md-p\">把第三方身份绑定到已登录本站账户，是敏感操作，需要确认当前会话与目标账户关系，必要时重新认证。解绑前检查是否还有可用登录方式，避免用户失去账户。第三方平台退出、撤销授权、删除平台账户、本站退出是四种动作；是否存在撤销通知、如何校验通知、已有本站会话何时失效，要依平台能力和本站策略设计，不能默认实时联动。</p><p class=\"md-p\">实现限制：“JWT 无法主动失效”只适用于完全离线验签且无在线状态校验的条件；撤销表、会话版本或在线检查可提供不同失效时效。只用 get/delete 的 state 骨架不保证一次消费，应采用绑定发起端的原子消费。指标是题设，非已验证业绩。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-network-source-guide\">适用版本与练习条件</a></li></ul>"
+      }
+    },
+    {
+      "entryId": "scenario-scan-login",
+      "title": "扫码登录设计（微信 / 钉钉）",
+      "sha256": "0bb49744d12cc4ed9b38ea86c6d27cade06cc9d93d4839e3ce06ff04ff6ae581",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-scan-login",
+        "number": "场景 32",
+        "title": "扫码登录设计（微信 / 钉钉）",
+        "idea": "二维码包含 scene_id，状态轮询用长轮询或 WebSocket，安全校验用一次性 code。难点在状态同步和安全。",
+        "description": "设计扫码登录：支持微信、钉钉扫码登录。要求安全（防伪造）、用户体验好（一键登录）、状态同步及时。",
+        "metrics": "登录成功率 > 99%；状态同步延迟 < 1s",
+        "components": "QRCode / WebSocket / Redis / JWT",
+        "requirements": [
+          "二维码生成：包含 scene_id",
+          "状态轮询：长轮询或 WebSocket",
+          "安全校验：一次性 code",
+          "状态同步：及时"
+        ],
+        "capacityPlan": [
+          "QPS = DAU × 登录频率",
+          "存储 = scene_id × 状态"
+        ],
+        "architecture": [
+          "二维码生成：包含 scene_id，存储到 Redis",
+          "状态轮询：长轮询或 WebSocket",
+          "安全校验：一次性 code",
+          "状态同步：WebSocket 推送"
+        ],
+        "dataFlow": [
+          "用户 → 扫码 → 跳转授权页",
+          "用户同意 → 回调拿 code",
+          "后端 → code 换 access_token",
+          "后端 → 绑定/注册本地账号 → 返回 JWT",
+          "WebSocket 推送状态"
+        ],
+        "consistency": [
+          "登录事务由权威短期状态机裁决，绑定发起浏览器并原子领取；WebSocket 仅传播状态，断线后仍须查询权威结果。"
+        ],
+        "failureModes": [
+          "WebSocket 断开 → 重连",
+          "code 过期 → 重新生成"
+        ],
+        "keyPoints": [
+          "scene_id 要一次性，防重放",
+          "WebSocket 可推送状态，也可按延迟、连接成本与恢复需求选择长轮询或其他推送方式；不存在所有场景都最优的通道。",
+          "code 要一次性，防伪造"
+        ],
+        "observability": [
+          "监控登录成功率、状态同步延迟"
+        ],
+        "tradeoffs": [
+          "长轮询 vs WebSocket：长轮询简单但延迟高，WebSocket 实时但复杂"
+        ],
+        "security": [
+          "scene_id 一次性",
+          "code 一次性",
+          "防伪造"
+        ],
+        "followups": [
+          "scene_id 怎么生成？",
+          "WebSocket 怎么推送状态？",
+          "code 怎么防伪？",
+          "如何设计状态同步？",
+          "如何防止重放？"
+        ],
+        "code": "",
+        "interviewAnswer": "我会先明确扫码登录的核心是二维码生成、状态轮询、安全校验。然后给出方案：二维码包含 scene_id，状态轮询用 WebSocket，安全校验用一次性 code。最后讨论状态同步和安全。关键要能说出 scene_id 的一次性和 WebSocket 的实时性。",
+        "scenario": true,
+        "kind": "scenario",
+        "group": "场景题",
+        "topic": "扫码登录",
+        "patternIdx": 0,
+        "explainIdx": 0,
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "登录与安全",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-network-scenario-scan-login\">网络手册：协议机制、适用条件与设计边界</h2><h3 class=\"md-h md-h3\">扫码登录其实是一个受控的状态机</h3><p class=\"md-p\">扫码登录可以分成“创建、手机批准、原网页领取”三步。网页先创建短期事务，服务端返回不可预测标识和展示用二维码；手机扫描后，要显示明确的站点、设备和操作意图，让用户确认，再将 PENDING 推进到 APPROVED。</p><p class=\"md-p\">原网页通过已认证或已绑定的轮询、推送领取结果，原子地把事务改为 CONSUMED，建立网页会话。事务也可能变为 EXPIRED 或 CANCELLED；进入终态后不能再次兑换。</p><p class=\"md-p\">关键不是“二维码里放用户 ID”，而是：二维码不要直接暴露可长期使用的登录凭据；事务与最初浏览器的秘密证明或会话绑定；结果只能被正确浏览器领取；审批者与最终登录身份绑定；过期、重复确认、并发领取都可控。二维码合法也不保证登录意图合法，攻击者可能诱导用户扫描其发起的登录二维码，因此手机确认页必须清晰呈现上下文。</p><p class=\"md-p\">OAuth Device Authorization Grant 是另一种标准化设备授权场景，涉及 device code、user code、轮询间隔和 slow_down 等约定；不要把所有扫码登录都称为该协议，也不要忽略轮询节流。仅为网页扫码做自定义流程时，同样需要限速、短期存活与一次性消费。</p><p class=\"md-p\">实现限制：扫码骨架本身不证明浏览器绑定、原子领取或身份映射安全；随机事务 ID 不是用户身份，结果领取应按短期状态机实施。WebSocket 并非所有场景实时性绝对最好的唯一选择。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-network-source-guide\">适用版本与练习条件</a></li></ul>"
+      }
+    },
+    {
+      "entryId": "scenario-massive-topk",
+      "title": "1 亿/海量数据取最大的前 100 个（Top K）",
+      "sha256": "7f6f8745477bfd13522b2db22c3790c60fc238f3ca38c70d9b5fb30232620ffe",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-massive-topk",
+        "number": "场景 11",
+        "title": "1 亿/海量数据取最大的前 100 个（Top K）",
+        "slug": "",
+        "category": "架构场景题",
+        "source": "场景题截图 + 上传资料",
+        "scenario": true,
+        "idea": "流式扫描 + 大小为 K 的小顶堆；数据跨多个大文件时每个分片先做 Local TopK，再归并为 Global TopK。并行化应让线程拥有局部堆，避免所有线程争一个全局锁。",
+        "description": "数据量远大于内存，例如 1 亿个整数，或 100 个文件、每个文件数亿个数字，需要找出全局最大的 K 个。要求讨论有限内存、4 核 CPU、磁盘 IO 与并行优化。",
+        "metrics": "单遍或少量遍历；内存 O(K×并行度)；顺序 IO；可并行",
+        "components": "Buffered/FileChannel Reader / Worker Pool / Local Min-Heap / Global Merge",
+        "requirements": [
+          "不能把所有数字加载内存，也不应对 N 个元素做全量排序。",
+          "找最大 K 个时使用大小 K 的小顶堆，堆顶是当前 TopK 中最容易淘汰的最小值。",
+          "4 核机器可让多个 Worker 并行处理不同文件/文件块，但每个 Worker 使用自己的堆。",
+          "最终只需要合并 workerCount × K 个候选，而不是再次扫描所有原始数据。"
+        ],
+        "architecture": [
+          "Map 阶段：每个文件/分片顺序读取，维护 local min-heap(K)。",
+          "Reduce 阶段：把所有 Local TopK 合并到一个 global min-heap(K)。",
+          "IO 优化：大 buffer、FileChannel/MappedByteBuffer；对 HDD 避免随机读取，对 SSD 控制并发。",
+          "如果 K 很小且值域有限，也可以按值域分桶/计数；通用解法仍是堆。"
+        ],
+        "dataFlow": [
+          "文件列表 → 固定大小线程池。",
+          "Worker 顺序读取 → Local TopK。",
+          "收集所有局部 K 候选 → Global TopK。",
+          "最终按需要降序输出。"
+        ],
+        "keyPoints": [
+          "复杂度 O(N log K)，当 K=100 时远小于 O(N log N) 全排序。",
+          "不要让多线程共享一个 PriorityQueue 再加大锁；高并发下锁竞争会抵消并行收益。",
+          "“内存无限”也不代表应该全量 sort：IO 与排序 CPU 仍然浪费。",
+          "如果输入单文件巨大，可以按 byte range 切块，但必须按记录边界切分。"
+        ],
+        "followups": [
+          "只有 10MB 内存怎么办？",
+          "如果需要前 100 个去重后的数字怎么办？",
+          "如果数据是持续不断的数据流而不是静态文件怎么办？",
+          "如何处理数值可能超过 int 范围或记录格式不固定？"
+        ],
+        "code": "",
+        "capacityPlan": [
+          "N 很大、K 很小时单 worker 只需 O(K) 内存；并行 worker 数按 CPU 和磁盘吞吐确定，不是越多越好。",
+          "如果有 M 个 worker，Reduce 阶段候选最多 M×K；这决定最终归并内存。"
+        ],
+        "consistency": [
+          "输入文件应是不可变快照或带版本；处理中途文件被覆盖会让结果不可复现。",
+          "并行分块必须按完整记录边界切割，并记录处理 offset 便于失败重试。"
+        ],
+        "failureModes": [
+          "worker 失败只重跑对应文件/分块；局部 TopK 可落临时结果并校验。",
+          "内存不足时算法仍只保留 K 候选；真正风险更多来自 IO、坏记录和磁盘故障。"
+        ],
+        "observability": [
+          "监控每文件读取吞吐、坏记录、worker 耗时倾斜、heap 更新比例和总扫描进度。"
+        ],
+        "interviewAnswer": "这是外存流式 TopK，不要全量排序。每个分片顺序扫并维护 K 大小的小顶堆，4 核用局部堆并行，最后只归并 M×K 个候选。复杂度 O(N log K)，内存 O(MK)。",
+        "tradeoffs": [
+          "全排序简单但 IO/CPU 浪费；局部 TopK + 全局 TopK 把内存和比较集中在 K 个候选。",
+          "共享一个全局堆看似省合并步骤，却会让多线程竞争同一把锁；线程本地堆 + reduce 更可扩展。"
+        ],
+        "security": [
+          "文件目录和临时结果遵守最小权限，坏记录/超长行要限长解析，避免数据文件成为资源耗尽入口。"
+        ],
+        "kind": "scenario",
+        "group": "场景设计",
+        "boundaryCases": [
+          "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "海量数据",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-practice-9ab2b4d72659d2bc\">一亿个数怎样取最大一百个</h2><p class=\"md-p\">不能仅凭示例中的测试数量、性能数字、PASS 文本与预期输出，认定已在当前环境复验或取得个人项目业绩。运行练习前须核对版本、依赖、输入条件与代码完整性；算法和手写实现如有节选，以注明的范围为准。</p><h3 class=\"md-h md-h3\">一亿个数怎样取最大一百个</h3><p class=\"md-p\">顺序扫描输入，维护 K=100 的小顶堆，堆顶始终是最该淘汰的候选。 未满直接加入，满后仅当新值大于堆顶才替换。保留重复值时，两个相同数字代表两个输入元素；若要求不同数值的 Top K，需要另加去重语义。</p><p class=\"md-p\">读完前 t 个元素后，堆保存此前缀最大的 min(t,K) 个元素。新值不大于堆顶时不可能改善已有 K 个候选；更大时替换最小者，归纳即得正确性。堆常以数组表示完全二叉树：插入在末尾并上浮，删除堆顶用末元素补根并下沉，每次 O(log K)。小顶堆适合淘汰最小候选，大顶堆顶端却是最希望保留的最大者。</p><p class=\"md-p\">扫描 O(N)，最坏 N 次堆更新 O(N log K)，工作内存 O(K)，最后降序输出还需 O(K log K)。PriorityQueue 的迭代顺序不是排序结果。K 远小于 N 时无需把一亿数全装内存，也无需全量外排序。最大的 K 个数与出现频率最高的 K 个数不同，后者先要精确或近似频次统计。</p><p class=\"md-p\">多文件版本的完整读取、合并和 Java 代码见本章下一节；单文件就是并行数为 1 的同一候选算法。</p>"
+      }
+    },
+    {
+      "entryId": "scenario-external-sort",
+      "title": "大文件排序：外部排序怎么设计",
+      "sha256": "ce030be98981b36cf866f78b842a482b87da5fc8c368865ad9537c8a80bdfdc1",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "scenario-external-sort",
+        "number": "场景 12",
+        "title": "大文件排序：外部排序怎么设计",
+        "slug": "",
+        "category": "架构场景题",
+        "source": "场景题截图补充",
+        "scenario": true,
+        "idea": "内存装不下时使用 External Merge Sort：分块读入内存排序形成多个有序 run，再用多路归并顺序读写；优化点在 run 大小、归并路数、缓冲区和磁盘临时空间。",
+        "description": "一个超大文件无法整体加载内存，需要对全部记录排序。要求给出可落地的磁盘算法，并考虑内存限制、磁盘 IO、临时文件、稳定性和故障恢复。",
+        "metrics": "顺序 IO 为主；峰值内存有界；可恢复；临时空间可估算",
+        "components": "Chunk Reader / In-memory Sort / Sorted Runs / K-way Merge / Temp Storage",
+        "requirements": [
+          "根据可用内存选择 chunkSize，每次只加载一块。",
+          "每块在内存中排序后写成有序临时文件 run。",
+          "第二阶段使用优先队列做 k-way merge，每个 run 只保留小 buffer，不把整份 run 读入内存。",
+          "磁盘空间不足、进程重启时需要知道哪些 run 已完成并可继续归并。"
+        ],
+        "architecture": [
+          "Phase 1：read chunk → sort → write run-N.tmp，直到原文件结束。",
+          "Phase 2：为每个 run 打开 buffered reader，把首元素放入小顶堆；每弹出一个最小值就从对应 run 补一个。",
+          "run 数过多时分多轮归并，避免同时打开超过 fd 限制的文件。",
+          "写最终文件使用临时路径，完成并 fsync/校验后原子 rename。"
+        ],
+        "dataFlow": [
+          "大文件 → 多个内存 chunk。",
+          "chunk 排序 → run1/run2/...。",
+          "多路归并 → final.tmp。",
+          "校验完成 → rename 成最终结果 → 清理临时 run。"
+        ],
+        "keyPoints": [
+          "外部排序优化目标主要是减少磁盘读写轮数，而不是把比较次数降到最低。",
+          "chunk 越大 run 越少，但必须为 JVM、输入输出 buffer、堆和 GC 留余量。",
+          "若记录是变长文本，排序 key 和原始 record 的序列化方式会影响内存估算。",
+          "如果只需要 TopK，不要做完整外排，直接流式小顶堆更省。"
+        ],
+        "followups": [
+          "100GB 文件、8GB 内存如何选 chunk？",
+          "有 10 万个 run 超过文件句柄限制怎么办？",
+          "如果排序 key 很小但 record 很大，能否只排序 offset/index？",
+          "分布式场景下如何演化为 MapReduce shuffle + merge？"
+        ],
+        "code": "",
+        "capacityPlan": [
+          "run 大小≈可用内存减 JVM/缓冲安全余量；归并 fan-in 受内存 buffer 与文件描述符上限共同限制。",
+          "总磁盘临时空间通常需要接近输入规模的 1~2 倍，且多轮归并会增加总 IO 字节。"
+        ],
+        "consistency": [
+          "输入按版本固定；每个 run 写完后带校验和/元数据，最终文件写临时路径并 fsync 后原子 rename。"
+        ],
+        "failureModes": [
+          "进程重启读取 manifest，复用已经完成的 run/merge level；临时文件有生命周期和垃圾回收。",
+          "坏记录按策略隔离到 error file，避免一条数据让整批无法恢复。"
+        ],
+        "observability": [
+          "监控读写 MB/s、run 数、归并轮次、磁盘占用、fd 使用、排序阶段耗时和失败重试。"
+        ],
+        "interviewAnswer": "内存装不下就做 External Merge Sort：分块读入、内存排序形成 run，再用小顶堆多路归并。优化目标主要是减少磁盘 IO 轮次，所以 run 大小、fan-in、buffer 和临时空间比“比较次数”更关键。",
+        "tradeoffs": [
+          "更大 chunk 会减少 run 数和归并轮次，但挤压 JVM/IO buffer 内存；过小 chunk 则增加临时文件和 IO 次数。",
+          "一次 k-way merge 路数高可减少轮次，但文件描述符、buffer 内存和随机 IO 压力更大。"
+        ],
+        "security": [
+          "临时文件权限、磁盘配额、路径规范化和校验和要明确；不要接受可穿越目录的任意输出路径。"
+        ],
+        "kind": "scenario",
+        "group": "场景设计",
+        "boundaryCases": [
+          "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "海量数据",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-practice-ce05b9867f573b50\">大文件在小内存中怎样完成全排序</h2><p class=\"md-p\">不能仅凭示例中的测试数量、性能数字、PASS 文本与预期输出，认定已在当前环境复验或取得个人项目业绩。运行练习前须核对版本、依赖、输入条件与代码完整性；算法和手写实现如有节选，以注明的范围为准。</p><h3 class=\"md-h md-h3\">大文件在小内存中怎样完成全排序</h3><p class=\"md-p\">分块排序产生有序段，再用有限路归并得到最终顺序。 与只要 Top K 不同，完整排序必须输出全部元素，不能只留下局部候选。</p><p class=\"md-p\">给定可用工作内存 M，扣除解析对象、堆、线程栈、输入输出缓冲和运行时余量后，每次读一个能容纳的块，在内存排序并写成独立有序段。并发排序可以利用多个核，但 P 个工作者的所有块之和仍要满足内存预算，不能每个都使用 M。</p><p class=\"md-p\">归并时，每段留一个输入缓冲，最小堆放“当前值、来源段号”；弹出最小值送输出缓冲，再从同一段补下一值。若有 9 段，可九路合并；有 1000 段但句柄或缓冲预算只允许 50 路，就先生成约 20 个新段，再做下一轮。每轮都会重新读写全部待归并数据，所以路数在内存、句柄与 I/O 轮次之间取舍。</p><p class=\"md-p\">单轮堆合并 O(N log F)，F 为实际同时归并段数。外排序总成本除计算外，还受顺序磁盘带宽、临时空间与归并轮数支配。文件特别倾斜时按可校准记录边界切块，不能从数字或 UTF-8 字符中间开始。</p><p class=\"md-p\">要稳定排序，就给键相等的记录附上原始全局序号，并在每轮使用同一比较规则。要保证最终文件可信，还需固定输入快照或版本，为临时段记录条数、范围与校验和，先写临时名称，校验后再发布完整产物。</p><p class=\"md-p\">练习时把故障分别放在磁盘满、坏行、产生半成品、进程重启和清理失败这几处，说明读者能查询到什么结果、哪些产物还不能发布。不能吞掉坏文件后，交付一份看似完整的排序。</p>"
+      }
+    },
+    {
+      "entryId": "pattern-scenario-highconcurrency",
+      "title": "高并发场景设计：从分析问题到架构落地",
+      "sha256": "8cf3bf22246ec2ff5bca414d4402a1ca389155b5e7752a6d77e0749d3f52f3c8",
+      "hashSerialization": "JSON ensure_ascii=False,separators comma colon, current insertion order",
+      "entry": {
+        "id": "pattern-scenario-highconcurrency",
+        "number": "高并发",
+        "title": "高并发场景设计：从分析问题到架构落地",
+        "kind": "pattern",
+        "kindLabel": "场景模板",
+        "group": "题型模板",
+        "category": "高并发场景",
+        "flat": false,
+        "subtitle": "覆盖 9 道题 · 强调分析链路与 Trade-off",
+        "problemDecomposition": {
+          "title": "🎬 问题识别与拆解",
+          "steps": [
+            {
+              "stage": "澄清需求",
+              "questions": [
+                "用户量？DAU / 在线数 / 注册用户？",
+                "读写比？（99:1 还是 50:50）",
+                "延迟要求？P50/P95/P99 分别多少 ms？",
+                "一致性要求？（强一致 / 最终一致 / 会话一致）",
+                "可用性 SLA？（99.9% / 99.99%）"
+              ],
+              "example": "面试官说\"设计一个秒杀系统\"→ 先问：预期 QPS？库存量级？是否允许超卖？支付超时怎么处理？"
+            },
+            {
+              "stage": "识别核心矛盾",
+              "questions": [
+                "这是读多写少还是写多读少？",
+                "瓶颈最可能在 CPU / 内存 / 网络 / 磁盘 / 锁 / 下游？",
+                "数据可以分片吗？（按用户 / 按时间 / 按业务键）",
+                "有热点吗？（单个 key / 单个用户 / 单个商品）"
+              ],
+              "example": "秒杀：读多写少 + 单点热点（爆款商品）+ 瞬时爆发 + 强一致库存 → 这是最难的高并发形态。"
+            },
+            {
+              "stage": "划定边界",
+              "questions": [
+                "哪些功能是核心链路？（必须保证可用）",
+                "哪些可以降级？（评论、推荐、统计）",
+                "哪些可以异步？（通知、日志、上报）"
+              ],
+              "example": "秒杀的核心链路：下单 → 扣库存 → 支付。评论、推荐、积分可以全部降级或异步。"
+            }
+          ]
+        },
+        "capacityEstimation": {
+          "title": "🔬 容量估算（必须用数字说话）",
+          "formulas": [
+            {
+              "name": "平均 QPS",
+              "formula": "DAU × 人均操作数 / 86400",
+              "example": "1000 万 DAU × 10 次操作 / 86400 ≈ 1157 QPS"
+            },
+            {
+              "name": "峰值 QPS",
+              "formula": "平均 QPS × 峰值系数",
+              "example": "1157 × 5 = 5785 QPS（峰值系数一般 3-10）"
+            },
+            {
+              "name": "存储量",
+              "formula": "DAU × 人均数据量 × 保留天数",
+              "example": "1000 万 DAU × 1KB/天 × 365 天 ≈ 3.6 TB"
+            },
+            {
+              "name": "带宽",
+              "formula": "峰值 QPS × 单请求大小",
+              "example": "5785 QPS × 10KB ≈ 58 MB/s = 460 Mbps"
+            }
+          ],
+          "benchmarks": [
+            {
+              "resource": "MySQL 单机",
+              "write": "~1000 TPS（简单写入）",
+              "read": "~1 万 QPS（主键查询）",
+              "note": "复杂 join 可能掉到几百"
+            },
+            {
+              "resource": "Redis 单机",
+              "write": "~10 万 QPS",
+              "read": "~10 万 QPS",
+              "note": "单 key 有 CPU 瓶颈"
+            },
+            {
+              "resource": "Kafka 单机",
+              "write": "~10 万 msg/s",
+              "read": "~百万 msg/s（批量拉）",
+              "note": "顺序写磁盘很快"
+            },
+            {
+              "resource": "Nginx 单机",
+              "write": "N/A",
+              "read": "~10 万 QPS",
+              "note": "静态资源 / 反向代理"
+            },
+            {
+              "resource": "千兆网卡",
+              "write": "~120 MB/s",
+              "read": "~120 MB/s",
+              "note": "1KB 响应 ≈ 12 万 QPS"
+            }
+          ],
+          "pitfalls": [
+            "凭感觉拍数字 → 面试官会追问\"为什么是这个数\"",
+            "只看 QPS 不看单机性能 → 不知道需要几台机器",
+            "忘算存储和带宽 → 只关注 CPU"
+          ]
+        },
+        "architectureEvolution": {
+          "title": "🏗️ 架构演进路径（从单机到分布式）",
+          "stages": [
+            {
+              "stage": "单机阶段（QPS < 1000）",
+              "architecture": "Nginx → 应用 → MySQL",
+              "pros": [
+                "简单",
+                "事务好做",
+                "运维成本低"
+              ],
+              "cons": [
+                "单点故障",
+                "QPS 上限 ~1000"
+              ],
+              "when": "MVP / 内部系统 / 低并发业务"
+            },
+            {
+              "stage": "读写分离（QPS < 5000）",
+              "architecture": "Nginx → 应用 → MySQL 主（写） + MySQL 从（读）",
+              "pros": [
+                "读 QPS 翻倍",
+                "主库压力减小"
+              ],
+              "cons": [
+                "主从延迟（ms 级）",
+                "写完立刻读可能读不到"
+              ],
+              "when": "读多写少；接受短暂不一致",
+              "tradeoff": "用\"读己之写\"一致性换吞吐"
+            },
+            {
+              "stage": "加缓存（QPS < 1 万）",
+              "architecture": "Nginx → 应用 → Redis（读） → MySQL",
+              "pros": [
+                "读 QPS 提升到 10 万级",
+                "DB 压力大幅减小"
+              ],
+              "cons": [
+                "缓存一致性问题",
+                "缓存穿透/击穿/雪崩"
+              ],
+              "when": "读多写少 + 容忍秒级不一致",
+              "tradeoff": "用缓存不一致换 DB 减压"
+            },
+            {
+              "stage": "加 MQ 削峰（QPS < 10 万）",
+              "architecture": "Nginx → 应用 → Kafka → 消费者 → MySQL",
+              "pros": [
+                "瞬时流量摊平",
+                "应用解耦"
+              ],
+              "cons": [
+                "消息延迟（秒级）",
+                "引入消息丢失/重复问题"
+              ],
+              "when": "瞬时爆发（秒杀 / 大促）",
+              "tradeoff": "用延迟换稳定"
+            },
+            {
+              "stage": "分库分表（QPS > 10 万 或 数据 > 亿级）",
+              "architecture": "Nginx → 应用 → Sharding Proxy → MySQL 集群",
+              "pros": [
+                "水平扩展",
+                "单机数据量下降"
+              ],
+              "cons": [
+                "跨分片查询难",
+                "分布式事务难",
+                "运维成本高"
+              ],
+              "when": "单机存不下 / 单机写瓶颈",
+              "tradeoff": "用复杂度换扩展性"
+            }
+          ]
+        },
+        "tradeoffMatrix": {
+          "title": "⚖️ 核心 Trade-off 决策矩阵",
+          "decisions": [
+            {
+              "question": "缓存 vs 直连 DB？",
+              "chooseCache": "读多写少 + 容忍秒级不一致 + QPS > 1000",
+              "chooseDB": "强一致要求 + 写多读少 + QPS < 100",
+              "cost": "缓存引入一致性问题、穿透/击穿/雪崩风险"
+            },
+            {
+              "question": "同步调用 vs MQ 异步？",
+              "chooseCache": "需要立即知道结果 + 延迟敏感（如支付）",
+              "chooseDB": "可接受延迟 + 流量有峰值（如发通知、记日志）",
+              "cost": "MQ 引入消息丢失/重复/顺序问题"
+            },
+            {
+              "question": "强一致 vs 最终一致？",
+              "chooseCache": "涉及钱（支付、库存扣减）",
+              "chooseDB": "不涉及钱（点赞、浏览量、评论数）",
+              "cost": "强一致需要分布式事务（2PC/TCC），性能差"
+            },
+            {
+              "question": "单 key vs 分片 key？",
+              "chooseCache": "QPS < 1 万 + 一致性要求高",
+              "chooseDB": "QPS > 1 万 + 允许最终一致",
+              "cost": "分片 key 需要合并查询，逻辑复杂"
+            },
+            {
+              "question": "本地缓存 vs 分布式缓存？",
+              "chooseCache": "单机足够 + 极少更新 + 极低延迟",
+              "chooseDB": "多实例共享 + 频繁更新 + 一致性要求高",
+              "cost": "本地缓存多实例间不一致"
+            },
+            {
+              "question": "推 vs 拉（Timeline 设计）？",
+              "chooseCache": "读多写少、粉丝少（普通用户发帖推给粉丝）",
+              "chooseDB": "粉丝极多（大 V 发帖由粉丝读时拉取）",
+              "cost": "推模式写放大；拉模式读放大。大 V 用拉、普通用户用推（混合模式）"
+            }
+          ]
+        },
+        "codeSkeletons": {
+          "title": "设计机制与适用条件",
+          "snippets": [
+            {
+              "name": "分布式限流（Redis + Lua 令牌桶）",
+              "code": "",
+              "explanation": "为什么用 Lua：保证\"读-改-写\"原子性。为什么用令牌桶而不是计数器：支持突发流量，平滑限流。"
+            },
+            {
+              "name": "缓存双写（Cache-Aside + 延迟双删）",
+              "code": "",
+              "explanation": "为什么先删缓存再写 DB：如果反过来，DB 写失败会留下脏缓存。为什么要延迟双删：防止\"删缓存→读请求回填旧值→写 DB\"的竞态。"
+            },
+            {
+              "name": "分布式计数器（拆 key 抗热点）",
+              "code": "",
+              "explanation": "为什么拆 100 个 key：单 key INCR QPS 上限 ~10 万，拆 100 个 → 理论上千万 QPS。代价：读操作要聚合 100 个 key。"
+            }
+          ]
+        },
+        "failureModes": {
+          "title": "💣 故障模式与兜底预案",
+          "scenarios": [
+            {
+              "failure": "Redis 挂了",
+              "symptom": "所有请求打到 DB",
+              "mitigation": "多级缓存（本地 + Redis）+ 限流降级 + 熔断",
+              "detection": "Redis QPS 突然为 0 + DB QPS 飙升"
+            },
+            {
+              "failure": "DB 主库挂了",
+              "symptom": "写入失败",
+              "mitigation": "MHA / Orchestrator 自动切换 + 读请求走从库",
+              "detection": "写入错误率 100%"
+            },
+            {
+              "failure": "MQ 消息积压",
+              "symptom": "消费延迟增加",
+              "mitigation": "扩容消费者 + 降级非核心消息 + 死信队列",
+              "detection": "lag 持续增长"
+            },
+            {
+              "failure": "下游服务超时",
+              "symptom": "线程池打满",
+              "mitigation": "超时 + 熔断 + 降级 + 舱壁隔离",
+              "detection": "RT P99 飙升 + 线程池活跃数 100%"
+            },
+            {
+              "failure": "热点 key 被打爆",
+              "symptom": "Redis 单实例 CPU 100%",
+              "mitigation": "拆 key + 本地缓存 + 读扩散",
+              "detection": "Redis 单实例 CPU 报警"
+            },
+            {
+              "failure": "缓存雪崩",
+              "symptom": "大量 key 同时过期",
+              "mitigation": "过期时间加随机抖动 + 永不过期 + 互斥重建",
+              "detection": "缓存命中率突然下降"
+            }
+          ]
+        },
+        "observability": {
+          "title": "📊 监控指标（RED + USE + 业务）",
+          "red": [
+            "Rate：QPS（入口 / 出口 / 下游调用）",
+            "Errors：错误率（4xx/5xx/超时）",
+            "Duration：延迟分布（P50/P95/P99）"
+          ],
+          "use": [
+            "Utilization：CPU / 内存 / 网卡 / 磁盘使用率",
+            "Saturation：线程池活跃数 / 连接池使用率 / 队列深度",
+            "Errors：OOM / FD 耗尽 / 磁盘满"
+          ],
+          "business": [
+            "业务成功率（如下单成功率）",
+            "库存超卖数量（应该是 0）",
+            "消息积压量",
+            "缓存命中率（目标 > 95%）"
+          ]
+        },
+        "problemMap": [
+          {
+            "range": "容量估算",
+            "ids": [
+              "scenario-qps-capacity-planning"
+            ],
+            "note": "先学会用数字说话"
+          },
+          {
+            "range": "计数器与排行榜",
+            "ids": [
+              "scenario-realtime-music-ranking",
+              "scenario-single-machine-counter"
+            ],
+            "note": "读多写少 + 热点问题的经典形态"
+          },
+          {
+            "range": "秒杀与库存",
+            "ids": [
+              "scenario-seckill-system"
+            ],
+            "note": "高并发的极端场景，所有技巧的集大成"
+          },
+          {
+            "range": "限流与削峰",
+            "ids": [
+              "scenario-distributed-rate-limit",
+              "handwrite-60",
+              "handwrite-65"
+            ],
+            "note": "保护系统的第一道防线"
+          },
+          {
+            "range": "缓存体系",
+            "ids": [
+              "scenario-redis-mysql-consistency",
+              "scenario-local-cache",
+              "scenario-redis-outage",
+              "handwrite-61"
+            ],
+            "note": "一致性、故障、降级的完整链路"
+          }
+        ],
+        "interviewPitch": "高并发设计我会按\"澄清需求 → 容量估算 → 识别瓶颈 → 逐层设防 → 故障预案\"五步走。先用数字量化规模（DAU/QPS/数据量），再找瓶颈（DB/缓存/网络/锁），然后对每层独立设计保护（限流/缓存/MQ/分片），最后说清每个组件的故障模式和降级方案。核心原则：不为高并发而高并发，每个组件都要回答\"解决什么问题\"。",
+        "pitfalls": [
+          "没做容量估算就堆组件 → 面试官会认为你在背八股",
+          "只会说\"加缓存\"、\"加 MQ\" → 追问\"为什么\"就卡住",
+          "不考虑故障场景 → 系统设计题的核心是\"出问题怎么办\"",
+          "忘说监控指标 → 没有度量就没有优化"
+        ],
+        "relatedIds": [
+          "scenario-realtime-music-ranking",
+          "scenario-single-machine-counter",
+          "scenario-qps-capacity-planning",
+          "scenario-seckill-system",
+          "scenario-distributed-rate-limit",
+          "scenario-redis-mysql-consistency",
+          "scenario-redis-outage",
+          "handwrite-60",
+          "handwrite-61"
+        ],
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "场景题型模板",
+        "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s4892\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">6.16 大流量分布式架构应该怎样从需求推导</h2><p class=\"md-p\">大流量架构应从业务不变量和容量模型推导，先定位可分片单元与共享瓶颈，再选择缓存异步和扩容策略。</p><p class=\"md-p\">常见问法：大流量系统如何设计；第一步问哪些需求；怎样发现不能横向扩展的瓶颈。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">先补齐业务、读写比、峰值、数据量、热点、SLO与故障目标，不能凭大流量三个字决定唯一架构。</p><h3 class=\"md-h md-h3\">先量需求，再找决定容量的路径</h3><p class=\"md-p\">确认日活/峰值到达、请求大小、读写比、热点分布、同步完成要求、数据正确性和可接受故障恢复。平均QPS不能代表秒级峰值；在途数约到达率×平均响应时间只是稳定条件下估计，长尾、重试和热点要单独测。列关键链路每跳的CPU/IO、服务时间、连接上限和串行点。</p><p class=\"md-p\">静态内容用CDN/对象存储，动态请求经L4/L7入口到无状态应用；服务发现/readiness摘流、身份/权限、分层限流、deadline和有界隔离保护下游。分业务/租户隔离热点，不能一条全局锁或一个线程池拖住所有接口。</p><h3 class=\"md-h md-h3\">读写路径和数据权威</h3><p class=\"md-p\">读多可cache-aside/热点本地缓存/读副本，明示新鲜度、回源并发、负缓存和重建；写正确性在权威DB条件/事务中裁决，缓存不能批准超额库存。按实际访问键分片，主查询可定位分片，次要维度建投影；复制和分片分别解决容错与容量。</p><p class=\"md-p\">耗时可异步的工作用可靠task/outbox→MQ→幂等consumer，向用户区分受理与完成。顺序强的同实体串行，不同实体并行；热点实体不能只靠增加消费者解决。持久队列有条数/字节/保留期与最老年龄，持续超载先限流或扩真实瓶颈，磁盘无限不是方案。</p><h3 class=\"md-h md-h3\">故障、扩缩与演进</h3><p class=\"md-p\">多副本跨独立故障域，定义哪些分区时拒绝强写、哪些读可陈旧；重试保留业务ID并有退避预算，断路器半开恢复，限流存储失效时选择可解释的保守退化。数据库复制切换/旧客户端回归、消息重复和缓存丢失都要画时序，而非堆“高可用”组件名。</p><p class=\"md-p\">扩容应追着瓶颈走，不是每一层一起加机器。先扩无状态层，再按瓶颈扩存储、分区或索引；迁移要有快照+增量水位、版本切换和回滚。</p><p class=\"md-p\">备份恢复、容灾演练也独立于在线副本。持续看 p99、真实成功率、队列年龄、锁等待、连接池、复制延迟与费用。架构可以从模块化单体逐渐走向少量服务，别先拆几十个服务制造部分失败。</p><h3 class=\"md-h md-h3\">验收与边界</h3><p class=\"md-p\">用真实载荷、读写比、热点、缓存冷启动、突峰与持续过载压测，注入单节点/依赖/机房故障并检查数据不变量。根据最弱环节给SLO和余量，不能只报告压测客户端发送量。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul>"
+      }
+    }
+  ]
+}

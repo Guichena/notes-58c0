@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-mcts",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "MCTS怎样在有限预算内选择下一步",
+  "questions": [
+    {
+      "id": "q-own-algo-mcts",
+      "question": "MCTS怎样在有限预算内选择下一步",
+      "shortAnswer": "MCTS 用有限次试探决定下一步，把计算预算逐渐分给值得继续探索的分支。每轮依次做选择、扩展、模拟和回传，最后根据当前搜索证据选动作。它既不穷举整棵树，也不靠随机一局定输赢；有限预算给出搜索建议，并不保证每次最优。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "MCTS怎样在有限预算内选择下一步"
+        },
+        {
+          "type": "paragraph",
+          "text": "MCTS 用有限次试探决定下一步，把计算预算逐渐分给值得继续探索的分支。每轮依次做选择、扩展、模拟和回传，最后根据当前搜索证据选动作。它既不穷举整棵树，也不靠随机一局定输赢；有限预算给出搜索建议，并不保证每次最优。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可能怎么问"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "手写一个简单的蒙特卡洛树搜索框架，四个阶段分别做什么？",
+            "UCT怎样平衡探索与利用，未访问节点怎么处理？",
+            "双人对抗时，胜率到底从谁的视角统计？",
+            "游戏有循环或模拟太慢怎么办？如何设置搜索预算？",
+            "MCTS和Minimax、强化学习有什么关系？怎样避免游戏AI偷看玩家不知道的信息？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先把游戏接口说清楚"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例选择确定性、完全可观察、双人零和游戏作为教学模型。玩家编号为0或1，合法动作集合有限；状态和动作对象不可变，执行动作返回新的状态，不能原地改掉其他分支仍在使用的棋盘。终局回报使用根节点玩家的统一视角，胜为1、负为-1、平为0。也可使用[-1,1]中的其他零和效用，但要保持整棵树同一量纲。"
+        },
+        {
+          "type": "paragraph",
+          "text": "根局面已经结束时没有下一步，返回空动作和零次模拟。非终局没有合法动作则是模型错误；如果游戏允许“过牌”，它应该是一个明确的合法动作。实现还检查空动作、重复动作、非法玩家编号以及非有限或越界回报，避免让一个NaN悄悄污染整棵树。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单人规划、不完全信息、随机事件、多人非零和都需要调整模型。掷骰子不能伪装成对手任意选择结果；随机转移需要机会节点或相应采样与统计语义，不能把某动作第一次采样出的后继永久当成唯一真实后继。隐藏信息游戏需要依据玩家可见信息构建信息集或信念状态，不能让搜索读取游戏引擎完整内部状态后再宣称公平。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "每个节点存什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "节点保存当前状态、父节点、入边动作、深度、已扩展子节点、尚未尝试的动作，以及访问次数N和根玩家回报总和W。平均价值是Q=W/N。子节点的N表示经过这条分支完成了多少次模拟，不是该动作在真实玩家对局中已经执行了多少次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实现每轮最多扩展一个树节点，未尝试动作中随机选一个。模拟阶段继续走局面，但不会把模拟途中所有状态都加入搜索树，避免一轮随机长对局就让树暴涨。状态对象的实际大小、每个节点缓存的合法动作列表和分支数仍会影响内存，不能把“只扩展一个节点”误说成整个算法只有常量空间。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "第一阶段：沿已有树选择"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果当前节点非终局、还没到深度上限，而且所有合法动作已经扩展，就选择一个子节点继续向下。UCT可以写成："
+        },
+        {
+          "type": "paragraph",
+          "text": "score = 当前行动者视角的平均价值 + c × sqrt(log(父节点访问次数) / 子节点访问次数)"
+        },
+        {
+          "type": "paragraph",
+          "text": "第一项利用已有结果，第二项鼓励探索较少访问的动作。c越大通常越愿意探索，但它依赖奖励尺度和任务；sqrt(2)只是可用起点，不是所有游戏的最优参数。c为0退化为不带探索奖励的选择，不能套用正探索系数下的相关收敛直觉。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例始终保存根玩家视角的W，不在回传中轮流取反。因此，根玩家行动时最大化Q，对手行动时最大化-Q；探索奖励保持正号。必须根据当前局面的实际行动者判断，而不能简单按树深度奇偶翻转，因为游戏可能允许同一玩家连续行动。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如两个子节点的根玩家均值为 0.6 和 −0.2，先暂时忽略探索项：根玩家行动时偏向 0.6，对手行动时偏向 −0.2。回传仍保存同一份根玩家回报；应变化的是选择时的价值方向，而不是把存储值每层再翻一次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "新节点通过尚未尝试动作分支扩展，随后立即完成模拟和回传，再参与下一轮选择，所以已有子节点通常N>0。代码仍保留N=0直接选中的防护；不能直接计算log(0)或除以0。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "第二阶段：只扩展一个动作"
+        },
+        {
+          "type": "paragraph",
+          "text": "从当前节点尚未扩展的合法动作中选一个，调用next得到新的不可变状态，并建立父子关系。如果根节点有一万个动作但只给十次模拟，最多只会考察其中十个动作；搜索不可能凭空了解剩余动作。这是预算与分支数的直接矛盾，可以进一步用动作筛选、先验或渐进扩展缓解，但不能假称这些机制已经包含在基础框架中。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一个状态经不同路径到达时，本例仍保留不同树节点。引入置换表可以共享信息，但这会把树改成图，必须重新处理循环、父路径、深度预算和回传次数，不能简单把Node放进HashMap就算完成。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "第三阶段：从叶子模拟到终局或截断点"
+        },
+        {
+          "type": "paragraph",
+          "text": "最简单的rollout按均匀随机策略选择后续合法动作。遇到终局，用真实终局规则计算回报；到达最大深度仍未终局，则调用cutoffValue返回启发式估值。本例可以先用0作为中性估值，但这意味着大量被截断分支无法区分，绝不等于这些局面真实会打平。"
+        },
+        {
+          "type": "paragraph",
+          "text": "深度从搜索根开始计数，树内选择和树外模拟共用同一上限。否则每到一个更深叶子都重新给满一段模拟深度，就会让总搜索路径超过预定限制。对于循环状态，深度上限保证每轮最终停止；若游戏有重复局面和规则性平局，应另外按规则实现，而不是把任意循环都直接判胜或判负。"
+        },
+        {
+          "type": "paragraph",
+          "text": "模拟策略与评估函数会带来偏差。随机对手经常失误，某个危险动作可能早期显示“胜率很高”；随着对手节点被树搜索展开，选择阶段应逐渐重视它的强反击。有限预算下仍可能看漏，因此需要战术样例、独立评估和失败分析，不能只给出平均胜率。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "第四阶段：回传一份一致的回报"
+        },
+        {
+          "type": "paragraph",
+          "text": "从本轮叶子沿父指针回到根，每个经过的节点访问次数加1，回报总和加本轮根玩家回报。不要一边存根玩家价值、一边又每层取反，那会把价值方向反转两次。也不要只更新最后一个节点，父节点会因此永远不知道哪个分支有效。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每次成功完成的模拟恰好让根N加1；本例每轮都会经过一个根子节点，所以所有根子节点访问次数之和等于根访问次数。这是非常实用的测试不变量。统计数随模拟增长，但它们描述的是指定模型和模拟策略中的搜索证据，不能直接当作现实玩家胜率预测。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "预算结束后怎么选动作"
+        },
+        {
+          "type": "paragraph",
+          "text": "基础版本使用固定模拟次数，返回根节点访问最多的动作；访问数相同再比较根玩家平均价值，仍相同保持扩展顺序。最终动作选择不再加探索奖励，因为此时要执行一个动作，而不是继续分配下一轮搜索预算。按最大均值选择也是另一种策略，面试时要说清口径，不能实现选访问数却解释成选胜率。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以让动作 A 有 20 次访问、均值 0.4，动作 B 有 2 次访问、均值 1.0：按本接口最终会选 A。再说明下一轮搜索仍可能因为探索奖励去选 B，区分“下一轮算谁”和“现在执行谁”这两个问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "相同输入、种子、动作顺序、确定性回调和预算会得到同一结果，便于回归测试。固定种子只让实验可重复，不会让建议自动正确。真实游戏常采用耗时预算并预留执行时间，同时限制节点数和内存；需要在选择、模拟和昂贵评估边界检查取消。不能只在最外层看一次时钟，而让单次模拟无限卡住。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度怎么回答"
+        },
+        {
+          "type": "paragraph",
+          "text": "设模拟次数为 I，从根开始的最大搜索深度为 D，单节点最大合法动作数为 B。一次选择可能扫描最多 B 个子节点。动作列表复制与空值检查为 O(B)；本实现使用 HashSet 检查重复动作，只有在 hashCode/equals 为常数成本且散列良好时，查重才具有期望 O(B) 成本。在这些条件下，暂把状态转移、终局判断和估值按常数计，框架的粗略期望上界为 O(I·D·B)。更一般地，令 H(B) 为一次动作列表生成、复制和校验的实际成本，应按 O(I·D·(B+H(B))) 再加状态转移、终局判断与估值等回调成本计费。动作对象还应具有稳定且一致的 equals/hashCode 契约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "树最多包含I+1个节点，但每个节点可能保存O(B)个动作和一个状态。如果单个状态占S空间，树存储约为O(I·(B+S))，加模拟中的临时对象；深度上限只约束路径，不能替代总节点和总字节预算。合法动作极多或状态很大时，缓存策略、按需生成和状态压缩比背一个O(I·D)更重要。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "和其他方法怎么配合"
+        },
+        {
+          "type": "paragraph",
+          "text": "Minimax直接建模双方最优行动，配合Alpha-Beta剪枝和估值函数适合可较深入搜索的确定性对抗；MCTS通过采样和预算分配处理宽树，但会受到稀疏回报与战术陷阱影响。MCTS不是训练算法的同义词：每一步重新搜索也可以完全没有跨局学习。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“每局都学习、下一局BOSS调整策略”还需要玩家行为数据、特征、策略更新、离线回放、灰度和回退边界。可把学习得到的策略先验或价值函数接入树搜索，但必须单独说明更新时机、数据泄漏和效果评价。PUCT用策略先验引导探索，也不是把本例UCT参数改个名字。"
+        },
+        {
+          "type": "paragraph",
+          "text": "评价游戏AI不能只看胜率。还应检查反应时间、可预测性、策略多样性、公平信息边界，以及玩家是否理解自己的失败和能否学会应对。难度提高与体验改善是不同目标，不能拿模拟器中赢得更多替代实际游戏体验实验，更不能把别人的项目指标写成自己的。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎样验证框架"
+        },
+        {
+          "type": "paragraph",
+          "text": "先用小型可穷举游戏建立独立Minimax或数学答案：例如双方轮流从一堆石子拿1或2个，拿走最后一个获胜。在这个规则下，非零且不是3的倍数的局面有明确的最优第一步，可以用多个固定种子检查搜索行为。还要构造“随机对手常失误，但有一个必胜反击”的陷阱，检查对手节点价值方向是否写反。"
+        },
+        {
+          "type": "paragraph",
+          "text": "结构测试包括终局根、单动作、一次模拟、深度1截断、循环模型、两种根玩家、同一玩家连续行动、非法回报、空/重复动作、原状态不被修改，以及根访问数等于模拟数、子访问数之和等于根访问数。对每种受支持模型验证规则接口，而不是通过一个游戏就宣称支持所有不完全信息或随机游戏。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面两份源码可以一起编译；BasicMcts是框架，BasicMctsTest给出拿石子、对手反击和循环截断样例。需要完整JDK17或兼容的工具链，使用目标运行时执行回归。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "原文代码（本次未执行）",
+          "value": "javac --release 17 -encoding UTF-8 -d classes BasicMcts.java BasicMctsTest.java\njava -Xmx64m -cp classes BasicMctsTest\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "BasicMcts.java 完整源码"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\n\n/** Single-threaded UCT for deterministic, fully observed, two-player zero-sum games.\n * States/actions must be immutable and callbacks pure. Values use root-player perspective.\n * A finite depth horizon makes even cyclic models terminate. No chance nodes or parallel sharing.\n */\npublic final class BasicMcts<S,A> {\n    public interface Game<S,A> {\n        boolean terminal(S state);\n        int playerToMove(S state); // 0 or 1; also permits extra turns by the same player.\n        List<A> legalActions(S state); // finite, nonempty for nonterminal states, unique, no nulls\n        S next(S state, A action); // must not mutate state or any already retained state\n        double terminalValue(S state, int rootPlayer); // finite in [-1,1]\n        double cutoffValue(S state, int rootPlayer); // finite in [-1,1]; a heuristic, not a win proof\n    }\n    public record ActionStat<A>(A action, long visits, double rootMean) {}\n    public record Result<A>(Optional<A> action, long simulations, List<ActionStat<A>> children) {\n        public Result { action=Objects.requireNonNull(action); children=List.copyOf(children); }\n    }\n    private final Game<S,A> game;\n    public BasicMcts(Game<S,A> game) { this.game=Objects.requireNonNull(game); }\n    private final class Node {\n        final S state;\n        final Node parent;\n        final A incoming;\n        final int depth;\n        final boolean terminal;\n        final ArrayList<A> untried;\n        final ArrayList<Node> children=new ArrayList<>();\n        long visits;\n        double rootSum;\n        Node(S state,Node parent,A incoming,int depth) {\n            this.state=Objects.requireNonNull(state);this.parent=parent;this.incoming=incoming;this.depth=depth;\n            terminal=game.terminal(state);\n            untried=terminal?new ArrayList<>():actions(state);\n        }\n    }\n    private int player(S state) {\n        int p=game.playerToMove(state);\n        if(p!=0&&p!=1)throw new IllegalArgumentException(\"player must be 0 or 1\");\n        return p;\n    }\n    private ArrayList<A> actions(S state) {\n        List<A> input=Objects.requireNonNull(game.legalActions(state),\"actions\");\n        ArrayList<A> result=new ArrayList<>(input);\n        if(result.isEmpty()||new HashSet<>(result).size()!=result.size()||result.contains(null))\n            throw new IllegalArgumentException(\"nonterminal actions must be nonempty, unique and nonnull\");\n        player(state);\n        return result;\n    }\n    private double checked(double value) {\n        if(!Double.isFinite(value)||value < -1.0||value > 1.0)\n            throw new IllegalArgumentException(\"value must be finite and in [-1,1]\");\n        return value;\n    }\n    /** Search starts a fresh tree. Fixed budget/seed/callback results make this deterministic.\n     * Returns the most visited root action; ties use root mean then expansion order.\n     */\n    public Result<A> search(S state,int iterations,int maxDepth,double exploration,long seed) {\n        Objects.requireNonNull(state);\n        if(iterations<1||maxDepth<1||!Double.isFinite(exploration)||exploration<0)\n            throw new IllegalArgumentException(\"positive iterations/depth and finite nonnegative exploration required\");\n        if(game.terminal(state))return new Result<>(Optional.empty(),0,List.of());\n        int rootPlayer=player(state);\n        Node root=new Node(state,null,null,0);\n        SplittableRandom random=new SplittableRandom(seed);\n        for(int iteration=0;iteration<iterations;iteration++) {\n            Node node=root;\n            // Selection: only fully expanded nodes choose among already visited children.\n            while(!node.terminal&&node.depth<maxDepth&&node.untried.isEmpty())\n                node=select(node,rootPlayer,exploration);\n            // Expansion: one action, one new child per simulation at most.\n            if(!node.terminal&&node.depth<maxDepth&&!node.untried.isEmpty()) {\n                A action=node.untried.remove(random.nextInt(node.untried.size()));\n                Node child=new Node(game.next(node.state,action),node,action,node.depth+1);\n                node.children.add(child);node=child;\n            }\n            // Rollout does not allocate tree nodes; depth is counted from the original root.\n            S current=node.state;int depth=node.depth;\n            while(!game.terminal(current)&&depth<maxDepth) {\n                ArrayList<A> available=actions(current);\n                current=Objects.requireNonNull(game.next(current,available.get(random.nextInt(available.size()))));\n                depth++;\n            }\n            double value=checked(game.terminal(current)?game.terminalValue(current,rootPlayer):game.cutoffValue(current,rootPlayer));\n            // Backpropagate the SAME root-perspective value; opponent sign is handled in select.\n            for(Node p=node;p!=null;p=p.parent){p.visits++;p.rootSum+=value;}\n        }\n        Node best=null;ArrayList<ActionStat<A>> stats=new ArrayList<>();\n        for(Node child:root.children) {\n            stats.add(new ActionStat<>(child.incoming,child.visits,child.rootSum/child.visits));\n            if(best==null||child.visits>best.visits||\n                    (child.visits==best.visits&&child.rootSum/child.visits>best.rootSum/best.visits))best=child;\n        }\n        return new Result<>(Optional.of(Objects.requireNonNull(best).incoming),root.visits,stats);\n    }\n    private Node select(Node parent,int rootPlayer,double exploration) {\n        Node best=null;double scoreBest=Double.NEGATIVE_INFINITY;\n        double sign=player(parent.state)==rootPlayer?1.0:-1.0;\n        for(Node child:parent.children) {\n            // A created child has been rolled out and visited before the next selection.\n            if(child.visits==0)return child;\n            double score=sign*(child.rootSum/child.visits)+exploration*Math.sqrt(Math.log(parent.visits)/child.visits);\n            if(best==null||score>scoreBest){best=child;scoreBest=score;}\n        }\n        return Objects.requireNonNull(best,\"fully expanded nonterminal node must have children\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "BasicMctsTest.java 完整源码"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\npublic final class BasicMctsTest {\n    static int checks;\n    static void check(boolean condition){checks++;if(!condition)throw new AssertionError(\"check \"+checks);}\n    record Take(int stones,int player){}\n    static final BasicMcts.Game<Take,Integer> TAKE=new BasicMcts.Game<>(){\n        public boolean terminal(Take s){return s.stones()==0;}\n        public int playerToMove(Take s){return s.player();}\n        public List<Integer> legalActions(Take s){return s.stones()==1?List.of(1):List.of(1,2);}\n        public Take next(Take s,Integer a){if(a<1||a>2||a>s.stones())throw new IllegalArgumentException();return new Take(s.stones()-a,1-s.player());}\n        public double terminalValue(Take s,int root){return 1-s.player()==root?1:-1;}\n        public double cutoffValue(Take s,int root){return 0;}\n    };\n    static final BasicMcts.Game<Integer,Integer> TRAP=new BasicMcts.Game<>(){\n        public boolean terminal(Integer s){return s==1||s>=10;}\n        public int playerToMove(Integer s){return s==0?0:1;}\n        public List<Integer> legalActions(Integer s){return s==0?List.of(1,2):List.of(10,11,12,13,14,15,16,17,18,19);}\n        public Integer next(Integer s,Integer a){return a;}\n        public double terminalValue(Integer s,int root){return s==1?0:s==10?-1:1;}\n        public double cutoffValue(Integer s,int root){return 0;}\n    };\n    static void bad(Runnable action){boolean caught=false;try{action.run();}catch(IllegalArgumentException|NullPointerException expected){caught=true;}check(caught);}\n    public static void main(String[] args){\n        BasicMcts<Take,Integer> search=new BasicMcts<>(TAKE);\n        for(int p=0;p<2;p++)for(int n=1;n<=16;n++)for(int seed=0;seed<12;seed++){\n            Take state=new Take(n,p);var result=search.search(state,3000,32,Math.sqrt(2),seed);\n            check(result.simulations()==3000);check(result.action().isPresent());check(state.equals(new Take(n,p)));\n            long visits=0;for(var child:result.children()){visits+=child.visits();check(child.visits()>0);check(child.rootMean()>=-1&&child.rootMean()<=1);}\n            check(visits==3000);if(n%3!=0)check(result.action().orElseThrow()==n%3);\n            check(result.equals(search.search(state,3000,32,Math.sqrt(2),seed)));\n        }\n        for(int seed=0;seed<40;seed++)check(new BasicMcts<>(TRAP).search(0,4000,4,Math.sqrt(2),seed).action().orElseThrow()==1);\n        check(search.search(new Take(0,0),1,1,0,1).action().isEmpty());\n        var one=search.search(new Take(5,0),1,1,0,8);check(one.simulations()==1);check(one.children().size()==1);check(one.children().get(0).rootMean()==0);\n        boolean immutable=false;try{one.children().clear();}catch(UnsupportedOperationException e){immutable=true;}check(immutable);\n        for(int n:new int[]{0,-1})bad(()->search.search(new Take(5,0),n,2,1,0));\n        bad(()->search.search(new Take(5,0),1,0,1,0));bad(()->search.search(new Take(5,0),1,2,Double.NaN,0));bad(()->search.search(new Take(5,0),1,2,-1,0));\n        BasicMcts.Game<Integer,Integer> cycle=new BasicMcts.Game<>(){\n            public boolean terminal(Integer s){return false;}public int playerToMove(Integer s){return 0;}\n            public List<Integer> legalActions(Integer s){return List.of(1);}public Integer next(Integer s,Integer a){return s;}\n            public double terminalValue(Integer s,int p){throw new AssertionError();}public double cutoffValue(Integer s,int p){return .25;}\n        };\n        var cyc=new BasicMcts<>(cycle).search(0,100,5,1,1);check(cyc.children().get(0).rootMean()==.25);check(cyc.simulations()==100);\n        BasicMcts.Game<Integer,Integer> extraTurn=new BasicMcts.Game<>(){\n            public boolean terminal(Integer s){return s>=10;}public int playerToMove(Integer s){return 1;}\n            public List<Integer> legalActions(Integer s){return s==0?List.of(10,1):List.of(11,12);}\n            public Integer next(Integer s,Integer a){return a;}\n            public double terminalValue(Integer s,int root){if(root!=1)throw new AssertionError();return s==10?0:s==11?1:-1;}\n            public double cutoffValue(Integer s,int root){return 0;}\n        };\n        for(int seed=0;seed<20;seed++)check(new BasicMcts<>(extraTurn).search(0,2000,3,Math.sqrt(2),seed).action().orElseThrow()==1);\n        for(int mode=0;mode<5;mode++){\n            final int invalid=mode;\n            BasicMcts.Game<Integer,Integer> malformed=new BasicMcts.Game<>(){\n                public boolean terminal(Integer s){return false;}public int playerToMove(Integer s){return invalid==0?2:0;}\n                public List<Integer> legalActions(Integer s){return invalid==1?List.of():invalid==2?List.of(1,1):invalid==3?Arrays.asList((Integer)null):List.of(1);}\n                public Integer next(Integer s,Integer a){return s;}\n                public double terminalValue(Integer s,int root){return 0;}public double cutoffValue(Integer s,int root){return Double.NaN;}\n            };\n            bad(()->new BasicMcts<>(malformed).search(0,2,1,1,0));\n        }\n        System.out.println(\"PASS BasicMcts deterministic and adversarial checks=\"+checks);\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-5",
+  "id": "q-own-redis-two-level-sdk",
+  "order": 131,
+  "question": "怎样设计有界且可恢复的 Java 二级缓存 SDK？",
+  "shortAnswer": "固定不可变版本 key 与可信版本指针，分别约束本地容量、加载并发、截止时间和故障分支，再管理线程与连接生命周期。",
+  "commonPhrasings": [
+    "预热如何绑定快照水位？",
+    "本地失效通知丢失或旧加载晚到怎么办？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "怎样设计一个 Java 二级缓存 SDK"
+    },
+    {
+      "type": "paragraph",
+      "text": "二级缓存 SDK 的核心是一条有明确数据契约、版本协议和资源上限的读取链；接口要同时交代命中、失败、失效以及关闭时的行为。"
+    },
+    {
+      "type": "paragraph",
+      "text": "现场题通常会连续问组件选择、接口、L1 到 L2 的读取、过期与淘汰、穿透击穿雪崩，以及最终交付的是设计还是代码。回答时先说明生产契约，再用一个可检查的核心实现展示取舍；接入真实 Redis 的适配器、订阅与运维配置仍是独立工作。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "先定义接口和数据边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 的常见组合是 Caffeine 做 L1，Lettuce 或团队已有的成熟驱动访问 Redis L2；Spring Cache 可以作为统一入口，但不会自动编排两级读取和失效。连接应复用，锁、订阅和命令连接的使用方式按客户端能力设计；不能每次请求新建连接，也不能在 Netty 等网络事件线程中阻塞查数据库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "API 至少要覆盖 get(key, loader)、本地或实体版本失效、断连处理、统计与 close。key 要有命名空间、schema、tenant、resource 和 revision；value 区分 FOUND 与权威确认的 NOT_FOUND。远端 MISS、超时、鉴权失败或损坏数据不是同一种结果。DTO 应不可变或防御复制，序列化要有格式版本、类型白名单和字节上限，不能对不可信输入直接使用 Java 原生反序列化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "配置应明确每个缓存及租户的容量、最大 value 字节数、并发加载数、等待超时、负缓存寿命、读写 TTL 和故障策略。批量接口也要限制条数与总字节。同一个 key 必须对应同一种 loader 语义，不能一个调用把它当用户资料，另一个调用当权限结果；泛型 T 不会自动解决序列化、类加载器或可变对象共享问题。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "用不可变版本 key 定义回填协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "读取前完成鉴权并取得可信当前版本，再按 L1 → L2 → 受控权威 loader 查询。L2 命中回填 L1 时，使用不超过远端剩余有效期的本地 TTL，并保守扣除获取与安装期间的耗时。双 MISS 在同一 JVM 内合并相同 key 的加载；跨 JVM 的重复加载仍要用全局回源预算或可失败的重建协调控制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种易于说明的方案是把 revision 放进 key，并约定每个版本的内容永久不变。数据库提交产生新 revision 和可靠事件，读者通过可信版本指针读新 key；旧加载最多填回旧版本 key，不能覆盖新版本。删除再创建也要换代际，版本号不能复用；同一个 revision 的 NOT_FOUND 也不能后来悄悄变成 FOUND。若版本指针本身长期陈旧，SDK 仍会读旧版，它不能替调用方承诺指针强一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若必须使用原地 key，就需要版本屏障或条件写，并处理删除或淘汰后比较下界消失的问题。业务事务提交后才能表达该次变更，删除失败要可靠重试，各实例都要失效本地副本；断连时还要阻止旧加载回填。这些写路径责任不能藏在一个通用 get 方法里，也不能因为加了一个缓存注解就省略。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "过期 淘汰和故障策略要各自有上限"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定新鲜度通常按写入或权威生成时间计算；expireAfterAccess 会被热点访问持续延寿，不宜单独承担最大陈旧时间。需要容忍旧值时，再增加软硬截止与有限刷新。TTL 抖动只能落在业务允许范围内，负缓存通常更短。缓存刷新、TTL 清理、容量淘汰和业务主动失效是不同事件，不能只配一个时间就当作全部解决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地条目数可以用 maximumSize 约束；value 大小相差很多时可使用 maximumWeight 和 weigher。权重是应用定义的成本估计，不是自动测得的精确堆占用，而且通常在创建或更新时计算。Caffeine 的策略结合近期性与频率，不等于手写精确 LRU；软引用受 GC 行为影响，也不能代替可预测的容量预算。下面的教学核心使用有界 LinkedHashMap LRU，便于直接检查状态变化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "穿透按参数、权限、短负缓存和可靠存在性过滤处理；击穿按同 key 合并加载和有限等待处理；雪崩按错峰、预热预算和限量回源处理。Redis 出错是否能回源，取决于业务策略与数据库余量，不能一律放开。代码中只有显式允许时的 IOException 可以转为回源，类型、不变量和参数错误直接失败；熔断恢复还需要退避探测，防止反复冲击下游。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "线程 生命周期和远端端口怎样约定"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 VersionedTwoLevelCache 是不依赖第三方库的教学核心：支持不可变版本 key、FOUND/NOT_FOUND、本地有界 LRU、剩余 TTL、同 key single-flight、不同 key 在途上限、等待者超时、字节预算、本地失效与关闭。它没有接入 Caffeine 或真实 Redis；Remote 是必须由适配层实现的协议端口。leader 在调用者线程执行远端操作和 loader，监视器内只处理内存状态，不私自创建无界线程池。"
+    },
+    {
+      "type": "paragraph",
+      "text": "等待者超时不会取消大家共享的加载。leader 的网络与数据库截止时间需要 Remote 和 Loader 自己落实，SDK 不能强制终止任意阻塞调用；loader 递归调用本 SDK 被拒绝，避免自等死锁。close 拒绝新请求并使等待者收到失败，但不强行中断调用者拥有的外部操作。maxLoads 限制不同 key 的在途加载，不限制同一 key 的等待线程数，因此入口线程和请求数仍需应用限流。"
+    },
+    {
+      "type": "paragraph",
+      "text": "invalidateLocal 和 onDisconnect 会阻止当前在途加载重新填入 L1。旧请求可以收到它已经读取的不可变旧版本，但失效后同 key 仍有旧加载在运行时，新请求被明确拒绝并要求稍后重试，不偷偷加入旧 future。这些方法不删除远端、不提交数据库、不发布广播；真正的适配层与业务事务负责相应动作。版本化 key 也无法撤销一个已经发出的响应。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Remote.get 的返回值和剩余 TTL 必须来自同一个原子读取，例如用适当的 Redis 脚本取得。先 GET、再独立 PTTL，中间可能换值，不能把这两次结果配成同一时刻的快照。核心还会保守扣除调用耗时。Remote.put 则必须把 value 和 TTL 一起原子写入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "适配器负责连接、TLS、超时、订阅状态和安全序列化；上层提供版本指针、授权与跨节点总预算。若远端写入失败后允许本地回退，本地寿命从失败返回时开始。这个时间只限定条目还能存多久，不能证明它就是最新版本，也不能证明最大数据年龄。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.nio.charset.StandardCharsets;\nimport java.util.HashMap;\nimport java.util.LinkedHashMap;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.Optional;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ExecutionException;\nimport java.util.concurrent.RejectedExecutionException;\nimport java.util.concurrent.TimeUnit;\nimport java.util.function.LongSupplier;\n\n/** Runnable SDK core for immutable versioned values. Remote is a protocol port, not Redis. */\npublic final class VersionedTwoLevelCache implements AutoCloseable {\n    public record Key(String tenant, String resource, long revision) {\n        public Key {\n            if (tenant == null || resource == null || !tenant.matches(\"[A-Za-z0-9_-]{1,64}\")\n                    || !resource.matches(\"[A-Za-z0-9_-]{1,64}\") || revision < 0)\n                throw new IllegalArgumentException(\"bounded ASCII tenant/resource and nonnegative revision required\");\n        }\n        public String redisKey() { return \"cache:v1:{\" + tenant + \":\" + resource + \"}:\" + revision; }\n    }\n    public record Value(Optional<String> text) {\n        public Value { Objects.requireNonNull(text); }\n        public static Value found(String text) { return new Value(Optional.of(text)); }\n        public static Value absent() { return new Value(Optional.empty()); }\n    }\n    public record RemoteHit(Value value, long remainingMillis) {\n        public RemoteHit {\n            Objects.requireNonNull(value);\n            if (remainingMillis <= 0) throw new IllegalArgumentException(\"positive remaining TTL required\");\n        }\n    }\n    public interface Remote {\n        // Empty means MISS; a hit whose Value is absent means a cached authoritative NOT_FOUND.\n        Optional<RemoteHit> get(Key key) throws Exception;\n        // Atomic value+TTL write. Same immutable version must never represent different contents.\n        void put(Key key, Value value, long ttlMillis) throws Exception;\n    }\n    @FunctionalInterface public interface Loader { Value load(Key key) throws Exception; }\n    public record Stats(long l1Hits, long l2Hits, long sourceLoads, long remoteFailures, long coalescedWaits, int resident, int inFlight) { }\n    private record Local(Value value, long born, long ttl) { }\n    private static final class Flight {\n        final CompletableFuture<Value> result = new CompletableFuture<>();\n        boolean cacheable = true;\n    }\n    private static final ThreadLocal<Boolean> IN_LOADER = ThreadLocal.withInitial(() -> false);\n    private final Remote remote;\n    private final LongSupplier clock;\n    private final int maxEntries, maxLoads, maxBytes;\n    private final long l1Ttl, l2Ttl, negativeTtl, waiterTimeout;\n    private final boolean fallback;\n    private final Map<Key, Local> local = new LinkedHashMap<>(16, 0.75f, true);\n    private final Map<Key, Flight> flights = new HashMap<>();\n    private long lastTick, l1Hits, l2Hits, sourceLoads, remoteFailures, coalescedWaits;\n    private boolean closed;\n\n    public VersionedTwoLevelCache(Remote remote, LongSupplier monotonicMillis, int maxEntries,\n            int maxLoads, int maxBytes, long l1Ttl, long l2Ttl, long negativeTtl,\n            long waiterTimeout, boolean allowSourceOnRemoteError) {\n        this.remote = Objects.requireNonNull(remote); this.clock = Objects.requireNonNull(monotonicMillis);\n        if (maxEntries <= 0 || maxLoads <= 0 || maxBytes <= 0 || l1Ttl <= 0 || l2Ttl <= 0\n                || negativeTtl <= 0 || negativeTtl > l2Ttl || waiterTimeout <= 0)\n            throw new IllegalArgumentException(\"positive bounds; negative TTL must not exceed L2 TTL\");\n        this.maxEntries=maxEntries; this.maxLoads=maxLoads; this.maxBytes=maxBytes;\n        this.l1Ttl=l1Ttl; this.l2Ttl=l2Ttl; this.negativeTtl=negativeTtl;\n        this.waiterTimeout=waiterTimeout; this.fallback=allowSourceOnRemoteError;\n    }\n    public Value get(Key key, Loader loader) throws Exception {\n        Objects.requireNonNull(key); Objects.requireNonNull(loader);\n        if (IN_LOADER.get()) throw new IllegalStateException(\"recursive SDK loads are forbidden\");\n        Flight flight; boolean leader;\n        synchronized (this) {\n            ensureOpen(); long now=tick(); Local hit=local.get(key);\n            if (hit != null && now-hit.born()<hit.ttl()) { l1Hits++; return hit.value(); }\n            local.remove(key); flight=flights.get(key); leader=flight==null;\n            if (!leader && !flight.cacheable) throw new RejectedExecutionException(\"invalidated load still draining; retry later\");\n            if (!leader) coalescedWaits++;\n            if (leader) {\n                if (flights.size() >= maxLoads) throw new RejectedExecutionException(\"source-load budget exhausted\");\n                flight=new Flight(); flights.put(key,flight);\n            }\n        }\n        if (!leader) {\n            try { return flight.result.get(waiterTimeout,TimeUnit.MILLISECONDS); }\n            catch (ExecutionException e) {\n                if (e.getCause() instanceof Exception cause) throw cause;\n                if (e.getCause() instanceof Error cause) throw cause;\n                throw new IllegalStateException(e.getCause());\n            }\n        }\n        try {\n            IN_LOADER.set(true);\n            long started=now(); Optional<RemoteHit> hit;\n            try { hit=Objects.requireNonNull(remote.get(key)); }\n            catch (Exception e) {\n                if (e instanceof InterruptedException) throw e;\n                synchronized (this) { remoteFailures++; }\n                if (!fallback || !(e instanceof java.io.IOException)) throw e;\n                hit=Optional.empty();\n            }\n            long ttl, ttlMeasuredAt; Value value; long returnedAt=now();\n            if (hit.isPresent() && hit.get().remainingMillis()>returnedAt-started) {\n                value=hit.get().value(); ttl=Math.min(l1Ttl,hit.get().remainingMillis()-(returnedAt-started));\n                ttlMeasuredAt=returnedAt;\n                synchronized (this) { l2Hits++; }\n            } else {\n                synchronized (this) { sourceLoads++; }\n                value=Objects.requireNonNull(loader.load(key)); validate(value);\n                long target=value.text().isPresent()?l2Ttl:negativeTtl;\n                started=now(); boolean stored=true;\n                try { remote.put(key,value,target); }\n                catch (Exception e) {\n                    if (e instanceof InterruptedException) throw e;\n                    synchronized (this) { remoteFailures++; }\n                    if (!fallback || !(e instanceof java.io.IOException)) throw e;\n                    stored=false;\n                }\n                ttlMeasuredAt=now();\n                // On IOException fallback, local TTL starts at this failed-PUT completion sample.\n                ttl=stored?Math.min(l1Ttl,Math.max(0,target-(ttlMeasuredAt-started))):Math.min(l1Ttl,target);\n            }\n            validate(value);\n            synchronized (this) {\n                ensureOpen();\n                long installNow=tick();\n                long remaining=Math.max(0,ttl-(installNow-ttlMeasuredAt));\n                if (flight.cacheable && remaining>0) {\n                    local.put(key,new Local(value,installNow,remaining));\n                    while (local.size()>maxEntries) local.remove(local.keySet().iterator().next());\n                }\n                flight.result.complete(value);\n            }\n            return value;\n        } catch (Exception | Error e) { flight.result.completeExceptionally(e); throw e; }\n        finally {\n            IN_LOADER.remove();\n            synchronized (this) { flights.remove(key,flight); }\n        }\n    }\n    public synchronized void invalidateLocal(Key key) {\n        ensureOpen(); local.remove(Objects.requireNonNull(key)); Flight f=flights.get(key);\n        if (f!=null) f.cacheable=false;\n    }\n    public synchronized void onDisconnect() {\n        ensureOpen(); local.clear(); for (Flight f:flights.values()) f.cacheable=false;\n    }\n    public synchronized Stats stats() { return new Stats(l1Hits,l2Hits,sourceLoads,remoteFailures,coalescedWaits,local.size(),flights.size()); }\n    private void validate(Value value) {\n        if (value.text().isPresent()) {\n            String text=value.text().get();\n            if (text.length()>maxBytes || text.getBytes(StandardCharsets.UTF_8).length>maxBytes)\n                throw new IllegalArgumentException(\"value exceeds configured UTF-8 byte budget\");\n        }\n    }\n    private synchronized long now() { return tick(); }\n    private long tick() {\n        long n=clock.getAsLong();\n        if (n<0 || n<lastTick) throw new IllegalStateException(\"nonnegative monotonic clock required\");\n        lastTick=n; return n;\n    }\n    private void ensureOpen() { if (closed) throw new IllegalStateException(\"cache closed\"); }\n    @Override public synchronized void close() {\n        closed=true; local.clear();\n        for (Flight f:flights.values()) f.result.completeExceptionally(new IllegalStateException(\"cache closed\"));\n        // No owned threads. Caller-owned loaders must enforce their own I/O deadlines/cancellation.\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "如何验收代码并回答现场追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试应能控制时间与执行顺序：检查 TTL 恰好到期、负缓存、L2 剩余寿命不被延长、慢 GET/PUT、不同租户和版本隔离、UTF-8 字节预算、加载异常后的清理，以及本地 LRU。并发测试要检查同 key 只执行一个 loader、不同 key 超预算被拒绝、等待者超时不取消 leader、失效或断连期间旧加载不能回填、递归拒绝和关闭语义。测试替身只能验证这些进程内契约，不能证明真实 Redis 的跨进程广播与切主行为。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求现场交付代码，就应把完整源文件、明确入口、依赖版本、构建与测试方式、演示调用和已知限制一起交付，而不只是几张设计图。人工审查要检查 AI 是否把 MISS 当不存在、漏掉 tenant、无限保存数据或创建线程、在网络线程阻塞、错误共享数据库事务连接，或只失效单机 L1。接入后还需要真实客户端与 Redis/Cluster 的跨进程广播、断网重连、序列化、慢下游、冷启动、长时间堆增长和 P99 验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若把缓存用于 Prompt 或 Skill 配置调用，可以优先缓存版本化的静态模板与共享配置，动态用户上下文和临时授权另行组装；缓存可放在重复 RPC 或数据库查询之前，但 key 必须覆盖模板版本、租户、语言及影响内容的权限域。新配置可以发布新版本并切换可信 active 指针，紧急撤销还要在执行前检查禁用状态，不能等一个很长的 TTL 自然过去。若在 NoteWeave 的 QA、Note 或 Wiki 链路增加缓存，我会同样按资料版本、检索条件和当前权限划分复用范围，而不把某次用户上下文当作所有请求可共享的内容。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "活动开始前怎样预热二级缓存"
+    },
+    {
+      "type": "paragraph",
+      "text": "预热应当把有限的热点数据从可信版本提前装入缓存，并在发布前补齐变化、校验准备度；运行中的库存和预留不能被一份旧快照覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“Caffeine 加 Redis 缓存什么”“开售前怎么预热”“为什么用 Redis 和 Lua 做库存判断”“实例重启漏广播怎么办”需要分开说明展示数据、交易状态和缓存发布。下面以活动系统为假设设计，预热不等于重新初始化所有业务状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果题目给出“限流 → Redis Lua 校验库存与一人一单 → MQ 异步下单 → MySQL 落库 → 超时关单”，就沿这个顺序讲。这个假设设计里有三个不同的成功时点：Redis 预扣只是暂占；请求及待处理意图进入明确的可恢复持久边界，才算可靠受理；MySQL 权威事务提交，才算订单成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接着沿链路说明失败。Redis 到 MQ 发布失败或应答未知，就用稳定 requestId／reservationId 核对持久受理与发布记录，恢复同 ID 发布。MQ 到 MySQL 提交结果未知，先查权威收据，再决定同 ID 重试或推进终态。没有恢复来源的暂占不能算可靠受理，UNKNOWN 也不能直接回补库存。消费者把订单效果与幂等收据同事务提交后，再 ACK。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整预留与消息衔接见“库存预留 一人一单与数据库落单”；超时关单沿“取消订单 释放库存与再次下单”核验支付状态、deadline 和 generation。也可以先完成数据库权威预留，再通过 Outbox 发布，但那是另一种合法链路，受理时点与这里的 MQ 异步落单不同，不能混讲。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "先区分展示快照与交易权威"
+    },
+    {
+      "type": "paragraph",
+      "text": "L1 可以放小而高频的活动标题、图片引用、规则版本等稳定快照，Redis L2 保存更大的共享详情或资格展示投影。动态库存可以作为展示或受控预筛，但不能复制进每个 Caffeine 实例独立扣减。价格、授权和库存的最终决定要在权威规则下复核；如果 MySQL 是权威账本，就由它的条件预留、唯一约束和提交结果决定成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存 key 需要租户、活动代际和数据版本，私人资格不能与通用详情混用。Redis 内存访问可降低预筛延迟，Lua 可以让同一执行范围内的库存检查与标记写入不被其他命令穿插；但它既不包住外部数据库和 MQ，也不能让已确认写入免于持久化或故障切换的风险。选择 Redis 和 Lua，是选择某一层的访问与原子边界，不是免除整条交易链的恢复设计。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "预热要像发布一样有快照和水位"
+    },
+    {
+      "type": "paragraph",
+      "text": "依据预约或历史热点选择有限集合，先算容量与后端预算，再从一致的权威快照或版本批量读取。写入 Redis 时限制并发、条数与字节，分批确认并核验内容编码、版本和 TTL；线上业务和预热共用数据库时，应给预热单独配额。pipeline 可以减少往返，仍要控制批大小，它不是原子事务，也不是无限发送的理由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先构建新 generation 的只读快照，接上快照后的可靠增量，确认完整度与版本水位后再发布 active 指针。若活动已经开卖，不能用起始总库存直接覆盖运行中的已扣库存。初始化库存需要核对快照后的预留、支付、取消与补偿；没有可恢复的增量边界时，必要时暂停受影响对象的准入，校验或切代后再开放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "L1 在实例启动或版本发布后，错峰加载最热的一小部分；在放开填充前先准备好订阅或版本校验。实例重启或断线错过广播后，丢弃不可信状态并按当前版本重建。L2 预热完成，只证明共享层准备好，不代表每台应用的 L1 都就绪，准备度需要分层看。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "过期和失败不能制造下一次雪崩"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 要覆盖预热到活动开始的间隔，同时符合允许陈旧的上限，在合法范围内抖动。全部数据统一在活动中途到期，预热只会把雪崩向后推迟。展示热点可以提前刷新或使用软硬截止，完全 MISS 仍需要 single-flight、总回源预算与失败降级。容量上限和 TTL 分开配置，不能为避免过期就无限保留所有活动。"
+    },
+    {
+      "type": "paragraph",
+      "text": "部分失败时可以幂等重试同一 generation、继续服务旧可信版本，或推迟切流，不能把半成品标成 ready。检查有效覆盖率、版本水位、抽样内容和 TTL、L1/L2 命中率、数据库预算和峰值内存；安排预热中途退出、开售前后改价撤权、迟到旧填充、扩容和 Redis 故障。若题目给出 1000 RPS 这样的数字，还要分清它是受理请求、同步完成还是异步最终完成，以及延迟与错误率的统计口径。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

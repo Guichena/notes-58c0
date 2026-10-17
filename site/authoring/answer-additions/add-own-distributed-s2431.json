@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2431",
+  "entryId": "bg-kafka-3",
+  "expectedOriginalHash": "fde7f5eda3b9f2720a7416b01b76632f32a3d875f6fe87bf787825df1fabaf5b",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.16 Kafka重复消费上下文中，Redis集合、MySQL唯一键和Bloom怎样判断ID是否处理过"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis集合提供成员判断，Bloom只做概率预筛，真正一次业务效果需要持久唯一收据与业务更新同事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Kafka重复消费怎样判断ID；Redis Set和Bloom怎么选；MySQL唯一键为何更接近业务去重边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "问题是判断消息ID是否处理过及如何避免业务重复，不是生成新ID。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "锁、发号与已处理集合解决不同问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "产生唯一ID只使不同事件有不同身份，不告诉消费者这个ID以前是否处理过。锁只能避免同时执行，A持锁做完释放后B仍可再执行同事件；必须保存已完成事实。批量生成主键回答的是发号吞吐，也没回答同eventId重投的判定。消息身份宜为上游稳定业务eventId，或明确topic/partition/offset的交付身份；重发到新offset但同业务仍需稳定业务键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis精确集合可SADD seen:{consumer}:bucket eventId，以返回1表示本例新加入，0表示已经是成员；先SISMEMBER再SADD有竞态。命名空间包含租户/消费者业务，不能让通知服务已处理就阻止账务服务独立处理。集合按容量/保留窗分桶，避免无限大key，但旧消息越过去重窗仍可能重做。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "原子SADD仍不能跨Redis和MySQL原子提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "SADD 原子，不代表 Redis 和 MySQL 一起原子。先 SADD 再写 DB，中途崩溃会留下标记却没效果，重投被误跳过；先写 DB 再 SADD，中途崩溃又会重复改 DB。加 Redis 锁也消不掉这两个窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果全部状态确实都在同一个 Redis 执行域，可以用短脚本维护相应不变量，但复制丢写和脚本运行错误的边界仍然存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MySQL采用PRIMARY KEY(consumer,tenant,eventId)的inbox，在同一个事务插inbox、执行本地业务、保存必要结果及outbox，提交后再ACK/推进安全offset。重复唯一冲突读取原已提交结果；普通SQL故障不等于重复。失败回滚同时清掉本例未提交inbox，所以能安全重试。Outbox与Inbox有完整DDL和故障矩阵，外部HTTP效果仍要下游幂等/查询。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "防重Token、状态机和布隆各自的位置"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次性表单Token可识别一次意图/限制重放，不能在Redis删Token后就认为DB效果已成功。消费Token与请求记录/业务同事务，或将Token映射到持久operationId并保存PENDING/结果；超时重试沿用同意图，而非生成新Token绕过去重。状态机用expectedVersion和允许迁移保护业务次序，eventId防重复，二者都需要。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom阳性只说明可能见过，不能据此永久丢弃合法新消息；阴性只有在完整同步且无错误删除的前提下说明过滤器中未插入，多个消费者也可能同时阴性。可用作精确账本查询的加速提示，最终仍尝试唯一inbox/查权威记录。过滤器漏更新或恢复旧版本不能决定业务跳过，且普通Bloom不安全删除单元素。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "到底能否彻底避免重复消费"
+    },
+    {
+      "type": "paragraph",
+      "text": "网络确认可能丢失，通常无法同时保证任意故障下绝不重复投递且不丢；目标是在定义好的事务域与恢复假设下重复处理入口不导致重复业务效果。提前ACK可少见重投却会漏效果，不是更强保证。Kafka幂等生产者也不自动去重外部数据库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试同ID串行/30并发、DB提交ACK丢、标记先写崩溃、同key不同payload、Bloom故意假阳性、保留期后重放和另一消费者独立消费。SegmentJournal在第5.26节实测稳定ID重复只留一条日志；它不是Kafka消费者事务，因此不替代Outbox与Inbox生产DB/MQ故障测试。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "3"
+}

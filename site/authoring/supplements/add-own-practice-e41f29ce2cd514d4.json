@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-e41f29ce2cd514d4",
+  "entryId": "handwrite-68",
+  "expectedOriginalHash": "bc44d5fc4adf5418f57ea77fb47b8180eea5a31190121c3fce10c2c5c37895ef",
+  "title": "跨册场景补充：11. AI 会话状态怎样防止串消息和旧请求回写？",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11. AI 会话状态怎样防止串消息和旧请求回写？"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法： 连续发两条 Query 怎么办？切会话后旧流还在返回怎么办？怎样封装 Chat 组件？"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 用会话、消息和运行三个层次的身份管理状态，所有异步回调都校验自己是否仍属于当前有效运行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先给三个身份各自一个职责：conversationId 表示会话，messageId 表示展示消息，runId 表示一次生成或工具执行。重试同一运行与重新生成新答案要分开，每条事件还需要序号或版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "然后记录运行走到了哪一步。状态可以包含 idle、submitting、streaming、completed、failed、cancelled；只用一个 loading 布尔值，会把提交中、流式中和不同终态压成同一种情况。"
+    },
+    {
+      "type": "paragraph",
+      "text": "快速切换会话或重新生成时，先使旧 runId 失效并取消连接；旧回调即使已经进入队列，也要在提交前检查身份。新连接启动前清理旧的帧回调和缓冲，防止把上一条回答尾部刷到下一条消息里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同时发送两条 Query，应明确是排队、并行分支还是拒绝；如果共用一个上下文版本，后端必须处理并发控制。前端按钮禁用只是体验措施，不是服务端一致性保证。工具执行结果也要绑定对应运行，不能按“最后一个聊天框”随便追加。"
+    },
+    {
+      "type": "paragraph",
+      "text": "组件接口： 输入包括消息列表、当前状态、发送/停止/重试回调、附件能力、权限和渲染配置；插槽或 render props 提供消息、工具结果、引用、错误与输入区的定制。传输适配器、会话状态与视觉组件分层，避免每个业务都复制一套 SSE 解析器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "停止后的最终状态： 断开网络不等于服务端已停止。界面可以显示取消请求已发出，再根据服务端终态更新；保留已接收部分并明确是否完整。对副作用工具，取消并不自动撤销已经完成的操作。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "21. 一份能测试的流式会话状态与资源生命周期实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 每个消息行独立维护快照和订阅，用 runId 与序号拦截旧事件；定时任务、Worker 和图片预览都要有明确释放者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面 StreamRow 接收的是已经解析好的业务事件，不是完整 SSE 解析器。正常情况下，接收 1000 个 delta 可以合并成一次计划刷新，done 会立即提交尾部。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看无法继续相信增量完整性的情况：序号缺口或缓冲溢出时，进入 resync，并通知调用方按协议取快照，不能丢字后继续显示成完整结果。maxPending 只限制待显示增量，不限制所有历史文本内存，长会话仍需归档和窗口策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "WorkerLease 演示共享资源引用计数：构造失败不污染状态，后续可再次 acquire；同一个 lease 重复 release 不会多减；最后一个使用者释放才 terminate。它不是完整任务 RPC，任务 ID、错误回传和 pending Promise 清理仍需由任务层实现。"
+    },
+    {
+      "type": "code",
+      "language": "javascript",
+      "label": "frontend 原语言代码 L1352–1407（精确片段；需按重建清单组合，未执行）",
+      "value": "// Injected schedules and resources make lifecycle boundaries independently testable.\nexport class StreamRow {\n  constructor({schedule, cancelSchedule, maxPending = 65536, onGap = () => {}}) {\n    if(typeof schedule!=='function'||typeof cancelSchedule!=='function'||!Number.isSafeInteger(maxPending)||maxPending<1)throw Error('scheduler/budget');\n    this.schedule=schedule; this.cancelSchedule=cancelSchedule;this.maxPending=maxPending;this.onGap=onGap;\n    this.listeners=new Set();this.handle=null;this.run=null;this.last=0;this.pending=[];this.size=0;\n    this.snapshot=Object.freeze({text:'',status:'idle'});\n  }\n  getSnapshot=()=>this.snapshot;\n  subscribe=fn=>{this.listeners.add(fn);return ()=>this.listeners.delete(fn);};\n  publish(text,status){this.snapshot=Object.freeze({text,status});for(const fn of this.listeners)fn();}\n  start(run){\n    if(typeof run!=='string'||!run)throw Error('run identity');\n    this.clearScheduled();this.run=run;this.last=0;this.pending=[];this.size=0;this.publish('','streaming');\n  }\n  clearScheduled(){if(this.handle!==null)this.cancelSchedule(this.handle);this.handle=null;}\n  accept(event){\n    if(event.run!==this.run||this.snapshot.status!=='streaming')return false;\n    if(!Number.isSafeInteger(event.seq)||event.seq<1)throw Error('sequence');\n    if(event.seq<=this.last)return false;\n    if(event.seq!==this.last+1){this.pause('gap');return false;}\n    if(event.type==='delta'){\n      if(typeof event.text!=='string')throw Error('delta text');\n      if(this.size+event.text.length>this.maxPending){this.pause('overflow');return false;}\n      this.last=event.seq;this.pending.push(event.text);this.size+=event.text.length;\n      if(this.handle===null)this.handle=this.schedule(()=>{this.handle=null;this.flush();});\n    }else if(event.type==='done'||event.type==='failed'){\n      this.last=event.seq;this.clearScheduled();\n      const text=this.snapshot.text+this.pending.join('');this.pending=[];this.size=0;\n      this.publish(text,event.type==='done'?'completed':'failed');\n    }else throw Error('event type');\n    return true;\n  }\n  flush(){\n    if(!this.pending.length)return;\n    const text=this.snapshot.text+this.pending.join('');this.pending=[];this.size=0;\n    this.publish(text,this.snapshot.status);\n  }\n  pause(reason){this.clearScheduled();this.flush();this.publish(this.snapshot.text,'resync');this.onGap(reason,this.last);}\n  cancel(){this.clearScheduled();this.flush();this.run=null;this.publish(this.snapshot.text,'cancelled');}\n  dispose(){this.clearScheduled();this.run=null;this.pending=[];this.size=0;this.listeners.clear();}\n}\n\n// One shared Worker per service. Construction failure does not poison later acquire.\nexport class WorkerLease {\n  constructor(factory){this.factory=factory;this.worker=null;this.refs=0;}\n  acquire(){\n    if(this.worker===null){const created=this.factory();this.worker=created;}\n    this.refs++;let released=false;const worker=this.worker;\n    return {worker, release:()=>{\n      if(released)return;released=true;\n      if(--this.refs===0){this.worker=null;worker.terminate();}\n    }};\n  }\n}\n\n"
+    }
+  ]
+}

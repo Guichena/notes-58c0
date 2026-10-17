@@ -1,0 +1,102 @@
+{
+  "entries": [
+    {
+      "id": "handwrite-60",
+      "number": 15,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第四章：Redis 与分布式基础",
+      "flat": false,
+      "title": "分布式限流系统",
+      "questionHtml": "<p class=\"md-p\">设计一个分布式限流组件。多个服务节点共享限流规则，例如同一用户每 1 秒最多访问登录接口 5 次，要求高并发下计数准确，延迟低，可降级。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题常出现在字节、阿里、美团类后端面试中。面试官不只看你会不会写 Redis Lua，还会看你能否讲清楚算法选择、一致性、降级和热点 Key。</p>\n<p class=\"md-p\">常见限流算法：固定窗口、滑动窗口、漏桶、令牌桶。固定窗口实现简单但边界突刺严重；滑动窗口更精确但存储成本更高；令牌桶适合允许一定突发；漏桶适合平滑输出。</p>\n<p class=\"md-p\">对于“每个用户 N 秒内最多 M 次”这种精确窗口题，Redis ZSET + Lua 是常见答案。</p>",
+      "knowledge": [
+        "Redis 单线程执行 Lua 脚本，脚本内部多个命令具备原子性。",
+        "ZSET：score 存时间戳，按时间范围删除过期请求，<code class=\"tok-inline\">ZCARD</code> 统计窗口内请求数。",
+        "Key 设计：<code class=\"tok-inline\">rate:{api}:{userId}</code>，避免不同业务互相影响。",
+        "时间来源：应用服务器时间可能有偏差，可以用 Redis <code class=\"tok-inline\">TIME</code> 或接受小误差。",
+        "降级策略：Redis 异常时 fail-open、fail-close 或本地限流，取决于业务风险。"
+      ],
+      "answerHtml": "<p class=\"md-p\">Lua 脚本：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"lua\">-- KEYS[1] 限流 key\n-- ARGV[1] nowMillis\n-- ARGV[2] windowMillis\n-- ARGV[3] maxCount\n-- ARGV[4] requestId，避免同毫秒 value 冲突\nlocal key = KEYS[1]\nlocal now = tonumber(ARGV[1])\nlocal window = tonumber(ARGV[2])\nlocal maxCount = tonumber(ARGV[3])\nlocal requestId = ARGV[4]\n\nredis.call('ZREMRANGEBYSCORE', key, 0, now - window)\nlocal current = redis.call('ZCARD', key)\n\nif current &lt; maxCount then\n    redis.call('ZADD', key, now, requestId)\n    redis.call('PEXPIRE', key, window + 1000)\n    return 1\nend\nreturn 0</pre></div></section>\n<p class=\"md-p\">Java 调用思路：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public boolean allow(String api, String userId, int maxCount, long windowMillis) {\n    String key = &quot;rate:&quot; + api + &quot;:&quot; + userId;\n    long now = System.currentTimeMillis();\n    String requestId = now + &quot;:&quot; + java.util.UUID.randomUUID();\n    Long result = redisTemplate.execute(\n            rateLimitScript,\n            java.util.Collections.singletonList(key),\n            String.valueOf(now),\n            String.valueOf(windowMillis),\n            String.valueOf(maxCount),\n            requestId\n    );\n    return result != null &amp;&amp; result == 1L;\n}</pre></div></section>\n<p class=\"md-p\">面试时要主动补充：ZSET 精确滑动窗口会为每个请求存一条记录，高 QPS 热点用户会带来内存和删除成本。如果只需要近似限流，可以用计数器滑动窗口；如果要支持突发和平滑恢复，可以用令牌桶，只存 <code class=\"tok-inline\">tokens</code> 和 <code class=\"tok-inline\">lastRefillTime</code>。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：Redis 宕机怎么办？</strong></p>\n<p class=\"md-p\">分析：限流在主链路上，不能让所有请求阻塞。答案按业务选择：登录/支付风控倾向 fail-close 或本地严格限流；普通读接口可 fail-open 并打告警；同时本地令牌桶兜底。</p>\n<p class=\"md-p\"><strong>变体 2：热点 Key 被打爆怎么办？</strong></p>\n<p class=\"md-p\">分析：单个 Redis Key 的操作无法水平扩展。答案：拆分维度、热点用户本地预限流、分片 Key 后汇总近似判断，或把强限流前置到网关/WAF。</p>\n<p class=\"md-p\"><strong>变体 3：令牌桶怎么写？</strong></p>\n<p class=\"md-p\">分析：令牌桶不存每次请求，只存当前令牌数和上次补充时间。每次请求先按时间差补充令牌，再判断是否扣减。优点是内存 O(1)，缺点是对“窗口内精确次数”不如 ZSET 精确。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "Redis 与分布式"
+    },
+    {
+      "id": "handwrite-61",
+      "number": 16,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第四章：Redis 与分布式基础",
+      "flat": false,
+      "title": "缓存一致性与热点缓存",
+      "questionHtml": "<p class=\"md-p\">设计一个缓存方案，读多写少，使用 Redis 缓存 MySQL 数据。要求尽量保证缓存和数据库一致，并处理缓存穿透、击穿、雪崩。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题是 Java 后端高频。面试官一般想听到 Cache Aside、删除缓存而不是更新缓存、延迟双删/订阅 binlog、互斥锁重建、布隆过滤器、随机过期时间。</p>\n<p class=\"md-p\">先明确一致性级别：缓存和数据库很难做到强一致，常见方案是最终一致。写操作以数据库为准，缓存是派生数据。</p>",
+      "knowledge": [
+        "Cache Aside：读缓存，未命中查库后回填；写库后删除缓存。",
+        "双写问题：先删缓存再写库、先写库再删缓存都有并发窗口。",
+        "缓存穿透：查询不存在数据，导致请求打到数据库。",
+        "缓存击穿：热点 Key 过期瞬间大量请求打到数据库。",
+        "缓存雪崩：大量 Key 同时过期或 Redis 故障。",
+        "热点 Key：本地缓存、多级缓存、逻辑过期、异步刷新。"
+      ],
+      "answerHtml": "<p class=\"md-p\">读流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>查 Redis。</li><li>命中直接返回。</li><li>未命中先查布隆过滤器或空值缓存，判断是否可能存在。</li><li>查 MySQL。</li><li>存在则写 Redis，并设置随机 TTL；不存在则缓存短 TTL 空值。</li></ol></div>\n<p class=\"md-p\">写流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>更新 MySQL。</li><li>删除 Redis 缓存。</li><li>如果业务对一致性要求较高，可以延迟再删一次，或监听 binlog 异步删缓存。</li></ol></div>\n<p class=\"md-p\">热点 Key 防击穿：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public Product getProduct(Long id) {\n    String key = &quot;product:&quot; + id;\n    Product cached = redis.get(key, Product.class);\n    if (cached != null) {\n        return cached;\n    }\n\n    String lockKey = &quot;lock:&quot; + key;\n    if (redis.setIfAbsent(lockKey, &quot;1&quot;, 3, TimeUnit.SECONDS)) {\n        try {\n            Product again = redis.get(key, Product.class);\n            if (again != null) {\n                return again;\n            }\n            Product db = productMapper.selectById(id);\n            redis.set(key, db == null ? Product.empty() : db, randomTtl());\n            return db;\n        } finally {\n            redis.delete(lockKey);\n        }\n    }\n\n    sleepShortly();\n    return redis.get(key, Product.class);\n}</pre></div></section>\n<p class=\"md-p\">注意：删除锁要防误删，生产中应用唯一 token + Lua 校验删除。热点缓存也可以用逻辑过期：缓存不过期，后台异步刷新，前台短时间返回旧值。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么写后删除缓存，而不是更新缓存？</strong></p>\n<p class=\"md-p\">分析：缓存可能是复杂聚合结果，更新成本高且容易漏字段。答案：删除缓存让下一次读按数据库重建，逻辑简单，最终一致性更好控制。</p>\n<p class=\"md-p\"><strong>变体 2：先删缓存再写库有什么问题？</strong></p>\n<p class=\"md-p\">分析：删完缓存后，另一个读请求可能查旧库并回填旧缓存，然后写库提交，缓存长期是旧值。答案：通常写库后删缓存，必要时延迟双删。</p>\n<p class=\"md-p\"><strong>变体 3：Redis 故障怎么办？</strong></p>\n<p class=\"md-p\">分析：缓存故障可能把流量打到数据库。答案：限流、降级、本地缓存兜底、熔断保护数据库，并监控 Redis 命中率和延迟。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "Redis 与分布式"
+    },
+    {
+      "id": "handwrite-62",
+      "number": 17,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第四章：Redis 与分布式基础",
+      "flat": false,
+      "title": "Redis 分布式锁",
+      "questionHtml": "<p class=\"md-p\">手写一个 Redis 分布式锁。要求支持互斥、超时释放、防误删，并说明看门狗和 RedLock。</p>",
+      "analysisHtml": "<p class=\"md-p\">分布式锁是大厂场景题高频。基础版必须答出 <code class=\"tok-inline\">SET key value NX PX ttl</code> 和 Lua 校验删除。只用 <code class=\"tok-inline\">SETNX</code> 再 <code class=\"tok-inline\">EXPIRE</code> 分两步会有原子性问题。</p>\n<p class=\"md-p\">防误删是重点：线程 A 锁过期后，线程 B 获取锁；线程 A 终于执行完，如果直接 delete key，会删掉 B 的锁。</p>",
+      "knowledge": [
+        "加锁：<code class=\"tok-inline\">SET lockKey token NX PX ttl</code>。",
+        "token：每个持锁者唯一标识。",
+        "解锁：Lua 判断 value 等于 token 才删除。",
+        "锁过期：避免服务宕机永久死锁。",
+        "看门狗：业务未完成时自动续期。",
+        "fencing token：防止锁过期后的旧持有者继续写资源。"
+      ],
+      "answerHtml": "<p class=\"md-p\">加锁：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">String token = UUID.randomUUID().toString();\nBoolean ok = redisTemplate.opsForValue()\n        .setIfAbsent(&quot;lock:job:1&quot;, token, Duration.ofSeconds(10));</pre></div></section>\n<p class=\"md-p\">解锁 Lua：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"lua\">if redis.call('GET', KEYS[1]) == ARGV[1] then\n    return redis.call('DEL', KEYS[1])\nend\nreturn 0</pre></div></section>\n<p class=\"md-p\">Java 思路：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public boolean unlock(String key, String token) {\n    Long result = redisTemplate.execute(unlockScript, List.of(key), token);\n    return result != null &amp;&amp; result == 1L;\n}</pre></div></section>\n<p class=\"md-p\">工程补充：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>TTL 要大于正常业务执行时间。</li><li>业务时间不确定时用 Redisson 这类成熟实现，支持看门狗续期。</li><li>对强一致资源，仅有锁还不够，最好引入 fencing token。每次加锁返回递增 token，资源侧只接受更大的 token，拒绝过期持有者的写入。</li></ul></div>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么 <code class=\"tok-inline\">SETNX</code> 后再 <code class=\"tok-inline\">EXPIRE</code> 不行？</strong></p>\n<p class=\"md-p\">问题分析：两步之间服务可能宕机。</p>\n<p class=\"md-p\">知识点：原子性。</p>\n<p class=\"md-p\">答案：如果 <code class=\"tok-inline\">SETNX</code> 成功后还没执行 <code class=\"tok-inline\">EXPIRE</code> 服务挂了，锁永不过期。应使用一条 <code class=\"tok-inline\">SET NX PX</code> 原子命令。</p>\n<p class=\"md-p\"><strong>变体 2：锁过期但业务还没执行完怎么办？</strong></p>\n<p class=\"md-p\">问题分析：会出现多个持锁者同时执行。</p>\n<p class=\"md-p\">知识点：续期、幂等、fencing token。</p>\n<p class=\"md-p\">答案：用看门狗续期；业务本身做幂等；关键写操作带 fencing token 防旧请求覆盖新请求。</p>\n<p class=\"md-p\"><strong>变体 3：RedLock 一定安全吗？</strong></p>\n<p class=\"md-p\">问题分析：RedLock 有适用边界和争议。</p>\n<p class=\"md-p\">知识点：时钟、网络分区、一致性。</p>\n<p class=\"md-p\">答案：普通业务互斥可用 Redis 锁；金融级强一致不要只依赖 Redis 锁，应使用数据库事务、唯一约束、ZooKeeper/etcd 等更强一致组件。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "Redis 与分布式"
+    },
+    {
+      "id": "handwrite-63",
+      "number": 18,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第四章：Redis 与分布式基础",
+      "flat": false,
+      "title": "分布式 ID 生成器",
+      "questionHtml": "<p class=\"md-p\">设计一个分布式 ID 生成器，要求全局唯一、趋势递增、高性能。请讲数据库自增、UUID、Redis 自增、雪花算法的优缺点，并手写雪花算法核心逻辑。</p>",
+      "analysisHtml": "<p class=\"md-p\">分布式 ID 是大厂通用场景题。订单号、消息 ID、文件 ID 都会用到。面试官关注：唯一性、排序性、性能、可用性、时钟回拨。</p>",
+      "knowledge": [
+        "数据库自增：简单，但单点和扩展性问题。",
+        "UUID：本地生成、高可用，但无序、长、索引不友好。",
+        "Redis INCR：简单递增，但依赖 Redis 可用性。",
+        "雪花算法：时间戳 + 机器 ID + 序列号，趋势递增。",
+        "时钟回拨：雪花算法最大风险。"
+      ],
+      "answerHtml": "<p class=\"md-p\">雪花 ID 常见结构：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">0 | 41bit 时间戳 | 10bit 机器ID | 12bit 序列号</pre></div></section>\n<p class=\"md-p\">Java 简化版：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public class Snowflake {\n    private static final long EPOCH = 1704067200000L;\n    private static final long WORKER_BITS = 10L;\n    private static final long SEQ_BITS = 12L;\n    private static final long MAX_SEQ = (1L &lt;&lt; SEQ_BITS) - 1;\n\n    private final long workerId;\n    private long lastMillis = -1L;\n    private long sequence = 0L;\n\n    public Snowflake(long workerId) {\n        if (workerId &lt; 0 || workerId &gt;= (1L &lt;&lt; WORKER_BITS)) {\n            throw new IllegalArgumentException(&quot;invalid workerId&quot;);\n        }\n        this.workerId = workerId;\n    }\n\n    public synchronized long nextId() {\n        long now = System.currentTimeMillis();\n        if (now &lt; lastMillis) {\n            throw new IllegalStateException(&quot;clock moved backwards&quot;);\n        }\n\n        if (now == lastMillis) {\n            sequence = (sequence + 1) &amp; MAX_SEQ;\n            if (sequence == 0) {\n                now = waitNextMillis(now);\n            }\n        } else {\n            sequence = 0;\n        }\n\n        lastMillis = now;\n        return ((now - EPOCH) &lt;&lt; (WORKER_BITS + SEQ_BITS))\n                | (workerId &lt;&lt; SEQ_BITS)\n                | sequence;\n    }\n\n    private long waitNextMillis(long now) {\n        while (now &lt;= lastMillis) {\n            now = System.currentTimeMillis();\n        }\n        return now;\n    }\n}</pre></div></section>\n<p class=\"md-p\">时钟回拨处理：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>小幅回拨：等待一段时间。</li><li>大幅回拨：拒绝发号并告警。</li><li>多时钟方案：引入逻辑时钟或备用 workerId。</li><li>更稳妥：使用数据库号段模式，提前批量取号段，本地内存发号。</li></ul></div>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么不直接用 UUID 做主键？</strong></p>\n<p class=\"md-p\">问题分析：UUID 无序且长。</p>\n<p class=\"md-p\">知识点：B+Tree 插入、页分裂、索引空间。</p>\n<p class=\"md-p\">答案：UUID 会导致聚簇索引随机插入，页分裂多，索引体积大。可用有序 UUID、雪花 ID 或自增/号段。</p>\n<p class=\"md-p\"><strong>变体 2：号段模式怎么设计？</strong></p>\n<p class=\"md-p\">问题分析：数据库每次取一段 ID，本地发号。</p>\n<p class=\"md-p\">知识点：批量取号、双 buffer。</p>\n<p class=\"md-p\">答案：表中维护 <code class=\"tok-inline\">biz_tag, max_id, step</code>，服务通过乐观更新把 <code class=\"tok-inline\">max_id</code> 推进 step，拿到 <code class=\"tok-inline\">(oldMax, newMax]</code> 在内存发号。</p>\n<p class=\"md-p\"><strong>变体 3：workerId 怎么分配？</strong></p>\n<p class=\"md-p\">问题分析：workerId 冲突会导致 ID 冲突。</p>\n<p class=\"md-p\">知识点：注册中心、机器标识。</p>\n<p class=\"md-p\">答案：可由配置中心静态分配，也可用 ZooKeeper/etcd/数据库注册租约动态分配，并监控冲突。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "Redis 与分布式"
+    }
+  ]
+}

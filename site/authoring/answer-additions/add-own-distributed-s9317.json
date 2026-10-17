@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s9317",
+  "entryId": "ai-agent-5",
+  "expectedOriginalHash": "799f3dfbe9789308dafd008973ad5ada478ff66de05487420793b779b072a1f4",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.17 CR Agent为何分布式、怎样通信和容错，Lua包过长逻辑会发生什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式CR把任务与产物持久分配给隔离执行器，通信容错靠身份和恢复协议，Redis Lua应保持有界短逻辑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：CR Agent为何分布式；怎样通信和容错；Lua包太长逻辑会怎样。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "CR可按代码审查作条件示例，Lua长脚本的阻塞结论仅适用于Redis等具有相应执行模型的宿主。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分布式动机必须从任务边界证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "若CR指代码审查，独立仓库/文件检查可以在隔离环境并行，重分析任务可独立扩资源，权限/故障域也可能需要拆；目标是吞吐、隔离和恢复，而非多Agent名字本身。小任务同进程模块更简单，分布式增加序列化、上下文复制、网络部分失败和协调成本，单Agent不足的真实瓶颈需测量而不能替候选人编造。"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定目标commit、diff范围、规则与工具版本，工作者对独立范围产出可定位的发现，汇总去重并检查跨文件依赖。分支修改应独立worktree/产物，不同时覆盖同一文件；最终合并、测试与发布有明确责任，不能把每个Agent说“看过了”当评审完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "通信与异常稳定性"
+    },
+    {
+      "type": "paragraph",
+      "text": "通信方式由执行边界决定。同进程可以传不可变DTO+有界Executor；跨进程的短查询用HTTP/gRPC，长时间异步工作用持久任务或MQ。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消息带上tenant/task/step/attempt、inputCommit、planVersion、deadline、结果/错误和产物hash。主控管理依赖、预算和终态；子任务各自保存私有输出，最后只合并同一输入版本的结果，并采用确定规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "任务/检查点/outbox保存恢复责任，租约/epoch防旧worker结果覆盖。工具参数与权限服务端校验，超时UNKNOWN先查结果，同operationId重试；纯读取可重做，已发布写入不能盲重跑。每依赖独立队列/并发/超时和熔断，限制重试、token及无进展循环，监控trace、队列年龄、错误类别和真正任务完成率。第12.1节讨论任务分派，第11.11节讨论不确定外部结果，第11.12节讨论模型与工具超时的不同恢复路径。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "若Lua运行在Redis：长的是执行时间与工作量"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis脚本在其执行域内原子不可穿插，因此一个遍历大集合/巨量计算的脚本会占主命令路径，使其他客户端排队，增加p99、连接积压和超时；只是源代码行数多但实际路径短，不必然更慢。网络I/O多线程不会把该脚本自动拆到多核执行，pipeline也无法消除它的执行占用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本达到busy阈值，不代表Redis会自动终止并回滚它。Redis会记录慢脚本，并对普通请求返回BUSY；SCRIPT KILL只在尚未发生写入等允许条件下可用，不能把已经写入的脚本当成普通可撤销线程随意杀掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua运行期报错，也不会撤销前面已成功的写。这里的原子执行是其他命令不能穿插，不是数据库式全回滚。终止服务器还有数据风险，不能当成常规修复动作。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样改造与诊断"
+    },
+    {
+      "type": "paragraph",
+      "text": "先参数/类型/容量校验再写，把脚本限定为小而明确的原子检查/更新。大扫描按cursor/批次分段，复杂计算移应用层，最终以版本/CAS提交；分段会失去整段原子快照，必须重新设计一致性，不是加个yield就兼得。可用分片分散不同key，但一个hotkey与跨slot多key事务边界仍在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用慢日志、latency、CPU、命令量/结果大小、客户端排队、脚本sha与版本定位；测试最大输入而非只测10个元素，测脚本错误前后的写和客户端超时后实际效果。这里没有向Redis执行长脚本或任何停机命令。若Lua在OpenResty或嵌入应用，需按该宿主线程/协程、阻塞调用和资源配额另行分析，不能照搬Redis SCRIPT KILL/BUSY机制。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

@@ -1,0 +1,543 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-systems",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 并发与 JUC",
+  "category": "并发系统设计与项目边界",
+  "title": "并发系统设计与项目边界",
+  "tags": [
+    "Java",
+    "JUC",
+    "Java21教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-juc-generation-cancellation",
+      "order": 1996,
+      "question": "Agent 停止按钮 应停止哪一代任务？",
+      "shortAnswer": "停止按钮要找到本次运行的任务句柄和代次，并区分“已响应取消”与“执行者已完成清理”。假设同一个 taskId 已经重跑，旧执行此时才进入 finally。如果只按 taskId 删除，它可能把新运行的句柄一起删掉；旧结果迟到写入，也可能覆盖新结果。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "停止按钮要找到本次运行的任务句柄和代次，并区分“已响应取消”与“执行者已完成清理”。假设同一个 taskId 已经重跑，旧执行此时才进入 finally。如果只按 taskId 删除，它可能把新运行的句柄一起删掉；旧结果迟到写入，也可能覆盖新结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此注册用 putIfAbsent 或明确的替换协议，清理用 remove(id, oldHandle) 只删除自己仍拥有的那一代，写结果也带 generation 或版本条件。取消控制旧计算尽快退出，条件删除与版本写入则守住新任务不被旧任务误伤的边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "循环任务要在步骤边界检查取消，并给单步 I/O 设置 deadline；只检查循环顶端无法中断卡在底层的一步。资源若在取消之后才注册，应立即按其实际所有权关闭，而不是错过早已执行完的 whenComplete。资源关闭自身也可能失败，保留主异常时要避免把同一个 Throwable 添加为自身 suppressed；禁用 suppression 的异常不会保存附加项，不能承诺异常列表总能完整记录所有清理问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "任务重试要有最大步骤、总时限和 token/费用预算，客户端断连是否取消后台任务取决于业务契约。下载“暂停”通常表示停止继续读写的合作请求；如果接口承诺 pause 返回后绝无新写入，就要等执行者确认暂停点的 ACK，而不只是设置一个 volatile 标记。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-byte-budget-ownership",
+      "order": 2006,
+      "question": "长视频和多 Agent 为什么需要字节预算？",
+      "shortAnswer": "长视频处理的瓶颈通常不止线程数；压缩视频字节数不能代表解码帧、音频、OCR 图像、Prompt、闭包和未消费结果的峰值内存。应流式切片，在分配大 payload 之前按保守权重一次申请预算，超大单项拆分或拒绝，再用有限任务窗口控制积压。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "长视频处理的瓶颈通常不止线程数；压缩视频字节数不能代表解码帧、音频、OCR 图像、Prompt、闭包和未消费结果的峰值内存。应流式切片，在分配大 payload 之前按保守权重一次申请预算，超大单项拆分或拒绝，再用有限任务窗口控制积压。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个可能的流程是 VideoContext 描述任务、VideoSegment 描述片段，ASR/OCR 抽取信息，Planner、Executor、Critic 推进后续决策。CPU 解码还要考虑本地库内部线程；ASR、OCR、LLM 分别约束连接、并发、QPS/TPM 和费用。Semaphore 许可是并发占用，不等于每秒调用次数或每分钟 token 速率。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下方 OwnedJob 跟踪预算究竟由谁占用：待运行时只是预留，真正开始工作后，预留移交给实际执行者。提交被拒绝、排队任务被取消，或 shutdownNow 返回尚未运行的任务时，可以收回预留；运行中的任务则要等自己的 finally 执行以后才归还预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试把总预算设为 10，运行者占 7、排队者占 3。取消排队者能还回 3；取消运行者的 Future 后，如果任务仍未退出，就不能再还 7。否则旧任务还占着内存，新任务却已经拿到同一额度，预算就超发了。lease 幂等关闭只防止重复归还，不替外部操作证明资源已经释放。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-juc/resource-ownership.png",
+          "alt": "预算从 PENDING 预留移交 RUNNING 执行者，实际 finally 清理后才 RELEASED；Future 已取消不能代替资源退出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/OwnershipLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.concurrent.locks.*;\n\npublic final class OwnershipLab {\n    static final class Budget {\n        private final long capacity;\n        private long available;\n        private final ReentrantLock lock = new ReentrantLock();\n        private final Condition changed = lock.newCondition();\n        Budget(long capacity) { if (capacity <= 0) throw new IllegalArgumentException(); this.capacity = available = capacity; }\n        Lease acquire(long weight, Duration timeout) throws InterruptedException, TimeoutException {\n            if (weight <= 0 || weight > capacity || timeout.isNegative()) throw new IllegalArgumentException();\n            long nanos = timeout.toNanos(), start = System.nanoTime();\n            if (!lock.tryLock(nanos, TimeUnit.NANOSECONDS)) throw new TimeoutException(\"budget lock\");\n            try {\n                while (available < weight) {\n                    long remaining = nanos - (System.nanoTime() - start);\n                    if (remaining <= 0) throw new TimeoutException(\"budget exhausted\");\n                    changed.awaitNanos(remaining);\n                }\n                available -= weight; return new Lease(this, weight);\n            } finally { lock.unlock(); }\n        }\n        void release(long weight) {\n            lock.lock();\n            try {\n                if (weight > capacity - available) throw new IllegalStateException(\"budget over-release\");\n                available += weight; changed.signalAll();\n            } finally { lock.unlock(); }\n        }\n        long available() { lock.lock(); try { return available; } finally { lock.unlock(); } }\n    }\n    static final class Lease implements AutoCloseable {\n        private final Budget budget; private final long weight; private final AtomicBoolean returned = new AtomicBoolean();\n        Lease(Budget budget, long weight) { this.budget = budget; this.weight = weight; }\n        public void close() { if (returned.compareAndSet(false, true)) budget.release(weight); }\n    }\n    /** Ownership transfer has a separate state from the externally visible Future terminal state. */\n    static final class OwnedJob<T> implements RunnableFuture<T> {\n        private static final int PENDING = 0, RUNNING = 1, RELEASED = 2;\n        private final AtomicInteger ownership = new AtomicInteger(PENDING);\n        private final CountDownLatch actualDone = new CountDownLatch(1);\n        private final Lease lease;\n        private final FutureTask<T> delegate;\n        OwnedJob(Lease lease, Callable<T> action) {\n            this.lease = Objects.requireNonNull(lease); Objects.requireNonNull(action);\n            delegate = new FutureTask<>(() -> {\n                if (!ownership.compareAndSet(PENDING, RUNNING)) throw new CancellationException();\n                try { return action.call(); }\n                finally { release(RUNNING); }\n            });\n        }\n        private void release(int expected) {\n            if (ownership.compareAndSet(expected, RELEASED)) {\n                try { lease.close(); } finally { actualDone.countDown(); }\n            }\n        }\n        public void run() { delegate.run(); }\n        public boolean cancel(boolean interrupt) {\n            boolean won = delegate.cancel(interrupt);\n            if (won) release(PENDING); // Running work retains its lease until its finally really executes.\n            return won;\n        }\n        public boolean isCancelled() { return delegate.isCancelled(); }\n        public boolean isDone() { return delegate.isDone(); }\n        public T get() throws InterruptedException, ExecutionException { return delegate.get(); }\n        public T get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {\n            return delegate.get(timeout, unit);\n        }\n        boolean awaitActualDone(long time, TimeUnit unit) throws InterruptedException { return actualDone.await(time, unit); }\n        static <T> OwnedJob<T> submit(Executor executor, Lease lease, Callable<T> action) {\n            OwnedJob<T> job;\n            try { job = new OwnedJob<>(lease, action); }\n            catch (RuntimeException | Error failure) { lease.close(); throw failure; }\n            try { executor.execute(job); return job; }\n            catch (RuntimeException | Error failure) { job.cancel(false); throw failure; }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        Budget budget = new Budget(10); ExecutorService executor = Executors.newSingleThreadExecutor();\n        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);\n        try {\n            OwnedJob<Integer> active = OwnedJob.submit(executor, budget.acquire(7, Duration.ZERO), () -> {\n                entered.countDown();\n                for (;;) {\n                    try { Checks.await(release); return 7; }\n                    catch (InterruptedException ignored) { /* deliberate bounded cancellation counterexample */ }\n                }\n            });\n            Checks.await(entered);\n            OwnedJob<Integer> queued = OwnedJob.submit(executor, budget.acquire(3, Duration.ZERO), () -> 3);\n            Checks.that(budget.available() == 0, \"both pending and running payloads budgeted\");\n            queued.cancel(true);\n            Checks.that(queued.awaitActualDone(5, TimeUnit.SECONDS) && budget.available() == 3, \"pre-start cancel returns lease\");\n            active.cancel(true);\n            Checks.that(active.isDone() && budget.available() == 3, \"running cancellation does not prematurely release\");\n            release.countDown();\n            Checks.that(active.awaitActualDone(5, TimeUnit.SECONDS) && budget.available() == 10, \"actual completion releases\");\n            Lease lease = budget.acquire(10, Duration.ZERO);\n            try {\n                try { budget.acquire(1, Duration.ZERO); throw new AssertionError(\"over budget\"); }\n                catch (TimeoutException expected) { }\n            } finally { lease.close(); lease.close(); }\n            Checks.that(budget.available() == 10, \"idempotent lease\");\n            Executor rejected = task -> { throw new RejectedExecutionException(\"closed\"); };\n            try { OwnedJob.submit(rejected, budget.acquire(4, Duration.ZERO), () -> 4); throw new AssertionError(\"rejection hidden\"); }\n            catch (RejectedExecutionException expected) { }\n            Checks.that(budget.available() == 10, \"rejected submission releases reservation\");\n            executor.shutdown();\n        } finally { release.countDown(); Checks.stop(executor); }\n        System.out.println(\"OwnershipLab OK\");\n    }\n}\n",
+          "label": "code/OwnershipLab.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "多 Agent 还会争抢文件描述符、连接池、锁、热点对象、上下文窗口和模型额度；只有实际本地推理时才把 GPU 显存列为本地预算。先画依赖图，独立节点才能并行，按阶段、租户及全局限制准入，避免持有连接等待另一种资源形成环。结果尽量流式消费，Planner/Critic 设置总轮数、时间和 token 上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单进程 Semaphore 管不了多个副本的总配额；需要权威配额服务或带租约的额度分配，并说明失联、过期和超发处理。外部调用超时且是否计费未知时，不能直接把全部额度当作未使用退回。优化优先减少无效节点、在权限和版本正确的前提下缓存、批量合并，再增加并发。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-multipart-protocol",
+      "order": 2143,
+      "question": "分片上传串行还是并行 怎样续传和正确合并？",
+      "shortAnswer": "互相独立且服务端允许乱序的分片可以并行，顺序流或弱网环境可能更适合串行或小窗口；线程数必须与每文件窗口、全局并发、片大小、连接和带宽一起设计。先确认是在浏览器、客户端还是后端调度，不能给所有拓扑一个固定线程数。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "互相独立且服务端允许乱序的分片可以并行，顺序流或弱网环境可能更适合串行或小窗口；线程数必须与每文件窗口、全局并发、片大小、连接和带宽一起设计。先确认是在浏览器、客户端还是后端调度，不能给所有拓扑一个固定线程数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "uploadId 必须绑定用户及租户，每片携带 partNumber 或 offset、长度、校验和与尝试代次。续传只相信服务端确认的片和校验信息；超时可能表示服务端已成功，重试同片必须幂等，还要避免旧 attempt 迟到覆盖新内容。入口窗口乘以每片驻留字节只是预算的一部分，读取缓冲、校验和请求体复制也要计入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "合并前检查完整片集合、缺片、越界、重叠、总长度和最终校验，用版本条件或唯一提交令牌防止并发重复合并。对象存储 multipart 只是可选协议示例，不应把某种 ETag 一概视为最终文件 MD5。测试覆盖空文件、最后短片、乱序、断网、重复上传、同时合并、取消后的未完成分片清理和存储回收期限。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-dual-detection",
+      "order": 2151,
+      "question": "规则与 LLM 双路检测 怎样并行和汇总？",
+      "shortAnswer": "两路只有在读取同一个不可变版本快照且彼此无依赖时才适合并行；如果模型只处理规则无法判断的疑难项，级联可减少费用。模型输出必须先验证结构、允许的枚举和证据回指，解析失败或证据不足应返回 UNKNOWN，不能默认为 CLEAR。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "两路只有在读取同一个不可变版本快照且彼此无依赖时才适合并行；如果模型只处理规则无法判断的疑难项，级联可减少费用。模型输出必须先验证结构、允许的枚举和证据回指，解析失败或证据不足应返回 UNKNOWN，不能默认为 CLEAR。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面采用一个明确的教学政策：任一路 VIOLATION 则 BLOCK，两路都 CLEAR 才 PASS，其余 REVIEW。这不是所有业务的普遍规则；硬拒绝、冲突与人工复核政策必须由领域要求定义。thenCombine 汇合两路结果，同时保留文档版本，实际落库仍需版本 CAS，防止旧检测覆盖新文档。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个非内联执行池隔离工作，拒绝、异常和期限转成 UNKNOWN。分支共享起始 deadline，排队后已过期的工作跳过实际检测；已运行的底层调用不会因为 completeOnTimeout 而停止。代码特别验证“聚合结果已返回、底层检测仍未清理”的区别，若需真正取消资源，应结合前面的句柄所有权与底层取消 API。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/DualDetectionLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.time.Duration;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class DualDetectionLab {\n    enum Finding { CLEAR, VIOLATION, UNKNOWN }\n    enum Action { PASS, BLOCK, REVIEW }\n    record Document(String id, long version, String text) {}\n    record Verdict(String id, long version, Finding rule, Finding model, Action action) {}\n    @FunctionalInterface interface Detector { Finding inspect(Document snapshot) throws Exception; }\n    static Action merge(Finding a, Finding b) {\n        if (a == Finding.VIOLATION || b == Finding.VIOLATION) return Action.BLOCK;\n        if (a == Finding.CLEAR && b == Finding.CLEAR) return Action.PASS;\n        return Action.REVIEW;\n    }\n    static CompletableFuture<Finding> branch(Document input, Detector detector,\n            ThreadPoolExecutor executor, long start, long budget) {\n        CompletableFuture<Finding> future;\n        try {\n            future = CompletableFuture.supplyAsync(() -> {\n                if (System.nanoTime() - start >= budget) return Finding.UNKNOWN;\n                try {\n                    Finding result = detector.inspect(input);\n                    return result == null ? Finding.UNKNOWN : result;\n                } catch (Exception failure) { return Finding.UNKNOWN; }\n            }, executor);\n        } catch (RejectedExecutionException rejected) {\n            return CompletableFuture.completedFuture(Finding.UNKNOWN);\n        }\n        long remaining = Math.max(0, budget - (System.nanoTime() - start));\n        return future.completeOnTimeout(Finding.UNKNOWN, remaining, TimeUnit.NANOSECONDS)\n                .exceptionally(error -> Finding.UNKNOWN);\n    }\n    /** Requires ordinary non-inlining pools; completion deadline does not stop a detector already running. */\n    static CompletionStage<Verdict> evaluate(Document snapshot, Detector rules, Detector model,\n            ThreadPoolExecutor rulePool, ThreadPoolExecutor modelPool, Duration timeout) {\n        if (timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException();\n        if (!(rulePool.getRejectedExecutionHandler() instanceof ThreadPoolExecutor.AbortPolicy)\n                || !(modelPool.getRejectedExecutionHandler() instanceof ThreadPoolExecutor.AbortPolicy))\n            throw new IllegalArgumentException(\"non-inlining AbortPolicy pools required\");\n        long budget = timeout.toNanos(), start = System.nanoTime();\n        return branch(snapshot, rules, rulePool, start, budget)\n                .thenCombine(branch(snapshot, model, modelPool, start, budget),\n                        (a, b) -> new Verdict(snapshot.id(), snapshot.version(), a, b, merge(a, b)))\n                .minimalCompletionStage();\n    }\n    static ThreadPoolExecutor pool() {\n        return new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1),\n                new ThreadPoolExecutor.AbortPolicy());\n    }\n    public static void main(String[] args) throws Exception {\n        ThreadPoolExecutor rules = pool(), model = pool();\n        CountDownLatch release = new CountDownLatch(1), entered = new CountDownLatch(1), ended = new CountDownLatch(1);\n        try {\n            Document input = new Document(\"doc\", 7, \"immutable content\");\n            for (Finding a : Finding.values()) for (Finding b : Finding.values()) {\n                Verdict result = Checks.get(evaluate(input, d -> a, d -> b, rules, model, Duration.ofSeconds(2)).toCompletableFuture());\n                Checks.that(result.version() == 7 && result.action() == merge(a, b), \"nine policy combinations and version\");\n            }\n            Verdict failed = Checks.get(evaluate(input, d -> Finding.CLEAR,\n                    d -> { throw new IllegalArgumentException(\"invalid model payload\"); }, rules, model,\n                    Duration.ofSeconds(2)).toCompletableFuture());\n            Checks.that(failed.action() == Action.REVIEW, \"failure is unknown, not clear\");\n            CompletionStage<Verdict> timed = evaluate(input, d -> Finding.CLEAR, d -> {\n                entered.countDown();\n                try { Checks.await(release); return Finding.CLEAR; }\n                finally { ended.countDown(); }\n            }, rules, model, Duration.ofMillis(100));\n            Checks.await(entered);\n            Checks.that(Checks.get(timed.toCompletableFuture()).action() == Action.REVIEW, \"deadline yields unknown\");\n            Checks.that(ended.getCount() == 1, \"underlying detector still owns its resources\");\n            release.countDown(); Checks.await(ended);\n            model.shutdown();\n            Verdict rejected = Checks.get(evaluate(input, d -> Finding.CLEAR, d -> Finding.CLEAR,\n                    rules, model, Duration.ofSeconds(2)).toCompletableFuture());\n            Checks.that(rejected.action() == Action.REVIEW, \"rejection also unknown\");\n            System.out.println(\"DualDetectionLab OK\");\n        } finally { release.countDown(); Checks.stop(rules); Checks.stop(model); }\n    }\n}\n",
+          "label": "code/DualDetectionLab.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "验证该方案要有独立标注集，分开统计 precision、recall、漏检、误杀、UNKNOWN 比例、人工复核负担、延迟和费用。不能只看到并行耗时变短就认为业务质量更高，也不能只拿一个模型自己生成的答案作为评估真值。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-baseline-incremental-scan",
+      "order": 2246,
+      "question": "已有仓库和文档的存量缺陷怎样扫描？",
+      "shortAnswer": "我会把存量扫描设计成“固定基线、可恢复分批、同步接收增量、按版本发布”的任务，单个对象仍交给前面的规则与 LLM 双路检测器。双路怎样并行解决的是一次检测；存量扫描还必须证明哪些内容已经检查、哪些仍未覆盖，以及结果对应哪个版本。下面是条件化设计，实际仓库规模、耗时和本人负责的部分，应以自己的项目记录回答。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "我会把存量扫描设计成“固定基线、可恢复分批、同步接收增量、按版本发布”的任务，单个对象仍交给前面的规则与 LLM 双路检测器。双路怎样并行解决的是一次检测；存量扫描还必须证明哪些内容已经检查、哪些仍未覆盖，以及结果对应哪个版本。下面是条件化设计，实际仓库规模、耗时和本人负责的部分，应以自己的项目记录回答。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先冻结范围和输入，再谈完成比例"
+        },
+        {
+          "type": "paragraph",
+          "text": "一次扫描建立独立的 scanId 和 generation，保存租户、仓库或文档集、目标分支、冻结基线、检测配置与范围政策。代码基线用确定的 commit 和 tree，文档用可重复读取的快照及对象版本；不能遍历一个不断变化的工作目录，再把它称为同一批输入。规则版本、模型标识、Prompt、解析器、检索索引和裁决政策也要固定，否则同一轮扫描的结果没有统一含义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "从基线生成可持久化的清单，逐项记录对象身份、路径、版本、内容摘要、语言、大小和所属分片。排除的生成文件、二进制、秘密目录等单列原因；无权限、无法解析和读取失败属于未覆盖，不能悄悄从分母删除。清单本身也要确认枚举结束并保存摘要。对代码缺陷，跨文件关系和调用上下文属于检测输入：任务虽可按文件或模块分片，所用符号、依赖和说明必须来自同一提交，不能只检查几个文本块就宣称完成了整个仓库的语义分析。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "分批任务怎样断点续跑"
+        },
+        {
+          "type": "paragraph",
+          "text": "清单以稳定顺序和键集分页生成有界批次，任务表记录 PENDING、RUNNING、已提交结果及待重试状态；Worker 通过租约领取，携带 fencing token。每批限制对象数、总字节、预计 token 和最长执行时间，超大文件按结构分解，保留父任务与完整覆盖范围。需要跨块才能判断的规则必须在父级汇总后完成，不能将所有子块“运行结束”等同于文件检查成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "任务幂等键包含扫描代次、对象版本、检测配置和分片身份。重试沿用同一业务键，attempt 另计，才能把同一任务的多次尝试收敛到同一项工作。结果先写成不可变产物并核对摘要，再在事务中登记 receipt、任务终态和 checkpoint。"
+        },
+        {
+          "type": "paragraph",
+          "text": "checkpoint 只能越过连续已提交的范围。比如第 1、3 项已提交，第 2 项仍未完成，就要保留第 2 项缺口，不能因为最大完成序号是 3，便宣称前三项完成。“已派发到第几页”同样不是提交证据。并行完成留下的缺口必须单独记录。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若数据库与产物存储不能共事务，就以数据库已经提交的产物引用为准；仅写出文件还不算任务已提交，没有被引用的孤儿产物留待后续回收。"
+        },
+        {
+          "type": "paragraph",
+          "text": "重启后核对清单、配置版本、receipt 和租约，只补未完成项；旧 Worker 回来的提交会被 fence 拒绝。已得到但未提交的模型结果可以在完整校验后按原任务键收敛，不能覆盖已有有效结果。幂等落库不保证模型只计费一次：供应商没有请求去重或结果查询能力时，未知调用可能重复耗费预算，必须计入尝试账本，而不能对外声称端到端 exactly-once。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "批处理不能挤垮在线增量"
+        },
+        {
+          "type": "paragraph",
+          "text": "存量与在线检测使用隔离的有界队列和配额，给增量保留容量；规则检测受 CPU、内存和 I/O 约束，LLM 检测另受并发、请求速率、token 与费用约束。按租户公平调度，在下游限流、队列积压或存储延迟升高时减少批量并暂停领取。预算在调用前预留、返回后结算，同时限制重试总量与整轮截止时间，不能只给每次调用单独设置一个超时。"
+        },
+        {
+          "type": "paragraph",
+          "text": "某一路失败仍沿用双路检测器的 UNKNOWN 与 REVIEW 语义。完成了调用不等于该对象无缺陷；超时、人工待判和不支持的规则需要保留状态。停止扫描先停止派发，再传播取消并等待资源清理，已提交进度保留；Future 超时本身不会立即释放仍在运行的底层请求。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "全量与增量怎样无缝衔接"
+        },
+        {
+          "type": "paragraph",
+          "text": "在枚举基线前就启用持久化变更捕获，记录起始游标 W0，并建立快照与变更日志的对齐边界。扫描期间，新增、修改、删除和改名持续进入增量账本；每条事件带源版本、事件身份及必要的前后提交。允许重复投递，以版本和事件键去重。Git commit hash 不能按数值比较新旧，分支变化需按权威 ref 更新序列及提交关系处理；force-push 造成非祖先跳转时，重新比较两棵树或重建受影响范围。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果源端只有可能丢失的 webhook，没有能和快照对齐的可重放日志，就不能承诺“每次变更都捕获了”。需要持久接收、定期拉取权威 ref、提交或树差异对账；日志保留期耗尽、检测到游标缺口时，重新建立基线或补扫。若目标是检查当前存量，完整对账可以弥补最终状态遗漏；若目标是审计每个中间提交，必须另有足够的版本留存，不能用最后一次快照替代。"
+        },
+        {
+          "type": "paragraph",
+          "text": "基线任务做完，还不能马上宣布切换成功。先选定明确的增量水位 H，追平 W0 到 H 的变更，再校验 H 对应的对象清单。此时索引、Description 和检测结果都要对应同一个目标版本。如果语法树、接口或共享规则改变，还要重检受影响的引用方；文件内容没变，并不表示它的检测上下文没变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "新代次验证通过后，再原子发布“代次、目标提交或文档快照、水位、覆盖状态”。H 之后的新事件仍由同一增量流水线接着处理，不能先关闭增量再切换，否则切换期间的新变化又会落进空档。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里发布的是“截至 H 的已知覆盖”。如果源数据已经更新，针对更新版本的检测应显示 PENDING，而不是沿用旧版 PASS。要求立即检查某个提交的入口，必须把该提交带到查询与门禁；当前分支指针已变化时，继续追平或明确返回该版本尚未完成。系统不能把后台消费游标假装成源系统此刻的真实最新状态。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "怎样阻止迟到旧结果覆盖新版"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史结果按对象版本追加保存，当前结果只是一个受保护的投影。提交时同时验证任务 fence、检测配置代次、目标对象仍存在，以及当前期望版本等于本次输入版本；只有全部成立才更新当前投影。版本不匹配时保留历史记录并安排新版本检测，不用完成时间较晚作为覆盖依据。判断一条旧告警是否已修复，也必须有对应新版的成功检测支持，不能因为旧扫描结束就关闭它。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如基线扫描的是文档 v7，增量已将 v8 的检测提交；v7 后返回，只能进入 v7 历史。删除事件产生带版本的 tombstone 并清理当前索引、结果和可检索引用，迟到的 v7 不能把它复活。删除后重建同名文档，要有新的对象 incarnation 或持续递增的修订号，避免版本重置造成 ABA。代码没有稳定文件 ID 时，改名按旧路径删除、新路径新增处理；相同 blob 可复用纯内容计算，但路径、权限、模块关系和受影响引用仍要重新判断。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "用什么证据说明扫完了"
+        },
+        {
+          "type": "paragraph",
+          "text": "分别报告枚举完成、检查覆盖和缺陷结论。基线清单中的每一项必须能对应成功检查、明确排除、失败或待复核等可追踪状态；任务队列为空不能证明没有漏建任务，UNKNOWN 也不能算无缺陷。若跳过了已被新版替代的基线对象，应明确标为被替代，而不是把原基线说成全部检查通过。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验收至少核对清单总数与各状态分区、对象或字节覆盖、分片缺口、规则适用范围、增量连续水位、未处理事件、索引孤儿和删除清理；记录实际完成时间及检测配置。内容摘要能证明扫描输入没有被换掉，不能证明检测结论正确。业务效果另用独立标注样本测漏检、误报、UNKNOWN 与人工负担。"
+        },
+        {
+          "type": "paragraph",
+          "text": "故障测试要包含：结果落库后确认丢失、派发后进程崩溃、租约交接后旧 Worker 回写、全量过程中修改或删除、同路径删除重建、改名、乱序或重复事件、force-push、日志缺口以及切换代次时又有新提交。通过这些测试，才能把“扫描跑完了”解释成可核对的覆盖声明。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-bounded-retry",
+      "order": 2300,
+      "question": "有界重试如何处理单次超时 总超时和错误类型？",
+      "shortAnswer": "重试封装必须把首次调用算进 maxAttempts，并用统一总期限覆盖排队、执行、清理确认和退避；单次超时只是这个总预算的一部分。权限拒绝通常不重试，暂时性错误也只有在操作可重复或已具备幂等协议时才能重试。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "重试封装必须把首次调用算进 maxAttempts，并用统一总期限覆盖排队、执行、清理确认和退避；单次超时只是这个总预算的一部分。权限拒绝通常不重试，暂时性错误也只有在操作可重复或已具备幂等协议时才能重试。"
+        },
+        {
+          "type": "paragraph",
+          "text": "尤其要区分“等待超时”与“远端未执行”。转账返回 Unknown Timeout，而幂等性未知、无法查询结果甚至不能修改下游时，不能用一个 Java retry 循环解决资金一致性。正确处置是保留未决状态、阻止盲目重复、按可用对账和人工流程确认；本地取消连接也不能撤销已经提交的远端操作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下方教学封装使用有界的非内联池，单次超时后请求中断，并单独等待实际清理确认；如果前次还在运行，就停止重试，避免并发重复执行。结果未决要向调用方暴露，不能永久占用后台线程悄悄无限重试。示例使用固定退避以便测试，真实重试可使用有上限的指数退避与抖动，熔断器则另行控制持续故障下的准入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/RetryLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.time.Duration;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\n/** Retry only operations whose repeatability has been explicitly established. */\npublic final class RetryLab {\n    enum Kind { TRANSIENT, PERMISSION, UNKNOWN_COMMIT }\n    static final class CallFailure extends Exception {\n        final Kind kind;\n        CallFailure(Kind kind) { super(kind.name()); this.kind = kind; }\n    }\n    static final class AttemptStillRunning extends Exception {\n        AttemptStillRunning(Throwable cause) { super(\"timed-out attempt did not acknowledge termination; no retry\", cause); }\n    }\n    record Policy(int maxAttempts, Duration total, Duration perAttempt, Duration backoff, Duration cleanupGrace) {\n        Policy {\n            if (maxAttempts <= 0 || total.isZero() || total.isNegative() || perAttempt.isZero()\n                    || perAttempt.isNegative() || backoff.isNegative() || cleanupGrace.isNegative())\n                throw new IllegalArgumentException();\n            // Validate the representation before any operation can be submitted.\n            total.toNanos(); perAttempt.toNanos(); backoff.toNanos(); cleanupGrace.toNanos();\n        }\n    }\n    static <T> T run(Callable<T> operation, Policy policy, boolean repeatable,\n                     ThreadPoolExecutor executor) throws Exception {\n        long start = System.nanoTime(), total = policy.total.toNanos();\n        OwnershipLab.Budget budget = new OwnershipLab.Budget(1);\n        Exception last = null;\n        for (int attempt = 1; attempt <= policy.maxAttempts; attempt++) {\n            long remaining = total - (System.nanoTime() - start);\n            if (remaining <= 0) throw new TimeoutException(\"total deadline before attempt\");\n            OwnershipLab.OwnedJob<T> task = OwnershipLab.OwnedJob.submit(executor,\n                    budget.acquire(1, Duration.ofNanos(remaining)), operation);\n            try {\n                remaining = total - (System.nanoTime() - start);\n                if (remaining <= 0) throw new TimeoutException(\"deadline during submission\");\n                return task.get(Math.min(remaining, policy.perAttempt.toNanos()), TimeUnit.NANOSECONDS);\n            } catch (TimeoutException timeout) {\n                task.cancel(true);\n                long grace = Math.min(policy.cleanupGrace.toNanos(), Math.max(0, total - (System.nanoTime() - start)));\n                if (!task.awaitActualDone(grace, TimeUnit.NANOSECONDS)) throw new AttemptStillRunning(timeout);\n                last = timeout;\n            } catch (InterruptedException interruption) {\n                task.cancel(true); throw interruption; // Owner may separately await actual cleanup.\n            } catch (ExecutionException failure) {\n                if (failure.getCause() instanceof Error error) throw error;\n                if (!(failure.getCause() instanceof Exception error)) throw failure;\n                last = error;\n            }\n            boolean eligible = last instanceof TimeoutException\n                    || (last instanceof CallFailure failure && failure.kind == Kind.TRANSIENT);\n            if (!repeatable || !eligible || attempt == policy.maxAttempts) throw last;\n            long delay = policy.backoff.toNanos();\n            remaining = total - (System.nanoTime() - start);\n            if (remaining <= delay) throw new TimeoutException(\"backoff would exhaust total deadline\");\n            TimeUnit.NANOSECONDS.sleep(delay); // Production can add capped exponential backoff plus jitter.\n        }\n        throw new AssertionError(\"unreachable\");\n    }\n    static ThreadPoolExecutor executor() {\n        return new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, new ArrayBlockingQueue<>(1),\n                new ThreadPoolExecutor.AbortPolicy());\n    }\n    public static void main(String[] args) throws Exception {\n        Policy policy = new Policy(3, Duration.ofSeconds(2), Duration.ofMillis(200), Duration.ZERO, Duration.ofMillis(200));\n        Duration huge = Duration.ofSeconds(Long.MAX_VALUE);\n        for (int field = 0; field < 4; field++) {\n            Duration[] values = {policy.total, policy.perAttempt, policy.backoff, policy.cleanupGrace};\n            values[field] = huge;\n            try { new Policy(1, values[0], values[1], values[2], values[3]); throw new AssertionError(\"overflow accepted\"); }\n            catch (ArithmeticException expected) { }\n        }\n        ThreadPoolExecutor executor = executor();\n        AtomicInteger calls = new AtomicInteger();\n        CountDownLatch release = new CountDownLatch(1), ended = new CountDownLatch(1);\n        try {\n            int value = run(() -> { if (calls.incrementAndGet() < 3) throw new CallFailure(Kind.TRANSIENT); return 7; }, policy, true, executor);\n            Checks.that(value == 7 && calls.get() == 3, \"bounded transient retry\");\n            for (Kind kind : new Kind[]{Kind.PERMISSION, Kind.UNKNOWN_COMMIT}) {\n                calls.set(0);\n                try { run(() -> { calls.incrementAndGet(); throw new CallFailure(kind); }, policy, true, executor); throw new AssertionError(); }\n                catch (CallFailure expected) { Checks.that(calls.get() == 1, \"no permission/unknown-commit retry\"); }\n            }\n            calls.set(0);\n            Policy once = new Policy(1, policy.total, policy.perAttempt, policy.backoff, policy.cleanupGrace);\n            try { run(() -> { calls.incrementAndGet(); throw new CallFailure(Kind.TRANSIENT); }, once, true, executor); throw new AssertionError(); }\n            catch (CallFailure expected) { Checks.that(calls.get() == 1, \"maxAttempts=1 includes initial call\"); }\n            calls.set(0);\n            Policy timed = new Policy(3, Duration.ofSeconds(1), Duration.ofMillis(30), Duration.ZERO, Duration.ofMillis(30));\n            try {\n                run(() -> {\n                    calls.incrementAndGet();\n                    try {\n                        while (release.getCount() != 0) {\n                            try { release.await(); } catch (InterruptedException ignored) { }\n                        }\n                        return 1;\n                    } finally { ended.countDown(); }\n                }, timed, true, executor);\n                throw new AssertionError(\"expected unfinished attempt\");\n            } catch (AttemptStillRunning expected) { Checks.that(calls.get() == 1, \"no overlapping retry\"); }\n            release.countDown(); Checks.await(ended);\n            executor.shutdown();\n            try { run(() -> 1, policy, true, executor); throw new AssertionError(\"rejection swallowed\"); }\n            catch (RejectedExecutionException expected) { }\n            System.out.println(\"RetryLab OK\");\n        } finally { release.countDown(); Checks.stop(executor); }\n    }\n}\n",
+          "label": "code/RetryLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-sliding-window-limit",
+      "order": 2422,
+      "question": "每用户一分钟最多十次点赞？",
+      "shortAnswer": "如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "内存版把清理、判断、记录放在同一个原子边界：先删去 now−60s 及之前的记录，再检查剩余数量，允许后记录本次时间。这样另一个请求不能插进“检查通过但尚未记录”的空档。用户维度必须来自已认证身份，不能让调用方随意换一个名字绕开配额。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面有明确用户数上限，避免攻击者制造无界 Map；简单实现每次扫描清理用户，吞吐成本因此与保留用户数相关。更高吞吐可分片并用独立过期结构，但不能删除仍有人持有的锁对象后创建第二把锁，让同一用户出现两套并发计数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/SlidingWindowLimiter.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.function.LongSupplier;\n\n/** Exact per-user sliding window in one JVM; milliseconds from a monotonic relative clock. */\npublic final class SlidingWindowLimiter {\n    private final Map<String, ArrayDeque<Long>> users = new HashMap<>();\n    private final int maxUsers, limit;\n    private final long window;\n    private final LongSupplier clock;\n    private long lastTime;\n    public SlidingWindowLimiter(int maxUsers, int limit, long windowMillis, LongSupplier clock) {\n        if (maxUsers <= 0 || limit <= 0 || windowMillis <= 0) throw new IllegalArgumentException();\n        this.maxUsers = maxUsers; this.limit = limit; window = windowMillis; this.clock = Objects.requireNonNull(clock);\n    }\n    public synchronized boolean allow(String user) {\n        Objects.requireNonNull(user);\n        long now = clock.getAsLong();\n        if (now < lastTime) throw new IllegalStateException(\"nonnegative monotonic clock required\");\n        lastTime = now;\n        // Bounds retained user state; this simple scan trades throughput for an explicit memory ceiling.\n        Iterator<ArrayDeque<Long>> values = users.values().iterator();\n        while (values.hasNext()) {\n            ArrayDeque<Long> times = values.next();\n            while (!times.isEmpty() && now - times.peekFirst() >= window) times.removeFirst();\n            if (times.isEmpty()) values.remove();\n        }\n        ArrayDeque<Long> times = users.get(user);\n        if (times == null) {\n            if (users.size() == maxUsers) return false;\n            times = new ArrayDeque<>(); users.put(user, times);\n        }\n        if (times.size() == limit) return false;\n        times.addLast(now); return true;\n    }\n    public static void main(String[] args) {\n        long[] time = {0}; SlidingWindowLimiter limiter = new SlidingWindowLimiter(2, 10, 60_000, () -> time[0]);\n        for (int n = 0; n < 10; n++) Checks.that(limiter.allow(\"user-a\"), \"first ten allowed\");\n        Checks.that(!limiter.allow(\"user-a\") && limiter.allow(\"user-b\"), \"user isolation\");\n        Checks.that(!limiter.allow(\"user-c\"), \"bounded user state\");\n        time[0] = 59_999; Checks.that(!limiter.allow(\"user-a\"), \"within rolling minute\");\n        time[0] = 60_000; Checks.that(limiter.allow(\"user-a\"), \"left boundary expired\");\n        System.out.println(\"SlidingWindowLimiter OK\");\n    }\n}\n",
+          "label": "code/SlidingWindowLimiter.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "多节点部署时，本地锁无法维持全局十次限制。Redis 版本把清理、计数和添加放进一个脚本，使用服务端时间和唯一请求标记区分同毫秒的不同请求。同一标记只代表同一次准入的幂等性，不等于点赞业务已经成功；脚本也不与数据库点赞提交自动组成事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/sliding_window.lua"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "value": "-- KEYS[1]: authenticated per-user limiter key (same slot for any related keys).\n-- ARGV: window_ms, limit, unique_request_member. Counts admission, not a business commit.\nlocal window = tonumber(ARGV[1])\nlocal limit = tonumber(ARGV[2])\nif not window or window <= 0 or window ~= math.floor(window)\n   or not limit or limit <= 0 or limit ~= math.floor(limit) or not ARGV[3] then\n    return redis.error_reply('invalid limiter arguments')\nend\nlocal tm = redis.call('TIME')\nlocal now = tonumber(tm[1]) * 1000 + math.floor(tonumber(tm[2]) / 1000)\nredis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)\nif redis.call('ZSCORE', KEYS[1], ARGV[3]) then\n    return {1, redis.call('ZCARD', KEYS[1])} -- Same admission token is idempotent within retention.\nend\nlocal count = redis.call('ZCARD', KEYS[1])\nif count >= limit then return {0, count} end\nredis.call('ZADD', KEYS[1], now, ARGV[3])\nredis.call('PEXPIRE', KEYS[1], window)\nreturn {1, count + 1}\n",
+          "label": "code/sliding_window.lua"
+        },
+        {
+          "type": "paragraph",
+          "text": "脚本执行期间只具有 Redis 单个执行域的原子边界，集群多 key 需满足同槽要求；时间精度、主从故障切换、异步复制丢失与 Redis 不可用时的放行或拒绝，都要按业务风险定义。严格计费或资金限额不应把一个可能丢失的限流计数当成唯一账本。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-executor-isolation",
+      "order": 2509,
+      "question": "为什么回答生成 SSE 和桥接任务分开？",
+      "shortAnswer": "NoteWeave 把回答 I/O、SSE 派发、SSE 连接和答案桥接放进不同的命名执行器。解释这份配置，可以从工作持续时间进入：短派发与长期阻塞桥接若挤在同一批 worker 中，前者可能排在长期任务后面；分开之后，才便于分别讨论接收、拒绝和关闭的边界。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "20 用 NoteWeave 解释线程池隔离与上下文"
+        },
+        {
+          "type": "paragraph",
+          "text": "NoteWeave 把回答 I/O、SSE 派发、SSE 连接和答案桥接放进不同的命名执行器。解释这份配置，可以从工作持续时间进入：短派发与长期阻塞桥接若挤在同一批 worker 中，前者可能排在长期任务后面；分开之后，才便于分别讨论接收、拒绝和关闭的边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里说的是 Java 17、Spring Boot 3.3.5 版本，不能直接套用 Java 21 虚拟线程 API。以下配置对应提交 c60decb1a94470e732ce54a7b3cc854410095073；列出的参数是代码默认值，可被配置项覆盖，并非所有部署的实际观测值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "answerIoExecutor 默认 core=4、max=16、queue=64，适合用来讲“先排队后扩到 max”的顺序：四个忙 worker 之后的任务先积压到队列，不能说第 5 个任务立刻扩线程。它设置 AbortPolicy，关闭时等待任务完成并有 20 秒等待配置；是否在期限内真正结束，仍取决于任务及底层操作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "sseDispatchExecutor 默认 2/8/128，关闭等待配置为 10 秒；sseConnectionExecutor 默认 4/32/0，核心线程允许空闲超时，keepAlive 为 60 秒。零队列容量在 ThreadPoolTaskExecutor 中对应直接交接式队列，不能解释为“默认无界队列”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "answerBridgeExecutor 是 2/16/0，针对阻塞 XREAD 桥接泵使用零容量队列。如果使用很大的队列，少数长期运行泵可能占住核心 worker，其他泵一直排队，max 配置形同虚设。零队列使不能直接交接的新任务尝试扩容，但到 16 后仍会拒绝；它解决的是接收路径与隔离，不能证明下游连接配额永远充足。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个 ScheduledExecutorService 分别使用 2 和 4 条命名 daemon 线程并在 Bean 销毁时 shutdown。daemon 不阻止 JVM 退出，shutdown 也不自动等待所有业务状态落盘。租约续期失败需让依赖它的任务停止或进入失效状态，不能只把续期异常写日志后继续假设拥有租约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "resources/NoteWeaveExecutorConfig.java.txt"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "value": "package com.noteweave.config;\n\nimport java.util.concurrent.Executor;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.ScheduledExecutorService;\nimport java.util.concurrent.ThreadPoolExecutor;\nimport org.slf4j.MDC;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;\nimport org.springframework.beans.factory.annotation.Value;\n\n@Configuration\npublic class RealtimeExecutorConfig {\n\n    @Bean(name = \"answerIoExecutor\")\n    public Executor answerIoExecutor(\n            @Value(\"${noteweave.executors.answer-io.core-size:4}\") int coreSize,\n            @Value(\"${noteweave.executors.answer-io.max-size:16}\") int maxSize,\n            @Value(\"${noteweave.executors.answer-io.queue-capacity:64}\") int queueCapacity\n    ) {\n        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();\n        executor.setThreadNamePrefix(\"answer-io-\");\n        executor.setCorePoolSize(coreSize);\n        executor.setMaxPoolSize(maxSize);\n        executor.setQueueCapacity(queueCapacity);\n        executor.setWaitForTasksToCompleteOnShutdown(true);\n        executor.setAwaitTerminationSeconds(20);\n        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());\n        executor.setTaskDecorator(runnable -> {\n            java.util.Map<String, String> captured = MDC.getCopyOfContextMap();\n            return () -> {\n                java.util.Map<String, String> previous = MDC.getCopyOfContextMap();\n                try {\n                    if (captured == null) {\n                        MDC.clear();\n                    } else {\n                        MDC.setContextMap(captured);\n                    }\n                    runnable.run();\n                } finally {\n                    if (previous == null) {\n                        MDC.clear();\n                    } else {\n                        MDC.setContextMap(previous);\n                    }\n                }\n            };\n        });\n        executor.initialize();\n        return executor;\n    }\n\n    @Bean(name = \"sseDispatchExecutor\")\n    public Executor sseDispatchExecutor(\n            @Value(\"${noteweave.executors.sse-dispatch.core-size:2}\") int coreSize,\n            @Value(\"${noteweave.executors.sse-dispatch.max-size:8}\") int maxSize,\n            @Value(\"${noteweave.executors.sse-dispatch.queue-capacity:128}\") int queueCapacity\n    ) {\n        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();\n        executor.setThreadNamePrefix(\"sse-dispatch-\");\n        executor.setCorePoolSize(coreSize);\n        executor.setMaxPoolSize(maxSize);\n        executor.setQueueCapacity(queueCapacity);\n        executor.setWaitForTasksToCompleteOnShutdown(true);\n        executor.setAwaitTerminationSeconds(10);\n        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());\n        executor.initialize();\n        return executor;\n    }\n\n    @Bean(name = \"sseConnectionExecutor\")\n    public Executor sseConnectionExecutor(\n            @Value(\"${noteweave.executors.sse-connection.core-size:4}\") int coreSize,\n            @Value(\"${noteweave.executors.sse-connection.max-size:32}\") int maxSize,\n            @Value(\"${noteweave.executors.sse-connection.queue-capacity:0}\") int queueCapacity\n    ) {\n        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();\n        executor.setThreadNamePrefix(\"sse-connection-\");\n        executor.setCorePoolSize(coreSize);\n        executor.setMaxPoolSize(maxSize);\n        executor.setQueueCapacity(queueCapacity);\n        executor.setKeepAliveSeconds(60);\n        executor.setAllowCoreThreadTimeOut(true);\n        executor.setWaitForTasksToCompleteOnShutdown(false);\n        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());\n        executor.initialize();\n        return executor;\n    }\n\n    @Bean(name = \"answerBridgeExecutor\")\n    public Executor answerBridgeExecutor() {\n        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();\n        executor.setThreadNamePrefix(\"answer-bridge-\");\n        executor.setCorePoolSize(2);\n        executor.setMaxPoolSize(16);\n        // Blocking XREAD tasks must grow to max threads before queueing, otherwise two pumps starve all peers.\n        executor.setQueueCapacity(0);\n        executor.setKeepAliveSeconds(60);\n        executor.setAllowCoreThreadTimeOut(true);\n        executor.setWaitForTasksToCompleteOnShutdown(false);\n        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());\n        executor.initialize();\n        return executor;\n    }\n\n    @Bean(destroyMethod = \"shutdown\", name = \"answerEventScheduler\")\n    public ScheduledExecutorService answerEventScheduler() {\n        return Executors.newScheduledThreadPool(2, runnable -> {\n            Thread thread = new Thread(runnable, \"answer-event-batch\");\n            thread.setDaemon(true);\n            return thread;\n        });\n    }\n\n    @Bean(destroyMethod = \"shutdown\", name = \"answerLeaseScheduler\")\n    public ScheduledExecutorService answerLeaseScheduler() {\n        return Executors.newScheduledThreadPool(4, runnable -> {\n            Thread thread = new Thread(runnable, \"answer-lease-renewal\");\n            thread.setDaemon(true);\n            return thread;\n        });\n    }\n}\n",
+          "label": "resources/NoteWeaveExecutorConfig.java.txt"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-task-decorator",
+      "order": 2652,
+      "question": "TaskDecorator 具体保护了什么？",
+      "shortAnswer": "answerIoExecutor 的 TaskDecorator 在提交边界复制 MDC Map，在实际执行线程保存旧 Map、安装捕获值，finally 恢复旧 Map 或 clear。这使线程复用和嵌套执行都能恢复原有上下文，比无条件清除更精确；MDC 内容本身仍需来自可信请求入口。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "answerIoExecutor 的 TaskDecorator 在提交边界复制 MDC Map，在实际执行线程保存旧 Map、安装捕获值，finally 恢复旧 Map 或 clear。这使线程复用和嵌套执行都能恢复原有上下文，比无条件清除更精确；MDC 内容本身仍需来自可信请求入口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这段 decorator 只配置在 answerIoExecutor，不能据此推断所有命名池都自动传播 MDC。sseDispatchExecutor、sseConnectionExecutor 和 answerBridgeExecutor 在上述配置中没有相同 decorator；若业务需要跨这些边界维持追踪，应明确增加何种捕获和恢复协议，并验证取消、拒绝及同步回退。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ResearchAgentCompletionMetrics 另外用 ThreadLocal<String> 记录 transactionStage，beginTransaction 设置起始阶段，markTransactionStage 更新，clearTransaction 调用 remove。这是当前线程的指标标签上下文，不是实际数据库事务本身，也不能替代 Spring 的事务同步管理器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "相应服务 complete 的 finally 先调用 stopLatency，再调用 clearTransaction。沿异常路径继续追问：如果前面的指标记录自己抛错，后面的清理是否还会执行？可以提出的加固方案是把 clearTransaction 放进独立内层 finally，使前一个清理失败也不能跳过它。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再改变一个条件：若这个 API 要支持同线程嵌套调用，只做 remove 还可能抹掉外层值，需要重新定义保存和恢复协议。这两点都是对现有实现提出的设计建议，不能讲成已经部署的改动。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-project-evidence",
+      "order": 2664,
+      "question": "项目题怎样自然回答 不编造性能数字？",
+      "shortAnswer": "一个完整回答可以这样组织：“这条链路里既有短派发，也有长期阻塞桥接，所以按任务性质拆分执行器。队列容量决定先积压还是先扩线程；桥接池零容量是为了避免少数长期任务占住核心后其他任务一直排队。每个池有独立拒绝和关闭协议，MDC 只在配置了 decorator 的边界传播，业务配额和持久任务状态仍由其他层负责。”",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "一个完整回答可以这样组织：“这条链路里既有短派发，也有长期阻塞桥接，所以按任务性质拆分执行器。队列容量决定先积压还是先扩线程；桥接池零容量是为了避免少数长期任务占住核心后其他任务一直排队。每个池有独立拒绝和关闭协议，MDC 只在配置了 decorator 的边界传播，业务配额和持久任务状态仍由其他层负责。”"
+        },
+        {
+          "type": "paragraph",
+          "text": "接着主动回答取舍：多池带来更多配置和监控成本，线程总量仍要合计；零队列更快暴露过载，也更容易把错误交给上游；大队列缓冲突发但增加尾延迟和保留内存。要看任务等待分位、运行时长、拒绝、实际完成率、连接等待及取消后资源归还，不能只看 active 线程数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "涉及吞吐收益时给出真实测量方法而非虚构结果。先用受控负载验证正常、突发、慢依赖、拒绝、取消和恢复，再用同一输入与资源限制比较方案；在没有相应测量记录时，回答机制和预期验证路径已经足够清楚。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

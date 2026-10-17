@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-elasticsearch-2",
+  "id": "q-own-es-distributed-aggregations",
+  "order": 39,
+  "question": "分布式聚合怎样合并，terms 误差和 composite 分页怎样解释？",
+  "shortAnswer": "聚合按指标合并局部状态；terms 的局部桶截断可能漏掉全局赢家，遍历全部分组应使用受控视图和响应 after_key。",
+  "commonPhrasings": [
+    "平均值可以平均各片均值吗？",
+    "为什么局部 TopK 证明不适用于计数桶？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.6 bucket metric pipeline 怎样分布式计算"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式聚合先在各分片形成局部结果，再由协调节点做中间和最终 reduce。其中，bucket 按条件或 key 分组，例如 tags 的 terms 桶、时间的 date_histogram 桶；metric 在桶内计算 sum、min、max、avg 或 cardinality 等；pipeline 再消费已有聚合结果，计算导数、累计或筛选桶。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并不是任何指标都能把分片结果简单平均。全局 avg 应合并 sum 与 count，再相除；两片分别有一条值100和九条值0，片均值平均得到50，正确全局均值是10。精确 sum/min/max 与使用近似结构的 cardinality、percentiles 也要区分；后两者需要解释误差和参数，不能统称精确统计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "搜索的 size=10 通常只控制返回命中数量，聚合仍面对 query 所限定的匹配集，不能以为只统计这10条。query 的租户/权限过滤也应覆盖聚合，否则即使正文未泄漏，桶计数也可能泄漏其他租户活动。post_filter 主要影响最终 hits，不会像顶层 query 那样缩小所有聚合；用它做统一安全边界是危险的。使用 global 聚合还要显式重新限定需要的安全范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多值 tags 的一篇文档可以进入多个桶，因此桶计数之和可超过命中文档数。nested 聚合的统计粒度还可能是隐藏子文档，若要回到父文档需明确 reverse_nested 等语义。金额建议按固定最小单位表达，并考虑累计范围与聚合浮点表示；搜索聚合不应被未经验证地当财务记账真值。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.7 terms 为什么可能不精确"
+    },
+    {
+      "type": "paragraph",
+      "text": "terms 默认返回最常见的一部分桶。每片只上报有限局部桶，协调节点汇总时可能缺少某个 key 在其他片上的贡献，所以 doc_count 和其子聚合可能不完整。增加 shard_size 通常比盲目增加最终 size 更有针对性，但仍增加网络和协调内存，不能保证所有分布下误差为零。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个反例足以解释为什么“局部 Top1 桶”不够：分片一 A=100、X=99；分片二 B=100、X=99。两片各只上报第一名，会漏掉全局计数198的 X。文档 TopK 的证明依赖每篇文档独立固定分数，而同 key 的计数需要跨片相加，问题不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "默认按 _count 降序时，可以请求 show_term_doc_count_error 查看返回桶的计数误差上界，并结合 sum_other_doc_count 判断被截断贡献。不同排序方式的保证不一样：按 key 排序有自己的精确计数条件；按 count 升序容易找错“稀有”桶，应该评估 rare_terms；按子聚合任意排序也可能错误，不能把一个非负误差字段泛化成所有排序的证明。最大值降序、最小值升序有可利用的局部极值性质，但其他计数和子指标仍可能不完整。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要把 terms size 拉到几百万当全量导出。桶、子桶、top_hits 与 metric 状态相乘，会迅速放大堆内存。search.max_buckets、断路器与请求限制是保护措施，不是容量规划替代品；调大上限会推迟报错，也可能让节点更容易耗尽资源。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.8 composite 怎样遍历全部分组"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要逐页枚举分组 key 时，composite 提供按 sources 定义顺序的桶分页。每次使用响应返回的 after_key 构造下一次 after，不能自行假定它一定等于最后一个桶的 key；query、sources、顺序和固定时间边界保持不变。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下请求同样使用第10章教学索引。实际第一页响应返回哪个 after_key，下一页就原样传哪个值；这是完整请求模板，替换键值后逐页执行。"
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "POST /interview_java_demo/_search?allow_partial_search_results=false\n{\n  \"size\":0,\n  \"query\":{\"bool\":{\"filter\":[\n    {\"term\":{\"tenant_id\":\"demo\"}},\n    {\"term\":{\"acl\":\"reader\"}},\n    {\"term\":{\"generation\":\"r1\"}},\n    {\"term\":{\"deleted\":false}},\n    {\"range\":{\"created_at\":{\"lte\":\"2026-10-10T12:00:00Z\"}}}\n  ]}},\n  \"aggs\":{\"all_tags\":{\"composite\":{\"size\":1,\"sources\":[\n    {\"tag\":{\"terms\":{\"field\":\"tags\",\"order\":\"asc\"}}}\n  ]}}}\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "若实际响应 after_key 为 {\"tag\":\"java\"}，下一页的 composite 部分是："
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "value": "{\"size\":1,\"after\":{\"tag\":\"java\"},\"sources\":[{\"tag\":{\"terms\":{\"field\":\"tags\",\"order\":\"asc\"}}}]}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是一种按 key 枚举方式，不是按全局文档数倒序的任意 Top 桶分页。多值字段的组合会生成多种 bucket key，需控制 sources 与每页 size。分页减小每次响应和 reduce 状态，不代表整次全量遍历免费；支持的 pipeline 组合也受限制，不能跨独立页面直接计算一个全局导数后假称没有边界问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持续写入时，after_key 不冻结数据，可能跨页改变桶内容。需要可复核报表时，用受控只读索引代，或在经验证支持的搜索路径里结合 PIT，并明确它只固定 ES 视图。任何页超时、失败分片或上下文失效都不能推进游标并标记全量统计完成。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    },
+    {
+      "entryId": "bg-elasticsearch-4",
+      "questionId": "q-own-es-java-client",
+      "label": "请求所用索引的完整 Java 夹具与字段定义"
+    }
+  ]
+}

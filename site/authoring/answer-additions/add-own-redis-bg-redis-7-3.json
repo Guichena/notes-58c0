@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-7-3",
+  "entryId": "bg-redis-7",
+  "expectedOriginalHash": "723fcb56d4f290f8ec766d9ab76cec8722989ae5ac0ee6943b3e989a58621ec2",
+  "title": "CRC16、Tag、路由、迁槽与同槽边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis Cluster 怎样分片、路由和扩容"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Cluster 先把 key 映射到固定的 16384 个槽，再决定每个槽由哪个主节点负责。客户端按槽找节点。因此，扩容改变的是部分槽及其数据放在哪台机器，并不是机器数一变就对所有 key 重新取模。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移期间，ASK 告诉客户端这一次临时去哪里；稳定归属变化后，MOVED 用来更新路由。把“key 的逻辑分区”和“分区所在机器”分开，就能理解这两种重定向为什么不同。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-redis/2de9a2d315174100.png",
+      "alt": "Redis Cluster 多主分片及其副本"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "CRC16、hash tag 与多键原子操作"
+    },
+    {
+      "type": "paragraph",
+      "text": "通常按 key 的字节计算 CRC16/XMODEM，再对 16384 取模。若 key 存在有效 hash tag，就只对标签内容计算；它按第一个左花括号以及之后第一个右花括号判断，并要求中间非空。首对为空时使用整个 key，不会跳到后面的另一对花括号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 order:{42}:stock 与 order:{42}:request 的有效内容都是 42，因此可落在同槽；foo{}{bar} 使用整个 key，foo{{bar}} 的有效内容是 {bar，未闭合花括号则使用整个 key。Redis 的键是字节串，Java 字符串要先明确使用 UTF-8 等约定编码，不能按 Java 字符数直接计算槽。"
+    },
+    {
+      "type": "paragraph",
+      "text": "原生 Cluster 中，相关多键命令、事务和 Lua 脚本通常要求涉及的 key 在同一槽。可以给同一个业务实体需要原子处理的键使用一致标签，但把整个租户所有键都放进同一个 tag 会牺牲分散性并制造热点。跨槽的业务原子性需要另外的协调机制，客户端拆分请求不等于 Redis 提供跨节点事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面保留完整的 Java 槽计算实现。byte[] 入口接受二进制键，String 入口转换为 UTF-8；null 由 Objects.requireNonNull 拒绝。计算时间 O(key 字节数)、byte[] 入口辅助空间 O(1)，String 入口另有编码分配。它只演示协议计算，不执行网络请求或扩容。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.nio.charset.StandardCharsets;\nimport java.util.Objects;\n\n/** Redis Cluster CRC16/XMODEM and first-brace-pair rule; no network operations. */\npublic final class ClusterSlot {\n    private ClusterSlot() { }\n    public static int slot(String key) {\n        return slot(Objects.requireNonNull(key).getBytes(StandardCharsets.UTF_8));\n    }\n    public static int slot(byte[] key) {\n        Objects.requireNonNull(key);\n        int begin = 0, end = key.length;\n        for (int i = 0; i < key.length; i++) {\n            if (key[i] != '{') continue;\n            for (int j = i + 1; j < key.length; j++) {\n                if (key[j] != '}') continue;\n                if (j > i + 1) { begin = i + 1; end = j; }\n                // The FIRST pair is authoritative, even if empty.\n                return crc(key, begin, end) & 16383;\n            }\n            break;\n        }\n        return crc(key, begin, end) & 16383;\n    }\n    static int crc(byte[] bytes, int from, int to) {\n        int value = 0;\n        for (int i = from; i < to; i++) {\n            value ^= (bytes[i] & 255) << 8;\n            for (int b = 0; b < 8; b++)\n                value = ((value & 0x8000) != 0 ? (value << 1) ^ 0x1021 : value << 1) & 0xffff;\n        }\n        return value;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "新增主节点后，数据为什么不会自动均匀"
+    },
+    {
+      "type": "paragraph",
+      "text": "新主加入集群时通常还没有槽。管理工具或运维流程先决定哪些槽从哪个主迁往哪个目标，再逐步迁移相应 key，并完成槽归属变更。加入节点、分配槽和迁移数据是不同步骤。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移时，源节点对仍在本地的 key 可以继续处理；某 key 已迁走时，请求可能收到 ASK。客户端应向目标发送 ASKING，再发送这一次命令，不能把 ASK 当成永久槽归属已变。稳定归属已经是目标时，错误节点返回 MOVED，客户端更新槽映射，必要时刷新整体拓扑。原生 Cluster 通常不替客户端透明代理业务命令。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多键请求即使原本同槽，也可能在迁移时因 key 分散到新旧节点而暂时无法执行，需要处理 TRYAGAIN 等情况并有界重试。超时还可能是结果未知，对非幂等业务操作不能机械重放。迁移大 key 会增加单次搬运和阻塞风险，要控制批次、并发、带宽和迁移窗口，并观察尾延迟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "槽归属通过 cluster bus、配置纪元和节点状态传播逐步被获知，客户端也要更新自身缓存。迁完同样数量的槽，只说明逻辑槽数均衡，不代表内存、访问次数、命令成本和输出字节均衡；热点槽和单个热 key 仍可能集中。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "热 key 分桶与键命名怎样避免新的正确性问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "以“阅读时长聚合”为假设场景，如果一个汇总 key 写入过热，可以按用户或稳定事件 ID 分配多个桶，写入各桶，读取时汇总。桶 key 要实际分散到不同槽：若所有桶都带相同 hash tag，逻辑上分了桶，物理上仍落在同一槽。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重试必须使用稳定路由规则，不能每次随机换桶后再次计入；要把事件去重、桶版本和时间窗口一起设计。扩桶时保留清晰的版本边界，旧事件重放仍找到正确一代，不能因 hash 取模数改变而重复或漏算。跨桶汇总不是原子快照；若要求某个统计截止点精确一致，需要冻结窗口、按版本水位汇总，或在权威明细/账本上计算。读热点可以考虑本地缓存、只读副本或受控冗余；写热点则必须看操作能否拆分与合并。"
+    },
+    {
+      "type": "paragraph",
+      "text": "键名可以包含业务、租户、实体、版本和用途，例如按明确编码约定组织多个字段。分隔符本身出现在字段中时要转义或使用长度编码，避免身份碰撞；不要为易读而把敏感内容直接放进 key 或日志。TTL 要对应数据生命周期，并配合回源和版本规则。hash tag 应围绕需要共槽的最小业务单元，而不是把所有键为了“方便原子操作”放在一处。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "读请求一定走主节点吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "默认读写通常按槽路由到主节点；读副本是客户端策略，而不是 Redis 把所有读自动平均发到任意节点。原生 Cluster 副本上的连接需要 READONLY 等适当设置，表示接受该副本负责分片的可能陈旧数据，客户端仍要选择正确分片的副本；普通连接可能被重定向到主。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读主可以避免通常的副本复制滞后，但仍要考虑客户端旧路由、主切换与请求顺序，也不会让 Redis 与外部数据库的双写自动变成强一致。要求读己之写时，必须明确这一会话的读路径、成功写版本与切换后的行为，不能只说“优先主库”就省略故障条件。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "节点通信、故障判断与业务复制使用什么协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端命令主要使用 RESP，经 TCP 连接发送，可配置 TLS。节点间 cluster bus 是独立的二进制 TCP 协议，默认端口通常是数据端口加 10000，也可配置；不是把普通 RESP 命令广播给所有主。"
+    },
+    {
+      "type": "paragraph",
+      "text": "节点通过 MEET 握手和受信成员介绍发现彼此，交换 PING/PONG、槽归属、配置纪元与 gossip 状态。Cluster 中主副本节点都参与适用的心跳和状态交换，不能把示意图理解为只有主节点之间存在网络连接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PFAIL 是本地对节点不可达的怀疑；FAIL 需要有效故障报告满足相应条件，副本提升还要经过有投票资格主节点的故障转移授权。故障判断、选举授权与配置传播是不同环节。原生 Cluster 有自己的协议，不能笼统叫“Raft 加 Gossip”，更不能由故障投票推出每次写入都经过共识提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "主副本的业务数据使用复制连接：握手、PSYNC、全量 RDB 与后续复制命令流。gossip 传播控制状态，不负责把所有业务 value 同步给所有主。分区后，失去多数主联系的一侧会在相关超时条件下停止接受写；是否因缺槽停止更大范围服务，还受 cluster-require-full-coverage 等配置影响。放宽缺槽服务范围也无法让失去权威节点的那个槽凭空可写。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "3"
+}

@@ -1,0 +1,1 @@
+class SolutionCheck { public static void main(String[] args) { Solution s=new Solution(); if(s.twoSum(new int[]{Integer.MAX_VALUE,1},Integer.MIN_VALUE).length!=0)throw new AssertionError(); if(s.twoSum(new int[]{3,3},6).length!=2)throw new AssertionError(); if(s.twoSum(new int[]{},0).length!=0)throw new AssertionError(); System.out.println("Solution boundaries passed"); }}

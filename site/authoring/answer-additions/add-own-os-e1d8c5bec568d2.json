@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-e1d8c5bec568d2",
+  "entryId": "own-juc-execution",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "69326a3dfa4e3e3940e517b1e39f06c74c294007ea2123bae1f234cdd150ce02",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q4 Future CompletableFuture与执行器各管什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Executor 管执行，Future 管某次计算的结果状态，CompletableFuture 还管结果之间的依赖编排。new CompletableFuture 不会自己启动工作，supplyAsync 才提交 Supplier，complete 则由调用方手动完成结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future 不必各配一条专属线程。CompletableFuture 也不是事件循环：动作在哪里运行，要一起看完成时机、是否 Async，以及选了哪个 Executor。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：thenApply/Compose/Combine→执行位置→异常恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：new CompletableFuture不会自己启动工作"
+    },
+    {
+      "type": "paragraph",
+      "text": "三个组合方法，可以按输入输出记：thenApply 把值变成值，thenCompose 展开返回阶段的动作，避免 Future 套 Future；thenCombine 合并两个独立结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "A.thenCompose(B) 表示 B 依赖 A，不能为了并行硬拆真实数据依赖。无返回值动作可用 runAsync，有返回值动作可用 supplyAsync。回调很长或会阻塞时，使用明确的隔离执行器，避免占住完成线程或共享公共池。"
+    },
+    {
+      "type": "paragraph",
+      "text": "异常链要有消费者：get一般以ExecutionException包装任务失败，join一般抛CompletionException，取消有CancellationException路径。whenComplete适合观察结果/记录日志，并不等同于自动恢复；exceptionally提供失败回退，handle统一变换成功/失败。回退为null或默认值可能掩盖服务异常，应保留错误分类和业务含义。详细契约参见CompletableFuture Java 8 API。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q7 顺序取结果 并行提交 聚合与首个结果如何选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "先提交再取结果，和取完再提交，效果不同。submit A 后立刻 get，再 submit B，就是串行；先提交 A、B，再分别 get，任务可以并行，但若先等慢 A，已完成的 B 也会被挡住输出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "invokeAll 等一批任务完成，按输入顺序返回 Future 列表，失败仍要逐个 get 观察，带期限版本会取消未完成任务。invokeAny 返回的是一个成功结果，并尝试取消其他任务；它不是“不论成败的第一个完成者”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：提交顺序→回收顺序→失败后兄弟任务处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：allOf不收集结果；anyOf不等于首个成功"
+    },
+    {
+      "type": "paragraph",
+      "text": "CompletableFuture.allOf产生Void聚合阶段，全部完成才结束，失败会使聚合失败，不负责自动收集结果，也不会自动取消兄弟任务。anyOf跟随先完成阶段的结果或异常，也不会自动取消输家；多个已完成阶段不提供可依赖的严格完成时间排序。allOf空数组立即完成，anyOf空数组不会自动完成，因此输入契约不能省略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "强关联子任务要显式设计失败后取消、资源清理和外部补偿；Java 8的allOf不是一套自动处理所有权的结构化任务作用域。独立批处理可把成功/失败封装为带jobId的结果对象逐项收集。失败时是否允许部分成功由业务决定，而不是由选择某个聚合API决定。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q22 Java批量任务按序 首个成功与逐项回收"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java8 ExecutorService没有照搬某些语言map家族的一整组名称：submit返回一个Future，invokeAll处理一组Callable，invokeAny竞争成功结果，ExecutorCompletionService把完成任务送入完成队列。选择前先问要按输入顺序，还是尽早消费可用结果；还要问失败是整体失败还是允许部分成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：输入序与完成序→逐项异常→输出重排"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：CompletionService并不是一套新线程池"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存List<Future<R>>并按列表get能保持输入序，但前项慢会挡住后项输出；CompletionService.take/poll尽早交付已完成的Future，仍需调用get观察异常。已同时完成的多个任务不具有可依赖的精确时间排名；结果中携带index后可显式重排。CompletionService本身不是新线程池，它包裹既有Executor并提供结果队列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并行Stream适合可分解、无干扰的聚合，但不自动带来明确的阻塞I/O隔离、背压和外部副作用协议。不要为追求短代码把全局公共池变成数据库请求池。一个批次任务失败时还应检查其它Future，不能让未观察异常和未关闭线程长期滞留。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q23 批量大小 lambda捕获与多参数任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java任务的多参数通常直接由Callable捕获不可变参数，或者用明确的任务数据对象。循环索引若每轮变化，应复制到有效final局部变量；不要让所有任务读取同一个持续修改的持有者。固定指数计算平方时捕获exponent=2，变化的是base；把底数固定为2则是另一个问题，函数参数位置要用小例子核验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：参数快照→任务粒度→负载不均与重试成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：subList视图会受底层列表变化影响"
+    },
+    {
+      "type": "paragraph",
+      "text": "批量大小 b 是自己设计的任务粒度，不是 ExecutorService 自带的通用 chunksize 参数。把 n 项拆成约 ceil(n/b) 个 Callable，每个循环处理一批，可以减少提交次数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "但批次大了，长短任务不均可能拖慢尾部，失败与重试也会一次覆盖更多项目。API 接收 List，不代表任务函数会自动把列表逐项展开。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分批复制输入或明确视图的生命周期，避免subList所依赖的原列表随后被修改。Math.multiplyExact可暴露long/int溢出；普通乘法可能悄悄回绕。返回结果要定义是一项平方、平方列表还是平方和，不能在消费端凭想象解包成另一种结构。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q24 Future与CompletionService的完整结果实验"
+    },
+    {
+      "type": "paragraph",
+      "text": "PoolDemo用门闩确定性填满一个有界线程池，验证拒绝而不依赖调度速度；再比较按输入取Future与按完成获取任务，验证失败经ExecutionException回传、lambda多参数与显式批量。构造测试时门闩只服务于协议验证，生产中不能用无限等待模拟真实I/O。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：门闩固定容量→拒绝验证→回收成功失败"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：有界线程池不代表调用方保存n个Future的内存有界"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名：PoolDemo.java。编译运行：javac -encoding UTF-8 PoolDemo.java；java PoolDemo。在JDK9及以上可使用javac --release 8进行Java8 API与字节码兼容检查。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "PoolDemo.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.function.IntBinaryOperator;\n\n/** Bound the queue explicitly; result retrieval order is separate from execution order. */\npublic final class PoolDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch gate) throws InterruptedException {\n        if (!gate.await(3, TimeUnit.SECONDS)) throw new AssertionError(\"gate timeout\");\n    }\n    private static void close(ExecutorService pool) throws InterruptedException {\n        pool.shutdownNow();\n        if (!pool.awaitTermination(3, TimeUnit.SECONDS)) throw new AssertionError(\"pool stuck\");\n    }\n    public static void main(String[] args) throws Exception {\n        CountDownLatch running = new CountDownLatch(1), release = new CountDownLatch(1);\n        ThreadPoolExecutor bounded = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,\n                new ArrayBlockingQueue<Runnable>(1), new ThreadPoolExecutor.AbortPolicy());\n        try {\n            Future<Integer> first = bounded.submit(() -> { running.countDown(); await(release); return 1; });\n            await(running);\n            Future<Integer> second = bounded.submit(() -> 2); // The sole queue slot is occupied.\n            boolean rejected = false;\n            try { bounded.submit(() -> 3); } catch (RejectedExecutionException ex) { rejected = true; }\n            check(\"full bounded pool rejects deterministically\", rejected);\n            check(\"pool has one queued task\", bounded.getQueue().size() == 1);\n            release.countDown();\n            check(\"accepted tasks still finish\", first.get(3, TimeUnit.SECONDS) + second.get(3, TimeUnit.SECONDS) == 3);\n        } finally { release.countDown(); close(bounded); }\n\n        ExecutorService pool = Executors.newFixedThreadPool(2);\n        CountDownLatch slowRelease = new CountDownLatch(1), fastFinished = new CountDownLatch(1);\n        try {\n            CompletionService<String> completed = new ExecutorCompletionService<>(pool);\n            Future<String> slow = completed.submit(() -> { await(slowRelease); return \"slow\"; });\n            Future<String> fast = completed.submit(() -> { fastFinished.countDown(); return \"fast\"; });\n            await(fastFinished);\n            check(\"later submitted task can finish first\", fast.get(3, TimeUnit.SECONDS).equals(\"fast\") && !slow.isDone());\n            Future<String> next = completed.poll(3, TimeUnit.SECONDS);\n            check(\"completion service returns ready task\", next == fast && next.get(3, TimeUnit.SECONDS).equals(\"fast\"));\n            // Iterating [slow, fast] and calling get() would wait for slow first.\n            slowRelease.countDown();\n            check(\"submission-order list retains input order\", Arrays.asList(slow.get(3, TimeUnit.SECONDS), fast.get(3, TimeUnit.SECONDS))\n                    .equals(Arrays.asList(\"slow\", \"fast\")));\n            Future<String> last = completed.poll(3, TimeUnit.SECONDS);\n            check(\"remaining completion is slow task\", last == slow);\n\n            Future<Integer> failed = pool.submit(() -> { throw new IllegalStateException(\"boom\"); });\n            boolean propagated = false;\n            try { failed.get(3, TimeUnit.SECONDS); }\n            catch (ExecutionException ex) { propagated = ex.getCause() instanceof IllegalStateException; }\n            check(\"Future get preserves task failure cause\", propagated);\n\n            IntBinaryOperator add = (x, y) -> x + y;\n            final int x = 7, y = 8; // A Callable has no arguments; capture the inputs in a lambda.\n            check(\"lambda captures multiple arguments\", pool.submit(() -> add.applyAsInt(x, y)).get(3, TimeUnit.SECONDS) == 15);\n            List<Future<Integer>> batches = new ArrayList<>();\n            for (int start = 1; start <= 6; start += 2) {\n                final int from = start;\n                batches.add(pool.submit(() -> from + (from + 1)));\n            }\n            int sum = 0;\n            for (Future<Integer> batch : batches) sum += batch.get(3, TimeUnit.SECONDS);\n            check(\"batching preserves aggregate result\", batches.size() == 3 && sum == 21);\n        } finally { slowRelease.countDown(); close(pool); }\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "推演：第一任务占住工作线程、后续任务占满队列，再提交触发明确拒绝；释放门闩后等待已接收任务终态。完成队列的poll只是拿结果句柄，get才确认成功或失败；按index归位可恢复输入序。n个小任务计算O(n)，Future列表与完整结果O(n)，固定队列q和并行p只是其中一部分内存，不能忽略调用者已保存的n个Future。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-future-contracts",
+  "targetOrigin": "authored"
+}

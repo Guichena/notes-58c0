@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-3cc57fb9825aa615",
+  "entryId": "own-mq-operations",
+  "expectedOriginalHash": "b522902b62d05413b8236ea74971c3f341b29c30d2a9b5704dcf35c0370995a9",
+  "title": "跨册场景补充：C26 广告事件看板怎样保证准确",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C26 广告事件看板怎样保证准确"
+    },
+    {
+      "type": "paragraph",
+      "text": "广告看板应以事件身份、事件时间和可补偿的 join 为核心，Kafka 加 Flink 并不会自动保证业务数据正确。 servingId 连接广告分发事实与用户行为，最终按 (adId, action, region) 聚合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：一条流只有 adId/servingId，另一条有 servingId、点击或曝光及地区怎么 join；日志乱序、重复、迟到怎么办；看板与实际不一致如何排查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分发流记录 servingId→adId 与分发时间，行为流记录 eventId、servingId、action、region、event_time、ingest_time。两个源按 servingId 分区或在流计算中 keyBy，维护有限时间状态。分发先来则缓存映射，行为先来则暂存待关联事件；等映射到达再补 join。严格限定 servingId 是否全局唯一，若包含租户或批次局部唯一，join key 必须带上相应域。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设置 event-time watermark 与允许迟到窗口，窗口内重试和乱序正常处理；超出窗口的记录进入迟到/补偿通道，记录不可归因率和原因。state TTL 必须覆盖实际分发到点击/曝光/转化的延迟分布，过短会系统性漏账，过长则增加存储。Redis 可作为外部映射缓存，但缓存 miss 不意味着事实不存在，且异步缓存更新不能替代一致的事件主账。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复行为以稳定 eventId 幂等处理，重复分发记录也要检验 payload 一致。结果写入 OLAP 可用明确的 upsert 主键或幂等批次，避免一次重放又把累计值加一。Flink checkpoint、源位点与 sink 事务或幂等协议需要形成一致恢复语义；若外部服务不参与事务，端到端 exactly-once 不能只靠一句 checkpoint 保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "看板除总量外，还要显示有效 join 量、重复量、迟到量、未知地区、非法 action 和采集延迟，解释数字在哪一步变化。按客户端版本、地域、广告类型和实验桶对账，并区分“发送成功”“消费成功”“join 成功”“聚合落库成功”“可视曝光成功”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "试把故障放在 join 成功之后、聚合落库之前：已有上游成功记录，仍不足以证明看板正确。回填应带可追溯批次、能重新计算窗口，不能手改一条总计掩盖断点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "相关商品目录批量上传场景若单次最多 50 万件商品，应走对象存储上传、任务 ID、流式解析和分批校验入库，失败按行定位并支持幂等重试。目录发布与推荐索引更新通过版本切换或增量事件衔接，不能 HTTP 请求内一次加载 50 万行并同步重建所有推荐索引。规模条件影响内存、事务大小与恢复设计，不能省略成泛泛“批量写数据库”。"
+    }
+  ],
+  "questionId": "q-own-mq-ad-stream-join",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,56 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">订单表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">question.txt</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="text">orders(id, user_id, amount, created_at)</pre></div></section>
+<p class="md-p">查询某用户订单：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">question.txt</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT id, user_id, amount, created_at
+FROM orders
+WHERE user_id = 12345
+ORDER BY created_at DESC
+LIMIT 10000, 50;</pre></div></section>
+<p class="md-p">为什么慢？如何优化？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p"><code class="tok-inline">LIMIT 10000, 50</code> 不是只读 50 行。MySQL 需要按条件和排序找到前 10050 行，再丢弃前 10000 行。如果查询列不在索引中，还可能发生大量回表。</p>
+<p class="md-p">面试官想听到两个方向：减少回表，以及避免大 offset。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>InnoDB 聚簇索引：主键索引叶子节点存整行。</li><li>二级索引：叶子节点存二级索引列 + 主键值，查其他列需要回表。</li><li>覆盖索引：查询列都在索引里，不需要回表。</li><li>延迟关联：先用覆盖索引拿主键，再回表取少量完整行。</li><li>游标分页/Keyset Pagination：用上一页最后一条记录作为下一页起点。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">先建立适配索引：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE INDEX idx_user_created_id
+ON orders(user_id, created_at DESC, id DESC);</pre></div></section>
+<p class="md-p">方案 A：延迟关联，适合仍需要页码的场景：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT o.id, o.user_id, o.amount, o.created_at
+FROM orders o
+JOIN (
+    SELECT id
+    FROM orders
+    WHERE user_id = 12345
+    ORDER BY created_at DESC, id DESC
+    LIMIT 10000, 50
+) t ON o.id = t.id
+ORDER BY o.created_at DESC, o.id DESC;</pre></div></section>
+<p class="md-p">子查询只查 <code class="tok-inline">id</code>，可以利用 <code class="tok-inline">(user_id, created_at, id)</code> 索引，减少前 10000 行的回表。外层只回表 50 次。</p>
+<p class="md-p">方案 B：游标分页，适合信息流、订单列表、评论列表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT id, user_id, amount, created_at
+FROM orders
+WHERE user_id = 12345
+  AND (
+      created_at &lt; '2026-05-01 12:00:00'
+      OR (created_at = '2026-05-01 12:00:00' AND id &lt; 987654)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 50;</pre></div></section>
+<p class="md-p">这里用 <code class="tok-inline">(created_at, id)</code> 作为稳定游标，避免相同时间导致翻页重复或漏数据。</p><p class="md-p">假定 created_at 非空、id 唯一且分页排序键不变；若允许 NULL，必须另外定义 NULL 分区与游标。唯一游标只解决并列歧义，不解决并发回填、删除或排序字段更新；严格一致导出需要固定快照/物化结果。原题单列排序存在并列，这里增加 id 明确选择顺序。</p><p class="md-p">外层“只回表50次”描述至多50个主键的详情查找，不含子查询可能发生的MVCC可见性聚簇访问；真实访问计划与I/O仍须测量。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：能不能只说“加索引”？</strong></p>
+<p class="md-p">问题分析：加索引只能减少排序和过滤成本，但 offset 仍然要跳过大量记录。</p>
+<p class="md-p">知识点：扫描行数、回表、offset。</p>
+<p class="md-p">答案：不能只说加索引。要说明深度分页的核心成本是扫描并丢弃 offset 行，优化要么减少回表，要么改成游标分页。</p>
+<p class="md-p"><strong>变体 2：必须跳到第 1000 页怎么办？</strong></p>
+<p class="md-p">问题分析：游标分页不适合任意页跳转。</p>
+<p class="md-p">知识点：产品约束、搜索引擎、缓存。</p>
+<p class="md-p">答案：限制最大跳页；使用延迟关联；对静态结果做快照；搜索类需求交给 ES；后台报表走离线导出。</p>
+<p class="md-p"><strong>变体 3：为什么排序要加 id？</strong></p>
+<p class="md-p">问题分析：<code class="tok-inline">created_at</code> 可能重复，单独排序不稳定。</p>
+<p class="md-p">知识点：稳定排序、游标边界。</p>
+<p class="md-p">答案：用 <code class="tok-inline">(created_at, id)</code> 组成唯一有序游标，避免翻页时重复或遗漏。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

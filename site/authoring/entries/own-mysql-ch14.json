@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch14",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · EXPLAIN、执行器与优化器选择",
+  "title": "EXPLAIN、执行器与优化器选择",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s780",
+      "order": 780,
+      "question": "含 NULL 和重叠分支的 OR 查询怎样安全拆成 Top-10 并集？",
+      "shortAnswer": "先固定原谓词与全序，再用 Q AND P IS NOT TRUE 排除第二支重叠；两支局部 Top-10 可归并，但所有读取必须共享同一结果视图。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "OR、排序和 LIMIT 10 的完整推导"
+        },
+        {
+          "type": "paragraph",
+          "text": "题面字符串存在转义和拼写缺口，能确定的意图线索是 a>? AND b=? OR c=? ORDER BY d DESC LIMIT 10。以下在明确确认 >、=、DESC，并按 AND 优先于 OR 的前提下讨论：条件是 (a>阈值 AND b=值) OR c=值，不是 a>阈值 AND (b=值 OR c=值)。若原意不同，必须重新推导。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确定 d 相同怎么排序。教学例显式追加 id DESC，使结果形成全序；若业务拒绝这个并列规则，不能声称结果序列完全相同。过滤索引 (b,a) 适合第一支缩小候选再排序；(b,d DESC,id DESC,a) 可顺序扫描并过滤 a；(c,d DESC,id DESC) 服务第二支；全局 (d DESC,id DESC) 也可能边扫边过滤并提前停止。选择取决于选择率与 d 的相关性，不是把四个索引全建一遍。"
+        },
+        {
+          "type": "paragraph",
+          "text": "令 P=(a>阈值 AND b=值)、Q=(c=值)。第一支保留 P，第二支保留 Q AND P IS NOT TRUE，就能既避免重叠，又保留 NULL 的三值逻辑。第一支不必排除 Q，第二支负责排除已被 P 选中的行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么每支只取前 10 就够？前提是两支用同一个全序。某行若在自己那支排到第 11 或更后，至少已有 10 行比它更好，它不可能再进入并集前 10。因此每支取 10，UNION ALL 后最多 20 个候选，最后再按同一全序取 10。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这项改写有两个不能省的检查。语义上，第二支不能写 Q AND NOT P，否则丢掉 P=UNKNOWN 的合格行；两支不能不排重就 UNION ALL，也不能依赖 SELECT * 的偶然 UNION 去重而忽略投影变化。章末样本放入 P/Q 重叠、NULL 和同分，应比较完整有序 id 序列。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读取边界上，两支以及后续取完整行必须共享同一结果视图。最好在同一条普通一致性读 SQL 内完成，或明确用共享读视图的事务、物化结果。若应用分别发两条 RC 查询，再发第三条取整行，中间增删改会改变集合、顺序或载荷；Top-10 证明和去重公式都正确，也不能弥补这个快照差异。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "带 NULL、重叠分支和并列排序的完整 Top-10 实验"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 or_top10.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/query/code/or_top10.sql",
+          "value": "CREATE TABLE top_items(id BIGINT PRIMARY KEY,a INTEGER,b INTEGER,c INTEGER,d INTEGER,payload VARCHAR(100));\nCREATE INDEX ix_b_a ON top_items(b,a);\nCREATE INDEX ix_c_d_id ON top_items(c,d DESC,id DESC);\nINSERT INTO top_items VALUES\n (1,8,2,9,100,'both'),(2,8,2,1,90,'P'),(3,NULL,2,9,80,'unknown P'),\n (4,1,2,9,80,'Q'),(5,8,NULL,9,70,'unknown P'),(6,8,2,NULL,70,'P'),\n (7,1,1,1,200,'neither'),(8,8,2,9,NULL,'both null sort'),\n (9,NULL,NULL,9,60,'Q'),(10,6,2,0,50,'P'),(11,9,2,0,40,'P'),\n (12,0,0,9,30,'Q'),(13,0,0,9,20,'Q'),(14,0,0,9,10,'Q');\nSET @threshold=5; SET @bv=2; SET @cv=9;\n-- Baseline useings: threshold, b_value, c_value.\nSELECT * FROM top_items WHERE (a>@threshold AND b=@bv) OR c=@cv ORDER BY d DESC,id DESC LIMIT 10;\n-- Equivalent disjoint branches. Use the same session values in both branches.\nWITH first_ten AS (\n SELECT * FROM top_items WHERE a>@threshold AND b=@bv ORDER BY d DESC,id DESC LIMIT 10\n), second_ten AS (\n SELECT * FROM top_items WHERE c=@cv AND (a>@threshold AND b=@bv) IS NOT TRUE ORDER BY d DESC,id DESC LIMIT 10\n)\nSELECT * FROM (SELECT * FROM first_ten UNION ALL SELECT * FROM second_ten) candidates\nORDER BY d DESC,id DESC LIMIT 10;\n-- NOT(a>@threshold AND b=@bv) would drop UNKNOWN rows from the second branch: incorrect with NULL.\n-- Candidate alternative, not a recommendation to create every index:\n-- CREATE INDEX ix_b_d_id_a ON top_items(b,d DESC,id DESC,a);\n-- CREATE INDEX ix_d_id ON top_items(d DESC,id DESC);\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-5",
+          "label": "常见会导致索引失效或效果不好的写法有哪些？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

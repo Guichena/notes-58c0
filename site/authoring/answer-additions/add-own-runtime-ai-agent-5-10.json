@@ -1,0 +1,299 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-5-10",
+  "entryId": "ai-agent-5",
+  "questionId": "10",
+  "expectedOriginalHash": "bcb4e8c574efe5d686bfe07f456cd559feb8d83bdcd85e4eb9003cd7f0327d02",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "09 超时 重试 取消和截止时间如何贯穿整条链路"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 单次超时限制一次等待，deadline 限制整个任务；两者都不证明远端没执行。我按错误类别决定原样重试、重新规划、等待审批或停止。所有层共享剩余预算，并把取消传播到队列、模型、工具与子任务；外部已提交操作另行核实状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Resilience4j 怎样落到 Java 调用链"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 Resilience4j 2.3.0 的 TimeLimiter 实现和官方 Spring Boot 3 集成合同为例，先锁定匹配依赖，再分别配置“何时停止等待”和“依赖故障时是否继续放行”。下面的数值用于说明字段，实际要按流量、SLO 和故障成本压测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "名为 llm 的熔断实例可在 resilience4j.circuitbreaker.instances.llm 配置 slidingWindowSize=100、minimumNumberOfCalls=20、failureRateThreshold=50、waitDurationInOpenState=10s、permittedNumberOfCallsInHalfOpenState=3。等待上限则在 resilience4j.timelimiter.instances.llm 配置，例如 timeoutDuration=2s、cancelRunningFuture=true。两秒只是这份示例的等待上限，不能未经测量套给所有长任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "配置还要通过服务方法相应的代理/装饰器真正应用，并导出状态、拒绝、失败和慢调用指标。调用方业务校验失败或授权拒绝通常不计入依赖故障率；下游凭据失效、权限配置错误仍需单独诊断和告警，不能静默忽略。按异常类型与调用阶段分类，才知道应保护服务还是修正请求；熔断不能把错误请求重试成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TimeLimiter 限制等待时间；2.3.0 的 Future 路径在配置允许时调用 cancel(true)，CompletionStage 路径则按计时器异常完成 Future，不能据 cancelRunningFuture=true 断言底层任务被取消。两条路径都不证明 HTTP 请求或写操作已停止，仍需客户端超时、资源关闭和 UNKNOWN 对账。CircuitBreaker 决定故障时是否放行，Bulkhead 限并发，RateLimiter 管接入频率，Retry 只重试被明确分类的安全暂态失败；它们不替代跨实例 TPM/费用账本。组合顺序决定统计按每次 attempt 还是整个重试序列计数，须用故障测试固定。fallback 可返回受限结果或等待状态，不得把写入超时包装成成功。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "错误分类决定恢复动作"
+    },
+    {
+      "type": "paragraph",
+      "text": "参数/schema 错误返回稳定字段路径和可修复原因；权限拒绝停止或询问授权，不能换工具绕过；资源版本冲突重新读取并重算；429 尊重 Retry-After 并有限退避；暂态只读故障可重试；写超时或不确定的传输故障先对账。404 也要看领域语义，可能是永久不存在或尚未可见，不能统一重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "退避常用带上限的指数增长和随机抖动，避免大量任务同一时刻重试。最大次数、总等待、下游并发、总费用同时受限；SDK、工具层、Agent 层不应各自重试三次形成放大。熔断器打开后保留少量探测恢复，业务错误不应污染下游可用性统计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "审核服务不可用时，先看被保护动作：发布、外发或高风险写入等待审核恢复或走已有人工入口；经政策允许的低风险只读/本地草稿可继续，但清楚标记尚未审核，不能把“没检测到结果”当审核通过。业务敏感词规则与模型审核分别记录命中和版本，避免只删词后换写法绕过。用模型或 Skill 辅助排查 API 异常时，只给脱敏日志、错误码、健康检查和依赖状态，输出原因假设及证据缺口；限流、凭据、权限和外部写重试仍由确定策略控制，模型不能为了修复异常自行换账户或放宽审批。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java 的取消语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future.get(40, MILLISECONDS) 超时仅让等待线程返回，任务可继续跑。Future.cancel(true) 请求中断，任务需要响应；阻塞客户端还需自身连接、读取和请求超时。CompletableFuture.cancel(true) 本身不能控制底层计算，orTimeout 也不能当作外部工作已停止。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对可信计算采用中断检查、取消 token 和关闭资源；捕获 InterruptedException 后不要无声吞掉，按方法契约传播或恢复中断标记。对不可信脚本用进程/容器边界和资源限制，超时回收整个进程树。Java 没有安全强杀任意线程、同时撤销其所有外部副作用的通用办法。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "断网与用户取消不是同一个事件"
+    },
+    {
+      "type": "paragraph",
+      "text": "浏览器 SSE 断线可能只是短暂网络问题。持久 Run 通常继续，客户端按游标恢复；用户点击停止应调用独立取消接口，落库取消意图并向下传播。若产品规定断线即取消，也要有明确宽限期，避免移动网络切换反复取消任务。取消成功、取消请求已接收、远端结果未知要分别呈现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "长任务的 deadline 在排队期间也消耗。每步实际超时取单步上限与剩余总时间中的较小值，启动前、重试前、合并前都检查。排队已过期的任务直接终止，不等取到 Worker 才付费调用模型。进程重启后用保存的绝对截止时间重建剩余预算；单进程计时用单调时钟，避免系统时钟回拨影响耗时。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 大模型 API 调用出现超时或异常时如何处理？Agent 系统的稳定性、监控和可观测性（Observability/Tracing）如何建设？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用失败、超时了怎么处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用失败怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- AI Agent 项目：在多轮对话场景中，如何管理 Agent 的上下文状态？如果 Agent 任务执行超时或失败，如何设计重试和补偿机制？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 调工具失败怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用超时或者返回异常以后，是直接终止还是继续让 Agent 重试？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 用户主动停止生成或者网络断开以后，后端怎么终止当前 Agent 任务？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 调用外部模型或者第三方 API 超时、失败时，后端怎么做容错？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Function Calling 的底层流程，你在 Java 侧怎么封装 Tool 调用？如何处理工具调用失败、超时、参数非法？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Tool 工具集标准化设计：什么样的能力适合封装成 Tool？Tool Schema 怎么定义？如何做 Tool 的权限、超时、熔断降级？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 连续发送多个请求，如何保证最新结果？（TaskId + 分片取消）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何处理 Agent 执行失败或 Tool 调用超时？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 失败/中断如何处理？重试安全？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 题面：实现一个带重试机制的下游服务调用封装（支持最大尝试次数、总超时、单次超时、错误类型过滤与退避休眠）。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 2：这个重试组件你打算怎么测试，测试用例怎么设计（Mock 下游时延与抖动）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 3：当 max_attempts = 1 时，到底执不执行重试？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 4：kTimeout 和 kPermissionDeny 错误分别该怎么处理（哪些可重试，哪些必须立即熔断）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 5：AI 生成的代码如果会无限重试，你在工程上怎么做静态审查与运行时熔断？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一个Agent任务耗时很长、用户等不及了，怎样停止这个任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个取消机制你实际尝试过吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 假设你给agent提供了一个执行代码的工具，这个工具你会怎么设计，把代码直接当做参数吗？如果代码报错了怎么办？（回答了如果是瞬时错误可以加重试），追问那重试你觉得的要做在代码执行的tool内，还是说直接让agent去多次调用tool来达到重试的目的？（问住了，回答做在tool内可能比较稳定）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Java 侧 SSE 断线重连怎么处理？用户点击停止后，如何真正取消推理而不是只停止前端展示？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 调用多个工具时，如果中途某个工具失败，如何设计恢复机制？（重试机制、异常回滚、Human-in-the-loop 人工介入）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- （6）Agent 调用多个工具时，如果中途某个工具失败，如何设计恢复机制？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- （9）取消 Plan 或中间派发后，是否会降低成功率或输出质量？是否做过评测？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent执行到一半，用户点击取消，如何让后续Tool调用停止并正确结束任务？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果 Agent 服务挂了，怎么保证用户无感知？有没有做熔断、降级、重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果工具调用超时或返回空值，你如何设计 Prompt 让 Agent 友好地反馈用户并尝试自我修复？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用失败处理策略？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果工具调用超时或返回空值，你如何设计 Prompt 让 Agent 反馈用户？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 自动重试机制是如何实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 哪些情况会触发任务自动重试？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用失败有哪几类？模型输出非法 JSON 怎么处理？怎么区分是 Prompt 问题还是模型能力不足？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- MCP 工具反复超时，修改代码前先检查什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 工作时工具调用失败或者超时怎么做？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 实现一个“RAG 问答服务”。请描述后端侧的核心组件：向量化服务、向量库、关键词检索、重排服务、LLM 生成服务。它们之间的调用顺序与超时预算你会怎么定？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LLM 调用失败有哪些原因？如何感知异常？"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 详细说定位问题、解决问题完整思路"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. LLM API 除限流外，还遇到过哪些线上问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果遇到 API 超时和报错怎么解决？"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 有没有考虑用大模型自己排除 API 超时和报错？（SKILL）"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 消耗 token 过快怎么排查？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Resilience4j 如何配置使用？LLM 远程调用超时/报错时如何做服务保护、稳定性兜底？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 编码实战 1（禁 AI，语言不限）："
+    },
+    {
+      "type": "paragraph",
+      "text": "- 题面：实现固定容量队列，支持 push/pop，初始化传入 capacity；进阶要求：O(1) 复杂度、多线程并发安全、close 语义、统计 push 成功与失败次数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 1：head 指针的设计目的是什么？插入元素的时候头部要不要变？单个头指针能否满足环形缓冲区（Ring Buffer）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 2：泛型下 pop 失败返回什么？怎么和合法的假值（如 None/False/0）区分开？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 3：多线程并发怎么保证正确性？互斥锁/自旋锁应该加在哪，锁粒度如何细化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 4：队列 close 之后，push 和 pop 分别对应什么语义？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 5：测试用例设计：异常与高并发边界用例有哪些？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

@@ -1,0 +1,227 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-c50b648debec5ff2",
+  "entryId": "handwrite-60",
+  "expectedOriginalHash": "4875e570804267af5904eded9bf16c55de7b68bb869fb0fb7e25aa1b484d87d5",
+  "title": "跨册场景补充：分布式限流如何定义算法与故障语义",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分布式限流如何定义算法与故障语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "先明确主体、计数单位、时间窗口与故障策略，再用同一权威执行域原子判断和记录准入。局部 Lua 原子性不等于跨故障切换严格全局限额。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "先固定问题边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "按某个稳定维度（例如账户与 API 组合）限制：窗口 W 毫秒内最多允许 N 次尝试。这里采用精确滑动日志，窗口定义为 (now−W, now]，左端点排除、右端点包含。被拒绝的尝试不占名额；每个获准尝试必须对应不同成员 ID。N=3、W=1000 时，同一毫秒内前 3 个不同尝试可以通过，第 4 个必须被拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "此实现面向一个权威 Redis 主节点上的单个限流桶；Redis Cluster 中同桶的两个 key 必须在同一槽。它不自动提供跨地域、多主、故障切换不丢计数或持久化 exactly-once。限流器也不是业务幂等系统，不证明请求已经成功执行。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "算法选择与不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定窗口只存计数，成本低，但边界附近短时间可能接近两倍突发；滑动日志保存每个获准时间戳，能精确实施这里定义的窗口；令牌桶保存令牌余量和补充时间，可用桶容量表达突发额度；漏桶/整形队列更适合平滑输出，但会引入排队、容量和延迟问题。不能说滑动窗口本身保证流量均匀，它仍允许 N 个请求同时进入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZSET 的 score 保存时间，member 保存唯一尝试 ID。一次检查必须原子地完成：清理过期项 → 查当前数量 → 未达上限时加入新成员。脚本执行期间不会与其他客户端命令交错，因此正常成功路径不会让两个请求都读取同一个旧计数后越界放行。原子执行会阻塞该 Redis 节点处理其他工作，所以脚本必须短小，不能把“原子”理解成没有延迟成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不变量：清理后集合恰好代表仍在定义窗口内、尚未过期的成功准入；加入前 count<N；加入后 count≤N。唯一 member 是必要条件，相同 member 的 ZADD 会更新旧记录而不是新增一次请求，score 相等则完全合法。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "时间来源、唯一性与失败边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 使用 Redis TIME 统一同节点时间来源，避免应用服务器各自传时间导致偏差。TIME 是服务端墙钟，不是永不回拨的单调钟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 脚本额外保存桶内 last，令 now=max(physical,last)，对本桶近期回拨采取保守冻结；TTL 增加回拨差额。这不能修复大幅向前跳变，也不能跨键被删除、淘汰、故障切换后提供连续时钟保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Java 生成 UUID 作为尝试 ID。随机碰撞极低但不当成数学不可能：脚本检测重复 ID 并拒绝，不会静默覆盖造成少计。这里没有“重复 ID 继续获准”的幂等捷径，否则客户端重复使用 ID 可能绕过计数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 同时写 events 和 clock 两个 key，需要共享 {bucket} 标签；所有访问要遵守独占命名空间，不能让别的业务改 key 类型。脚本原子不等于错误自动回滚，配置错误或运行错误前已经执行的写入不能假定被撤销。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整 Lua 脚本"
+    },
+    {
+      "type": "paragraph",
+      "text": "目标环境为 Redis 7 或更新版本，确保所用部署支持当前脚本执行/复制模型。window、limit 的上限是示例主动设置的资源保护边界，不代表这些极限配置能满足某个延迟目标。"
+    },
+    {
+      "type": "code",
+      "language": "lua",
+      "label": "backend-scenarios 原语言代码 L2973–3007（完整围栏，未执行）",
+      "value": "-- Redis 7+; KEYS[1] = events ZSET, KEYS[2] = logical-clock STRING.\n-- Both keys MUST share a Redis Cluster hash tag and belong only to this script.\n-- ARGV = windowMs, maxCount, freshAttemptId. Window is (now-windowMs, now].\nlocal window = tonumber(ARGV[1])\nlocal limit = tonumber(ARGV[2])\nlocal member = ARGV[3]\nif not window or window < 1 or window > 86400000 or window ~= math.floor(window)\n    or not limit or limit < 1 or limit > 1000000 or limit ~= math.floor(limit)\n    or not member or #member < 1 or #member > 128 then\n    return redis.error_reply('invalid rate-limit arguments')\nend\nlocal t = redis.call('TIME')\nlocal physical = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)\nlocal last = tonumber(redis.call('GET', KEYS[2]) or '0')\nlocal now = math.max(physical, last) -- Clamp local backward jumps; no cross-failover guarantee.\nredis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window)\nlocal count = redis.call('ZCARD', KEYS[1])\nlocal allowed = 0\nif redis.call('ZSCORE', KEYS[1], member) then\n    allowed = -1 -- Reused ID is rejected; never silently overwrite a previous attempt.\nelseif count < limit then\n    redis.call('ZADD', KEYS[1], 'NX', now, member)\n    count = count + 1\n    allowed = 1\nend\n-- Extend both lifetimes consistently, including a conservative clock-backward allowance.\nlocal ttl = window + math.max(0, now - physical) + 1000\nredis.call('SET', KEYS[2], tostring(now), 'PX', ttl)\nredis.call('PEXPIRE', KEYS[1], ttl)\nlocal retry = 0\nif allowed == 0 then\n    local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')\n    retry = math.max(1, tonumber(oldest[2]) + window - now)\nend\nreturn {allowed, math.max(0, limit - count), retry}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "清理使用闭合上界 now−window，正好对应本题左端点排除。ZREMRANGEBYSCORE 的成本包含真正删除的元素数，集中清理大桶可能带来延迟峰值。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整 Java 接入类"
+    },
+    {
+      "type": "paragraph",
+      "text": "依赖 Spring Data Redis 与 Spring Core，构造器传入已配置、可用的 StringRedisTemplate，classpath 放置 limit.lua。示例不内嵌凭据，也没有捏造一套适用于所有项目的连接池、超时和故障降级配置。DefaultRedisScript 的脚本执行流程可使用缓存的脚本摘要，并按框架能力处理脚本加载，不需要每次请求新建脚本对象。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L3017–3061（完整围栏，未执行）",
+      "value": "import java.util.Arrays;\nimport java.util.List;\nimport java.util.Objects;\nimport java.util.UUID;\nimport org.springframework.core.io.ClassPathResource;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.scripting.support.ResourceScriptSource;\n\n/** Integration example: requires a configured StringRedisTemplate and limit.lua on classpath. */\npublic final class RedisSlidingWindow {\n    private final StringRedisTemplate redis;\n    private final DefaultRedisScript<List> script;\n    public RedisSlidingWindow(StringRedisTemplate redis) {\n        this.redis = Objects.requireNonNull(redis);\n        script = new DefaultRedisScript<>();\n        script.setResultType(List.class);\n        script.setScriptSource(new ResourceScriptSource(new ClassPathResource(\"limit.lua\")));\n    }\n    public static final class Decision {\n        public final boolean allowed;\n        public final long remaining, retryAfterMs;\n        private Decision(boolean allowed, long remaining, long retryAfterMs) {\n            this.allowed = allowed; this.remaining = remaining; this.retryAfterMs = retryAfterMs;\n        }\n    }\n    public Decision acquire(String bucket, int maxCount, long windowMs) {\n        if (bucket == null || !bucket.matches(\"[A-Za-z0-9_.:-]{1,120}\"))\n            throw new IllegalArgumentException(\"use a stable, nonsecret bucket identifier\");\n        if (maxCount <= 0 || maxCount > 1000000 || windowMs <= 0 || windowMs > 86400000)\n            throw new IllegalArgumentException(\"unsupported rate-limit policy\");\n        // The same {...} hashes both keys to one Redis Cluster slot.\n        // Include policy parameters to avoid mixing incompatible windows in one log.\n        String base = \"rl:{\" + bucket + \"}:w\" + windowMs + \":n\" + maxCount;\n        List<?> result = redis.execute(script,\n                Arrays.asList(base + \":events\", base + \":clock\"),\n                Long.toString(windowMs), Integer.toString(maxCount), UUID.randomUUID().toString());\n        if (result == null || result.size() != 3) throw new IllegalStateException(\"invalid Redis reply\");\n        long code = ((Number) result.get(0)).longValue();\n        if (code == -1) throw new IllegalStateException(\"attempt ID reused\");\n        if (code != 0 && code != 1) throw new IllegalStateException(\"unknown decision code\");\n        return new Decision(code == 1, ((Number) result.get(1)).longValue(),\n                ((Number) result.get(2)).longValue());\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "演算与返回语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "N=3、W=1000，在 now=1000 时分别加入 a、b、c，count 依次为 1、2、3；第四次 d 被拒，retryAfterMs=1000。到 now=1999 仍不能放行，重试建议为 1 毫秒；到 2000 时删除 score≤1000 的三条记录，下一次可以重新进入。相同时间不同 ID 仍是三条记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "返回码 1 为允许，0 为容量耗尽，−1 为 ID 重用错误；remaining 是本次原子决策结束时的快照，下一请求可能立刻改变它。retryAfterMs 只是最早现有记录过期的建议，不能承诺客户端等待后一定抢到额度。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "成本、故障策略与工程追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "单次清理 O(log N+R)，R 是删除条目数；计数 O(1)，加入 O(log N)，每桶空间 O(N)，活跃桶总空间约为所有桶记录总数及 key/对象开销。清理摊销通常可接受，却不能以此保证固定 5ms 或未经压测的 QPS。热点桶落在单槽，不能靠随意拆成多个 key 还保持原有严格总配额。"
+    },
+    {
+      "type": "paragraph",
+      "text": "限流请求超时后，先保留两种可能：Redis 尚未计入，或者已经计入但响应丢失。保守策略是这次不给业务放行，宁可损失一份额度；选择 fail-open 则提高可用性，同时接受全局上限暂时失效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地 Semaphore 只能限制本机并发，不能代替全局每秒/每窗口次数；本地令牌桶也会发生多副本额度叠加。复述故障策略时，必须说清接受的是少放还是超放，不能只说“降级到本地”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 重启、异步复制故障切换、内存淘汰、修改策略 key 等都可能重置历史；需要根据业务决定持久化、复制、禁止淘汰或外部更强一致性存储，以及容量与可用性代价。策略改变时本示例使用新窗口/上限命名空间，切换时相当于一个新桶，应显式规划，不能偷偷声称历史连续。"
+    },
+    {
+      "type": "paragraph",
+      "text": "令牌桶追问：需要保存 tokens、lastRefill，计算 tokens=min(capacity,tokens+max(0,now−lastRefill)*rate)，扣除请求成本前检查是否足够，再原子保存时间和余量。必须统一毫秒/秒单位、考虑小数或整数缩放精度、限制回拨、设计 TTL；只写补充公式还不是完整实现。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "必须执行的集成测试清单"
+    },
+    {
+      "type": "paragraph",
+      "text": "在目标 Redis 部署需补充以下集成测试：同毫秒至少 N+1 个并发请求，实际只通过 N 个；恰好位于窗口左端点；重复 ID；时间回拨；key 过期后首次请求；Cluster 同槽与跨槽；脚本缓存丢失；连接超时且结果未知；主从切换；错误 key 类型；热点桶内存和 p99 延迟。Java 接入类需按实际 Spring Data 版本编译运行；本地 JDK 模型只验证局部逻辑。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "每分钟最多三次，怎样再同时限制每小时次数"
+    },
+    {
+      "type": "paragraph",
+      "text": "先明确“每分钟”是自然分钟还是任意滚动 60 秒，再把分钟与小时条件放在同一个原子准入操作中。只要任一窗口已满，就拒绝且不占另一个窗口的额度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：手写每分钟允许 3 个请求、超过拒绝的限流器；同时按分钟和小时限流时，key 和 value 分别是什么？下面采用更严格的滑动窗口 (now−window, now]，被拒绝的调用不计数。若业务明确要求自然分钟/小时，应改用对应时间桶并解释边界突发，不能混用两种合同。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "本地双窗口如何维护"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个可信主体与 API 对应一个实例。分别用两个队列保存仍在最近一分钟、一小时内的获准时刻；锁内读取单调时间、删除到期记录、同时检查两个长度，仅当都未满才将同一个时刻追加到两队列。同毫秒的不同调用仍各占一项。尝试次数与业务幂等是两件事：这里重复调用也会重新申请额度，不推断业务已完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若只要求每分钟 3 次，可设分钟上限 3、小时上限 180；在这个滑动窗口定义下，小时条件不再额外收紧。若还要求每小时 4 次，则前三次在 t=0 放行，t=60000 可再放一条，此后即使分钟窗口清空，也必须等待小时额度。t=3600000 时，t=0 的三条恰好离开左开窗口，可重新准入；被拒绝的请求没有“先扣分钟额度再等小时”的泄漏。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下完整 Java 21 实现只证明单 JVM、单实例、易失状态的准入合同。计时供应器返回非负且不回退的累计毫秒；默认实现以同 JVM 的 nanoTime 差值计时，生命周期差值须小于其溢出边界。错误时钟直接报错，不用清空历史来恢复可用。多主体管理还需限制主体实例总数；不能任意淘汰仍在窗口内的主体后重建空桶。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L3101–3142（完整围栏，未执行）",
+      "value": "import java.util.ArrayDeque;\nimport java.util.Objects;\nimport java.util.concurrent.TimeUnit;\nimport java.util.function.LongSupplier;\n\n/** Single-process admission for one trusted principal/API scope; no business deduplication. */\npublic final class MinuteHourLimiter {\n    private static final long MINUTE_MS = 60_000, HOUR_MS = 3_600_000;\n    private final int minuteLimit, hourLimit;\n    private final LongSupplier elapsedMillis;\n    private final ArrayDeque<Long> minute = new ArrayDeque<>(), hour = new ArrayDeque<>();\n    private long last = -1;\n\n    public MinuteHourLimiter(int minuteLimit, int hourLimit) {\n        this(minuteLimit, hourLimit, monotonicMillis());\n    }\n    public MinuteHourLimiter(int minuteLimit, int hourLimit, LongSupplier elapsedMillis) {\n        if (minuteLimit < 1 || hourLimit < 1) throw new IllegalArgumentException(\"positive limits required\");\n        this.minuteLimit = minuteLimit;\n        this.hourLimit = hourLimit;\n        this.elapsedMillis = Objects.requireNonNull(elapsedMillis);\n    }\n    private static LongSupplier monotonicMillis() {\n        long origin = System.nanoTime();\n        return () -> TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - origin);\n    }\n    private static void expire(ArrayDeque<Long> times, long now, long window) {\n        while (!times.isEmpty() && now - times.peekFirst() >= window) times.removeFirst();\n    }\n    /** Counts only admissions in (now-window, now]; a rejection consumes neither quota. */\n    public synchronized boolean tryAcquire() {\n        long now = elapsedMillis.getAsLong();\n        if (now < 0 || now < last) throw new IllegalStateException(\"nonnegative monotonic clock required\");\n        last = now;\n        expire(minute, now, MINUTE_MS);\n        expire(hour, now, HOUR_MS);\n        if (minute.size() >= minuteLimit || hour.size() >= hourLimit) return false;\n        minute.addLast(now);\n        hour.addLast(now);\n        return true;\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "清理每个时间戳最多一次，单次最坏可能清理整个队列，长期摊销 O(1)；两个队列空间有界于两个上限之和。锁内判断和双追加构成正常执行路径的原子准入，进程 OOM 等致命错误不在可继续运行保证中。方法没有排队等待额度、HTTP 身份认证、持久化或跨进程共享。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Redis 的 key 和 value 怎样落地"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种精确方案只保存一小时日志：rl:{tenant:user:api:policy}:events 是 ZSET，member 为服务端生成的唯一尝试 ID，score 为可信准入毫秒；同标签的 :clock 保存桶内保守逻辑时钟。主体来自认证上下文，策略版本由服务端配置，客户端不能通过换 key、换上限或重用 member 绕过。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在同一脚本执行域中取 TIME 并按既定回拨策略处理，先删去 score≤now−3600000 的成员，再用 ZCARD 得小时数、用左开边界的 ZCOUNT 得最近 60000 毫秒数；两者均低于上限且 member 未用过才 ZADD。也可用两个日志，但必须同槽、同一次决策更新，不可先成功扣分钟桶再单独请求小时桶。故障发生在部分命令之后也不能假定 Lua 自动回滚，参数和 key 类型应在写入前校验，保持独占命名空间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 覆盖最长窗口及采用的回拨保护，不能把小时记录按一分钟清掉。更换策略时需要保持或迁移历史；直接换一个空 key 会重置额度。Redis 故障切换丢计数、淘汰、网络结果未知与单槽热点的边界，与前一节限流协议相同；若要求故障下仍严格不超配额，必须选择满足该一致性要求的权威存储或保守拒绝。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "用边界与并发测试验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面测试覆盖一分钟左端点、一小时左端点、两个上限联合、拒绝不占额、错误参数/时钟、10000 步扫描 oracle，以及同一时刻 32 次尝试由 8 个线程竞争只放行 3 次。有限本地测试不代表真实 Redis 集成或生产吞吐。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L3160–3226（完整围栏，未执行）",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicLong;\n\npublic final class MinuteHourLimiterTest {\n    private static int checks;\n    private static void check(boolean ok) { checks++; if (!ok) throw new AssertionError(\"check \" + checks); }\n    private static void expect(Class<? extends Throwable> type, Runnable action) {\n        try { action.run(); throw new AssertionError(\"expected \" + type); }\n        catch (Throwable t) { if (!type.isInstance(t)) throw new AssertionError(\"wrong error\", t); checks++; }\n    }\n    public static void main(String[] args) throws Exception {\n        AtomicLong clock = new AtomicLong();\n        // At most 3 in any trailing minute; 180/hour adds no restriction to that contract.\n        MinuteHourLimiter three = new MinuteHourLimiter(3, 180, clock::get);\n        check(three.tryAcquire()); check(three.tryAcquire()); check(three.tryAcquire());\n        check(!three.tryAcquire());\n        clock.set(59_999); check(!three.tryAcquire());\n        clock.set(60_000); check(three.tryAcquire());\n        // A tighter hourly cap still blocks after the minute log has expired.\n        clock.set(0);\n        MinuteHourLimiter both = new MinuteHourLimiter(3, 4, clock::get);\n        check(both.tryAcquire()); check(both.tryAcquire()); check(both.tryAcquire());\n        check(!both.tryAcquire());\n        clock.set(60_000); check(both.tryAcquire()); check(!both.tryAcquire());\n        clock.set(3_599_999); check(!both.tryAcquire());\n        clock.set(3_600_000); check(both.tryAcquire()); check(both.tryAcquire()); check(both.tryAcquire());\n        check(!both.tryAcquire());\n        clock.set(3_599_999); expect(IllegalStateException.class, both::tryAcquire);\n        expect(IllegalArgumentException.class, () -> new MinuteHourLimiter(0, 4));\n        expect(IllegalArgumentException.class, () -> new MinuteHourLimiter(3, -1));\n        expect(NullPointerException.class, () -> new MinuteHourLimiter(3, 4, null));\n        MinuteHourLimiter negative = new MinuteHourLimiter(3, 4, () -> -1);\n        expect(IllegalStateException.class, negative::tryAcquire);\n        // Independent scan oracle; rejected calls must never leak quota into either log.\n        clock.set(0);\n        MinuteHourLimiter randomLimiter = new MinuteHourLimiter(3, 8, clock::get);\n        List<Long> accepted = new ArrayList<>(); Random random = new Random(63);\n        long now = 0;\n        for (int i = 0; i < 10_000; i++) {\n            now += random.nextInt(120_001); clock.set(now);\n            int minute = 0, hour = 0;\n            for (long time : accepted) {\n                if (now - time < 60_000) minute++;\n                if (now - time < 3_600_000) hour++;\n            }\n            boolean expected = minute < 3 && hour < 8;\n            check(randomLimiter.tryAcquire() == expected);\n            if (expected) accepted.add(now);\n        }\n        // 32 concurrent attempts on 8 threads at one timestamp: exactly 3 admissions.\n        MinuteHourLimiter concurrent = new MinuteHourLimiter(3, 4, () -> 0);\n        ExecutorService pool = Executors.newFixedThreadPool(8);\n        CountDownLatch gate = new CountDownLatch(1);\n        List<Future<Boolean>> tasks = new ArrayList<>();\n        try {\n            for (int i=0; i<32; i++) tasks.add(pool.submit(() -> { gate.await(); return concurrent.tryAcquire(); }));\n            gate.countDown(); int winners = 0;\n            for (Future<Boolean> task : tasks) if (task.get(10, TimeUnit.SECONDS)) winners++;\n            check(winners == 3);\n        } finally {\n            gate.countDown(); pool.shutdownNow();\n            if (!pool.awaitTermination(10, TimeUnit.SECONDS)) throw new AssertionError(\"executor did not terminate\");\n        }\n        System.out.println(\"PASS \" + checks + \" checks: 3/minute, joint hour quota, endpoints, rejected attempts, monotonic clock, 10000 oracle steps, 32 attempts/8 threads; local volatile model only.\");\n    }\n}\n"
+    }
+  ]
+}

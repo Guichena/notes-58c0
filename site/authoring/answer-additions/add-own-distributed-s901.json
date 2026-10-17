@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s901",
+  "entryId": "own-tools-skill",
+  "expectedOriginalHash": "2991893ca53f4516e462298aea9e95022e8691b1cb18668b7ab9582a4783ed61",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "2.16 Skill热插拔为何用进程池、RPC和注册中心，OSS方案能否替代"
+    },
+    {
+      "type": "paragraph",
+      "text": "Skill热插拔需要版本化制品发布、隔离加载、发现与灰度切换，OSS能承载制品分发而不能单独替代RPC执行面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Skill为何用进程池RPC注册中心；OSS能否替代；旧请求如何固定旧版本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "OSS可分发不可变制品，但不负责运行时调用、执行隔离、实例发现和健康路由。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三个组件各解决什么问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立skill进程隔离运行时/依赖和崩溃域，进程池复用已启动/预热实例并限制资源；RPC提供稳定请求/响应、schema、deadline与取消边界；注册中心记录skillId、版本、能力、兼容协议、健康和端点，主服务据此发现可用执行者。不是把进程池称为天然分布式，也不是有注册中心就拥有安全执行权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对于不可信Skill脚本，普通进程分离本身不是完整沙箱。执行平台还需最小权限、隔离文件目录/网络、CPU内存进程数/运行时间/输出限额，不能让主服务在宿主直接加载并执行任意下载文件；可信插件与敌对多租户代码风险不同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "加载、发布、排空和回滚完整时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "把skill制品/依赖/manifest固定为不可变版本与hash，验证来源、签名/摘要、schema和权限；在隔离执行环境启动新版本，健康/小样本验证后注册READY。路由按skill版本/租户/能力选择，灰度流量逐步切换；老请求固定旧版本，不在一半执行中偷换实现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "热更新收尾时，旧版本先停止接新调用，等在途到安全点；到了排空期限，就持久记录取消或待恢复状态，核对已发生效果，最后下线端点并回收进程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回滚新版本路由，不会撤销它已经写出的数据，仍需兼容 schema 与幂等补偿。旧 owner 的迟到结果也要按 task/epoch 拒绝，不能覆盖新一代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "OSS可以是制品仓库，但不是完整运行时"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果所谓OSS是对象存储，可保存版本化Skill包、manifest和配置，由控制面监听/轮询发布指针，worker下载校验后在受控环境加载；这确实能实现制品分发和更新发现的一部分。对象存储里放新zip不会自动提供进程启动、RPC路由、健康检查、并发预算、在途排空与权限隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若方案是主进程动态解释声明式规则，可能不需要独立RPC进程；若有原生依赖、长任务或不可信代码，独立worker/沙箱仍有意义。比较启动时延、兼容性、安全边界、资源利用和更新频率，才能判断哪条路线适合。讨论具体OSS方案时，先确认它只负责分发制品，还是还包含加载器、执行隔离和服务路由；只有这些职责齐全，才能比较是否可以替代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "任务数据和临时文件不能绑定失效实例"
+    },
+    {
+      "type": "paragraph",
+      "text": "session持久上下文、输入和已提交产物放有权限校验的共享权威/对象存储，调用传不可变引用/hash；临时工作文件可在执行实例隔离目录，结果可靠上传并提交引用后按策略清理。RPC超时不代表进程停止，过早删临时文件会破坏仍在执行的调用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按tenant/session/task/version划分资源，生命周期由任务终态、引用和重试/审计窗口决定，断线后扫描孤儿并有保留上限；不要把主服务本地路径发给另一机器当可访问文件。回答具体部署时，应明确这些文件分别位于哪类存储、由谁授权以及何时清理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "测并存v1/v2、旧请求未完成、新版不兼容、注册watch断线、进程崩溃、下载hash不符、取消未停、发布指针回滚和旧端点复活，检查每个调用的版本/责任/效果。部署前应完成受控环境测试，并核验权限、资源限额和取消操作的实际效果。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-tools-hot-reload",
+  "targetOrigin": "authored"
+}

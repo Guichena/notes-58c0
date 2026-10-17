@@ -1,0 +1,1021 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-1-1",
+  "entryId": "ai-agent-1",
+  "questionId": "1",
+  "expectedOriginalHash": "4b3969add21a34df51376f3e10392b6351d212678f99546cf3d94531403f32e3",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "01 Agent 与 Workflow 怎样区分 Harness 又负责什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 我按“下一步由谁决定”区分。Workflow 的控制路径由代码或配置规定，节点可以调用模型；Agent 在允许的动作空间内，让模型根据目标、状态和新观测选择下一步。Harness 是支撑它运行的控制系统，负责上下文、工具权限、调度、持久化、预算、恢复和验收。它们可以组合，常见设计是外层确定性状态机，内层有界 Agent 循环。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从一个请求看职责"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户说“检查配置是否有问题”，接入层确认身份和只读范围，创建 Run；上下文层取当前版本、规则和相关证据；模型提出读取或校验请求；执行器检查参数、资源与配额后执行；结果变成 Observation，状态机决定继续、等待还是结束。用户没有授权修改时，即使模型生成写操作也必须被拒绝。最后的“没有问题”需要本次版本的验证结果支持。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LLM 是生成和决策组件，不等于整个 Agent。模型不改参数也能通过新上下文使用最新信息；是否保存会话由接口和应用决定。长期记忆、多 Agent、复杂计划都是可选组件。有聊天历史的 Chatbot 未必有动态行动；调用一次工具也未必形成自主循环。普通模型也能做多步推理，不能用“模型只会单轮问答”定义 Agent。"
+    },
+    {
+      "type": "paragraph",
+      "text": "沿着“检查配置”的请求，可以把 Harness 的职责记成一条链：目标与验收器先规定什么算做完；Context Builder 准备本轮信息，Provider Adapter 把请求和模型返回接成统一接口；Tool Registry 与 Executor 决定哪些工具可用、动作能否执行。任务状态和记忆接口保存需要继续使用的信息，Scheduler 与 Recovery 安排执行及故障接手，Trace 与 Eval 则帮助追查过程和评估效果。这仍是七个工程边界，不是要求建立七个 Agent。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Orchestrator 主要决定如何拆分、路由和汇总任务，是 Harness 的一个职责。比如模型总按旧规则校验配置：改指令属于 Prompt Engineering，给它当前规则属于 Context Engineering；即使它仍提议越权修改，也要由 Harness Engineering 所负责的运行环境和强制约束拦住。三者分别改善指令、本轮可见信息和运行约束，不能互相替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工程讨论应先声明自己的定义，避免把营销名称当成统一标准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "什么时候坚持确定性流程"
+    },
+    {
+      "type": "paragraph",
+      "text": "退款资格校验、权限、审批、金额计算、状态提交等有明确规则和风险的环节，用代码执行。模型可理解投诉、查找证据、提出方案；不能由一句“应该退款”绕过业务约束。固定“分类→检索→生成”属于含模型的工作流；允许自行发现证据缺口并选择下一次查询，才引入 Agent 式控制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：Workflow 一定不会跑偏吗？ 不一定，规则、输入和实现也会错。确定性提供的是可检查的状态迁移，不自动提供正确需求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：基础设施为何能提升模型能力？ 它改善模型可用证据、工具反馈、验证机会和失败恢复，因此可能提高端到端任务成功率；它没有凭空增加模型参数中的知识，收益要用相同任务集测量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "练习时，先沿“检查配置”的请求说清输入、读取、候选动作、执行检查和验收，再把用户要求改成“直接修改配置”：哪一步开始需要新的授权，为什么模型答应了仍不能直接写入？回到自己的项目时，说明实际承担的职责、采用版本和数据口径；能查到的实现与结果照实讲，架构推演单独说明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你如何理解 Agent 系统？可以拆解一下 Agent 的核心模块吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 谈谈你对于 Agent 的理解吧？你觉得 Agent 包括哪些部分？运行机制是怎样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一个完整的 Agent 系统通常包含哪些核心模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Chatbot 也可以有记忆（存聊天历史）、也可以有 Prompt 工程（那它和 Agent 的区别是什么）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 和普通 LLM 应用、和工作流的区别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 新旧架构与范式差异：ReAct 循环和现在的 Harness / 自治 Agent 架构的核心区别是什么？LangGraph 整体架构和运行机制是什么样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你如何理解Agent中Harness的概念？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简单介绍一下你做过的Coding Agent项目，以及整体架构设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一个完整的Agent记忆系统应该如何设计？包括哪些模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 主问题：从零设计企业内部知识库 Agent 问答系统，10 万日活，单用户日均提问 5 次，p95 响应 2 秒内。先讲整体架构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 从工程或技术角度来看，内容生成类和智能体（Chatbot，基于纯文本的大模型）有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍你做的 AI Agent 项目，你的角色、整体架构，遇到最大的工程难点是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的核心模块拆解，数据流怎么走？不要只说大模型，讲后端工程层面的模块。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工作流完整链路：从用户输入开始，整个 Agent 工作流是怎么一步一步运行的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是用 workflow 方式搭建的 agent 吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent评估体系包括哪些维度？如何衡量planning能力 vs hallucination rate？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何理解 Agent 中的长短期记忆？实际项目中分别如何实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么普通接口查询不能完全替代 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目使用 LangGraph，介绍一下核心模块、组件？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 系统通常由哪些核心模块组成？各模块分别承担什么职责？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何理解 Agent 的短期记忆和长期记忆？两者通常有哪些实现方式？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 和普通 LLM 最大区别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- （1）Agent 和普通 LLM 最大区别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个智能助手是一个固定的工作流（Workflow）吗？主 Agent 会动态判断调用哪些子 Agent 吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你对Agent和work flow的看法？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 主要划分为哪几个核心模块（Profile 角色定义、Memory 记忆管理、Planning 规划编排、Action 工具行动）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 关于 Coze：Coze 有两版，一版是拖拽式的工作流（Workflow）编排，新版是直接构建自主 Agent。你使用的是哪一种？你是怎么设计节点间的流转逻辑的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你是怎么理解 Agent Harness 的？一个标准的 Harness 一般包含哪些核心模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent的整体架构是怎样的？从用户输入到最终输出，完整链路说一下。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent评估体系包括哪些维度？如何衡量规划能力 vs 幻觉率？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 重点介绍与 AI Agent 相关的项目架构与落地难点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍实习中的 Agent 基础设施链路，以及最难的部分"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 基础设施为什么能够提升模型能力？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们 Agent 目前在生产环境稳定运行了吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Workflow 和 Agent 的 Loop 各自怎么设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍实习 AI Agent 项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 业务具体做什么？与 AI Agent 是如何结合落地的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 字节跳动内部的 Agent 系统除了 Go 语言外，有没有基于 Python 或 Java 实现的技术栈？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 操作系统的知识怎么应用到 Agent 开发里的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 知识库如何搭建的，你们的agent如何开发的？从零还是基于已有平台"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 主问题：Multi-Agent 架构里，什么时候需要拆分 Agent？为什么拆多了会出现收益递减甚至负收益？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 架构与 Agent 设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 开发 Agent 时踩过哪些坑？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解过市面上有哪些智能体 Agent 吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 演示 Agent 项目实现细节"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 觉得当前的 Agent 达到预期了吗？对 Agent 的预期是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个 Agent 项目干了什么，怎么实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果让你设计一个 Agent 要考虑哪些模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 什么是 Agent Loop？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 构造一个 Agent Loop 主要需要哪些模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 有自己的提示词吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 内部设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你觉得 Agent 开发最大的难点是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- AI Agent 与 Function Call 有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中都是交给 AI 去完成流程吗，有哪些是自己实现的？（工作流模式和 agent 模式）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你对 AI Agent 是大致怎么一个理解？比如要生成最终的答案之前有哪些步骤？RAG 的总结？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 智能体底下的模型用的什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 做智能体这块，相关的资料你是怎么去找去解决的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍一下 Agent Infra / Agent Runtime 相关工作"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 提效平台式在什么样的场景下，做的这个东西"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你这个AI Agent提效平台是为了解决什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们的workflow是自己编写的吗？还是借鉴网上成熟的方案？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 我们就针对你刚才说的这个，就是你刚才说的这个AI Agent 平台，它也是在途游实习做的一个项目是吧？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 就是你对Spring AI这部分，你是光验证它，还是说也系统化的了解了一下Spring AI整个的这个源码，包括设计流程，包括怎么去更快速的去更新Agent的开发"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个 AI agent 项目主要是解决什么问题？为什么要做这样一套东西？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是每个场景对应多个 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Expert Agent 是以什么维度划分的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Expert Agent 的 prompt 主要输入有哪些？模型输出是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Expert Agent 是否有预设工作流（workflow）和任务描述？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent项目是如何编排"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 先介绍一下你做的这个 Agent 项目，主要解决什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 用户 Query 进来以后，最先进入哪个 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 最后又是哪个 Agent 负责把结果返回给用户？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果一个 Agent 执行失败，系统怎么处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 结构是怎样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何看待现在的一些 Agent 架构，以及如何改进？——这个问题问了 n 遍（追问如「这个已经过了这么久，了解新技术吗，有可以结合的吗」等等）。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目 1 你的 Agent 是什么架构？具体是怎么设计的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent loop 是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 连续五次生成相同 shell 命令或命令超时但实际成功时如何处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 Agent 执行和校验过程中，你是如何控制模型行为的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果让你做头条业务场景的 Agent（内容资讯、内容检索、内容总结），你会怎么设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你为什么想从传统 Java 后端转到 AI Agent 方向？为什么选头条这个团队？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 实习的 Agent 项目做了哪些工作？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 架构中的 Prompt 设计有哪些经验？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 整个 Agent 的运行机制怎样实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你了解哪些 Agent 架构或运行形式？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Workflow 形式是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你的 Agent 对应哪种架构？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一个完整的 Agent 系统包含哪些模块？能否简单介绍？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 搭建 Agent 的过程中，有没有深入看过具体模块的实现？重点看过哪些模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍一下 AI Agent 项目的完整链路和解决的问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 最核心的组件有哪些？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 传统对话系统与 AI Agent 模式有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍 CR Agent（候选人实习项目）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解主流的 Agent 设计吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Multi-Agent 架构主流的实现方案有哪些？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你是怎么构建这个 Agent 的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 详细讲解一下 CR Agent 的设计，以及后端高可用的保障方式"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 架构与模块拆分：介绍一下这个 Agent 项目的整体架构和主要模块。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 描述一下最简单的Agent Loop是什么样子"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 用 Spring AI 写一个 agent 的过程大概是什么样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何提升 Agent 的 Function Call 的能力？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Multi-Agent 如何协调串接？用你实现的项目说明"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目背景下，智能体的工作流链路是怎么实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 智能体拓展性怎么样？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个 Agent 主要实现了什么样的功能？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 主要用来做什么？它的执行链路是怎样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 现在有个小需求给到 Agent，它是怎么分析需求 → 做任务拆解 → 一步步实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你用这个 Agent 最多处理的问题是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 实际开发过程中，如何判断一个任务适合采用固定Workflow流程，还是自主决策型Agent来实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在Agent系统架构中，RAG检索获取的外部知识，是如何精准输入给模型，同时避免无关知识对模型输出产生干扰的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简单聊一下之前实习中负责的 Agent 相关业务，主要解决什么问题？整体方案是如何设计的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 Agent 应用开发过程中，有没有遇到过比较典型的问题或者踩坑？后续总结出了哪些优化方法？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个项目为什么要设计成 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你所说的受控 Agent Workflow具体受控在哪里？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- DoVideoAI 这个 Agent 具体要解决什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你平时关注 Agent 领域吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 最近主要阅读哪些类型的 Agent 相关文章或行业新闻？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你看过 DeepSeek 最近发布的相关 Agent 产品吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请介绍一下风控归因 Agent 的业务背景、核心场景和整体方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么把系统设计成三级 Agent 架构？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么第二层编排还要单独设计成一个 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 3聊agent设计，问我还有哪些agent"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请具体介绍 Agent 项目，哪一块最复杂、最有挑战？你是怎么解决的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你认为 AI Agent 最核心的是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你这个项目中为什么要用 workflow？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 大模型/Agent能处理的典型问题是什么？能力边界怎么界定？哪些交给Agent做、哪些人做，怎么判断的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 和 AI 的区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 什么时候用 LLM 什么时候用 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- RocketMQ 延迟消息用于 Agent 定时兜底任务，和 Redis 过期回调相比有什么坑？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 自我介绍，技术背景与 AI Agent 相关经历"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么采用 Agent Teams 架构？相比 Workflow 编排方式有什么优势？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对Agent了解多少？RAG了解吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中为什么采用 Agent Teams 架构？相比 Workflow 编排方式，它有什么优势？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你自己实现的 Agent，相比开源 Agent 有什么优点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 整个 Agent 实现过程中，你觉得最难的点是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Multi-Agent 这块能详细讲一下吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- -[]大模型和agent区别是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你这个 AI Agent 的内部子图里面放了多少个节点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 子图 Agent 如果一旦跑偏了怎么办？这个节点会重跑吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 与 LLM 有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 是怎么实现搜索或外部查询的？调用了哪些公开接口？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 详细讲讲你那个 AI Agent 项目的建设背景、落地方案、最终成果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 流程较长，你们做了哪些保障措施，让每一步按预期推进？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 抛开 Agent 项目，日常交付、工作中，AI 是如何做提效、融入工作流程的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你本地搭建 Agent 工作流，还是团队有统一工作流平台？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 本地 Agent 工作流遇到异常、边界场景，有没有专门设计处理机制？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- RAG 和“把文件交给 Agent，让它自己 grep 检索”各有什么优劣。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 设计“电商搜索排序 Agent”，用户搜“连衣裙”，你怎么设计排序模型？特征有哪些。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 深度思辨：你怎么看待“Agent 的能力效果全部依赖于底层基座模型能力”这个观点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你这第二个项目是agent吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们这个智能体平台的形式是什么？是接到IM吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 什么样的Agent算一个好用的Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 适配与差异：Agent 适配是否只是模型适配？除了模型以外，不同 Agent 之间真正有哪些差异？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你从零到一负责的风控 Agent，主要解决什么核心问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 专化 Agent 和通用 Agent 有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有什么思路去对自己的 Agent 做优化，让它更智能？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你如何定义 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 业务上了 Agent 的优势是什么？要提供和已有功能同等的稳定性保障，最主要做哪一件？拿具体案例讲。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 进主 Agent 之前规则过滤的比例大概多少，你们预期它应该是多少？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 知识库越来越全，Agent 的存在价值会不会被稀释？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 常用知识用知识库兜底了，Agent 又靠什么样的知识、从哪来？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 公司内部类似 Agent 不少，有没有横向对比过自己大概什么水平？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 Agent 的流程，例如我想要会议总结。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一个 Agent 由什么组成？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个 Agent 是你从头搭建的吗？你具体负责哪些部分？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent项目的背景是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍实习 Agent 的整体架构"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍该 Agent 从输入到返回结果的完整流程"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Workflow 和你说的自治 Agent 的区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 深度反思：介绍你做的 Agent 项目，做完这个项目后，你对哪个技术模块理解最深入？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 深度思考题：换能力更强的大模型后，传统的双 Agent 复杂编排反而可能限制模型整体效果，你怎么看？面对模型能力持续提升，老 Agent 架构应从哪些方面优化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 谈一谈你对Agent的理解，Agent完整设计包含哪几个关键环节？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent开发有哪几种执行模式，是否了解？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在做视频剪辑 Agent 项目遇到的最大挑战是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简单介绍下视频生成 Agent 完整项目。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲cr agent项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍一下你最近做的Agent项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent项目是实习项目还是个人项目？你在里面具体负责哪些部分？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent在学术上通常由哪些模块组成？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何写一个agent"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何写一个 Agent。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 自我介绍，介绍你的 Agent 项目，你负责哪些模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是否能接受使用 Java 栈（Spring AI）开发 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent的项目是开源的吗，还是怎么完成的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你做的这个agent项目是基于开源项目二次开发的吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent实现了哪些能力"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 当前有哪些步骤是需要人参与的，怎么优化这个问题，实现真正意义上的自动化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目1主要解决了什么问题？推理路径是否描述了一个完整的 Agent 执行流程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent流程介绍"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 推理路径是否描述了一个完整的 Agent 执行流程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果过期的 Description 对 Agent 产生误导，系统如何发现并纠正？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 模型推理和 Agent 执行流程是否由你们自行实现和编排？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请介绍一下外汇汇款 Agent 的完整链路"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你重写的 Agent 层到底对需求做了什么约束？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 子agent怎么编排的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 实习主要做 Agent 哪一部分？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个 Agent 是否已经落地使用？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你怎么理解 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 【面经】AI 大模型应用开发 / AI Agent 工程师 一面（含场景设计）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在该 Agent 项目开发中，你认为最难的技术点/挑战是什么？是如何迭代解决的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 从零做轻量 agent，你会怎么拆最小任务？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 能否详细讲讲在小米项目中，你观察到的一个 Agent 效果上的具体问题，以及你们最终是怎么迭代和改进的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在这类 Agent 中，“主动给用户推送消息”（而非传统的一问一答）机制通常是如何实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 除了 Agent 相关的开发，你在后端开发或者其他技术栈上有哪些实践经验？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 公司有没有在大模型相关应用方面有相关的业务或开发？（面试官回答）有，公司搭建了类似 Dify 的平台，可搭智能体 / 工作流对接业务；专门团队用 Go / Java 对接大模型，传统后端直接对接平台能力"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Multi-Agent 架构具体怎么实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你整个 Agent 的问题解决率大概是什么水平？有无考虑延时？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 AI 和 Agent 项目里，你在前端层面做过哪些实践？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工程难点与解决：在 Agent 设计与落地过程中遇到了哪些技术难点？分别是如何解决的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍agent项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍 agent 业务背景。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent的两种架构，你选的是哪一种，讲讲它的过程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是否做过对 Agent 整体系统的端到端微调？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有做过 Agent 的设计或者开发？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的核心架构、都有哪些经典架构？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- RAG 在这类 Agent 项目里到底用来解决什么问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么要做 Zero2Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简单介绍你的多模态Agent整体项目架构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Q6：你的 Agent 还有哪些未充分优化的空间？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Q8：你的 Agent 和别人开发的相比，核心差异是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果给现有 Agent 扩展新能力，会考虑设计哪些功能？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 顺着RAG和Multi Agent方向，说说你对它们认知和迭代是怎样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目背景，引入 Agent 方案的原因"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在实习之前，你是否已经具备 Agent 相关的知识储备？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解Agent吗？把RAG做成Agent有什么好处"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 快手工作流，agent"
+    },
+    {
+      "type": "paragraph",
+      "text": "17.skill和harness engineer\n18.agent工具调用调用"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一直问候选人的 CR Agent 项目：问 Harness、问 MetaHarness"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 问 DeepSeek Harness"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你认为大模型和Agent的区别和联系是什么？在训练层面有什么不同？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简单讲讲你的Agent项目？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 详细区分 Workflow 和 Agent 的核心差异与适用场景"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 问题3：拆解大模型自能体（Agent）的工作原理，说明其核心组成部分（感知、记忆、规划、学习模块）及在环境交互和任务执行中的作用。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

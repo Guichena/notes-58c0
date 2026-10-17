@@ -1,0 +1,846 @@
+{
+  "schemaVersion": 1,
+  "id": "own-os-native-js",
+  "kind": "doc",
+  "module": "syntax",
+  "part": "OS完整实验与运行时对照",
+  "category": "完整源码与语义边界",
+  "title": "原生对照：JavaScript事件循环与任务",
+  "source": "操作系统与 Linux 面试复习手册",
+  "sections": [
+    {
+      "id": "section-os-565c74a3ab62",
+      "title": "原生语言对照四 JavaScript事件与任务",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "原生语言对照四 JavaScript事件与任务"
+        }
+      ]
+    },
+    {
+      "id": "section-os-b7b6febfc6eb",
+      "title": "JS怎样设计并发池 100个进程与5并发该怎样解释",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "JS怎样设计并发池 100个进程与5并发该怎样解释"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确认任务是异步I/O、CPU计算，还是真正的OS进程。若是100个异步I/O任务、同时最多5个，就让固定消费者按需调用任务函数；把已经开始的Promise放进队列，并不能重新限制它们的启动数量。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Promise池与真正线程池分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "若是100个异步I/O任务同时最多5个，使用任务函数队列而非已经开始执行的Promise；五个消费者每次领取一个任务，await结果后再领取。输入索引保存结果顺序，完成顺序可不同，错误必须转成明确结果或触发整体失败策略。Promise.all本身不限制并发，async也不会创建CPU线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若工作是CPU计算，要用浏览器Web Worker或Node worker_threads等真正线程。保持最多5个Worker，每个同一时刻一个任务，主线程负责待办队列、ID匹配、错误/退出、deadline和回收。消息按结构化克隆或transfer传递，大数据复制和共享内存同步会影响收益；不把每个小任务都新建一个Worker。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题目100个进程的两个分支"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果真是100个待启动的OS进程且全局同时最多5个，应使用进程启动器，子进程退出并回收后才释放槽位；Node可用child_process的spawn/fork等，避免shell拼接不可信参数，持续消费有界stdout/stderr，处理超时、退出码、信号与子孙进程。不能先启动100个再说只有5个Promise在等待就是并发上限5。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果100个进程已经存在，而每个进程都能发工作且要求全局最多5个，仅在每个进程创建容量5的本地Semaphore会放大到最多500。应由中央调度器或真正跨进程共享的许可/任务队列协调，明确崩溃后归还、租约过期与旧执行者隔离；如果其实要求每进程5个，则那是不同预算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "js_pools.mjs同时提供promisePool和真实Node Worker池。Promise池最多1000个任务、32个消费者，接受任务函数，逐项保留fulfilled/rejected结果；必须要求任务最终settle，Promise或AbortSignal本身不能强杀任意JS函数。Worker池最多100项、5个Worker，任务是有界整数平方，维护单个在途ID，异常/提前退出/总期限失败后finally终止并等待全部Worker。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度与工程限制"
+        },
+        {
+          "type": "paragraph",
+          "text": "调度领取与结果槽位总工作O(n)，保存输入/结果O(n)，同时运行最多p；任务自身耗时、序列化和线程启动成本另算。固定输入上限只约束这段演示，生产还应限制单任务payload/输出、排队时间、租户公平与下游连接。"
+        },
+        {
+          "type": "paragraph",
+          "text": "发生整体失败时已开始的副作用未必撤销，重试要靠业务幂等与状态核对。线程terminate和进程kill也不等于外部数据库回滚；生产共享状态若被强停任务修改到一半，需要额外一致性策略。示例只计算整数，不执行来自外部的代码。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "js_pools.mjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "js_pools.mjs",
+          "value": "import {Worker, isMainThread, parentPort, workerData} from 'node:worker_threads';\n// Promise pool: controls task invocation, does not create CPU threads.\n// Accepted task functions must eventually settle. No timeout can force JS functions\n// to stop. Results are per-task fulfilled/rejected, in input order.\nexport async function promisePool(tasks, limit=5) {\n  if (!Array.isArray(tasks)) throw new TypeError('bounds');\n  const length=tasks.length; // Capture once; do not invoke a caller-defined iterator.\n  if (!Number.isInteger(length) || length<0 || length>1000) throw new TypeError('bounds');\n  const work=new Array(length);\n  // Indexed getters must finish; a slot bound cannot preempt arbitrary user code.\n  for (let i=0;i<length;i++) work[i]=tasks[i];\n  if (work.some(t=>typeof t!=='function') ||\n      !Number.isInteger(limit) || limit<1 || limit>32) throw new TypeError('bounds');\n  const result=new Array(work.length); let next=0;\n  async function consume() {\n    for (;;) {\n      const i=next++; if (i>=work.length) return;\n      try { result[i]={status:'fulfilled',value:await work[i]()}; }\n      catch (reason) { result[i]={status:'rejected',reason}; }\n    }\n  }\n  await Promise.all(Array.from({length:Math.min(limit,work.length)},consume));\n  return result;\n}\n// Actual Node worker-thread pool, not OS-process pool. Fixed square workload;\n// -1 throws; -2 deliberately omits its response for a timeout test.\nif (!isMainThread && workerData==='bounded-square-worker') {\n  parentPort.on('message', ({id,n}) => {\n    if (n===-1) throw new Error('intentional task failure');\n    if (n===-2) return;\n    parentPort.postMessage({id,value:n*n});\n  });\n}\nexport async function workerPool(numbers, limit=5, deadlineMs=2000) {\n  if (!isMainThread || !Array.isArray(numbers)) throw new TypeError('bounds');\n  const length=numbers.length;\n  if (!Number.isInteger(length) || length<0 || length>100) throw new TypeError('bounds');\n  const work=new Array(length);\n  for (let i=0;i<length;i++) work[i]=numbers[i];\n  if (work.some(n=>!Number.isInteger(n)||n< -2||n>10000) ||\n      !Number.isInteger(limit)||limit<1||limit>5 ||\n      !Number.isInteger(deadlineMs)||deadlineMs<1||deadlineMs>10000) throw new TypeError('bounds');\n  if (!work.length) return [];\n  const workers=[]; let finish=false, next=0, done=0, timer;\n  try {\n    return await new Promise((resolve,reject) => {\n      const values=new Array(work.length);\n      function fail(error) { if (!finish) {finish=true;reject(error);} }\n      timer=setTimeout(()=>fail(new Error('batch deadline exceeded')),deadlineMs);\n      try {\n        for (let k=0;k<Math.min(limit,work.length);k++) {\n          const w=new Worker(new URL(import.meta.url),{workerData:'bounded-square-worker'});\n          workers.push(w); let inFlight=-1;\n          function send() {\n            if (finish || next>=work.length) return;\n            inFlight=next++; w.postMessage({id:inFlight,n:work[inFlight]});\n          }\n          w.on('message', msg => {\n            if (finish) return;\n            if (inFlight<0 || !msg || msg.id!==inFlight || !Number.isInteger(msg.value)) {\n              fail(new Error('worker protocol violation')); return;\n            }\n            values[inFlight]=msg.value; inFlight=-1; done++;\n            if (done===work.length) {finish=true;resolve(values);} else send();\n          });\n          w.on('error',fail);\n          w.on('exit', code=>{if(!finish)fail(new Error('worker exited: '+code));});\n          send();\n        }\n      } catch(error) {fail(error);}\n    });\n  } finally {\n    finish=true; clearTimeout(timer);\n    await Promise.all(workers.map(w=>w.terminate()));\n  }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-0759e368fc30",
+      "title": "Promise和async await是什么关系 何时执行与怎样处理错误",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Promise和async await是什么关系 何时执行与怎样处理错误"
+        },
+        {
+          "type": "paragraph",
+          "text": "Promise表示异步结果，async函数返回Promise，await让函数的后续执行等待结果。它们方便组合顺序和传播错误，但不自动创建线程，也不自动取消其他工作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "按JavaScript语言与常见事件循环语义，区分Promise状态容器、语法和底层执行资源。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Promise是结果表示 async是函数语法"
+        },
+        {
+          "type": "paragraph",
+          "text": "Promise表示可能稍后fulfilled或rejected的结果，pending只能向终态变化一次；then/catch/finally注册反应并返回可继续链式组合的Promise。new Promise的executor同步执行，不能因为构造了Promise就说内部CPU任务转后台。"
+        },
+        {
+          "type": "paragraph",
+          "text": "async函数调用会返回Promise，函数体在第一次实际挂起前同步推进；return值用于兑现返回Promise，抛出的异常变为拒绝。await等待值或thenable/Promise的结果，挂起的是该async函数后续执行，不阻塞整个线程；即使等待已兑现Promise，后续也通过作业调度恢复，而不是把整个函数都立刻同步完成。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "串行并发与错误传播"
+        },
+        {
+          "type": "paragraph",
+          "text": "连续await fetchA再await fetchB若第二个请求直到第一完成才创建，就是串行；先创建两个操作再await Promise.all可重叠执行。Promise.all失败会拒绝聚合结果，但不会自动取消其他工作；要全部观察各项结果可用allSettled或显式逐项包装。真正的并发上限用任务函数池，见JS怎样设计并发池 100个进程与5并发该怎样解释 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn4fj78woYm3gRxR1thL8nsb)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "await拒绝在async函数中表现为抛异常，可用try/catch/finally清理；then链中抛错也传播为拒绝，忘记return内部Promise会使链路提前结束。避免new Promise(async executor)反模式，因为外层构造器不按期望跟踪executor返回的Promise；通常直接写async函数即可。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "不是线程也不是取消协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "Promise不决定操作由网络、文件线程池、同线程计算还是Worker完成；把长循环放进async仍会占用执行线程。取消需要操作自身支持AbortSignal等协议，Promise.race超时只改变谁先被观察，不会自动停止其他任务。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-7f2a6e8b9b18",
+      "title": "微任务与宏任务解决什么问题 怎样按执行路径推导输出",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "微任务与宏任务解决什么问题 怎样按执行路径推导输出"
+        },
+        {
+          "type": "paragraph",
+          "text": "事件循环安排不同事件何时执行，微任务检查点则决定Promise等后续处理何时接上。推导输出时，先走同步调用栈，再按实际入队时机追踪微任务和task，不能只背一张固定优先级表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "宿主调度与Promise状态分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "浏览器事件循环在一个执行线程上编排脚本、定时器、用户输入与网络等事件，避免每个事件占一条专用JS线程。HTML规范称task，“宏任务”是常用教学称呼；微任务给Promise反应、queueMicrotask及相关机制安排在合适检查点完成，使一轮操作的后续处理在下一轮task前被观察。它们都不把任意CPU循环自动放到后台。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Promise状态是pending、fulfilled、rejected，后两者为settled且不可再次变；resolved表示已锁定结果/接纳另一个thenable，可能仍pending，不能把resolved硬列为第四状态。new Promise的executor同步运行，then回调异步排入作业机制，async/await关系详见Promise和async await是什么关系 何时执行与怎样处理错误 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcng8U20honIeNOxc2SWm6kjd)。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "输出排序的可操作方法"
+        },
+        {
+          "type": "paragraph",
+          "text": "先逐行执行同步调用栈，记录注册了哪个回调及何时才可入队。到微任务检查点按队列取出并执行，执行微任务期间新排的微任务也继续处理，直到队列清空；之后事件循环再选择可运行task，并在规范规定时机考虑渲染。多个task来源不等于全局唯一FIFO，渲染也不是每个task后必发生。"
+        },
+        {
+          "type": "paragraph",
+          "text": "setTimeout(fn,0)给的是尽早可调度条件，不保证恰好零毫秒。网络完成顺序与计时器可受环境影响，不能只看注册顺序断言全部回调顺序；持续递归排微任务会饿死后续任务/渲染。Node有自己的事件循环阶段和process.nextTick等队列，不能把一条浏览器口诀原样覆盖所有Node版本与CJS/ESM环境。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例同步记录sync、注册timer、注册已兑现Promise回调、注册queueMicrotask、记录end。同步段结束后Promise回调先记录promise并把nested微任务追加到队尾，已有microtask先执行，再nested，最后timer。对这个明确代码得到sync→end→promise→microtask→nested→timer。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "event_order.mjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "event_order.mjs",
+          "value": "// Teaching example of synchronous work, microtasks, and a timer.\nexport function orderExample() {\n  const log=[];\n  return new Promise(resolve=>{\n    log.push('sync');\n    setTimeout(()=>{log.push('timer');resolve(log);},0);\n    Promise.resolve().then(()=>{\n      log.push('promise');queueMicrotask(()=>log.push('nested'));\n    });\n    queueMicrotask(()=>log.push('microtask'));\n    log.push('end');\n  });\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-ac23769cf682",
+      "title": "浏览器新建标签页一定对应新进程还是新线程",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "浏览器新建标签页一定对应新进程还是新线程"
+        },
+        {
+          "type": "paragraph",
+          "text": "新标签页不固定对应一个新线程或一个新进程。标签页是UI概念，Chromium会按导航、站点隔离和复用策略安排renderer，一个标签页也可能涉及多个渲染进程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "题目未指定浏览器、版本、站点或导航状态。以Chromium文档为具体例子，明确标签页这一UI概念不与进程一一对应。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "浏览器中点击+号创建新的标签页，是开启了一个新线程还是新进程，以及原因"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先区分浏览器进程 渲染器 与线程"
+        },
+        {
+          "type": "paragraph",
+          "text": "现代Chromium常有browser主进程、多个renderer，以及网络、GPU和其他服务进程；各进程内部又有主线程、合成/工作等执行线程。点击加号创建标签页时，主进程管理新的页面/UI状态，可使用预热或已存在的renderer，也可能按策略创建新renderer，不能无条件回答只增加一个线程或必新建一个独占进程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "新标签页是否尚未导航、是否同站点/同BrowsingInstance、进程复用策略、内存压力和隔离规则都会影响分配。不同浏览器与平台实现也不同，不能从看到一个tab推断精确PID数量。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么要用多进程隔离"
+        },
+        {
+          "type": "paragraph",
+          "text": "不同站点/来源边界与sandbox限制降低不可信页面访问其他资源的机会，renderer崩溃可尽量限制影响范围；多核也允许不同执行流并行。代价是进程/线程内存、IPC与跨进程协作成本，因此实现会权衡隔离与复用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Site Isolation可把同一页面中的跨站iframe放在不同renderer，所以一个标签页也可能涉及多个渲染进程；反过来符合策略的多个页面有时共享进程。进程隔离不是网页应用已获用户授权，也不能保证浏览器没有漏洞。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎样验证实际实例"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要确认目标浏览器版本与进程模型，使用浏览器自带任务管理/诊断视图结合OS进程树，区分tab、frame、renderer与utility进程，再观察导航前后变化。仅在系统top看到多条同名进程或多线程，不足以说明每个标签页的对应关系。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-9ea103ec2014",
+      "title": "Electron多窗口怎样分工 Main Node Worker与Renderer为何相互影响",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Electron多窗口怎样分工 Main Node Worker与Renderer为何相互影响"
+        },
+        {
+          "type": "paragraph",
+          "text": "Electron的main管理窗口、应用生命周期和受控IPC，renderer负责页面，CPU重活应交给合适Worker或独立进程。main本身运行在Node环境里；它卡住时，依赖它的IPC和原生交互会延迟，不能据此说所有renderer同时停止。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Electron 的多窗口架构是什么样的？"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Electron 的 Main Process 主要负责什么逻辑？Node 相关逻辑负责什么？大计算量任务应该放在哪里？如何避免 Main Process 卡顿？"
+        },
+        {
+          "type": "paragraph",
+          "text": "你刚刚提到了 Worker，可以展开讲讲吗？"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果 Electron 的 Main Process 发生卡顿，对 Renderer Process 有什么影响？"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么用 Worker？（CPU 密集型任务计算，而非 IO 密集型）"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Main和Node不是两个必然独立的进程"
+        },
+        {
+          "type": "paragraph",
+          "text": "Electron应用有main入口进程，在Node.js环境运行，负责应用生命周期、创建管理BrowserWindow、菜单/对话框等原生集成及受控IPC。Node是其运行环境和API能力，不是必定另有一个叫Node的业务进程。每个窗口的网页由renderer负责；浏览器还可能有GPU、utility等辅助进程，不能把总进程数固定等于窗口数加一。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Renderer负责DOM/CSS/页面JS与UI，现代默认配置不应直接给不可信页面完整Node能力。preload与contextBridge可暴露最小业务接口，main验证消息来源、参数、任务归属与权限；不要把任意ipcRenderer调用、文件路径或shell执行直接暴露给页面。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "大计算放到能真正并行或隔离的执行位置"
+        },
+        {
+          "type": "paragraph",
+          "text": "Node worker_threads适合CPU密集JS计算，独立JS执行环境在不同线程运行；支持clone/transfer或明确共享内存协议，但不是独立进程故障域。Node内建异步IO本已避免普通等待占住事件循环，单纯为了网络等待开worker不一定获益。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Web Worker适合renderer里的纯计算，例如复杂图分析/布局，不能直接读写DOM，要把结果发回页面应用；DOM更新仍占renderer主线程。需要隔离崩溃或独立生命周期的Node任务可考虑utilityProcess等子进程。不要用async函数包装同步大循环就声称转后台，也不要每个token建一个worker。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "通信 成本与取消同样需要设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "消息通常经过结构化克隆；大ArrayBuffer可用transfer转移所有权，发送侧会失去原buffer可用性；SharedArrayBuffer避免某些复制但引入Atomics同步与环境安全约束。任务带id/版本，限制输入字节、队列和worker数，区分结果、错误、退出与超时。"
+        },
+        {
+          "type": "paragraph",
+          "text": "长期worker/pool避免反复启动成本，但要防止并发无限增长。合作取消须分块回到事件循环处理新消息，或者使用经过证明的共享取消标志；worker.terminate适合放弃整个worker但会丢未完成工作，外部副作用仍需对账。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Main卡住时Renderer不是都被硬件暂停"
+        },
+        {
+          "type": "paragraph",
+          "text": "独立renderer可以继续某些本地JS或合成工作，但依赖main处理的IPC响应、窗口/菜单/原生交互和生命周期协调会延迟；同步IPC还可直接阻塞等待它的renderer。共享CPU/内存争用也可能拖慢整个应用，所以用户看到窗口卡顿，不代表每个renderer线程都在同一条JS调用栈上停止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若renderer自己跑长循环，则主要阻碍该页面脚本、输入与渲染；把重活从main搬到renderer主线程仍会卡界面。优先避免同步fs/网络等待、大JSON解析和长CPU任务占main，改异步IO、懒加载及有界worker/utility进程；不要为性能关闭安全隔离。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "验证实际影响"
+        },
+        {
+          "type": "paragraph",
+          "text": "用main与renderer各自profile、事件循环延迟、IPC往返、交互响应和内存/CPU定位，再将同等任务移出主循环比较。测试窗口关闭后迟到结果、worker报错/退出、队列溢出与取消。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-74fb91a589bc",
+      "title": "await零延时timer怎样让出事件循环 Worker怎样只接受最新结果",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "await零延时timer怎样让出事件循环 Worker怎样只接受最新结果"
+        },
+        {
+          "type": "paragraph",
+          "text": "await等待尚未兑现的timer Promise时，当前函数挂起，后续task才有机会推进。Worker分片也利用这个机会处理新请求或取消；再配合任务id检查，防止旧计算继续耗时或覆盖新结果。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "你刚刚提到了 Worker，可以展开讲讲吗？"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么用 Worker？（CPU 密集型任务计算，而非 IO 密集型）"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "await new Promise((resolve) => { setTimeout(resolve, 0) }) 是怎么让出事件循环的？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "按调用栈 task和microtask逐步走"
+        },
+        {
+          "type": "paragraph",
+          "text": "new Promise的executor当场执行，注册timer后返回一个尚未兑现的Promise；await挂起当前async函数后续，当前调用栈才有机会退出。timer满足宿主可运行条件后作为后续task运行resolve，兑现Promise并安排await后续的微任务；到微任务检查点恢复该函数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这给其他task获得执行机会，但不是“await直接把CPU交给渲染”。setTimeout0不保证零毫秒、严格注册总序或一定先画一帧；浏览器多个task来源和渲染机会由规范/调度决定，嵌套及后台节流也影响时间。在Worker里本就没有页面DOM绘制，这次让出主要让新消息/取消和其他工作可被处理。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "已经兑现的Promise为什么不是同样的让出"
+        },
+        {
+          "type": "paragraph",
+          "text": "JS await Promise.resolve()会把后续安排为Promise作业/微任务，但当前微任务检查点会继续处理新排微任务。长循环每次只await已兑现Promise，可能不断占住微任务队列，迟迟不处理timer、输入和渲染。用未来task的timer、适合平台的yield API或真正worker分离，才改变这个调度层次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不要把结论泛化到Python：asyncio await一个已完成Future可能根本不实际挂起，Python async与await怎样运行 阻塞IO和高并发该怎样选模型 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn76K8dOzA2N79BbUAMrygWe)单独提供实际演示。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "TaskId防过期发布 分片才允许合作取消"
+        },
+        {
+          "type": "paragraph",
+          "text": "主界面每发新请求提高id，并在收到结果时只接受当前id。Worker也记录current，每片开始检查id，执行有限工作后用future-task调度下一片。新请求消息有机会在片间更新current，旧任务下一片就停止；若整个CPU循环一直占用Worker，新消息处理器也不能及时修改id。"
+        },
+        {
+          "type": "paragraph",
+          "text": "仅在主界面丢弃旧结果可保证显示新旧不乱，但旧计算还在烧CPU；仅在Worker检查也不够，因为旧结果可能已经发出、正在传输。两边检查覆盖不同竞争窗口。片太大取消慢，太小调度开销大，按时间预算和实际单步成本调整；本例固定256次简单运算，不承诺所有任务同样耗时。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "latest_chunks.mjs提供单拥有者、递增安全整数id、输入0到100000、分片/取消/再次提交/销毁协议。平方和最大值仍低于JS安全整数上限；post和schedule需符合注明契约，消息/计算异常应由宿主报告。Node适配器用实际worker_threads承载它，浏览器可用self.onmessage和self.postMessage接同一核心。"
+        },
+        {
+          "type": "paragraph",
+          "text": "另1000次已兑现await没有推进timer，未来timer await后timer执行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "latest_chunks.mjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "latest_chunks.mjs",
+          "value": "// Host-neutral protocol core usable inside a Web Worker or a Node worker.\n// schedule must asynchronously run fn in a future TASK, not a microtask.\nexport function createLatestJob(post, schedule = fn => setTimeout(fn, 0), chunk = 256) {\n  if (typeof post !== 'function' || typeof schedule !== 'function' ||\n      !Number.isSafeInteger(chunk) || chunk < 1) throw new TypeError('invalid configuration');\n  let current = 0, disposed = false, active = false;\n  function submit(message) {\n    if (disposed) return false;\n    if (!message || !Number.isSafeInteger(message.id) || message.id <= current)\n      throw new TypeError('strictly increasing safe integer id required');\n    // Bounded sample workload: sum squares of integers from 0 through n-1.\n    if (!Number.isSafeInteger(message.n) || message.n < 0 || message.n > 100000)\n      throw new RangeError('n 0..100000');\n    current = message.id; active = true;\n    const id = current, n = message.n;\n    let index = 0, sum = 0;\n    function step() {\n      if (disposed || !active || id !== current) return;\n      const end = Math.min(n, index + chunk);\n      for (; index < end; index++) sum += index * index;\n      if (index === n) { active = false; post({id, sum}); }\n      else schedule(step);\n    }\n    schedule(step); return true;\n  }\n  return {\n    submit,\n    cancel(id) { if (disposed || !active || id !== current) return false; active = false; return true; },\n    dispose() { disposed = true; }\n  };\n}\n\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "node_worker_adapter.mjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "node_worker_adapter.mjs",
+          "value": "// Node24 adapter for exercising actual worker-thread execution.\n// Browser adaptation: post = result => self.postMessage(result),\n// and self.onmessage = event => core.submit(event.data).\nimport {parentPort} from 'node:worker_threads';\nimport {createLatestJob} from './latest_chunks.mjs';\nif (!parentPort) throw new Error('worker-only entry');\nconst core = createLatestJob(result => parentPort.postMessage(result));\nparentPort.on('message', message => {\n  try {\n    if (message?.type === 'cancel') core.cancel(message.id);\n    else core.submit(message);\n  } catch (e) {\n    parentPort.postMessage({id: message?.id, error: e.message});\n  }\n});\nparentPort.postMessage({ready: true});\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-bc8ad105e39f",
+      "title": "浏览器与Node事件循环有什么区别 nextTick和微任务怎样排序",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "浏览器与Node事件循环有什么区别 nextTick和微任务怎样排序"
+        },
+        {
+          "type": "paragraph",
+          "text": "浏览器事件循环要协调任务、微任务和渲染机会；Node还围绕libuv阶段及nextTick等宿主队列组织工作。具体顺序取决于注册位置、入口上下文和版本，浏览器口诀不能直接套到Node。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "JS 事件循环理解，浏览器常见微任务、宏任务，浏览器与 Node 事件循环区别。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "浏览器的任务与渲染机会"
+        },
+        {
+          "type": "paragraph",
+          "text": "浏览器常见task来自定时器、用户输入、消息和网络等任务源；微任务包括Promise反应、queueMicrotask和MutationObserver通知等。同步调用栈结束到规定的微任务检查点会清空可执行微任务，包括期间新加入的微任务，之后才有机会继续其他任务与渲染处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "规范没有让所有task来源共享唯一严格FIFO队列，也不保证每个task之后立即绘制。requestAnimationFrame属于渲染更新机制，不能粗暴当成setTimeout同义词；微任务无限自续会延误输入与绘制。await已兑现Promise的续执行仍是JS异步作业，与Python某些已完成Future可不让出的语义不同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Node围绕libuv和宿主队列组织IO"
+        },
+        {
+          "type": "paragraph",
+          "text": "Node事件循环常见阶段包含timers、pending callbacks、idle/prepare、poll、check及close callbacks；poll处理适当IO事件，setImmediate对应check，timer要等阈值满足且得到执行机会。FS等操作可能使用线程池，JS回调通常仍回对应事件循环线程，不是每个异步API都新起JS线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "libuv1.45/Node20后每轮timer主要在poll之后处理，兼容路径仍有首次进入loop前的timer处理；不要拿旧版本图的排列当永久契约。顶层setTimeout(0)与setImmediate先后受时机影响，不能无条件写死；在本例文件IO回调内注册二者时，check中的immediate先于其timer。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "nextTick不是普通阶段 微任务还要看入口上下文"
+        },
+        {
+          "type": "paragraph",
+          "text": "process.nextTick队列在Node返回继续事件循环前的相应检查中处理；它与V8的Promise/queueMicrotask队列不同。普通CJS顶层同步代码之后，本例nextTick先于Promise和queueMicrotask；ESM模块求值本来在异步模块/微任务处理中，本例Promise和queueMicrotask先于nextTick。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这不是“ESM里任何时刻nextTick都晚于Promise”。进入同一个后续文件IO回调后，两个样例都观察nextTick、Promise、queueMicrotask、immediate、timer的顺序。必须把每次注册位置与检查点列出来，而不是给整个进程套一个永久优先级表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个完整文件都先记录sync/end，再注册nextTick、Promise和queueMicrotask；通过fs.readFile进入IO回调后重复这些队列并加入immediate/timer。分别运行并检查CJS与ESM顶层差异，以及IO回调内的共同顺序；结论限于这些注册位置和所用Node版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPU长循环、过多微任务或nextTick都会占住JS线程；用分块让出或Worker处理CPU工作，配合背压与取消，不能仅加async关键字就自动并行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "node_order.cjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "node_order.c",
+          "value": "// CommonJS teaching fixture; actual I/O callback ordering is separately checked.\nconst assert = require('node:assert/strict');\nconst fs = require('node:fs');\nconst top = ['sync'];\nprocess.nextTick(() => top.push('nextTick'));\nPromise.resolve().then(() => top.push('promise'));\nqueueMicrotask(() => top.push('microtask'));\ntop.push('end');\nfs.readFile(__filename, err => {\n  if (err) throw err;\n  assert.deepEqual(top, ['sync', 'end', 'nextTick', 'promise', 'microtask']);\n  const io = ['io'];\n  process.nextTick(() => io.push('nextTick'));\n  Promise.resolve().then(() => io.push('promise'));\n  queueMicrotask(() => io.push('microtask'));\n  setImmediate(() => io.push('immediate'));\n  setTimeout(() => {\n    io.push('timer');\n    assert.deepEqual(io, ['io', 'nextTick', 'promise', 'microtask', 'immediate', 'timer']);\n    console.log(JSON.stringify({mode:'CJS', top, io}));\n  }, 0);\n});\n\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "node_order.mjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "node_order.mjs",
+          "value": "// ES module top-level execution is already part of asynchronous module work.\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nconst top = ['sync'];\nprocess.nextTick(() => top.push('nextTick'));\nPromise.resolve().then(() => top.push('promise'));\nqueueMicrotask(() => top.push('microtask'));\ntop.push('end');\nfs.readFile(new URL(import.meta.url), err => {\n  if (err) throw err;\n  assert.deepEqual(top, ['sync', 'end', 'promise', 'microtask', 'nextTick']);\n  const io = ['io'];\n  process.nextTick(() => io.push('nextTick'));\n  Promise.resolve().then(() => io.push('promise'));\n  queueMicrotask(() => io.push('microtask'));\n  setImmediate(() => io.push('immediate'));\n  setTimeout(() => {\n    io.push('timer');\n    assert.deepEqual(io, ['io', 'nextTick', 'promise', 'microtask', 'immediate', 'timer']);\n    console.log(JSON.stringify({mode:'ESM', top, io}));\n  }, 0);\n});\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-89dcb1746d10",
+      "title": "Node怎样支撑服务端高并发 为什么单线程JS不等于整个进程单线程",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Node怎样支撑服务端高并发 为什么单线程JS不等于整个进程单线程"
+        },
+        {
+          "type": "paragraph",
+          "text": "Node用事件循环交错推进很多等待网络的连接，不要求每连接占一条JS线程。当前JS回调通常串行执行，进程内部却还可有工作池、V8后台线程和显式Worker；高并发仍受回调耗时和资源预算约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“Node和JS区别”应对齐为Node宿主与浏览器宿主，JavaScript是语言。浏览器与Node事件循环有什么区别 nextTick和微任务怎样排序 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcndDK0BJe7cpWN9t8Z8O7Pme)给出事件循环顺序推演与可运行示例；服务端还要分析容量和阻塞路径。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "事件循环（Node 和 JS 区别）。",
+            "Node 是怎么支持服务端高并发的？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一个事件循环交错推进很多连接"
+        },
+        {
+          "type": "paragraph",
+          "text": "网络socket利用OS就绪/完成机制，libuv在适当阶段调度回调；很多连接在等网络时不需要每连接独占一条JS线程。主事件循环串行执行当前JS回调，回调应迅速结束，让其他连接继续推进；高并发连接不等于同时运行同样多段JS。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Node进程还可含V8后台线程、libuv工作池和显式worker_threads。部分文件、DNS或加密等API借工作池完成，网络IO常由OS异步能力支持；不能把所有异步操作都说成入同一个线程池，也不能说只有一条线程存在。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Promise不能搬走CPU工作"
+        },
+        {
+          "type": "paragraph",
+          "text": "把大JSON解析、正则灾难回溯、压缩/加密循环或长for放进async函数，仍可能在当前JS线程占CPU。Promise.then也是任务调度关系，不是自动交给多核。await零延时timer怎样让出事件循环 Worker怎样只接受最新结果 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnKKCMbaccA5nJBHMLp1LGud)的分片/Worker协议可供受控计算参考；Worker池应有任务和字节预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "阻塞同步fs/CPU库会让其他请求迟迟无法处理；异步文件API不等于无限资源，工作池任务过长或数量过多也会积压。将CPU与阻塞IO分开、限制输入大小和执行时间，并对不可取消的任务使用明确的隔离/回收策略。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "背压贯穿读 写和下游"
+        },
+        {
+          "type": "paragraph",
+          "text": "连接数、等待队列、HTTP/数据库池和同时业务执行数分开限制；慢客户端时限制每连接待写字节，尊重流write返回值与drain等协议，不在内存无限堆响应。下游慢时限流/超时/取消，重试有预算且考虑幂等。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多进程或Worker可利用多个有效核，但共享状态改为消息/外部存储或正确同步，负载均衡、部署和故障域也改变。加线程不能使单个未拆分CPU回调自动并行，更不会把外部数据库吞吐按比例放大。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎么证明高并发真的有效"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定请求工作量与成功标准，逐步增加连接/并发，记录吞吐、延迟分布、event-loop delay、CPU、RSS、GC、FD及下游等待；请求发出数不是完成数。单机怎样承受高并发 而不把线程和队列无限放大 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnDaAMFe4fLiDzixcjgNTs2f)和并行性能怎样衡量 单核并发与线程池瓶颈怎么解释 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnJBM36a8mPWWcAr0rhbLnBd)给容量与并行量化完整解释。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-73c0b9ca9169",
+      "title": "不用async和await怎样遍历数组并保证Promise有序输出",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "不用async和await怎样遍历数组并保证Promise有序输出"
+        },
+        {
+          "type": "paragraph",
+          "text": "从Promise.resolve开始，为每个输入位置添加then；前一个回调返回的值/Promise/thenable完成后才调用下一个。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同时给数组、回调、有序输出与禁止async/await。明确默认同时保证调用串行和输出有序；若仅要求输出顺序、允许并发，则另外解释而不偷换。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "实现一个方法：接收数组与回调函数，遍历数组执行回调，保证异步 Promise 有序输出，禁止使用 async/await。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "把下一个调用放到前一个then后面"
+        },
+        {
+          "type": "paragraph",
+          "text": "从Promise.resolve开始，为每个输入位置添加then；前一个回调返回的值/Promise/thenable完成后才调用下一个。每个then返回后续Promise，让拒绝和等待向整条链传播；for循环只是构建链，不是立即执行所有业务回调。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整ordered函数中callback(input[i],i)返回值经Promise链吸收，emit(value,i)也可返回Promise，等输出完成后再推进。同步抛错、异步拒绝和输出失败都使返回Promise拒绝，后面的业务回调不再执行；这不是静默跳过错误。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "接口 边界与内存成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "先在受保护的快照步骤校验数组及callback/emit函数，捕获一次length并验证为0到10000的整数，再只复制0到length−1的数字槽位，不读取或调用Symbol.iterator。稀疏槽作为undefined处理，空数组返回空结果；只做浅复制，payload对象本身仍可被外部改。长度或槽位getter抛错转成返回Promise的拒绝；要求同步getter/proxy trap可信且有限完成，槽位数有界不能抢占不返回的用户代码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "函数返回Promise，调用方必须then/catch或由允许的上层await观察它；题目要求的实现源码没有async/await关键字。链和结果占O(n)额外空间，不适合无限流；串行总时长大致累加任务耗时，任一任务永不settle则链停住，需要业务超时/取消协议。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "仅输出有序的并发版本有什么不同"
+        },
+        {
+          "type": "paragraph",
+          "text": "Promise.all(items.map(callback))可先启动全部，再在全部成功后按输入顺序得到数组，并非每个任务完成当下就有序输出，也没有自动并发上限。若前项很慢而后项很快，按序流式输出需要缓冲后项并等待前项，会有队头阻塞。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有限并发需求复用JS怎样设计并发池 100个进程与5并发该怎样解释 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn4fj78woYm3gRxR1thL8nsb)完整任务池：先控制启动数量，再带索引存结果，维护nextToEmit；生产比输出快仍需结果缓冲字节上限。Promise.all拒绝不自动取消其他任务，不能把返回失败当所有远端副作用都停止。本题默认串行实现避免偷偷引入这一组未说明规则。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "ordered_promises.mjs 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "ordered_promises.mjs",
+          "value": "// Serial invocation AND ordered emission; callbacks may return values/thenables.\nexport function ordered(items, callback, emit = () => undefined) {\n  let input;\n  try {\n    if (!Array.isArray(items) || typeof callback !== 'function' || typeof emit !== 'function') {\n      throw new TypeError('array <=10000 and functions required');\n    }\n    const length = items.length; // Read once; never use a caller-defined iterator.\n    if (!Number.isInteger(length) || length < 0 || length > 10000) {\n      throw new TypeError('array length must be 0..10000');\n    }\n    input = new Array(length);\n    // Getters/proxy traps must finish; a slot bound cannot preempt user code.\n    for (let i = 0; i < length; ++i) input[i] = items[i];\n  } catch (error) {\n    return Promise.reject(error);\n  }\n  const results = [];\n  let chain = Promise.resolve();\n  for (let i = 0; i < input.length; ++i) {\n    chain = chain.then(() => callback(input[i], i))\n      .then(value => Promise.resolve(emit(value, i)).then(() => {\n        results.push(value);\n      }));\n  }\n  return chain.then(() => results);\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-256209bfc196",
+      "title": "JavaScript怎样垃圾回收 为什么闭包监听器和缓存会保留内存",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "JavaScript怎样垃圾回收 为什么闭包监听器和缓存会保留内存"
+        },
+        {
+          "type": "paragraph",
+          "text": "JS的追踪式GC依据根可达性回收对象。闭包、监听器和缓存若还连着对象，它就仍可达，即使业务已经不用；修复这类保留要切断引用链，不能只催GC运行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "讲一下垃圾回收。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可达性决定能否回收"
+        },
+        {
+          "type": "paragraph",
+          "text": "从运行中的上下文、栈、全局、宿主持有对象等根沿引用找到的对象仍可达；不可达对象才可能回收。两个对象相互引用却不再从根可达，追踪式GC能处理这种循环，不能只背“引用计数减到零”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "变量离开一段语法作用域不等于所有相关对象立刻释放：闭包、定时器、事件监听器、未结束任务和缓存可能继续持有它。反过来编译器证明不再需要的引用也可能不按源码视觉作用域保活；不能依赖精确回收时刻做业务协议。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "标记 清扫 移动与分代"
+        },
+        {
+          "type": "paragraph",
+          "text": "标记找到存活图，清扫回收未标记空间，移动/整理可减少碎片并需要更新引用。V8公开设计采用分代并结合并行、增量、并发等技术，利用许多新对象短命的特征；晋升、写屏障和老生代到新生代引用记录参与正确性。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“并发GC”不是完全没有停顿，标记与应用写入交错需要屏障/同步，某些阶段仍需暂停。具体年轻代/老年代算法与版本会演进，不把一篇历史Orinoco文章的每个默认阈值当所有Chrome/Node永久实现。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "常见泄漏是无意义但仍可达"
+        },
+        {
+          "type": "paragraph",
+          "text": "页面移除DOM节点后若监听器闭包、全局map或异步回调仍引用它，相关对象图可能保留；长寿缓存不设容量、订阅不解除、interval不清理、取消后任务仍保留大结果也类似。GC回收内存不等于自动取消网络请求或释放所有宿主资源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "WeakMap可给对象附加不延长键生命的元数据，但不能遍历全部键做精确容量统计；WeakRef/FinalizationRegistry的回收和回调时机不确定，不适合作为锁释放、付款或必须发生清理的唯一机制。需要显式dispose/close/AbortSignal等生命周期协议。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎样排查与证明修复"
+        },
+        {
+          "type": "paragraph",
+          "text": "重复可控的页面打开/关闭或请求批次，观察充分稳定后的堆基线，用heap snapshot的retainer链和分配剖析找根到大对象的路径；单次RSS不下降可能是引擎/分配器保留，不足以证明泄漏。堆快照可能含用户内容，应在获授权范围最小化采集。"
+        },
+        {
+          "type": "paragraph",
+          "text": "修复解除监听/订阅、清定时器、有界缓存、取消异步工作并切断保留链后，验证功能正确及多轮稳态，而不是调用一次gc就宣称生产问题消失。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "OS/Linux主线与版本边界"
+    },
+    {
+      "entryId": "own-java-modern",
+      "questionId": "q-own-java-cross-language-contracts",
+      "label": "Java基础：跨语言契约"
+    }
+  ]
+}

@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s11340",
+  "entryId": "ai-agent-4",
+  "expectedOriginalHash": "ebbd73bf42a01a22489d6141e2828dd56100af6300e88964526bfd798591331a",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "12.15 设计Java企业级Agent平台：多会话工具RAG多Agent与高并发如何贯通"
+    },
+    {
+      "type": "paragraph",
+      "text": "企业Agent平台应以持久任务控制面贯通会话、工具、检索和多执行者，推理与沙箱作为受控可替换执行面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Java企业Agent平台怎么设计；多会话和高并发怎样处理；RAG工具多Agent如何贯通。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "统一架构设计先固定租户、容量、时延、授权和数据驻留要求，再选择部署与组件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "需求和边界先确定"
+    },
+    {
+      "type": "paragraph",
+      "text": "明确企业租户/用户对象权限、并发会话数、平均/尾部任务时长、上下文与产物大小、可接受等待、工具副作用及恢复目标。企业知识默认私有，模型供应商/地域和传输范围由政策决定；工具与检索结果是外部数据，不能变成新授权。Java可作为网关、Session/任务与工具服务的主语言，模型推理通常是远端依赖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次请求的关键ID分tenant/user/session/turn/task/step/operation与trace；trace用于观测，operation用于副作用去重。会话轮次因果顺序独立于网络连接，多SSE连接不能各自无约束推进同Session。下面图是逻辑责任与数据流，不代表所有箭头同步或每框一台机器。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "逻辑架构图"
+    },
+    {
+      "type": "paragraph",
+      "text": "实线箭头表示数据流；持久状态是任务恢复权威。各模块可以合并部署，按测得瓶颈再拆。"
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "label": "041/fence-041.txt",
+      "value": "用户 / Web / 企业应用\n  | HTTPS 输入，SSE / 查询结果\n  v\n网关：认证 + 租户ACL + 入口配额\n  |\nSession / Task API -----> 关系库：会话/任务/预算/操作账 + outbox\n  | 受理ID                         | 可靠事件 / 扫描恢复\n  v                                v\n查询与流式投影 <------------- 有界公平队列 / 调度器\n                                   | lease + epoch\n                                   v\n                       Java 编排Worker / Supervisor\n                       /       |                 \\\n          RAG检索与rerank   模型网关            Tool执行器\n          |               配额/费用/熔断       schema/ACL/幂等\n          v                    |                   |\n关键词+向量索引 / ACL       获准模型供应商       受权业务系统\n          ^\n授权文档 -> 解析/切片/Embedding/版本增删\n          |\n       对象存储：原文、冷历史、不可变产物\n\nRedis：热缓存/进度投影/受控限流；不替代权威任务账\n日志 + 指标 + Trace：贯穿各层；结果校验后提交checkpoint\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "入口层和编排层"
+    },
+    {
+      "type": "paragraph",
+      "text": "入口先做认证、租户解析、对象ACL、请求大小检查和反滥用；Session API把turn与任务可靠受理后返回ID。关系库状态+outbox驱动有界、公平的调度器，worker领取epoch再执行图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "编排层继续分工：Supervisor/Planner提出合法计划，Executor落实工具协议，validator用证据验收。没有依赖的分支可以有界并行，输入和结果都带版本，最终产物只由主协调者CAS发布一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工具注册表给名称/schema/能力；执行器校验参数/权限/审批，带operationId访问业务系统，独立超时/池/断路器。模型网关统一供应商适配、流解析、RPM/TPM/费用预算与重试，返回工具调用还要走执行器而非直接执行模型URL。循环轮数、总deadline、token/成本和无进展检测是代码硬边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "存储分工与冷热会话"
+    },
+    {
+      "type": "paragraph",
+      "text": "存储按数据责任分工："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "关系DB保存权威事实，包括租户/会话归属、turn顺序与版本、任务/计划状态、操作账、预算预留、outbox/inbox。",
+        "受权对象存储保存长文本、原文/附件和产物，DB只保留对应版本/hash引用。",
+        "Redis保存热Session摘要/缓存、短期进度，或实现可解释的限流。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "未决任务和幂等证据有恢复责任，不能像普通缓存一样被TTL随意删掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "热会话读取最近消息+摘要+必要检索证据；冷历史归档后按需查询。摘要可能漏细节，因此保留指向不可变历史版本的证据引用，金额、授权和任务硬条件则结构化保存，不能靠有损摘要猜测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消息删改、隐私删除和ACL收紧，要传播到缓存、索引及任务副本。并发更新采用Session单写者，或锁外模型生成+短事务version CAS；冲突可以重算，但不能重复外部动作。第11.9节给出真实H2局部验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RAG是一条有版本和权限的数据管线"
+    },
+    {
+      "type": "paragraph",
+      "text": "离线接入经授权文档→解析保留结构/来源→按语义标题与长度约束切片及必要重叠→embedding→向量索引，同时建关键词索引与docId/chunkId/version/ACL元数据。原文权威保留，可重建索引；增量更新与删除有水位/tombstone，避免旧chunk长期可见。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在线RAG先确认租户、对象权限、查询时间和意图，再做关键词+向量多路召回、融合去重和rerank。候选经权限过滤后，按上下文预算组织成带引用的证据，再交给模型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "权限检查覆盖真正返回的片段：检索前过滤减少泄漏与无效候选，返回前再核对权限和版本。缓存key包含租户、权限版本和语料版本，避免跨用户复用出错。评估既看召回率，也看引用可核实率、回答忠实度、过期内容和无证据拒答。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "核心链路与异步结果"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心链路从可靠受理开始：用户输入→持久保存turn/task→调度器取得额度→读取会话快照和RAG证据→模型提出动作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "动作进入工具执行器，经过权限、参数和预算校验，先记录调用责任，再执行并更新操作账，再形成结构化Observation。验收合格就保存结果/checkpoint/outbox；还没完成就进入下一轮，最终通过SSE或查询展示终态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型生成期间不持数据库长事务。流式片段只是暂存，半个JSON工具调用不能执行；终态失败，也不能把收到的片段当完整成功回答。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型慢时按第6.15节排队，查询/事件重放可跨连接恢复；缓存/小模型/部分结果只在业务允许且标时效时降级。外部副作用超时进入UNKNOWN先查真实结果。pod升级先摘流排空，持久checkpoint、graph/schema版本、lease/epoch阻止旧任务乱写，不能恢复已丢的JVM栈或socket。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "横向扩容的真实瓶颈"
+    },
+    {
+      "type": "paragraph",
+      "text": "无状态API/检索编排可加实例，长连接要按连接数/字节与排空处理，不能仅看CPU；任务worker按队列年龄和实际服务能力扩，但供应商RPM/TPM/预算和下游DB连接有全局上限。每实例复制同配额会超发，必须全局预算或安全分配。"
+    },
+    {
+      "type": "paragraph",
+      "text": "有状态DB、索引、消息分区和对象存储分别按容量/热点扩；按tenant/task/session稳定分片，单Session强顺序/热工具写仍有串行点。分片迁移需版本/水位和owner切换，增加worker不能解决一个账户/同文件的冲突。checkpoint频率平衡恢复重算与写放大，历史/大对象有归档保留规则。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可观测性风险与验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "以trace/span串入口、排队、模型、工具、检索、DB，跨异步用上下文或span links关联；结构化日志记录task/step/attempt、版本、错误类别和产物引用，脱敏且不默认记录全部提示词/秘密。指标分端到端p50/p95、排队/首token/生成时长、成功/UNKNOWN、RPM/TPM、实际费用、估算误差、工具失败/超时、检索命中质量、SSE积压、checkpoint/outbox年龄。"
+    },
+    {
+      "type": "paragraph",
+      "text": "风险包括prompt injection、越租户检索、工具误写、重复副作用、长会话漂移、费用滥用、队列饥饿和升级不兼容。压测用真实大小与热点分布，故障注入模型慢、Broker停、DB切换、重复事件和旧worker复活，验证终态责任/权限/额度。工具包装、会话CAS、循环和预算等局部测试不能代替整体平台的容量与高可用验证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "1"
+}

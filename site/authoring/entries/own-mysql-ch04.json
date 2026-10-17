@@ -1,0 +1,526 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch04",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · LSM、PostgreSQL 与分析、文档存储比较",
+  "title": "LSM、PostgreSQL 与分析、文档存储比较",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s9862",
+      "order": 9862,
+      "question": "LSM 怎样组织写入，WAL、MemTable、SST 与 compaction 各有什么成本？",
+      "shortAnswer": "写入先进入受持久化协议保护的内存结构，再落不可变有序文件；读放大、写放大、空间放大与 compaction 需要共同权衡。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第04章 LSM、PostgreSQL 与分析、文档存储比较"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据库选型要从访问模式、数据规模、事务边界与恢复成本出发；B+ 树、LSM、列式存储和文档模型分别优化不同的问题，没有一种结构天然通吃。"
+        },
+        {
+          "type": "paragraph",
+          "text": "也可能这样问：LSM 为什么需要 compaction？HBase 为什么适合某些历史数据？PostgreSQL 比 MySQL 强在哪？OceanBase、TDSQL、adbpg 分别是什么？Hive、ClickHouse、MongoDB 怎么选？自研 MiniSQL 或 mmap hint 索引怎样解释？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "面试时怎样组织比较"
+        },
+        {
+          "type": "paragraph",
+          "text": "“我先确定点查还是扫描聚合、单行还是跨行事务、写入是否持续、数据是否能重建，再比较结构。InnoDB 适合有关系约束的在线事务，LSM 类系统把随机写转成批量顺序维护，列式分析库减少读取无关列，文档库便于按聚合对象访问。最终还要看一致性、容灾、团队运维和迁移出口，不能只报一个吞吐排名。”"
+        },
+        {
+          "type": "paragraph",
+          "text": "本章 MySQL 以 8.4.0 为基线，PostgreSQL 比较采用 17 的机制，HBase 客户端采用 2.5.0 API；其余产品分别标明版本范围或产品形态。版本不同的 SQL、默认配置和部署方式不能混用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "LSM：写入便宜，维护不会消失"
+        },
+        {
+          "type": "paragraph",
+          "text": "LSM 把一次写入先收进日志和内存，再批量变成有序文件。以 LevelDB 1.23 与 RocksDB 9.10.0 的 level compaction 为例：写入取得序号，写 WAL，再进有序 MemTable；MemTable 满后冻结，新写入切到另一张表，后台把冻结表刷成 SST，并发布版本元数据。ACK 前是否 fsync 取决于持久化选项，“写了日志”不等于已经能抗掉电。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读时则要回答“这个键的最新可见版本在哪”。先看活动和冻结的 MemTable，再用各文件最小/最大键缩小磁盘候选。L0 可能有多个重叠文件，较低层可按层内不重叠范围查找；冻结只是停止写入，不意味着可以把那张 MemTable 从读路径移除。最后依据序号、墓碑和快照选可见结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进入 SST 后也不是从第一行扫起：footer 定位索引和元信息，块索引定位数据块，Bloom Filter 排除一部分不存在的键，块缓存减少重复读；前缀压缩与 restart points 可支持块内查找。Bloom 说“可能存在”还需查数据，范围查询也仍需多路归并，不能用点查 Bloom 代替。"
+        },
+        {
+          "type": "paragraph",
+          "text": "检验这条读路，要放入缺失键、跨层新旧值、墓碑和长快照，再看 L0 积压与坏块；块校验负责发现损坏。一次缓存命中只能解释那次点查，不能替所有这些边界作证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MemTable 常用跳表，但不是唯一选择；哈希结构或其他有序结构要分别解决范围遍历、并发写、内存分配和快照。内部键通常需要把用户键、序号和类型区分开，不能覆盖掉仍被快照需要的版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在典型 leveled 布局中，L0 文件范围可重叠，L1 及更低各层内部通常按键范围不重叠；不同层之间仍可存在同一键的不同版本。因此问“L1、L2 存什么类型”，答案不是一层只存键、另一层只存值，而是不同层次的有序键值版本与删除标记。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么文件已经有序，还需要 compaction？同一键的新旧版本可能分布在多个层和重叠文件里，读一次要查多处，空间也要一直占着。Compaction 归并这些范围，处理旧版本和墓碑，用后台维护换取较低的读放大、空间放大。它不是简单拼文件：丢墓碑前，要确认没有读者或更低层旧值仍需要它，否则旧值会复活；新 SST 与版本清单必须可靠发布，旧文件要等读者不再引用后才删除。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不同压实策略付的账不同。Leveled 往往多重写数据，换较低读放大与空间放大；tiered/universal 通常少一些写放大，但读候选和临时空间可能增多。持续写入超过后台能力，L0 就会积压、延迟上升，最终 write stall，因此压测要看到稳定态和积压，不能只跑空库短测。"
+        },
+        {
+          "type": "paragraph",
+          "text": "与之相比，B+ 树更偏向原位页维护和有序定位，LSM 更偏向批量生成新文件。强同步、随机读、范围扫描、长快照分别改变成本，不能仅凭“顺序写”判断所有负载都由 LSM 胜出。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-3",
+          "label": "MySQL 为什么使用 B+ 树？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9884",
+      "order": 9884,
+      "question": "HBase RowKey 怎样影响范围、热点和缓存，字节编码怎样保持次序？",
+      "shortAnswer": "先按查询前缀与范围设计 RowKey，再处理热点和字节顺序；缓存不是任意二级查询的索引，编码必须明确长度、符号与边界。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "HBase：先设计 RowKey，再谈缓存"
+        },
+        {
+          "type": "paragraph",
+          "text": "HBase 2.5 是按 RowKey 排序、按 Region 切分的宽列数据库；数据维度是行键、列族、列限定符、版本时间戳。列族是较重的存储边界，限定符可稀疏出现；不是每个列都像关系表列一样必须有值。RegionServer 的 WAL、MemStore、HFile、BlockCache 和 compaction 共同承担存储读写。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Cell 的版本时间戳不自动等于业务 eventTime，也不自动形成跨列的同一业务版本快照；需要恢复整条事件时，应明确行内原子写入与版本读取契约。字符串字节键中的 \"10\" 可排在 \"2\" 前，不能把展示出来的数字当作数值排序。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HBase 适合已知 RowKey 或范围的海量稀疏历史记录。Redis 常用于低延迟热数据和内存数据结构，两者不能仅按“都是 KV”替换。HBase 的行原子性不等于任意多行 SQL 事务，Redis 的持久化也不是 LSM compaction。是否选 HBase，要证明数据保留量、访问路径、批量处理生态和运维成本需要它。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果按某租户的一条 trace 读取有序事件，可以用 salt | tenant | trace | sequence。下方 codec 固定为 1+8+8+8 字节；租户、trace、序号都限制非负，整数用大端编码，按无符号字节序比较后才保留非负整数顺序。salt 由 trace 决定，单 trace 的查询可直接计算目标前缀，不需扫描所有桶；跨 trace 查询则可能扇出。只用递增时间作 RowKey 可能把写集中到少数 Region，盐值缓解热点也会牺牲一些全局顺序便利。"
+        },
+        {
+          "type": "paragraph",
+          "text": "salt 只由 trace 决定时，同一热 trace 仍落在一个前缀，不能把这一条 trace 的写入自动分散；若改成事件级分桶，就要付出跨桶归并和顺序恢复成本。行键含 tenant 只定义数据布局，不替代权限控制。事件序号应稳定，重试是否覆盖同一个 cell、保留几个版本、TTL 与删除策略都要显式约定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "给定前缀 P，扫描范围应为 [P, successor(P))。successor 从末尾向前找第一个非 FF 字节加一，并截断后缀；全 FF 没有有限上界，不能溢出回零。codec 的测试验证字节契约，不证明真实 Region 分布或 HBase 服务性能。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对应 Java API 可用 withStartRow(P,true) 与 withStopRow(successor,false)；若无有限 successor，就不设置停止行。不能用 P 后拼一个 FF 当作所有后缀的上界，它会漏掉某些合法键。时间范围 Scan.setTimeRange(min,max) 也是左闭右开，且作用于 cell 版本时间，不应偷偷替换成业务事件时间筛选。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读优化优先级是明确起止键、只取需要的列族/限定符/版本，再减少 RPC 和资源浪费。HBase 2.5 Scan.setCaching 影响每次 RPC 的行批量，setCacheBlocks 决定扫描是否污染块缓存，setBatch 是单次返回 cell 数相关设置，可能出现部分行。Filter 不等于完全没有扫描成本。复用线程安全 Connection，按 API 生命周期管理 Table、ResultScanner，结束后关闭；观察 Region 热点、RPC 延迟、块缓存命中、HFile 数量和 compaction 压力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "批量设置过大增加客户端内存、单次 RPC 延迟与处理间隔，扫描器还受租约/超时约束；需要一起调行批量、cell 批量与应用处理速度。默认只取最新版本和显式读取多版本的成本不同，过滤器也不能替代正确的起止键。"
+        },
+        {
+          "type": "paragraph",
+          "text": "搭建先选模式：standalone 在单 JVM、通常本地文件系统运行；pseudo-distributed 在单机上模拟分布式进程；真正分布式部署需要协调 HDFS、ZooKeeper、RegionServer、主备 Master、网络与权限。HBase 2.5 的 JDK 兼容矩阵与独立 codec 的 JDK 21 测试环境不是同一件事。单机学习可选经 2.5 文档确认兼容的 JDK 11，使用官方发行包；不要把此配置直接升级成生产高可用方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整 standalone 配置与 shell 会话列在章末。前提是 HBase 2.5 已由操作者安装、JAVA_HOME 指向兼容 JDK，HBASE_HOME 指向发行目录，文件路径可写；本章不包含下载、安装或真实服务执行结果。集群模式还需分别配置 rootdir、distributed、quorum、regionservers、备 Master、时间同步、安全认证与失败恢复演练。"
+        },
+        {
+          "type": "paragraph",
+          "text": "真实搭建应核验官方发行包校验和、隔离实验目录与网络访问；外部 ZooKeeper 的管理责任要与 HBase 自管模式分清，不能让两个管理者争抢同一实例。Master 启动成功不等于数据面可用，要验证建表、写入、读取、服务重启后读取，并在获准的测试环境演练节点故障与恢复。放在 /tmp 的实验数据可能被系统清理，不可当作可靠保留方案。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整 HBase 行键字节编码"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 TraceRowKey.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/query/code/TraceRowKey.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.util.Arrays;\nimport java.util.Optional;\n\n/** Original fixed-width byte codec; no HBase client or server is required. */\npublic final class TraceRowKey {\n    private TraceRowKey() {}\n    public record Decoded(long tenant, long trace, long sequence) {}\n    public static byte[] prefix(long tenant, long trace) {\n        if (tenant < 0 || trace < 0) throw new IllegalArgumentException(\"nonnegative IDs required\");\n        int salt = Long.hashCode(trace) & 15;\n        return ByteBuffer.allocate(17).put((byte)salt).putLong(tenant).putLong(trace).array();\n    }\n    public static byte[] encode(long tenant, long trace, long sequence) {\n        if (sequence < 0) throw new IllegalArgumentException(\"negative sequence\");\n        return ByteBuffer.allocate(25).put(prefix(tenant,trace)).putLong(sequence).array();\n    }\n    public static Decoded decode(byte[] key) {\n        if (key == null || key.length != 25) throw new IllegalArgumentException(\"25 bytes required\");\n        ByteBuffer b = ByteBuffer.wrap(key); int salt = Byte.toUnsignedInt(b.get());\n        long tenant=b.getLong(),trace=b.getLong(),sequence=b.getLong();\n        if (tenant<0 || trace<0 || sequence<0 || salt!=(Long.hashCode(trace)&15))\n            throw new IllegalArgumentException(\"invalid key\");\n        return new Decoded(tenant,trace,sequence);\n    }\n    /** Smallest exclusive upper bound of a prefix; empty means unbounded, never wrap to zero. */\n    public static Optional<byte[]> exclusiveEnd(byte[] prefix) {\n        if (prefix == null) throw new IllegalArgumentException(\"null prefix\");\n        byte[] end=prefix.clone();\n        for (int i=end.length-1;i>=0;i--) {\n            if (Byte.toUnsignedInt(end[i])<255) {\n                end[i]++; return Optional.of(Arrays.copyOf(end,i+1));\n            }\n        }\n        return Optional.empty();\n    }\n    public static boolean inPrefixRange(byte[] key, byte[] prefix) {\n        if (Arrays.compareUnsigned(key,prefix)<0) return false;\n        Optional<byte[]> end=exclusiveEnd(prefix);\n        return end.isEmpty() || Arrays.compareUnsigned(key,end.orElseThrow())<0;\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "字节顺序、前缀与非法输入测试"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 TraceRowKeyTest.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/query/code/TraceRowKeyTest.java",
+          "value": "import java.util.*;\npublic final class TraceRowKeyTest {\n  private static int checks;\n  static void check(boolean ok){checks++;if(!ok)throw new AssertionError(\"check \"+checks);}\n  static void invalid(Runnable r){try{r.run();throw new AssertionError(\"expected invalid\");}catch(IllegalArgumentException expected){checks++;}}\n  public static void main(String[] args){\n    invalid(()->TraceRowKey.prefix(-1,0));invalid(()->TraceRowKey.prefix(0,-1));\n    invalid(()->TraceRowKey.encode(0,0,-1));invalid(()->TraceRowKey.decode(new byte[24]));\n    invalid(()->TraceRowKey.decode(null));invalid(()->TraceRowKey.exclusiveEnd(null));\n    check(TraceRowKey.exclusiveEnd(new byte[]{(byte)255}).isEmpty());\n    check(TraceRowKey.exclusiveEnd(new byte[0]).isEmpty());\n    check(Arrays.equals(TraceRowKey.exclusiveEnd(new byte[]{1,(byte)255}).orElseThrow(),new byte[]{2}));\n    Random random=new Random(20261010);\n    for(int i=0;i<10000;i++){\n      long tenant=random.nextLong()&Long.MAX_VALUE,trace=random.nextLong()&Long.MAX_VALUE;\n      long seq=random.nextLong()&Long.MAX_VALUE;\n      byte[] key=TraceRowKey.encode(tenant,trace,seq),prefix=TraceRowKey.prefix(tenant,trace);\n      check(TraceRowKey.decode(key).equals(new TraceRowKey.Decoded(tenant,trace,seq)));\n      check(TraceRowKey.inPrefixRange(key,prefix));\n      check(Arrays.compareUnsigned(key,prefix)>=0);\n      check(Arrays.compareUnsigned(key,TraceRowKey.exclusiveEnd(prefix).orElseThrow())<0);\n      if(seq<Long.MAX_VALUE)check(Arrays.compareUnsigned(key,TraceRowKey.encode(tenant,trace,seq+1))<0);\n      byte[] bad=key.clone();bad[0]^=1;invalid(()->TraceRowKey.decode(bad));\n    }\n    byte[] maximum=TraceRowKey.encode(Long.MAX_VALUE,Long.MAX_VALUE,Long.MAX_VALUE);\n    check(TraceRowKey.decode(maximum).sequence()==Long.MAX_VALUE);\n    System.out.println(\"PASS TraceRowKey checks=\"+checks+\", random round trips=10000; no HBase server invoked\");\n  }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "HBase standalone 的完整配置"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 hbase-site.xml。"
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "label": "components/query/code/hbase-site.xml",
+          "value": "<?xml version=\"1.0\"?>\n<configuration>\n  <property><name>hbase.rootdir</name><value>file:///tmp/hbase-interview-data</value></property>\n  <property><name>hbase.zookeeper.property.dataDir</name><value>/tmp/hbase-interview-zk</value></property>\n  <property><name>hbase.cluster.distributed</name><value>false</value></property>\n</configuration>\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "HBase standalone 启停与基础读写会话"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 hbase_standalone.sh。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "components/query/code/hbase_standalone.sh",
+          "value": "#!/usr/bin/env bash\nset -euo pipefail\n: \"${JAVA_HOME:?Set JAVA_HOME to a JDK supported by the selected HBase 2.5 release}\"\n: \"${HBASE_HOME:?Set HBASE_HOME to an already installed official HBase 2.5 distribution}\"\n# Put hbase-site.xml in the distribution's conf directory after reviewing its local paths.\n\"$HBASE_HOME/bin/start-hbase.sh\"\ntrap '\"$HBASE_HOME/bin/stop-hbase.sh\"' EXIT\n\"$HBASE_HOME/bin/hbase\" shell <<'HBASE'\nstatus\ncreate 'interview_trace', 'event'\nput 'interview_trace', 'tenant7:trace1:0001', 'event:body', 'start'\nput 'interview_trace', 'tenant7:trace1:0002', 'event:body', 'finish'\nget 'interview_trace', 'tenant7:trace1:0001'\nscan 'interview_trace', {STARTROW=>'tenant7:trace1:', STOPROW=>'tenant7:trace2:', COLUMNS=>['event:body'], LIMIT=>10}\nHBASE\n# This shell example uses readable strings; Java TraceRowKey has a different binary contract.\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "行键测试只需要 TraceRowKey.java 和 TraceRowKeyTest.java，以 JDK 21 编译后运行 TraceRowKeyTest；不依赖 HBase 客户端 jar。standalone shell 脚本依赖事先安装的 HBase 2.5.0 与兼容 JDK，字符串行键示例和 Java 二进制行键是两个明确不同的实验。ClickHouse 示例应得到 parse 的 count=2、avg=2，以及 index 的 count=1、avg=2。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-6",
+          "label": "分库分表有哪些常见策略？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9910",
+      "order": 9910,
+      "question": "PostgreSQL 与 InnoDB 的行组织、索引和版本维护怎样比较？",
+      "shortAnswer": "InnoDB 聚簇叶子承载行，PostgreSQL 常用堆表加索引定位元组；可见性、回表与清理机制必须按各自实现解释。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "PostgreSQL 与 InnoDB：从行组织比较"
+        },
+        {
+          "type": "paragraph",
+          "text": "PostgreSQL 17.0 普通表是 heap，B-tree 等索引保存定位 heap tuple 的信息；InnoDB 表数据按聚簇主键组织。PostgreSQL 的 CLUSTER 可以重排一次表物理布局，但不会保证以后每次写都持续维持该聚簇顺序。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PostgreSQL 通过 tuple 版本和可见性机制处理 MVCC，VACUUM 回收不再需要的死版本；满足索引列未变及同页可放新版本等条件时，HOT 可减少部分索引更新。InnoDB 则依靠聚簇记录的系统字段和 undo 重建旧版本。二者都需要控制长事务，不能把 PostgreSQL 的 VACUUM 直接理解为 InnoDB 的刷脏。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里的 heap 定位信息通常是 TID，关联页号与页内位置；tuple 头的 xmin/xmax 等事务信息参与版本可见性判断，不是照搬 InnoDB 的 undo 链。迁移时除计划和性能外，还要逐项核对 NULL 唯一性、排序规则、日期精度、序列/自增、JSON 操作、参数类型与事务重试，避免同名 SQL 或隔离级别掩盖语义差异。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PostgreSQL 的 index-only scan 先要能从索引得到所需列，还要用 visibility map 判断 heap 页是否 all-visible；页不是 all-visible 时仍需访问 heap。INCLUDE 可添加非搜索载荷列，也有空间成本。它与 MySQL “Using index”不能一概等价。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PostgreSQL 提供 B-tree、Hash、GiST、SP-GiST、GIN、BRIN 等索引方法；JSON、全文、范围、空间及扩展生态各有适用场景，pgvector 是扩展，不是所有 PostgreSQL 自带同一向量能力。隔离方面，Serializable 的 SSI 通过依赖检测阻止不可串行化执行，不能简单叫作 InnoDB 的 next-key lock。以 pgvector 0.8.0 为例，HNSW、IVFFlat 是两类近似索引选择，不代表 HNSW 对所有过滤和规模已证明最优。同库保存元数据与向量能减少跨库投影，但 ANN 不保证返回全部符合过滤条件的行，仍需验证 RLS/权限、删除可见性与索引更新。选型应考虑已有运维、数据类型、扩展、查询和恢复要求，不用“PG 一定比 MySQL 高级”替代评估。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-rag-stores",
+          "label": "PostgreSQL 16 / pgvector 0.8.2 的距离、索引与 RLS 合同是什么？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9922",
+      "order": 9922,
+      "question": "OceanBase、TDSQL 和 adbpg 的选型为什么必须先明确产品全名与部署？",
+      "shortAnswer": "品牌或产品家族名不能确定存储架构；先核对具体产品、版本、部署和事务分析目标，再讨论兼容性、一致性和运维代价。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "OceanBase、TDSQL 与 adbpg：先问产品全名"
+        },
+        {
+          "type": "paragraph",
+          "text": "OceanBase 4.3 系列的经典分布式部署通过分区/Tablet 与日志流组织数据，使用多副本共识和分布式事务协调。与单实例 MySQL 相比，它可将资源与容灾扩展到多节点，但跨分区事务、网络、迁移与调度会引入成本。MySQL 协议或语法兼容不意味着优化器计划、锁和所有边界行为完全相同。只给出“MySQL 和 OceanBase 同时使用”的问题，没有项目架构时，应分别列出 OLTP、容量与容灾需求，再说明分工假设。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多副本日志同步采用 Paxos 系列共识，事务协调与副本共识承担不同职责。兼容模式还要区分 MySQL 与 Oracle，并核对版别支持；兼容某一种 SQL 模式不等于可以在同一租户中无条件混用两套语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TDSQL 是产品家族名称。TDSQL MySQL 版的分布式形态需要讨论分片键、路由、本地/跨分片访问及广播表等；TDSQL-C MySQL 版强调计算与共享存储分离，不能把它等同于应用分库分表，也不能直接断言所有节点都能无冲突多写。集中式与不同兼容引擎又是另一层选择。回答前要确认产品、引擎版本和部署形态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "腾讯云的 MariaDB 产品也使用“TDSQL MySQL 版集中式数据库”的名称；集中式高可用、自动水平拆分的分布式形态、TDSQL-C 存算分离必须分别确认，不能看到 TDSQL 或 MariaDB 字样就推断所有实例采用同一拓扑。"
+        },
+        {
+          "type": "paragraph",
+          "text": "adbpg 如果指 AnalyticDB for PostgreSQL，应讨论 MPP 的协调节点、执行节点、数据分布和跨节点交换。分布键让等值关联或聚合尽量就地完成；随机分布用于打散，复制小维表减少部分 JOIN 移动，但有空间和维护成本。DISTRIBUTED BY (customer_id)、DISTRIBUTED RANDOMLY、DISTRIBUTED REPLICATED 是特定产品/版本的语法，不可直接拿到社区 PostgreSQL 17 或 MySQL 执行。按日期分区管理生命周期与按客户分布实现并行是两个维度。产品同时可能有不同存储架构，不能仅凭缩写确认版本和全部能力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这类 MPP 查询还要检查分布倾斜：总行数均匀不代表按热点客户的 JOIN 或聚合均匀。行存、列存及混合存储能力须按具体产品版本确认；减少交换、选择存储布局和做日期裁剪是不同优化，不能由一个分布键包办。"
+        },
+        {
+          "type": "paragraph",
+          "text": "迁移这些数据库时，必须验证数据类型、排序规则、约束、事务和关键 SQL。全量迁移加增量追平、对账、影子查询、灰度和回滚窗口要形成闭环；切换期间明确唯一权威写入端，不用无协调双写声称安全。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-rag-stores",
+          "label": "PostgreSQL 16 / pgvector 0.8.2 的距离、索引与 RLS 合同是什么？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9938",
+      "order": 9938,
+      "question": "Hive、ClickHouse 与事务库怎样按分析负载比较？",
+      "shortAnswer": "分析查询优先评估列裁剪、批量扫描、聚合与数据新鲜度；列式和分布式能力不自动提供传统 OLTP 的更新与事务契约。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Hive、ClickHouse 与数据挖掘"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hive 4.1.0 面向数仓 SQL、批处理和历史分析。Metastore 保存表、分区等元数据，底层业务数据可在 HDFS/对象存储的 ORC、Parquet 等文件中；不能说“用了 MySQL Metastore，所以全部分析数据在 MySQL”。SQL 编译为执行计划，通过配置的引擎运行，Tez、旧版 MapReduce 等必须按版本区分。分区裁剪、列裁剪、统计、JOIN shuffle、倾斜和小文件决定大量性能问题；事务表还有配置、格式和 compaction 条件，不能说 Hive 永远不支持 ACID。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SerDe 负责把存储记录与字段结构互相解释；分区用于按目录/元数据范围裁剪，分桶按哈希等规则组织数据，二者不等价。晚到数据、重复导入、分区元数据与文件不一致、schema 演进都需要定义修复和重放方式；只增加分区列并不能消除这些问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ClickHouse 以 25.3.4.190-lts MergeTree 的常见机制为例：插入产生排序的 part，后台合并；同分区的 part 才参与相应合并，数据可采用 Wide 或 Compact 布局。ORDER BY 指定 part 内排序键，PRIMARY KEY 是稀疏索引键，若单独指定须是排序键前缀。它不强制唯一，重复事件仍需业务与引擎语义处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "索引定位 granule，granule 行数受 index_granularity 和字节阈值约束，不是永远恰好 8192 行。列式布局和压缩适合扫描少数列做聚合，频繁点更新、跨行强事务或小批碎写可能不适合。异步插入的确认落点、去重窗口、复制与分布式写入保证都须单独定义；Keeper 协调元信息也不是把所有数据行放进内存协调服务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "讨论吞吐先统一单位：PPS 可能指包/秒或特定业务处理量，不能无条件换成行/秒、查询 QPS 或事务 TPS。ReplacingMergeTree 依据排序键在后台合并时处理重复版本，不保证每次读取前已经去重；普通 UPDATE/DELETE mutation、轻量删除与实验性事务又各有版本、引擎和部署限制，不应套用 InnoDB 的即时行更新与跨表事务语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "章末 metric_event 例子保留 tenant、event_id、时间、服务名、数值，月分区，按租户/时间/事件排序，查询一天内各服务的事件数和平均值。它是独立分析教学数据模型，不能当作已上线业务表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据挖掘通常需要原始历史、可重放清洗、特征版本、可复现训练集和分析读隔离。Parquet 是文件格式，Iceberg 是表格式/元数据协议，Spark 是计算引擎，不是三个同层数据库替代选项。CDC 与快照衔接要有位点、水位、重复和删除处理；训练的 point-in-time join 要防止未来信息泄漏。分析投影可以晚到，库存或审批权威事实不能依赖过期投影。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整 ClickHouse 表与查询"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 clickhouse.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/query/code/clickhouse.sql",
+          "value": "-- ClickHouse 25.3.4.190-lts teaching example; run in an isolated database.\nCREATE TABLE metric_event (\n tenant_id UInt64,\n event_id String,\n event_time DateTime64(3,'UTC'),\n service LowCardinality(String),\n value Float64\n) ENGINE=MergeTree\nPARTITION BY toYYYYMM(event_time)\nORDER BY (tenant_id,event_time,event_id)\nPRIMARY KEY (tenant_id,event_time);\n\nINSERT INTO metric_event VALUES\n (1,'e1','2026-01-01 01:00:00.000','parse',1.0),\n (1,'e2','2026-01-01 02:00:00.000','parse',3.0),\n (1,'e3','2026-01-01 03:00:00.000','index',2.0),\n (2,'e4','2026-01-01 03:00:00.000','parse',8.0),\n (1,'e5','2026-01-02 00:00:00.000','parse',9.0);\n\n-- Filter only necessary tenants/time ranges and read only required columns.\nSELECT service,count() AS events,avg(value) AS avg_value\nFROM metric_event\nWHERE tenant_id=1\n  AND event_time>=toDateTime64('2026-01-01 00:00:00',3,'UTC')\n  AND event_time<toDateTime64('2026-01-02 00:00:00',3,'UTC')\nGROUP BY service ORDER BY events DESC,service LIMIT 20;\n\n-- This PRIMARY KEY is a sparse access index, NOT a uniqueness constraint.\n-- Repeated event_id inserts can appear multiple times. Define deduplication\n-- and replay contracts before using count/sum for authoritative reporting.\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mysql-ch08",
+          "label": "报表该实时还是离线，为什么暂不采用大数据方案，增长后如何演进？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9954",
+      "order": 9954,
+      "question": "MongoDB、NoSQL 与浏览器持久化怎样划清数据模型和能力边界？",
+      "shortAnswer": "文档模型、事务与部署是独立维度；浏览器的本地持久化也不能代替服务端权威数据、权限和多设备恢复协议。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "MongoDB、NoSQL 与浏览器持久化"
+        },
+        {
+          "type": "paragraph",
+          "text": "MongoDB 8.0.0 用 BSON 文档表达聚合对象。有限且一起访问的子对象适合嵌入，需要独立生命周期或无界增长的集合适合引用；文档大小、索引、校验和更新成本仍需控制。单文档写是原子的，updateMany 不意味着全部文档整体原子；多文档事务有部署与读写关注级别条件，不能因叫 NoSQL 就说没有事务，也不能说 JSON 可以完全不要模型。"
+        },
+        {
+          "type": "paragraph",
+          "text": "乐观更新可以把期望 version 放进过滤条件，并原子增加版本；matchedCount 为零时需区分冲突、不存在和错误租户，不能一概算成功。租户范围应同时进入查询和合适的唯一约束。引用另一个文档 ID 不会自动获得关系库外键保证；派生读模型还需版本、水位与失败重建机制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SQL 是查询语言，关系模型强调结构和约束；NoSQL 是宽泛类别，涵盖文档、宽列、KV、图等。比较时应固定同样的持久性、一致性与功能，不能拿内存异步确认和磁盘同步事务做不对等吞吐比较。"
+        },
+        {
+          "type": "paragraph",
+          "text": "前端 Zustand 5 的普通内存状态会随页面实例消失；persist 中间件需要选择实际存储并处理 hydration 与版本迁移。sessionStorage 受会话/标签页生命周期影响，localStorage/IndexedDB 属于浏览器 origin 的本地状态，配额和清理策略仍可能导致丢失；SQLite 则是嵌入式本地数据库。跨设备的权威任务与消息记录应由服务端保存，本地层适合缓存和恢复体验。用 runId、消息序号及版本恢复增量，退出登录清理对应租户/用户数据；页面恢复不是长任务已经成功完成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "sessionStorage 通常可跨同一标签页刷新保留，结束标签页会话则不能按跨会话持久化承诺。IndexedDB 写入可能因配额或事务错误失败，应在事务完成后推进本地恢复检查点；complete 也不是任何故障下都已完成硬件刷盘的保证。SQLite 位于服务端、桌面程序或浏览器 WASM 时，存储与同步方式不同，它本身不自动跨设备同步。"
+        },
+        {
+          "type": "paragraph",
+          "text": "恢复消息时，相同消息身份但载荷不同要报冲突或按版本规则处理；hydration 得到的旧快照不能覆盖已经到达的新状态。退出登录、撤权与服务端删除应有清理或墓碑策略，避免下次恢复把已删除消息重新显示出来。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-rag-workflow",
+          "label": "Markdown、Memory、文件检索与 RAG 是替代关系吗？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9968",
+      "order": 9968,
+      "question": "自研数据库项目怎样说明源码依据、恢复协议和自己负责的范围？",
+      "shortAnswer": "区分阅读、教学实现与实际工程责任，沿数据格式、事务状态和故障恢复给证据；不能由某个组件名称推断已经实现完整数据库。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "自研数据库的两类追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "MiniSQL 没有给出具体仓库时，可以按解析 AST、语义绑定、目录/类型、优化计划、执行器、记录页、缓冲池、索引和事务逐层讲设计，不能声称它已支持某个 SQL 子集。字段要明确整数范围、DECIMAL 精确性、字符串比较、NULL 三值逻辑、日期时区及编码，不能只列 Java 类型名。由一条主键查询端到端跑通，再加入范围、更新和恢复，比先堆积语法更易验证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "记录定位还要定义 pageId/slotId 是否稳定、页满后的移动方式，以及缓冲页的 pin/unpin、dirty 与淘汰规则。表记录和索引更新必须共同提交或共同恢复，否则崩溃后可能出现“行在但索引没有”或反过来的状态。没有具体实现证据时，应明确哪些类型、SQL、并发和恢复能力尚未支持。"
+        },
+        {
+          "type": "paragraph",
+          "text": "mmap hint 文件启动加速也需要格式契约。若 hint 是从追加日志派生的 key→文件/偏移目录，它应记录版本、覆盖位置、长度和校验和；新文件写入临时路径并安全发布，启动验证后重放未覆盖日志尾部，损坏则从权威日志重建。mmap 只是映射，冷页仍会缺页并读盘；进程仍要处理边界、长度溢出、映射文件被截断导致的 SIGBUS，以及并发发布与旧映射生命周期。只有小文件读测试，不能宣称启动一定加速或实现零拷贝全链路。"
+        },
+        {
+          "type": "paragraph",
+          "text": "更完整的 hint 头可含 magic、格式版本、源日志代次、已覆盖的文件/位置和校验信息。可靠发布通常要完成临时文件写入与同步、原子改名，并按平台要求同步目录；日志尾部若只有半条记录，要按长度/校验规则截断或拒绝，不能当有效索引。启动收益来自避免重扫大值载荷等具体工作，需比较 hint 验证、缺页、索引构建与尾部重放时间。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mysql-ch27",
+          "label": "教学 WAL 如何编码、校验并分片大记录，为什么不等于生产恢复协议？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

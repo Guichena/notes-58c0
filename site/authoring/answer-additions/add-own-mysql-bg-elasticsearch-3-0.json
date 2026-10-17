@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-elasticsearch-3-0",
+  "entryId": "bg-elasticsearch-3",
+  "expectedOriginalHash": "abf5d24744c7df9df83faaecf7dd433ec9432263d835d73efacc881135ef7b04",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "12. 数据库版本怎样保护检索索引和多片段可见性？"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务内递增资料版本并写 Outbox，才能保证“新事实”和“需要更新投影”一起存在。版本 10 已生效后，版本 9 的迟到写必须被拒绝；删除也应成为带版本的墓碑，不能只删完索引再把版本水位丢掉。数据库的一次提交并不原子更新 ES、对象存储和向量库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一篇资料有多个 chunk 时，逐片写入新版本会产生半新半旧的中间状态。可先以 (tenant,source,version,chunkNo) 写不可变片段，确认清单完整，再以旧 manifest 版本做 CAS 推进可见版本；读者只取 manifest 指向的整代数据。清单检查、可见指针切换和本地业务状态应在清楚的事务边界完成；远端刷新/可搜索确认由索引协议负责。尚未完成的候选版本不应因为“有几个 chunk 已写入”就被宣称发布成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面 version_manifest.sql 与 ManifestPublisher.java 给出该本地提交边界的完整教学实现。SQL 只用于新空库，未执行；其中远端回执是合成数据，不能据此认为已经写入真实索引。保存后用 JDK 21 执行 javac ManifestPublisher.java，调用者提供 DataSource，以可信租户 1、source 10、candidate 1、expectedVisible 0 调用 publish。它只切换本地 manifest，不调用任何远端服务。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/application/code/version_manifest.sql",
+      "value": "-- MySQL 8.4.0 teaching script; not executed. New empty local schema only.\nCREATE TABLE source_head (\n tenant_id BIGINT NOT NULL, source_id BIGINT NOT NULL,\n current_version BIGINT NOT NULL, visible_version BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,source_id), CHECK(current_version>=visible_version), CHECK(visible_version>=0)\n) ENGINE=InnoDB;\nCREATE TABLE source_revision (\n tenant_id BIGINT NOT NULL, source_id BIGINT NOT NULL, version BIGINT NOT NULL,\n payload MEDIUMTEXT NOT NULL, tombstone BOOLEAN NOT NULL,\n PRIMARY KEY(tenant_id,source_id,version)\n) ENGINE=InnoDB;\nCREATE TABLE source_outbox (\n tenant_id BIGINT NOT NULL, source_id BIGINT NOT NULL, version BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,source_id,version)\n) ENGINE=InnoDB;\nCREATE TABLE projection_build (\n tenant_id BIGINT NOT NULL, source_id BIGINT NOT NULL, version BIGINT NOT NULL,\n expected_chunks INT NOT NULL, state VARCHAR(16) NOT NULL,\n PRIMARY KEY(tenant_id,source_id,version), CHECK(expected_chunks BETWEEN 0 AND 1000000)\n) ENGINE=InnoDB;\nCREATE TABLE projection_receipt (\n tenant_id BIGINT NOT NULL, source_id BIGINT NOT NULL, version BIGINT NOT NULL,\n chunk_no INT NOT NULL, PRIMARY KEY(tenant_id,source_id,version,chunk_no), CHECK(chunk_no>=0)\n) ENGINE=InnoDB;\nINSERT INTO source_head VALUES(1,10,0,0);\n-- Demonstration of source-version + outbox + build definition in one transaction.\n-- Real callers use a trusted tenant and check each affected-row result before COMMIT.\nSTART TRANSACTION;\nUPDATE source_head SET current_version=1\nWHERE tenant_id=1 AND source_id=10 AND current_version=0;\nINSERT INTO source_revision VALUES(1,10,1,'immutable source version one',FALSE);\nINSERT INTO source_outbox VALUES(1,10,1);\nINSERT INTO projection_build VALUES(1,10,1,2,'BUILDING');\nCOMMIT;\n-- Only the trusted projection worker records receipts AFTER verifying remote write/search readiness.\n-- These are synthetic fixture receipts, not evidence that a real remote index was written.\nINSERT INTO projection_receipt VALUES(1,10,1,0),(1,10,1,1);\n"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/application/code/ManifestPublisher.java",
+      "value": "import javax.sql.DataSource;\nimport java.sql.*;\npublic final class ManifestPublisher {\n    public static void publish(DataSource ds,long tenant,long source,long candidate,long expectedVisible)throws SQLException {\n        if(ds==null || tenant<=0 || source<=0 || candidate<=expectedVisible || expectedVisible<0)throw new IllegalArgumentException();\n        try(Connection c=ds.getConnection()) {\n            if(!c.getAutoCommit())throw new SQLException(\"fresh auto-commit connection required\");\n            c.setAutoCommit(false);\n            try {\n                try(PreparedStatement p=c.prepareStatement(\"SELECT current_version,visible_version FROM source_head WHERE tenant_id=? AND source_id=? FOR UPDATE\")) {\n                    p.setLong(1,tenant);p.setLong(2,source);\n                    try(ResultSet r=p.executeQuery()){if(!r.next()||r.getLong(1)!=candidate||r.getLong(2)!=expectedVisible)throw new SQLException(\"stale candidate or manifest\", \"45000\");}\n                }\n                int expected;\n                try(PreparedStatement p=c.prepareStatement(\"SELECT expected_chunks,state FROM projection_build WHERE tenant_id=? AND source_id=? AND version=? FOR UPDATE\")) {\n                    bind(p,tenant,source,candidate);\n                    try(ResultSet r=p.executeQuery()){if(!r.next()||!\"BUILDING\".equals(r.getString(2)))throw new SQLException(\"build unavailable\");expected=r.getInt(1);}\n                }\n                try(PreparedStatement p=c.prepareStatement(\"SELECT COUNT(*),MIN(chunk_no),MAX(chunk_no) FROM projection_receipt WHERE tenant_id=? AND source_id=? AND version=?\")) {\n                    bind(p,tenant,source,candidate);\n                    try(ResultSet r=p.executeQuery()){r.next();long n=r.getLong(1);if(n!=expected||(n>0&&(r.getInt(2)!=0||r.getInt(3)!=expected-1)))throw new SQLException(\"incomplete manifest\");}\n                }\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE source_head SET visible_version=? WHERE tenant_id=? AND source_id=? AND current_version=? AND visible_version=?\")) {\n                    p.setLong(1,candidate);p.setLong(2,tenant);p.setLong(3,source);p.setLong(4,candidate);p.setLong(5,expectedVisible);\n                    if(p.executeUpdate()!=1)throw new SQLException(\"manifest CAS lost\");\n                }\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE projection_build SET state='VISIBLE' WHERE tenant_id=? AND source_id=? AND version=? AND state='BUILDING'\")) {\n                    bind(p,tenant,source,candidate);if(p.executeUpdate()!=1)throw new SQLException(\"build CAS lost\");\n                }\n                try{c.commit();}catch(SQLException e){throw new SQLException(\"manifest COMMIT UNKNOWN; query visible_version before retry\", \"08007\",e);}\n            }catch(SQLException|RuntimeException e){try{c.rollback();}catch(SQLException x){if(e!=x)e.addSuppressed(x);}throw e;}\n        }\n    }\n    private static void bind(PreparedStatement p,long tenant,long source,long version)throws SQLException {\n        p.setLong(1,tenant);p.setLong(2,source);p.setLong(3,version);\n    }\n    private ManifestPublisher(){}\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "该协议要求所有源版本推进也锁定同一 source_head；原文版本和 Outbox 必须始终一起提交。示例 SQL 的固定版本仅用于空库种子，业务适配器必须逐条检查 CAS 结果，失败回滚，不能把这个固定脚本反复当作通用新增接口。投影 worker 以不可变版本写片段，并只对已确认完整写入及满足读取契约的片段登记回执；回执内容和权限不是客户端可自行提供的。发布端校验数量、最小/最大序号与唯一键来证明本地清单连续，但无法单凭这些行证明远端数据真实存在或此刻仍可搜索。删除版本的 tombstone 可以使用零片段清单，读者读到墓碑后不再返回旧片段；旧片段和旧水位要等最长重放/读者保留窗口后再回收。遇到提交未知，先查权威可见版本；若已切换，不应把再次 CAS 的零行当成发布失败而回退指针。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以当前 NoteWeave 实现为例，2026 年 10 月 10 日的代码把关系状态交给 MySQL/JDBC/Flyway，Compose 声明 MySQL 8.4；这只能说明当前配置与实现落点，不能推出简历时期的生产版本。上传完成路径在本地事务中写资料/快照与任务；启用异步消息模式时，还会同事务写 Outbox，关闭该模式的开发/测试分支则同步解析。异步派发有 claim/token/lease；发布成功但落库标完成失败仍可能重投。消费端的身份检查、阶段跳过与 snapshot/chunk 唯一键是具体防线，而非所有副作用都不重复的证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同样，当前实现中 worker completion 需要经过 canonical 状态、epoch、lease、摘要和版本等校验；checkpoint hydration 恢复的是有身份与 hash 约束的业务账本，不是 JVM 堆栈；artifact 版本与回执可在本地事务内追加，兼容回调分支却不等于所有历史路径采用同样强校验。检索回查 MySQL 的 workspace、状态和最新已索引快照，说明读取侧有资格与版本过滤，不能推出索引与关系库同步事务提交。最新已索引版本也不一定等于刚上传的最新版本。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "0"
+}

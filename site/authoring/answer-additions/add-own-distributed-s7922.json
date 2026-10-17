@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s7922",
+  "entryId": "own-os-containers",
+  "expectedOriginalHash": "f7fda3f17fd8e2e71df611c36eac58b18e48f2f5313085681355671fc4c221ff",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10.1 Kubernetes 任务如何隔离资源，namespace 为什么不够"
+    },
+    {
+      "type": "paragraph",
+      "text": "namespace主要组织资源，真正隔离还要结合配额、网络策略、身份权限、运行时限制及必要的独立节点或虚拟机。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Kubernetes怎样隔离任务；namespace是否足够；不可信代码应怎样部署。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "以Linux节点的常见容器运行时为基础，隔离层级由信任边界决定；Kubernetes namespace不是独立内核或物理机器。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "调度、约束和安全是三个问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "requests用于调度容量判断，limits由运行时/内核机制约束资源使用。CPU超过上限通常被throttle，内存压力可能触发OOM终止，二者失败形态不同；设了limit不意味着该Pod永远能获得足够资源。应根据工作集和实际CPU峰值配置，避免把所有任务request设为0后过度挤到同一节点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "namespace 先解决 API 资源与策略的组织，不是建了一台独立机器。ResourceQuota 管租户总资源和对象数量，LimitRange 可设默认值及允许范围，RBAC 管谁能操作资源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些属于准入和控制面隔离，不会自动限制网络通信，也不会消除共享内核漏洞，更不代表租户数据已经物理隔离。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "运行时、网络、磁盘和设备都要考虑"
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux namespaces隔离进程视图、网络等，cgroups控制CPU/内存等使用；Pod内容器按共享语义运行，不能把两个容器都放一个Pod然后当成强租户隔离。禁用不必要的privileged、hostPath、hostNetwork和额外capabilities，使用最小ServiceAccount权限、只读根文件系统与合适的seccomp。"
+    },
+    {
+      "type": "paragraph",
+      "text": "NetworkPolicy须有支持它的网络插件才生效，采用默认拒绝后放通所需流量，并核对DNS、控制面和出站路径；它不是加密机制。临时存储、日志、PV配额和IO瓶颈也需单独限制与观测；CPU/memory limit不代表磁盘带宽或GPU显存已自动公平隔离。GPU共享能力取决于设备、插件和具体机制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "高信任隔离与高可用"
+    },
+    {
+      "type": "paragraph",
+      "text": "不互信的租户，可能需要专用节点池、沙箱运行时或虚拟机，甚至独立集群。taint/toleration 可以挡住不匹配的 Pod，但带 toleration 只意味着允许进入，不保证一定去专用节点，还需 node affinity 等调度约束和准入防绕过。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果合同要求物理隔离，就要专用宿主机或设备，并检查存储、网络边界。单独 namespace 或普通 VM，不能自动证明达标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pod 重启，不等于从上一条业务语句接着跑。长任务需要检查点和幂等恢复，不能只指望容器自动拉起。"
+    },
+    {
+      "type": "paragraph",
+      "text": "副本跨节点或可用区分布、优雅终止、PDB 各解决不同问题；PDB 主要约束自愿中断，防不了节点突然失效。同时限制并发、保证租户公平，避免低优先级批任务拖垮在线请求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证什么才可信"
+    },
+    {
+      "type": "paragraph",
+      "text": "实际压测CPU超限、内存OOM、临时磁盘耗尽、进程数增长、跨namespace访问和节点故障，检查是否只影响预期边界。观测CPU throttling、OOMKilled、eviction、Pending原因和配额拒绝。测试网络插件策略与存储驱动行为，不以YAML存在就宣称隔离已生效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10.4 Kubernetes节点亲和性怎样写语义，和污点、Pod亲和性有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "node affinity按节点标签筛选或偏好节点，污点要求容忍，Pod affinity则表达与其他Pod的位置关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：节点亲和性怎么写；required和preferred有什么不同；容忍污点是否一定会被调度过去。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "节点亲和性约束调度位置，不能单独保证运行期隔离或物理独占；具体字段按部署版本核对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "硬约束、软偏好和布尔组合"
+    },
+    {
+      "type": "paragraph",
+      "text": "nodeSelector要求节点满足指定标签，是简单等值选择；nodeAffinity支持In、NotIn、Exists等表达式。requiredDuringSchedulingIgnoredDuringExecution是调度时硬条件，不满足就不能选；preferredDuringSchedulingIgnoredDuringExecution是带权偏好，在可行节点之间评分，不保证一定落到偏好节点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一nodeSelectorTerm里的matchExpressions通常是AND，不同terms之间是OR；同时配置nodeSelector和nodeAffinity须一起满足。例子：必须位于region=cn且磁盘ssd，优先zone=a。若a区没有容量但b区也满足硬条件，可调到b；若硬条件全无匹配则Pod Pending，而不是自动降低要求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "IgnoredDuringExecution不是持续驱逐规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "IgnoredDuringExecution 的意思，是调度后标签变化不会仅因此自动驱逐 Pod。需要迁移，就另设控制器或重调度流程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "强制 nodeName 可以绕过正常调度选择，要谨慎看资源与策略影响。亲和性还要和 requests、PV 可用区及其他约束一起判断，标签对得上，不代表资源一定够。"
+    },
+    {
+      "type": "paragraph",
+      "text": "toleration 是“允许通过拒绝条件”，不是“吸引 Pod 过去”。taint 拒绝不容忍的 Pod，专用节点池通常还需 node affinity/selector 与准入校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pod affinity/anti-affinity 看的是其他 Pod 的位置和 topology key，区别于节点自身标签。若目标是跨区或跨节点分散，拓扑分布约束可能表达得更直接。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "故障与验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "标签应由可信控制面管理，不能允许不可信节点随便声明自己满足敏感隔离标签。测试没有可行节点、标签变更、偏好不可达、污点不匹配、卷区位冲突和反亲和过严，阅读调度事件而不盲目扩副本。复杂跨Pod亲和计算有调度成本，规则越多越需检查是否造成不可满足条件。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-os-kubernetes-resources",
+  "targetOrigin": "authored"
+}

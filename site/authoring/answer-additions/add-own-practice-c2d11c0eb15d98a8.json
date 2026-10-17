@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-c2d11c0eb15d98a8",
+  "entryId": "ai-agent-7",
+  "expectedOriginalHash": "ae7ed588141f7157e57f79c355c06a82876ee571db3dd286f1e2263d3f13f9ce",
+  "title": "跨册场景补充：文本生成HTTP接口怎样定义字段、流式协议和调用ID，怎样追踪重试与错误",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "文本生成HTTP接口怎样定义字段、流式协议和调用ID，怎样追踪重试与错误"
+    },
+    {
+      "type": "paragraph",
+      "text": "先固定版本化请求、成功与错误结构，再定义流式事件和唯一终态；requestId、业务 operationId、幂等键和 traceId 各有不同职责。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问："
+    },
+    {
+      "type": "paragraph",
+      "text": "- 【场景设计题】 你要提供一个文本生成 HTTP 接口给业务方调用。请你设计请求与返回的关键字段（至少包含：输入上下文、模型参数、输出结构、错误码，以及用于追踪的一次调用 ID）。另外，你会如何支持流式（Streaming）返回？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 【追问】 在实际实现中，你会如何生成这个“调用 ID”以确保它的唯一性和可追踪性？"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "请求契约与身份边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "POST /v1/generations使用JSON：messages为有界role/content列表，也可给经授权的contextRefs及conversationId；model为服务端允许的逻辑模型名，parameters含temperature、top_p、max_output_tokens等实际模型支持参数，response_format定义文本或JSON schema，stream指定流式，client_request_id与Idempotency-Key可供相关和去重。示例中的字段是本服务契约，不能把不支持参数静默吞掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "tenant/user/权限从认证层获得，客户端不能通过messages里的system或自填userId提升身份。限制消息/附件/工具数量、总token、输出长度与超时；参数范围按模型能力注册表检查。API密钥不进请求体日志和上下文。请求重复时校验同幂等键同参数hash，异内容冲突报409；幂等键的保存时长和生成任务重用语义必须明确。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "非流式成功与失败都可关联"
+    },
+    {
+      "type": "paragraph",
+      "text": "成功响应含request_id、generation_id、model_revision、status、output[{type,text或json}]、finish_reason、usage(input/output/已知缓存token)、created_at、可选sources与warnings。usage无法取得时标unknown，不能填0；输出截断、模型拒绝或只得部分结果都不包装成完整成功。异步长任务返回202和可鉴权的状态查询地址，202只是受理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "失败使用稳定error.code、可公开message、retryable、request_id和必要的retry_after，不回堆栈、内部Prompt或凭证。可区分400契约错误、401未认证、403越权、409幂等冲突、429额度/过载、502上游坏响应、503依赖不可用、504超时；业务错误与HTTP语义要一致。超时后外部动作是否发生需单独UNKNOWN语义，retryable不是无条件重做写操作。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Streaming必须定义事件和终态"
+    },
+    {
+      "type": "paragraph",
+      "text": "流式接口可以使用 Content-Type: text/event-stream，以 UTF-8 逐事件发送；id 是 generation 内序号，event 可为 meta/delta/usage/done/error，data 是经 JSON 序列化的对象，每个事件以空行结束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端累积 delta，只在 done 确认完成。EOF 本身不是成功，error 应包含可公开错误和部分结果标记。练习时让连接在 HTTP 200 已发出后失败：此时不能改 HTTP 状态，应发送 error 事件并关闭；若网络已经断开，就由状态查询确认终态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "直接POST用fetch流式读取并增量解析；原生EventSource通常用于GET订阅，可先POST创建generation再GET事件端点。TCP/HTTP chunk并不等于SSE事件或完整UTF-8字符，不能每次读取就直接JSON.parse。心跳、代理缓冲、空闲/总超时、有限发送队列与慢客户端策略都要联调；一个SSE连接单writer保证发送次序。输出需要审查时，不能先发敏感token再异步审核。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Last-Event-ID只携游标，服务必须真有按权限保留的事件日志才支持续传；超过窗口返回不可恢复并让客户端查最终结果，不重新生成同任务冒充续传。断线是否继续生成由契约决定，显式取消要传播到执行器；关闭流不等远程工具回滚。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "一次调用ID与绝对唯一性追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "服务入口生成受控requestId，例如Java UUID.randomUUID()的随机UUIDv4；足够随机时碰撞概率极低，但不是数学上的绝对不会撞。若业务要求权威域内唯一，靠数据库唯一约束+碰撞重试或单调序列/正确划分号段，明确多节点分配、重启、租约、时钟回拨和容量边界。UUIDv7具有时间有序性质也不能仅凭格式保证绝对唯一。"
+    },
+    {
+      "type": "paragraph",
+      "text": "requestId表示一次API尝试，generation/operationId表示同一业务动作，Idempotency-Key绑定重试意图；分布式traceId/spanId表达调用图。重试应有新attempt/span并关联原operation，HTTP、MQ和异步任务传播trace context或span links，日志包含上述关联及版本。校验外来ID长度字符与可信来源，不能允许伪造ID混淆租户/授权；链路采样丢失时仍保留必要业务账。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Java练习与可证明边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "StreamFrames完整演示SSE文本安全编码、序号和终态：每行都带data前缀，避免返回文本注入event/id；验证Unicode、CRLF、空行、长度与终态重复。输入长度L下时间和内存O(L)，它不存重放历史。生产data应先用可靠JSON库序列化对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "该测试仅本地字节帧，没有HTTP服务器、浏览器、代理、网络分片、背压/重连或生成模型；同步emit分配序号不替代外部单writer发送保证。端到端还要测鉴权失效、半帧断线、重复游标、错误后late delta及取消竞争。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整源码：StreamFrames.java"
+    },
+    {
+      "type": "paragraph",
+      "text": "局部编码/终态示例，不是HTTP服务。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10. 100 毫秒收到 1000 次输出，怎样避免页面卡死？"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法： 每个 token 都 setState 会怎样？requestAnimationFrame 能解决吗？用什么数据结构缓存？"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 将网络接收与界面刷新解耦，先有界缓冲增量，再按帧或时间批量提交，避免每个碎片都触发完整渲染。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接收侧负责校验 runId、序号与事件类型，把文本增量放进队列或分段缓冲；渲染侧在一次调度中合并一定量，再更新对应消息。长文本不要每个 token 都复制整个历史数组、重新解析全部 Markdown 和高亮全部代码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "requestAnimationFrame 的作用是把可见界面的提交对齐绘制机会，它既不是网络背压，也不是固定 60 Hz。后台标签页可能暂停或大幅降低频率，所以不能只靠帧回调决定何时处理完缓冲。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要处理终止事件立即 flush、可见性变化和缓冲上限。缓冲过大时，可以暂停读取、请求快照、降低预览解析频率，或按协议处理；具体取舍按协议决定，不能无限堆内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "1000 次事件如何处理才不丢字？ 批量合并更新频率，不等于随意丢弃文本增量。可以跳过中间画面，但最终内容必须由完整事件或权威快照恢复。进度百分比一类可覆盖状态与文本 delta 不同，数据结构应按语义选择。"
+    },
+    {
+      "type": "paragraph",
+      "text": "怎么测效果？ 固定输出速率、文本长度、代码块比例与设备，测输入响应、长任务、内存、最终文本一致性和取消后的残留更新。只看 FPS 平均值会掩盖偶发长卡顿。"
+    }
+  ],
+  "questionId": "7"
+}

@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-practice-gift-receipt-contract",
+  "kind": "qa",
+  "module": "code",
+  "part": "代码手撕",
+  "category": "跨册场景补充",
+  "title": "AI Coding 实战：满额赠品的完整前后端",
+  "questions": [
+    {
+      "id": "q-own-practice-gift-receipt-contract",
+      "question": "AI Coding 实战：满额赠品的完整前后端",
+      "shortAnswer": "前端负责购物车交互和展示，Java 服务端以整数最小货币单位重新计算金额，并把库存变化与稳定请求号收据放在同一个权威临界区中决定。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "AI Coding 实战：满额赠品的完整前后端"
+        },
+        {
+          "type": "paragraph",
+          "text": "前端负责购物车交互和展示，Java 服务端以整数最小货币单位重新计算金额，并把库存变化与稳定请求号收据放在同一个权威临界区中决定。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "题意与必须补问的条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "现场要求是做一个类似“满 XX 元获得赠品”的营销交互页面，并完成前后端逻辑。具体门槛、币种、赠品库存、是否叠加、运费与折扣口径并没有给出，不能把自选数值当成原有业务规则。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可换一种问法：购物车满额就显示赠品，后台如何防止篡改金额？提交时赠品被别人领完了怎么办？双击、超时重试和刷新会不会重复扣库存？金额正好等于门槛时是否达标？"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个可运行示例明确采用以下教学约定："
+        },
+        {
+          "type": "paragraph",
+          "text": "- 币种为人民币，金额用“分”的 long 整数保存；门槛为 10000 分，即 100.00 元，达到或超过都合格。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 商品小计参与门槛判断。没有运费、税费、折扣、跨币种和优惠叠加。每笔成功订单至多赠 1 份书签，满两倍金额也不赠两份。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 合成商品为 4999 分的马克杯、5001 分的笔记本、1 分的贴纸；初始库存分别为 20、20、40，赠品库存为 3。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 报价不预留库存。提交时重新计算金额、重新检查商品和赠品库存。达标但赠品售罄时整笔拒绝；这个选择必须由实际业务确认，也可以改成事先告知的其他政策。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 单个商品数量为 1 至 20；未选择的商品不进入请求。最多 3 行、总共最多 30 件，不允许重复商品行、负数、小数或未知商品。前端可选 0，表示从请求中移除。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- “确认演示订单”只改变当前 Java 进程的合成库存与收据，没有真实账户、付款、发货或外部调用。允许显式开始新订单，不增加没有依据的“一人只能领一次”规则。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "数据与接口契约"
+        },
+        {
+          "type": "paragraph",
+          "text": "GET /api/catalog 返回服务端目录、单价、库存、门槛、规则相关字段和本次进程的 epoch。"
+        },
+        {
+          "type": "paragraph",
+          "text": "GET /api/receipt 按 epoch 和 requestId 只读查询收据。恢复本地已完成记录时，本地缓存只作为待核实线索；只有服务端返回同一实例、请求号和商品参数的有效收据，页面才显示成功或拒绝状态及服务器金额。查询失败、收据不存在或实例更换时保留本地记录并停止确认，不能把缓存当成权威结果，也不会自动生成新请求号。"
+        },
+        {
+          "type": "paragraph",
+          "text": "POST /api/quote 仅接收 items，返回 totalMinor、remainingMinor、eligible 和 reason。前端只展示服务端结果，不根据浏览器中的单价决定权威资格。请求使用 UTF-8 表单编码，items 形如 CUP:1,NOTEBOOK:1；未知字段、重复字段和重复商品行都拒绝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "POST /api/confirm 仅接收 epoch、requestId、items。客户端没有提交价格、总价、赠品数量或库存的权限；额外传这些字段会得到输入错误。服务端按固定 SKU 顺序规范化商品集合，因此商品行顺序变换仍是同一份参数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "成功和业务拒绝都返回终态收据。收据包含 requestId、规范化的 items、status、reason、orderId、服务器金额和是否获得赠品。商品不足、赠品不足或空购物车均不会部分扣库存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HTTP 400 表示输入无效，409 表示请求号参数冲突或服务实例更换，503 表示收据容量不足，200 的业务收据仍可能是 REJECTED。客户端不能只看到 HTTP 200 就宣称下单成功。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "稳定请求号与新购买意图区分"
+        },
+        {
+          "type": "paragraph",
+          "text": "一次逻辑确认只生成一个 requestId，在网络请求前先把它和不可变商品参数保存到 sessionStorage。双击只会进入同一次在途操作。网络超时或响应丢失后，购物车保持锁定，按钮变成“同号重试”；不能因为未收到响应就换号。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先把“重试”和“新购买”分开。同一 requestId 配相同规范参数，只返回首次终态收据，不再次扣库存；同一 ID 配不同参数则返回冲突。业务拒绝也会保存，所以库存后来变化，同号重试仍返回原来的拒绝，不能悄悄变成新购买。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完成收据还保存在标签页存储里。刷新后先只读核对服务端收据，不会自动开启第二笔订单；只有改动购物车或明确点击“开始下一笔”，才代表新的购买意图并获得新 ID。练习时依次考虑超时、刷新和开始下一笔，分别说明应保留还是更换请求号。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若本地存储不能写入，页面在发送前停止；若本地状态损坏，停止继续确认，避免抛弃不明请求号。sessionStorage 只覆盖当前标签页的重载恢复，关闭标签页、清除站点数据或复制到另一浏览器都不属于持久保障。服务器重启后 epoch 改变，页面不会向新实例重放旧请求，而是提示旧内存结果不能恢复，等待用户明确开启新实例演示。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么库存检查和收据必须在同一处"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个示例的裁决点是同一个 JVM 对象上的同步区。quote、catalog 和 confirm 都在这里同步；confirm 先查 requestId，再核对参数、计算金额、检查全部库存，最后改变库存并保存收据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "沿两个请求争最后一份赠品的顺序走一遍：每个请求都必须经过这条权威顺序；同号重放也先读已有收据。这个解释仅适用于健康单进程的正常执行，崩溃、重启和多实例的限制见下一段。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这不是数据库事务，也不承诺进程崩溃、OOM、重启或多实例条件下的持久原子性。示例把收据容量限制为 1000 条，满了就拒绝新请求，不删除还可能用于重试的历史。真实系统应在数据库事务中用唯一键、库存条件更新和订单/收据共同提交；参数绑定还应包含已经认证的用户、租户和业务范围，不能信任客户端自己声明身份。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果进一步接入真实支付或发货，应用超时仍可能已经产生外部效果。应保存稳定的外部操作号，通过渠道幂等、结果查询和对账恢复；Outbox 负责本地事实与待发送事件的一致性。仅有 synchronized、Redis 锁或“已处理”缓存，都不能跨进程、数据库和第三方调用保证恰好一次。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "交互与乱序响应"
+        },
+        {
+          "type": "paragraph",
+          "text": "每次购物车变化都会取消旧报价等待并提升版本。迟到的旧报价即使返回也不能覆盖新购物车；界面在新报价出来前显示“等待服务器报价”。客户端的取消不代表服务端已经停止处理，因此确认请求的未知结果仍必须保留稳定 ID。"
+        },
+        {
+          "type": "paragraph",
+          "text": "页面离开后，确认响应、后续目录响应和旧初始化都不能更新新的页面版本。若页面在确认请求结束前返回，先等待这次请求结束，再重新读取当前实例和已保存的请求；结果仍未知时继续保留原请求号。初始化和提交分别核对页面版本，避免旧异步结果覆盖恢复后的状态。提交过程锁定数量编辑，已完成且核实过的收据阻止无意识重复提交。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "如何运行和验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要 JDK 21 与 Node.js。示例不需要 Maven、npm 安装或任何第三方库；前端由同一个 Java HTTP 服务提供。"
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "backend-scenarios 原语言代码 L1589–1592（完整围栏，未执行）",
+          "value": "cd marketing\nmkdir -p build\njava com.sun.tools.javac.Main -d build MarketingServer.java\njava -cp build MarketingServer 8080 .\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "浏览器打开 [http://127.0.0.1:8080](http://127.0.0.1:8080) 。服务只绑定 IPv4 loopback；不要把它改成公网生产服务。它没有生产认证、TLS、完整的连接超时和网关防护。示例检查 Host、Origin 与自定义请求头，禁止跨源浏览器直接提交，但这些检查不等同于身份认证，其他本机进程仍可调用它。静态文件采用固定白名单，响应配置了 CSP 和 no-store。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在示例根目录运行："
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "backend-scenarios 原语言代码 L1600–1600（完整围栏，未执行）",
+          "value": "bash marketing/run-tests.sh\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试脚本编译 Java，检查 JavaScript 语法，运行营销页的 DOM 状态测试，随后启动一个随机端口的 127.0.0.1 Java 进程执行真实 HTTP 集成，最后关闭测试进程。手动运行的 8080 服务需要自己按 Ctrl+C 停止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HTTP 测试覆盖 9999、10000、10001 分；伪造金额/资格、负数量、小数、超大数量、重复商品；同号重放、商品顺序变换、同号不同参数；16 次同号并发、10 个请求争最后一份赠品；报价后售罄、拒绝不扣库存、收据容量满和本机 HTTP 边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DOM 测试覆盖真实渲染函数和交互状态：服务端资格展示、旧报价覆盖防护、双击、响应丢失后同号重试、刷新恢复、已完成收据防重、明确下一笔、服务器重启、本地存储失败和超时清理。DOM 替身不执行真实布局、浏览器网络栈或 BFCache；真实浏览器视觉与端到端点击验收需要另外执行，不能由这些测试推导已经通过。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "面试时怎样解释取舍"
+        },
+        {
+          "type": "paragraph",
+          "text": "先交付目录、购物车、服务器报价、提交收据这一条路径，再补输入校验、重放和竞争测试。这个规模选择原生 Java HTTP 服务是为了展示核心契约并减少依赖；如果现有工程已经使用 Spring Boot，就在已有框架中实现相同协议，不为演示另造协议栈。"
+        },
+        {
+          "type": "paragraph",
+          "text": "金额使用整数不是全部答案，还要明确币种、舍入口径和可接受数量上界。是否赠品售罄就拒单、是否允许同人多次购买、是否按实付金额判断都是业务规则，应先问清再编码。前端按钮置灰改善体验，正确性仍由服务端保证。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整实现与可运行测试"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "文件：marketing/MarketingServer.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "backend-scenarios 原语言代码 L1620–1835（完整围栏，未执行）",
+          "value": "import com.sun.net.httpserver.HttpExchange;\nimport com.sun.net.httpserver.HttpServer;\nimport java.io.IOException;\nimport java.net.InetSocketAddress;\nimport java.net.URLDecoder;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Single-process, synthetic teaching application. No payment, account, or external calls. */\npublic final class MarketingServer implements AutoCloseable {\n    static final long THRESHOLD = 10_000L; // CNY minor units: 100.00 yuan.\n    static final int MAX_QUANTITY = 20, MAX_TOTAL_QUANTITY = 30, MAX_RECEIPTS = 1_000;\n    record Product(String id, String name, long price) {}\n    record Receipt(String canonicalItems, String json) {}\n    record Reply(int status, String json) {}\n    static final class BadRequest extends RuntimeException {\n        BadRequest(String message) { super(message); }\n    }\n    static final class Store {\n        final String epoch = UUID.randomUUID().toString();\n        final List<Product> products = List.of(new Product(\"CUP\", \"演示马克杯\", 4_999),\n                new Product(\"NOTEBOOK\", \"演示笔记本\", 5_001), new Product(\"STICKER\", \"演示贴纸\", 1));\n        final Map<String, Integer> stock = new HashMap<>(Map.of(\"CUP\", 20, \"NOTEBOOK\", 20, \"STICKER\", 40));\n        final Map<String, Receipt> receipts = new HashMap<>();\n        int gifts = 3;\n        long sequence = 0;\n\n        SortedMap<String,Integer> parseItems(String input) {\n            if (input == null || input.length() > 256) throw new BadRequest(\"items 格式无效\");\n            SortedMap<String,Integer> items = new TreeMap<>();\n            if (input.isEmpty()) return items;\n            String[] lines = input.split(\",\", -1);\n            if (lines.length > products.size()) throw new BadRequest(\"商品行数超限\");\n            int totalQuantity = 0;\n            for (String line : lines) {\n                String[] pair = line.split(\":\", -1);\n                if (pair.length != 2 || !stock.containsKey(pair[0]) || !pair[1].matches(\"[1-9][0-9]?\"))\n                    throw new BadRequest(\"商品或数量无效\");\n                int quantity = Integer.parseInt(pair[1]);\n                if (quantity > MAX_QUANTITY || items.putIfAbsent(pair[0], quantity) != null)\n                    throw new BadRequest(\"数量超限或商品重复\");\n                totalQuantity += quantity;\n            }\n            if (totalQuantity > MAX_TOTAL_QUANTITY) throw new BadRequest(\"总件数最多 30\");\n            return items;\n        }\n        String canonical(SortedMap<String,Integer> items) {\n            StringJoiner out = new StringJoiner(\",\");\n            items.forEach((id,quantity) -> out.add(id + \":\" + quantity));\n            return out.toString();\n        }\n        long total(SortedMap<String,Integer> items) {\n            long total = 0;\n            for (Product p : products) total = Math.addExact(total,\n                    Math.multiplyExact(p.price(), (long)items.getOrDefault(p.id(),0)));\n            return total;\n        }\n        String reason(SortedMap<String,Integer> items, long total) {\n            if (items.isEmpty()) return \"EMPTY\";\n            for (var item : items.entrySet()) if (stock.get(item.getKey()) < item.getValue()) return \"PRODUCT_STOCK\";\n            if (total >= THRESHOLD && gifts == 0) return \"GIFT_STOCK\";\n            return \"READY\";\n        }\n        synchronized String catalog() {\n            StringJoiner out = new StringJoiner(\",\");\n            for (Product p : products) out.add(\"{\\\"id\\\":\" + q(p.id()) + \",\\\"name\\\":\" + q(p.name())\n                    + \",\\\"priceMinor\\\":\" + p.price() + \",\\\"stock\\\":\" + stock.get(p.id()) + \"}\");\n            return \"{\\\"epoch\\\":\" + q(epoch) + \",\\\"currency\\\":\\\"CNY\\\",\\\"thresholdMinor\\\":\" + THRESHOLD\n                    + \",\\\"maxQuantity\\\":\" + MAX_QUANTITY + \",\\\"maxTotalQuantity\\\":\" + MAX_TOTAL_QUANTITY\n                    + \",\\\"giftName\\\":\\\"演示书签\\\",\\\"giftStock\\\":\" + gifts + \",\\\"products\\\":[\" + out + \"]}\";\n        }\n        synchronized String quote(String rawItems) {\n            var items = parseItems(rawItems); long total = total(items);\n            return \"{\\\"epoch\\\":\" + q(epoch) + \",\\\"items\\\":\" + q(canonical(items)) + \",\\\"currency\\\":\\\"CNY\\\",\\\"totalMinor\\\":\" + total\n                    + \",\\\"thresholdMinor\\\":\" + THRESHOLD + \",\\\"remainingMinor\\\":\" + Math.max(0, THRESHOLD-total)\n                    + \",\\\"eligible\\\":\" + (total >= THRESHOLD) + \",\\\"reason\\\":\" + q(reason(items,total)) + \"}\";\n        }\n        synchronized Reply receipt(String requestEpoch, String requestId) {\n            if (!epoch.equals(requestEpoch)) return new Reply(409,error(\"SERVER_RESTARTED\",\"演示实例已更换\",epoch));\n            if (requestId == null || !requestId.matches(\"[A-Za-z0-9_-]{16,80}\")) throw new BadRequest(\"requestId 格式无效\");\n            Receipt receipt = receipts.get(requestId);\n            return receipt == null ? new Reply(404,error(\"NOT_FOUND\",\"未找到终态收据，请保留原请求号\",epoch)) : new Reply(200,receipt.json());\n        }\n        synchronized Reply confirm(String requestEpoch, String requestId, String rawItems) {\n            if (!epoch.equals(requestEpoch)) return new Reply(409, error(\"SERVER_RESTARTED\", \"演示实例已更换，旧结果无法由内存恢复\", epoch));\n            if (requestId == null || !requestId.matches(\"[A-Za-z0-9_-]{16,80}\")) throw new BadRequest(\"requestId 格式无效\");\n            var items = parseItems(rawItems); String canonical = canonical(items);\n            Receipt old = receipts.get(requestId);\n            if (old != null) {\n                if (!old.canonicalItems().equals(canonical)) return new Reply(409,error(\"ID_CONFLICT\",\"同一 requestId 不能更换商品或数量\",epoch));\n                return new Reply(200,old.json());\n            }\n            // Never evict a still-valid receipt just to admit another operation.\n            if (receipts.size() >= MAX_RECEIPTS) return new Reply(503,error(\"CAPACITY\",\"演示收据容量已满；请保留原 requestId\",epoch));\n            long total = total(items); String reason = reason(items,total);\n            boolean success = reason.equals(\"READY\"), gift = success && total >= THRESHOLD;\n            String orderId = success ? \"DEMO-\" + (sequence + 1) : null;\n            // Build the entire receipt before changing stock; the monitor is the single-JVM authority.\n            String json = \"{\\\"epoch\\\":\" + q(epoch) + \",\\\"requestId\\\":\" + q(requestId) + \",\\\"items\\\":\" + q(canonical)\n                    + \",\\\"status\\\":\" + q(success ? \"SUCCESS\" : \"REJECTED\") + \",\\\"reason\\\":\" + q(reason)\n                    + \",\\\"orderId\\\":\" + (orderId == null ? \"null\" : q(orderId))\n                    + \",\\\"currency\\\":\\\"CNY\\\",\\\"totalMinor\\\":\" + total + \",\\\"giftGranted\\\":\" + gift + \"}\";\n            if (success) {\n                for (var item : items.entrySet()) stock.put(item.getKey(),stock.get(item.getKey())-item.getValue());\n                if (gift) gifts--;\n                sequence++;\n            }\n            receipts.put(requestId,new Receipt(canonical,json));\n            return new Reply(200,json);\n        }\n    }\n\n    final Store store = new Store();\n    final HttpServer server;\n    final ExecutorService executor;\n    final Map<String,byte[]> staticFiles = new HashMap<>();\n    final String origin;\n    MarketingServer(int port, Path root) throws IOException {\n        for (String name : List.of(\"index.html\",\"app.mjs\",\"styles.css\")) staticFiles.put(\"/\"+name,Files.readAllBytes(root.resolve(name)));\n        server = HttpServer.create(new InetSocketAddress(\"127.0.0.1\",port),32);\n        origin = \"http://127.0.0.1:\" + server.getAddress().getPort();\n        executor = new ThreadPoolExecutor(4,4,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(64),new ThreadPoolExecutor.CallerRunsPolicy());\n        server.setExecutor(executor);\n        server.createContext(\"/\",this::handle);\n    }\n    void start() { server.start(); }\n    void handle(HttpExchange exchange) throws IOException {\n        try {\n            var headers = exchange.getResponseHeaders();\n            headers.set(\"Cache-Control\",\"no-store\"); headers.set(\"X-Content-Type-Options\",\"nosniff\");\n            headers.set(\"Content-Security-Policy\",\"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\");\n            if (!Objects.equals(exchange.getRequestHeaders().getFirst(\"Host\"),origin.substring(7))) {\n                send(exchange,403,error(\"HOST\",\"请使用本机 127.0.0.1 地址\",store.epoch)); return;\n            }\n            String path = exchange.getRequestURI().getPath(), method = exchange.getRequestMethod();\n            if (method.equals(\"GET\") && path.equals(\"/api/catalog\")) { send(exchange,200,store.catalog()); return; }\n            if (method.equals(\"GET\") && path.equals(\"/api/receipt\")) {\n                String query = exchange.getRequestURI().getRawQuery();\n                if (query == null || query.length() > 256) throw new BadRequest(\"查询参数无效\");\n                Map<String,String> fields = form(query,Set.of(\"epoch\",\"requestId\"));\n                Reply reply = store.receipt(fields.get(\"epoch\"),fields.get(\"requestId\"));\n                send(exchange,reply.status(),reply.json()); return;\n            }\n            if (method.equals(\"POST\") && (path.equals(\"/api/quote\") || path.equals(\"/api/confirm\"))) {\n                String requestOrigin = exchange.getRequestHeaders().getFirst(\"Origin\");\n                if (!\"gift-v1\".equals(exchange.getRequestHeaders().getFirst(\"X-Demo-Client\"))\n                        || (requestOrigin != null && !origin.equals(requestOrigin))) {\n                    send(exchange,403,error(\"ORIGIN\",\"请求来源无效\",store.epoch)); return;\n                }\n                String type = exchange.getRequestHeaders().getFirst(\"Content-Type\");\n                if (type == null || !type.toLowerCase(Locale.ROOT).matches(\"application/x-www-form-urlencoded(?:;\\\\s*charset=utf-8)?\")) {\n                    send(exchange,415,error(\"TYPE\",\"只接受 UTF-8 表单编码\",store.epoch)); return;\n                }\n                byte[] body = exchange.getRequestBody().readNBytes(4097);\n                if (body.length > 4096) { send(exchange,413,error(\"SIZE\",\"请求体超限\",store.epoch)); return; }\n                Set<String> keys = path.endsWith(\"quote\") ? Set.of(\"items\") : Set.of(\"epoch\",\"requestId\",\"items\");\n                Map<String,String> fields = form(new String(body,StandardCharsets.UTF_8),keys);\n                if (path.endsWith(\"quote\")) send(exchange,200,store.quote(fields.get(\"items\")));\n                else { Reply reply = store.confirm(fields.get(\"epoch\"),fields.get(\"requestId\"),fields.get(\"items\")); send(exchange,reply.status(),reply.json()); }\n                return;\n            }\n            if (method.equals(\"GET\")) {\n                String file = path.equals(\"/\") ? \"/index.html\" : path;\n                byte[] bytes = staticFiles.get(file);\n                if (bytes != null) {\n                    exchange.getResponseHeaders().set(\"Content-Type\",file.endsWith(\".html\") ? \"text/html; charset=utf-8\" : file.endsWith(\".mjs\") ? \"text/javascript; charset=utf-8\" : \"text/css; charset=utf-8\");\n                    exchange.sendResponseHeaders(200,bytes.length); exchange.getResponseBody().write(bytes); return;\n                }\n            }\n            send(exchange,path.startsWith(\"/api/\") ? 405 : 404,error(\"ROUTE\",\"路径或方法不存在\",store.epoch));\n        } catch (BadRequest | IllegalArgumentException ex) {\n            send(exchange,400,error(\"INPUT\",ex.getMessage(),store.epoch));\n        } catch (RuntimeException ex) {\n            send(exchange,500,error(\"INTERNAL\",\"未能确认结果，请保留原 requestId 重试\",store.epoch));\n        } finally { exchange.close(); }\n    }\n    static Map<String,String> form(String input, Set<String> allowed) {\n        Map<String,String> out = new HashMap<>();\n        for (String field : input.split(\"&\",-1)) {\n            String[] pair = field.split(\"=\",2);\n            if (pair.length != 2) throw new BadRequest(\"表单字段无效\");\n            String key = URLDecoder.decode(pair[0],StandardCharsets.UTF_8), value = URLDecoder.decode(pair[1],StandardCharsets.UTF_8);\n            if (!allowed.contains(key) || out.putIfAbsent(key,value) != null) throw new BadRequest(\"未知或重复字段\");\n        }\n        if (!out.keySet().equals(allowed)) throw new BadRequest(\"缺少字段\");\n        return out;\n    }\n    static String q(String text) {\n        StringBuilder out = new StringBuilder(\"\\\"\");\n        for (char c : text.toCharArray()) {\n            if (c == '\\\\' || c == '\"') out.append('\\\\').append(c);\n            else if (c < 32) out.append(String.format(\"\\\\u%04x\",(int)c));\n            else out.append(c);\n        }\n        return out.append('\"').toString();\n    }\n    static String error(String code,String message,String epoch) {\n        return \"{\\\"error\\\":\" + q(code) + \",\\\"message\\\":\" + q(message) + \",\\\"epoch\\\":\" + q(epoch) + \"}\";\n    }\n    static void send(HttpExchange exchange,int code,String json) throws IOException {\n        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);\n        exchange.getResponseHeaders().set(\"Content-Type\",\"application/json; charset=utf-8\");\n        exchange.sendResponseHeaders(code,bytes.length); exchange.getResponseBody().write(bytes);\n    }\n    public void close() { server.stop(0); executor.shutdownNow(); }\n    public static void main(String[] args) throws Exception {\n        int port = args.length > 0 ? Integer.parseInt(args[0]) : 8080;\n        Path root = args.length > 1 ? Path.of(args[1]) : Path.of(\".\");\n        MarketingServer app = new MarketingServer(port,root);\n        Runtime.getRuntime().addShutdownHook(new Thread(app::close));\n        app.start(); System.out.println(\"LISTEN \" + app.origin);\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "文件：marketing/test-http.mjs"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "文件：marketing/run-tests.sh"
+        }
+      ]
+    }
+  ]
+}

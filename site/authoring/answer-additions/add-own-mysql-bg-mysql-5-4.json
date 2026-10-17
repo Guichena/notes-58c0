@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-5-4",
+  "entryId": "bg-mysql-5",
+  "expectedOriginalHash": "e4c2b102fa4d2685d95e7ebc0b853606c72cf23ea729a2ad709ab0366e2be22c",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第16章 深分页、稳定排序与游标"
+    },
+    {
+      "type": "paragraph",
+      "text": "深 OFFSET 的主要问题是为丢弃前面的结果仍需扫描或处理它们；延迟关联减少取宽行，复合游标才把连续翻页变为从边界继续定位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：LIMIT 10000,10 为什么慢？百万 OFFSET 如何优化？书签法必须有序吗？只有时间游标为什么漏数据？最近三十天流水怎么分页？动态数据能保持快照吗？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先讲三种代价"
+    },
+    {
+      "type": "paragraph",
+      "text": "“OFFSET 表示跳过结果中的前 N 条，不是按主键直接跳到第 N 行。有序索引能省排序，但仍可能处理 offset+limit 条候选；延迟关联先取少量主键再取完整行，可以减少宽行回表；keyset 根据上一页最后一条的完整排序键继续查，适合连续翻页。前提是稳定全序、索引匹配，以及明确并发变化的产品语义。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "MySQL 的 LIMIT 10 是最多十条；LIMIT 10000,10 和 LIMIT 10 OFFSET 10000 是跳过一万条后取十条。offset 从零开始，LIMIT 0 返回空结果。接口要校验非负页大小、上限与页码乘法溢出，不能把负数或超大整数直接拼接成 SQL。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "保留 10000,50 的完整例子"
+    },
+    {
+      "type": "paragraph",
+      "text": "先固定排序，才有资格比较两种分页。用户 12345 有 10500 条记录，用户 99999 有 50 条，created_at 全为 2026-10-01 12:00:00。只写 created_at DESC 不能决定同一时刻的先后；教学查询再加 id DESC，OFFSET 10000 LIMIT 50 才能明确预期得到 id 500 到 451。"
+    },
+    {
+      "type": "paragraph",
+      "text": "直接查询既要处理被跳过的候选，也可能为它们读取宽列。延迟关联把这两件事拆开：子查询只取 id、created_at，完成完全相同的过滤、排序和 OFFSET/LIMIT，再按留下的主键取 amount 等宽列。外层仍要 ORDER BY，JOIN 不保证继承子查询顺序。它省的是取宽行的成本，被跳过的索引条目仍要处理，不能说已经消除了 OFFSET 的线性增长。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-mysql/pagination.png",
+      "alt": "OFFSET 10000,50 与完整 (created_at,id) 游标；同时间必须保留 id 边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "游标为 (2026-10-01 12:00:00,900) 时，下一页条件是 created_at<last_time OR(created_at=last_time AND id<last_id)，同样按两列 DESC，预期 id=899 到 850。只用 created_at<last_time 会把同一时间的其他行全部漏掉。索引 (user_id,created_at DESC,id DESC) 服务用户范围内的全序。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "保留百万 OFFSET 与 B 的关系"
+    },
+    {
+      "type": "paragraph",
+      "text": "另一题的文本是 select id,A from table where B>xxxxxx limit 1000000 10，题设已说明 B 有索引，但逗号缺失且没有 ORDER BY。应先确认是否意指 LIMIT 1000000,10，并询问需要什么顺序；不能把 B> 改成 B=，也不能假设 id 与 B 单调相关。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果业务同意按 B ASC,id ASC，(B,id) 可以提供顺序，延迟关联先选十个 id 再取 A。下一页仍保留 B>原阈值，并加 B>last_B OR (B=last_B AND id>last_id)。仅写 id>last_id 不能保证 B 排序正确，按时间/id 的游标也不能擅自替换此题的 B。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若 A 也已在覆盖索引中，延迟关联能节省的取列回表可能很少，不能默认一定更快。单条延迟关联 SQL 与应用先查 ID、再发第二条 SELECT 也不是同一种快照契约：READ COMMITTED 下两条语句通常各建读视图，中途删除或修改会改变第二步结果。需要一致结果时，应明确定义事务、快照或物化结果及其资源期限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "章末 page_probe 用 1119 行和 OFFSET 1000 演示重复 B 值及等价结果；这不是百万 OFFSET 压测。真实一百万跳过量的实验需加载相应规模，观察执行计划与资源。减少分页深度、搜索定位或先建立快照结果集都属于产品契约变化，应说明用户会失去或获得什么。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "接住最后一层追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "要精确总页数就可能需要昂贵 COUNT；是否允许延迟统计要单独约定。要随机跳页可考虑锚点、物化结果或限制跳转，但不能承诺任意深度都 O(1)。新增覆盖列可以省取列成本，却扩大写入和缓存压力。最终选择取决于浏览、检索、导出还是审计，不只是把 OFFSET 改成一个小于号。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10550 行分页数据、OFFSET、延迟关联与游标"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 page_orders.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/page_orders.sql",
+      "value": "CREATE TABLE page_orders (\n  id BIGINT PRIMARY KEY,\n  user_id BIGINT NOT NULL,\n  amount DECIMAL(18,2) NOT NULL,\n  created_at DATETIME(6) NOT NULL,\n  INDEX idx_user_created_id (user_id, created_at DESC, id DESC)\n) ENGINE=InnoDB;\nCREATE TABLE practice_digit(n INT PRIMARY KEY);\nINSERT INTO practice_digit VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);\nINSERT INTO page_orders(id,user_id,amount,created_at)\nSELECT n+1,IF(n<10500,12345,99999),\n       CAST(1+MOD(n,1000)/100 AS DECIMAL(18,2)),\n       '2026-10-01 12:00:00.000000'\nFROM (\n  SELECT a.n+10*b.n+100*c.n+1000*d.n+10000*e.n AS n\n  FROM practice_digit a CROSS JOIN practice_digit b CROSS JOIN practice_digit c\n  CROSS JOIN practice_digit d CROSS JOIN practice_digit e\n) AS seed\nWHERE n<10550;\nANALYZE TABLE page_orders;\nSELECT id, user_id, amount, created_at\nFROM page_orders\nWHERE user_id = 12345\nORDER BY created_at DESC, id DESC\nLIMIT 50 OFFSET 10000;\nSELECT o.id, o.user_id, o.amount, o.created_at\nFROM page_orders AS o\nJOIN (\n  SELECT id, created_at\n  FROM page_orders\n  WHERE user_id = 12345\n  ORDER BY created_at DESC, id DESC\n  LIMIT 50 OFFSET 10000\n) AS page ON page.id = o.id\nORDER BY page.created_at DESC, page.id DESC;\nSELECT id, user_id, amount, created_at\nFROM page_orders\nWHERE user_id = 12345\n  AND (\n    created_at < '2026-10-01 12:00:00.000000'\n    OR (created_at = '2026-10-01 12:00:00.000000' AND id < 900)\n  )\nORDER BY created_at DESC, id DESC\nLIMIT 50;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "B 范围与重复 B 值分页"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 page_fixture.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/page_fixture.sql",
+      "value": "-- A separate toy page dataset is populated by tests to expose duplicate B values.\nCREATE TABLE page_probe(id INTEGER PRIMARY KEY,a VARCHAR(30),b INTEGER NOT NULL);\nCREATE INDEX ix_b_id ON page_probe(b,id);\nCREATE TABLE page_digit(n INT PRIMARY KEY);\nINSERT INTO page_digit VALUES(0),(1),(2),(3),(4),(5),(6),(7),(8),(9);\nINSERT INTO page_probe(id,a,b)\nSELECT n+1,CONCAT('row-',n+1),FLOOR(n/3)\nFROM(SELECT a.n+10*b.n+100*c.n+1000*d.n n FROM page_digit a\n CROSS JOIN page_digit b CROSS JOIN page_digit c CROSS JOIN page_digit d)s WHERE n<1119;\n-- Intended original syntax is LIMIT 10 OFFSET 1000000, with a specified order.\n-- Here LIMIT 10 OFFSET 1000 keeps the fixture small; it is not a million-row benchmark.\nSELECT id,a,b FROM page_probe WHERE b>10 ORDER BY b,id LIMIT 10 OFFSET 1000;\nSELECT p.id,p.a,p.b FROM page_probe p JOIN\n (SELECT id,b FROM page_probe WHERE b>10 ORDER BY b,id LIMIT 10 OFFSET 1000) s\n ON p.id=s.id ORDER BY s.b,s.id;\n-- For a cursor (last_b,last_id), bind values rather than concatenate them:\n-- SELECT id,a,b FROM page_probe WHERE b>10\n-- AND (b>? OR (b=? AND id>?)) ORDER BY b,id LIMIT 10;\n\nSELECT id,a,b FROM page_probe WHERE b>10\n AND(b>344 OR(b=344 AND id>1033)) ORDER BY b,id LIMIT 10;\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "4"
+}

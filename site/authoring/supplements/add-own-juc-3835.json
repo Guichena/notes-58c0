@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-juc-3835",
+  "entryId": "handwrite-47",
+  "expectedOriginalHash": "b6b43e8eaed1fb6560b65836729167886c7a132c610a7cb551644d64c841feb3",
+  "title": "严格手写、并发 TTL 与分布式 LRU 变体",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原题平均 O(1) 的基本 LRU 与以下扩展分别保留契约：手写哈希桶与泛型同步版、统一写 TTL 且过期优先的 O(log n) 索引版、范围查询、分布式近似 LRU 和明确的教学 CLI 输入。TTL 版不是对原 O(1) 要求的同复杂度替换。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "17 从普通 LRU 到泛型 并发 TTL 和分布式"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "手写 LRU 为什么同时需要哈希和双向链表"
+    },
+    {
+      "type": "paragraph",
+      "text": "哈希索引负责按 key 定位节点，双向链表负责按最近访问顺序移动和淘汰；命中 get 和更新 put 都会改变访问顺序，因此线程安全版本的 get 也不是纯读操作。头部放最近使用项，尾部放最久未使用项，满容量插入时同时删除尾节点及其哈希映射。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果明确禁止 LinkedHashMap，就不能用它隐藏链表实现。下面还把哈希桶自己实现出来，使严格手写变体也有完整答案；泛型键值均不接受 null，容量可以为零，get 未命中返回 null，evict(n) 删除最多 n 个尾节点并返回实际数量，负 n 抛错。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查找 O(1) 是散列分布合理时的期望复杂度，碰撞严重时可退化，不应宣称任意键都严格常数时间。桶内也维护前驱指针，已知尾节点的删除不必再次遍历碰撞链，所以 evict(n) 的结构修改是 O(min(n,size))。固定桶数组按容量预分配，避免访问过程中扩容；因此空间为 O(capacity)，不适合无上界容量或超大稀疏配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "全局 synchronized 让哈希和访问链表保持一致，代价是同一缓存操作串行；键的 hashCode/equals 必须稳定、无重入副作用，返回的可变 value 仍由调用者管理。分段锁可以提高分区并发，但若每段独立淘汰，得到的是分段近似 LRU，不再是全局严格 LRU。"
+    },
+    {
+      "type": "paragraph",
+      "text": "code/LruCache.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Handwritten hash buckets + doubly linked access list; no LinkedHashMap/HashMap inside the cache. */\npublic final class LruCache<K, V> {\n    private static final class Node<K, V> {\n        final K key; final int hash; V value;\n        Node<K, V> bucketPrevious, bucketNext, previous, next;\n        Node(K key, V value, int hash) { this.key = key; this.value = value; this.hash = hash; }\n    }\n    private final Node<K, V>[] buckets;\n    private final int capacity;\n    private Node<K, V> first, last; // MRU -> LRU\n    private int size;\n    @SuppressWarnings(\"unchecked\") public LruCache(int capacity) {\n        if (capacity < 0 || capacity > (1 << 28)) throw new IllegalArgumentException(\"capacity out of teaching range\");\n        this.capacity = capacity;\n        int length = 1;\n        while (length < Math.max(1, 2 * capacity)) length <<= 1;\n        buckets = (Node<K, V>[]) new Node<?, ?>[length];\n    }\n    private int hash(K key) {\n        if (key == null) throw new NullPointerException(\"key\");\n        int h = key.hashCode(); return h ^ (h >>> 16);\n    }\n    private Node<K, V> find(K key, int hash) {\n        for (Node<K, V> node = buckets[hash & (buckets.length - 1)]; node != null; node = node.bucketNext)\n            if (node.hash == hash && key.equals(node.key)) return node;\n        return null;\n    }\n    private void unlinkAccess(Node<K, V> node) {\n        if (node.previous == null) first = node.next; else node.previous.next = node.next;\n        if (node.next == null) last = node.previous; else node.next.previous = node.previous;\n        node.previous = node.next = null;\n    }\n    private void linkFirst(Node<K, V> node) {\n        node.next = first;\n        if (first != null) first.previous = node; else last = node;\n        first = node;\n    }\n    private void touch(Node<K, V> node) { unlinkAccess(node); linkFirst(node); }\n    private void remove(Node<K, V> node) {\n        int bucket = node.hash & (buckets.length - 1);\n        if (node.bucketPrevious == null) buckets[bucket] = node.bucketNext;\n        else node.bucketPrevious.bucketNext = node.bucketNext;\n        if (node.bucketNext != null) node.bucketNext.bucketPrevious = node.bucketPrevious;\n        node.bucketPrevious = null;\n        unlinkAccess(node); node.bucketNext = null; size--;\n    }\n    public synchronized V get(K key) {\n        Node<K, V> node = find(key, hash(key));\n        if (node == null) return null;\n        touch(node); return node.value;\n    }\n    public synchronized void put(K key, V value) {\n        int hash = hash(key);\n        if (value == null) throw new NullPointerException(\"value\");\n        Node<K, V> node = find(key, hash);\n        if (node != null) { node.value = value; touch(node); return; }\n        if (capacity == 0) return;\n        Node<K, V> fresh = new Node<>(key, value, hash); // Allocate before evicting an existing value.\n        if (size == capacity) remove(last);\n        int bucket = hash & (buckets.length - 1);\n        fresh.bucketNext = buckets[bucket];\n        if (fresh.bucketNext != null) fresh.bucketNext.bucketPrevious = fresh;\n        buckets[bucket] = fresh;\n        linkFirst(fresh); size++;\n    }\n    public synchronized int evict(int n) {\n        if (n < 0) throw new IllegalArgumentException(\"n >= 0\");\n        int removed = 0;\n        while (removed < n && last != null) { remove(last); removed++; }\n        return removed;\n    }\n    public synchronized int size() { return size; }\n    public synchronized Object[] keysMostRecentFirst() {\n        Object[] keys = new Object[size]; int i = 0;\n        for (Node<K, V> node = first; node != null; node = node.next) keys[i++] = node.key;\n        if (i != size) throw new AssertionError(\"access-list invariant\");\n        return keys;\n    }\n    public static void main(String[] args) throws Exception {\n        LruCache<Integer, String> cache = new LruCache<>(2);\n        cache.put(1, \"a\"); cache.put(2, \"b\"); Checks.that(cache.get(1).equals(\"a\"), \"hit touches\");\n        cache.put(3, \"c\"); Checks.that(cache.get(2) == null, \"LRU eviction\");\n        cache.put(1, \"A\"); Checks.that(cache.size() == 2 && cache.get(1).equals(\"A\"), \"update no size growth\");\n        Checks.that(cache.evict(10) == 2 && cache.size() == 0, \"evict beyond size\");\n        LruCache<Integer, Integer> zero = new LruCache<>(0); zero.put(1, 1);\n        Checks.that(zero.get(1) == null && zero.size() == 0, \"zero capacity\");\n        record Collision(int id) { public int hashCode() { return 1; } }\n        LruCache<Collision, Integer> collided = new LruCache<>(3);\n        for (int n = 0; n < 10; n++) collided.put(new Collision(n), n);\n        Checks.that(collided.get(new Collision(9)) == 9 && collided.get(new Collision(6)) == null, \"bucket collisions\");\n        LruCache<Integer, Integer> shared = new LruCache<>(32); ExecutorService pool = Executors.newFixedThreadPool(4);\n        try {\n            List<Future<?>> jobs = new ArrayList<>();\n            for (int t = 0; t < 4; t++) { int base = t * 1000; jobs.add(pool.submit(() -> {\n                for (int i = 0; i < 1000; i++) { shared.put(base + i, i); shared.get(base + i); }\n            })); }\n            for (Future<?> f : jobs) Checks.get(f);\n            Checks.that(shared.size() == 32 && shared.keysMostRecentFirst().length == 32, \"concurrent capacity/list invariant\");\n        } finally { Checks.stop(pool); }\n        System.out.println(\"LruCache OK\");\n    }\n}\n",
+      "label": "code/LruCache.java"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "过期优先为什么不能只检查 LRU 尾部"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 回答“什么时候失效”，LRU 回答“最近谁用过”，两者不能共用同一个顺序。看下面测试的时间线：A 在 0 时写入、10 时过期，B 在 5 时写入、15 时过期；9 时读取 A 会把它移到最近使用的头部，却不续期。"
+    },
+    {
+      "type": "paragraph",
+      "text": "到 10 时插入 C，应该先删已过期的 A。若只检查 LRU 尾部，看到的却是仍有效的 B，可能错删 B、留下头部已经过期的 A。这就是不能只按访问顺序判断过期的原因。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本答案设定所有写入共享一个 TTL，读取不续期，更新写入重新计算期限，now 等于 expires 时视为已过期。get 发现自身过期就删除并返回空；put 先通过独立过期索引删除所有到期条目，仍满时才淘汰活的 LRU。若题目只给“带 TTL 的 LRU”，续期方式、惰性还是定时清理、过期优先和线程安全要逐项确认，不要默认全部成立。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里用 TreeSet 按期限及唯一序号排序，哈希和手写双向访问链表分别保留查找与 LRU 语义。相同期限必须能保存多个节点；更新期限前先从有序索引移除，修改后重新加入。与不断塞入过期堆而留下陈旧节点相比，这种实现的辅助索引始终与物理条目数同阶。"
+    },
+    {
+      "type": "paragraph",
+      "text": "加入 TTL 索引后，删除和更新变为 O(log n)，清理 k 个到期项为 O(k log n)，不能继续声称所有操作 O(1)。若只要求惰性删除且允许插入时扫描全表，也能写更简单的版本，但必须承认扫描成本。若要求严格 O(1) 并且统一写 TTL，可讨论独立写入时间队列和版本淘汰；更新、内存回收和最坏清理批次仍要分析。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试时使用可控单调时钟，不靠 sleep 碰过期边界。示例时钟单位由调用者统一，要求从非负相对时间起步且单调；真实系统可封装 nanoTime 的相对差值，不能把系统墙钟调整当成业务时间倒流。"
+    },
+    {
+      "type": "paragraph",
+      "text": "code/TtlLruCache.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\nimport java.util.function.LongSupplier;\n\n/** Common write TTL, no read renewal; expiry index is independent of recency. */\npublic final class TtlLruCache<K, V> {\n    private static final class Node<K, V> {\n        final K key; final long sequence; V value; long expires;\n        Node<K, V> previous, next;\n        Node(K key, V value, long expires, long sequence) {\n            this.key = key; this.value = value; this.expires = expires; this.sequence = sequence;\n        }\n    }\n    private final int capacity;\n    private final long ttl;\n    private final LongSupplier clock;\n    private final Map<K, Node<K, V>> map = new HashMap<>();\n    private final NavigableSet<Node<K, V>> expiry = new TreeSet<>(\n            Comparator.<Node<K, V>>comparingLong(n -> n.expires).thenComparingLong(n -> n.sequence));\n    private Node<K, V> first, last;\n    private long sequence, lastTime;\n    public TtlLruCache(int capacity, long ttlTicks, LongSupplier monotonicNonnegativeClock) {\n        if (capacity < 0 || ttlTicks <= 0) throw new IllegalArgumentException();\n        this.capacity = capacity; ttl = ttlTicks; clock = Objects.requireNonNull(monotonicNonnegativeClock);\n    }\n    private long now() {\n        long value = clock.getAsLong();\n        if (value < lastTime) throw new IllegalStateException(\"clock must be nonnegative and monotonic\");\n        lastTime = value; return value;\n    }\n    private void unlink(Node<K, V> node) {\n        if (node.previous == null) first = node.next; else node.previous.next = node.next;\n        if (node.next == null) last = node.previous; else node.next.previous = node.previous;\n        node.previous = node.next = null;\n    }\n    private void front(Node<K, V> node) {\n        node.next = first;\n        if (first == null) last = node; else first.previous = node;\n        first = node;\n    }\n    private void remove(Node<K, V> node) { map.remove(node.key); expiry.remove(node); unlink(node); }\n    private void purge(long time) {\n        while (!expiry.isEmpty() && expiry.first().expires <= time) remove(expiry.first());\n    }\n    public synchronized V get(K key) {\n        Objects.requireNonNull(key); long time = now(); Node<K, V> node = map.get(key);\n        if (node == null) return null;\n        if (node.expires <= time) { remove(node); return null; }\n        unlink(node); front(node); return node.value;\n    }\n    public synchronized void put(K key, V value) {\n        Objects.requireNonNull(key); Objects.requireNonNull(value);\n        long time = now(), expires = Math.addExact(time, ttl);\n        long newSequence = Math.incrementExact(sequence);\n        purge(time); // Remove expired entries anywhere in the recency list before evicting live LRU.\n        Node<K, V> node = map.get(key);\n        if (node != null) {\n            expiry.remove(node); node.expires = expires; node.value = value;\n            expiry.add(node); unlink(node); front(node); return;\n        }\n        if (capacity == 0) return;\n        Node<K, V> fresh = new Node<>(key, value, expires, newSequence);\n        if (map.size() == capacity) remove(last);\n        sequence = newSequence; map.put(key, fresh); expiry.add(fresh); front(fresh);\n    }\n    public synchronized int evict(int n) {\n        if (n < 0) throw new IllegalArgumentException();\n        int removed = 0;\n        while (removed < n && last != null) { remove(last); removed++; }\n        return removed;\n    }\n    /** A physical entry count; expired entries may remain until touched or a put purges them. */\n    public synchronized int retainedSize() { return map.size(); }\n    public static void main(String[] args) {\n        long[] clock = {0}; TtlLruCache<String, Integer> cache = new TtlLruCache<>(2, 10, () -> clock[0]);\n        cache.put(\"A\", 1); clock[0] = 5; cache.put(\"B\", 2);\n        clock[0] = 9; Checks.that(cache.get(\"A\") == 1, \"A becomes MRU without renewing TTL\");\n        clock[0] = 10; cache.put(\"C\", 3);\n        Checks.that(cache.get(\"A\") == null && cache.get(\"B\") == 2 && cache.get(\"C\") == 3,\n                \"expired MRU removed before live LRU\");\n        clock[0] = 14; cache.put(\"B\", 22); clock[0] = 20;\n        Checks.that(cache.get(\"C\") == null && cache.get(\"B\") == 22, \"put renews, expiration is exclusive\");\n        Checks.that(cache.evict(100) == 1 && cache.retainedSize() == 0, \"eviction removes both indices\");\n        TtlLruCache<String, Integer> sameExpiry = new TtlLruCache<>(3, 10, () -> 0);\n        sameExpiry.put(\"x\", 1); sameExpiry.put(\"y\", 2); sameExpiry.put(\"z\", 3);\n        Checks.that(sameExpiry.retainedSize() == 3, \"equal expiry nodes coexist\");\n        clock[0] = Long.MAX_VALUE;\n        try { cache.put(\"overflow\", 4); throw new AssertionError(\"deadline overflow accepted\"); }\n        catch (ArithmeticException expected) { }\n        Checks.that(cache.retainedSize() == 0, \"overflow before structural change\");\n        System.out.println(\"TtlLruCache OK\");\n    }\n}\n",
+      "label": "code/TtlLruCache.java"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "范围查询 分布式和 ACM 输入输出"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 key 范围查询需要有序索引，仅靠哈希表不能高效完成。可以加入 TreeMap 或跳表，把单键与范围查询、访问链表、过期索引放在同一一致性边界；通常单键更新成本上升到 O(log n)。若要求“有序且线程安全 Map”，先问有序是插入顺序、访问顺序还是键排序，三者对应不同结构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式 LRU 可以按一致性哈希分片，每片维护自己的容量与淘汰策略，但它不是全局严格 LRU。扩缩容要考虑迁移、双写或转发、一致性和过期时间；热点 key 仍可能集中打满一个节点，需要热点复制、请求合并、本地缓存或限流，并明确一致性代价。单 JVM 加锁无法跨节点保护状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ACM 模式还要求解析具体输入并按题面输出；原题若未提供操作编码和输入格式，应先确认，不应凭空给它编一个唯一规范。下面给出可运行教学入口，明确采用首行 capacity，后续 GET key、PUT key value、EVICT n，值和键为无空格字符串，GET 未命中输出 NULL，EVICT 输出实际删除数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "code/LruCli.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.io.*;\n\n/** Teaching input format is documented in the reader; this is not an inferred judge format. */\npublic final class LruCli {\n    public static void main(String[] args) throws IOException {\n        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));\n        String first = reader.readLine();\n        if (first == null) throw new IllegalArgumentException(\"capacity missing\");\n        LruCache<String, String> cache = new LruCache<>(Integer.parseInt(first.trim()));\n        for (String line; (line = reader.readLine()) != null;) {\n            if (line.isBlank()) continue;\n            String[] fields = line.trim().split(\"\\\\s+\");\n            switch (fields[0]) {\n                case \"GET\" -> {\n                    if (fields.length != 2) throw new IllegalArgumentException(\"GET key\");\n                    String value = cache.get(fields[1]); System.out.println(value == null ? \"NULL\" : value);\n                }\n                case \"PUT\" -> {\n                    if (fields.length != 3) throw new IllegalArgumentException(\"PUT key value\");\n                    cache.put(fields[1], fields[2]);\n                }\n                case \"EVICT\" -> {\n                    if (fields.length != 2) throw new IllegalArgumentException(\"EVICT n\");\n                    System.out.println(cache.evict(Integer.parseInt(fields[1])));\n                }\n                default -> throw new IllegalArgumentException(\"unknown command\");\n            }\n        }\n    }\n}\n",
+      "label": "code/LruCli.java"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-juc-reference",
+      "label": "运行支持与教学范围"
+    },
+    {
+      "entryId": "146",
+      "label": "基础 LRU 算法"
+    }
+  ]
+}

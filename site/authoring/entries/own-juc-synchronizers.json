@@ -1,0 +1,474 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-synchronizers",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 并发与 JUC",
+  "category": "锁、同步器与原子操作",
+  "title": "锁、同步器与原子操作",
+  "tags": [
+    "Java",
+    "JUC",
+    "Java21教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-juc-monitor-semantics",
+      "order": 373,
+      "question": "synchronized 锁谁 又怎样实现？",
+      "shortAnswer": "synchronized 提供对象监视器上的互斥、可重入以及释放到后续获取的可见性，正常或异常离开同步区域都会释放对应层次的锁。实例同步方法锁 this，静态同步方法锁声明类的 Class 对象，同步块锁表达式计算得到的对象。",
+      "commonPhrasings": [
+        "竞争后怎样从对象头走到 Monitor",
+        "是不是第二个线程一来就升级",
+        "膨胀后一定进入内核吗",
+        "锁能不能降级",
+        "Java 锁为什么能跨操作系统？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "4 synchronized 显式锁与 AQS"
+        },
+        {
+          "type": "paragraph",
+          "text": "synchronized 提供对象监视器上的互斥、可重入以及释放到后续获取的可见性，正常或异常离开同步区域都会释放对应层次的锁。实例同步方法锁 this，静态同步方法锁声明类的 Class 对象，同步块锁表达式计算得到的对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "判断两段代码是否互斥，先把它们锁住的对象写出来。两个实例都调用同步实例方法，各自锁的是自己的 this，所以不能借此保护同一个 static 库存；static 同步方法锁的是声明类的 Class，也不会与某个实例的 this 锁互斥。方法都写了 synchronized，不代表它们在争同一把锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "库存 int 是受保护状态，基本类型本身不能作为监视器。锁应是生命周期稳定的对象：避免锁住会被重新赋值的引用、装箱值，或可能被无关代码共享的字符串常量。私有 final 锁对象更容易让所有访问者遵守同一套保护范围。"
+        },
+        {
+          "type": "paragraph",
+          "text": "字节码层面，同步块通常使用 monitorenter/monitorexit，同步方法由 ACC_SYNCHRONIZED 标志表达。JVM 再将语言语义映射到具体运行时实现，不是每个对象一创建就为它分配一个完整 OS 互斥量。可重入意味着同一线程重复获取同一锁要逐层释放，计数归零才真正允许其他持有者进入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HotSpot 的快速路径、对象头、锁记录、监视器膨胀是实现问题。JDK 6 时期常讲偏向锁、栈锁、自适应自旋、锁消除和锁粗化；JDK 15 起偏向锁默认禁用并废弃相关选项，不能在 Java 21 答案里把“无锁→偏向→轻量→重量”当成必经路线。wait 等需要完整监视器的操作也可能触发膨胀，不能规定为“第几个线程来就升级”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "锁消除依赖编译器证明对象不被其他线程共享；锁粗化是在一段连续操作上减少重复获取开销；自旋用 CPU 换取短等待，停放则让出执行资源。它们都不能替代码补回缺失的业务同步。性能比较必须有目标 JDK、工作负载和正确性前提。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "锁膨胀到底改变了什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "锁膨胀是把轻量的锁表示转换成完整的 ObjectMonitor，以处理竞争、等待和唤醒；锁住的还是同一个对象，互斥和可见性的语义不变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 OpenJDK 21 初始发行实现为例，默认 LM_LEGACY 使用传统栈锁，LM_LIGHTWEIGHT 是另一条可选实现。以下先讲传统路径，不能把对象头位布局和状态转换当成所有 JDK 的共同规范。"
+        },
+        {
+          "type": "paragraph",
+          "text": "无竞争时，栈锁通过线程栈中的锁记录保存原对象头，并以 CAS 建立关联。对象仍处于传统栈锁状态、需要膨胀时，先准备 ObjectMonitor；再竞争把对象头设为临时 INFLATING 状态。只有成功者继续迁移原对象头和既有持有关系，最后以 release 语义发布 Monitor 地址。失败者重试，看到正在膨胀的线程等待转换完成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这一步最重要的不是“换一个地址”，而是不能丢掉原持有者。假如 A 已经持锁，B 触发膨胀，不代表 B 顺便获得了锁；A 的持有关系必须保留。临时状态也协调 A 同时解锁的竞争，避免对象头尚未迁完就恢复或被复用。新轻量锁路径使用自己的锁栈与发布协议，不照搬这个 INFLATING 流程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "膨胀之后，竞争线程仍可先尝试获取和自旋，再进入竞争队列并停放，醒来还要重新竞争。因此“重量级”不等于每次获取都立即发生系统调用，更不代表公平交接。需要阻塞时，才承担停放、唤醒和调度成本；短临界区和长时间 RPC 放在同一把锁里，表现会很不一样。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Object.wait 需要监视器的等待集合，也可能触发膨胀。竞争队列是等拿锁，等待集合是已调用 wait、释放锁后等条件；notify 不会立刻把锁交给被通知者。业务仍须在循环中重查条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“只能升级不能降级”也不能说成终身规则。该实现能在监视器空闲、没有持有者或等待者等条件满足时异步收缩，解除对象与 Monitor 的关联；这不是有竞争时随意降级，也不是每次退出同步块立即收缩。"
+        },
+        {
+          "type": "paragraph",
+          "text": "从系统设计角度，我会先看锁保护的业务不变量，再看临界区耗时、热点对象和阻塞证据。优先把不必受保护的计算或远程调用移出临界区，必要时拆分无关资源的锁；不能为了减少膨胀就移除同步，或把一次 CAS 失败当作已经阻塞的证据。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Java 锁为什么能跨操作系统"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 规范定义语义，HotSpot 等 JVM 的公共运行时、操作系统适配层和 CPU 后端共同把它实现出来；“字节码可移植”只解释了一部分。监视器和停放可由不同平台机制实现，CAS 常由 JIT 内建映射为原子指令或序列，不必每次走 JNI 或系统调用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象头布局随 VM、架构、压缩指针和锁实现变化，不能把 hash、owner、重入计数和完整等待队列都画成同时放在一个固定宽度对象头里。旧偏向锁在顺序交接所有权时也可能产生撤销成本，不必先有很多线程同时抢锁；锁消除和粗化是编译优化，与某次运行中的锁状态转换不同。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "21 高频追问的最后一层"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-explicit-locks",
+      "order": 407,
+      "question": "ReentrantLock 什么时候更合适？",
+      "shortAnswer": "需要可中断获取、定时尝试、多条件队列或可选公平策略时，ReentrantLock 比 synchronized 提供更多显式控制。简单互斥可以优先选择更容易维护的结构，两者性能没有跨版本通用的胜者。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "需要可中断获取、定时尝试、多条件队列或可选公平策略时，ReentrantLock 比 synchronized 提供更多显式控制。简单互斥可以优先选择更容易维护的结构，两者性能没有跨版本通用的胜者。"
+        },
+        {
+          "type": "paragraph",
+          "text": "成功获取锁之后再进入 try/finally，finally 中 unlock。lockInterruptibly 在获取阶段抛异常时并没有得到锁，不能无条件解锁；tryLock 返回 false 也一样。lock 本身不会以 InterruptedException 终止获取，选择哪个方法属于取消契约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "默认非公平锁允许新到线程在队列等待者之前尝试获得空闲锁。改成公平策略，通常会照顾排队更久的线程，但要区分“谁有资格获取锁”和“谁先完成业务”：操作系统调度不由这把锁保证，获取锁后的工作耗时也可能不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "还有 API 这一层条件。即使构造为公平锁，无参数 tryLock 仍可直接争抢；带期限的 tryLock 才有相应公平行为。如果题目要求三个角色严格打印 ABC，公平锁仍然不够，必须把当前轮到谁写进业务状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "悲观锁先取得互斥再访问共享状态，例如 synchronized 和 ReentrantLock；乐观方案先读取并计算，提交时用版本或 CAS 验证，冲突就重算或失败。冲突少、重试计算便宜时乐观方案可能减少阻塞，竞争激烈、临界区复杂或存在不可重复副作用时，重试成本可能更大，应选择明确的锁或事务协议。synchronized 内部快速路径即使用 CAS，业务契约仍是悲观互斥；乐观也不意味着无锁算法必然无等待或每个线程都不会饥饿。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-aqs-condition",
+      "order": 419,
+      "question": "AQS 的 state 等待队列和 Condition？",
+      "shortAnswer": "AQS 是构造锁和同步器的框架，子类定义同步状态的意义与取得释放规则，框架组织竞争失败后的入队、重试、停放、唤醒与取消。它不是一把具体的锁，也不能只概括成“CAS 加双向链表”。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "AQS 是构造锁和同步器的框架，子类定义同步状态的意义与取得释放规则，框架组织竞争失败后的入队、重试、停放、唤醒与取消。它不是一把具体的锁，也不能只概括成“CAS 加双向链表”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "独占模式一次由一个持有者取得资源；共享模式允许多个获取者根据状态继续推进。ReentrantLock 的 state 表示重入层数，CountDownLatch 表示剩余次数，Semaphore 表示可用许可。state 大于一在可重入锁中并不表示持有多把不同的锁。检查 owner、改变 state 和发布解锁必须构成完整协议，给一个计数器加 volatile 远远不够。"
+        },
+        {
+          "type": "paragraph",
+          "text": "自己实现可重入锁时，先追踪一个线程的持有过程。锁空闲，A 把 owner 设为自己、holdCount 设为 1；A 再进一次，计数加一；B 看到 owner 仍是 A，只能循环等待。A 每次 unlock 都先验证自己确实是 owner，再减一次计数。只有减到 0，才能清除 owner 并通知竞争者。检查计数溢出也属于这个协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果用监视器写最小教学实现，上述状态读写全部放在同一个 synchronized 保护区，等待用 while 加 wait，holdCount 用普通 int 即可。若改用 AQS，则必须遵循它的 volatile state、CAS 与释放协议。两种实现都要保护完整不变量，不能从一边摘一个 volatile 字段、从另一边摘一段等待代码，拼成看似可用的锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "典型过程是先尝试获取，失败后把等待节点加入同步队列；在适当条件下重试，不满足则 park。释放到资源可用时推进可用后继；共享获取成功还可能传播推进。取消、超时节点需要跳过或清理，不能机械背“永远唤醒物理上的第一个节点”。FIFO 队列并不自动禁止新线程插队，公平性来自具体获取规则。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Condition 的两次等待要分清。消费者持锁发现队列为空，调用 await，先保存并完全释放相关独占状态，去条件等待队列等“有元素”这个条件。生产者放入元素后 signal，消费者只是转入锁竞争；它重新拿到锁，恢复相应持有层数以后，才从 await 继续。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此条件等待队列和同步队列不是同一个地方，signal 也不是直接移交锁。消费者继续后仍须用 while 重查条件。ReentrantLock 可以建多个 Condition，把 notEmpty 与 notFull 分开，减少对不相关角色的唤醒。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-juc/aqs-condition.png",
+          "alt": "AQS 同步竞争队列与 Condition 等待队列：await 完整释放锁，signal 转移等待者，重新获取后才返回并循环检查业务条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/LockLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.io.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.concurrent.locks.*;\n\npublic final class LockLab {\n    /** Deliberately non-reentrant teaching mutex, not a general ReentrantLock replacement. */\n    static final class Mutex implements Lock, Serializable {\n        private static final class Sync extends AbstractQueuedSynchronizer {\n            protected boolean tryAcquire(int ignored) {\n                if (compareAndSetState(0, 1)) {\n                    setExclusiveOwnerThread(Thread.currentThread()); return true;\n                }\n                return false;\n            }\n            protected boolean tryRelease(int ignored) {\n                if (!isHeldExclusively()) throw new IllegalMonitorStateException();\n                setExclusiveOwnerThread(null); setState(0); return true;\n            }\n            protected boolean isHeldExclusively() {\n                return getState() == 1 && getExclusiveOwnerThread() == Thread.currentThread();\n            }\n            Condition condition() { return new ConditionObject(); }\n            private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {\n                in.defaultReadObject(); setState(0); // A deserialized mutex is unlocked.\n            }\n        }\n        private final Sync sync = new Sync();\n        public void lock() { sync.acquire(1); }\n        public void lockInterruptibly() throws InterruptedException { sync.acquireInterruptibly(1); }\n        public boolean tryLock() { return sync.tryAcquire(1); }\n        public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {\n            return sync.tryAcquireNanos(1, unit.toNanos(time));\n        }\n        public void unlock() { sync.release(1); }\n        public Condition newCondition() { return sync.condition(); }\n    }\n    static final class Point {\n        private final StampedLock lock = new StampedLock();\n        private double x, y;\n        void move(double dx, double dy) {\n            long stamp = lock.writeLock();\n            try { x += dx; y += dy; }\n            finally { lock.unlockWrite(stamp); }\n        }\n        double distance() {\n            long stamp = lock.tryOptimisticRead();\n            double a = x, b = y;\n            if (!lock.validate(stamp)) {\n                stamp = lock.readLock();\n                try { a = x; b = y; }\n                finally { lock.unlockRead(stamp); }\n            }\n            return Math.hypot(a, b); // Only use the validated local snapshot.\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        Mutex mutex = new Mutex(); Condition ready = mutex.newCondition();\n        boolean[] available = {false};\n        CountDownLatch waiting = new CountDownLatch(1);\n        AtomicReference<Throwable> failure = new AtomicReference<>();\n        Thread consumer = Checks.thread(\"condition-consumer\", failure, () -> {\n            try {\n                mutex.lockInterruptibly();\n                try {\n                    waiting.countDown();\n                    while (!available[0]) ready.await();\n                } finally { mutex.unlock(); }\n            } catch (InterruptedException e) { throw new AssertionError(e); }\n        });\n        consumer.start(); Checks.await(waiting);\n        mutex.lock();\n        try { available[0] = true; ready.signal(); }\n        finally { mutex.unlock(); }\n        Checks.join(consumer); Checks.rethrow(failure);\n        try { mutex.unlock(); throw new AssertionError(\"non-owner unlock accepted\"); }\n        catch (IllegalMonitorStateException expected) { }\n        mutex.lock();\n        CountDownLatch entered = new CountDownLatch(1);\n        AtomicBoolean interrupted = new AtomicBoolean();\n        Thread blocked = Checks.thread(\"interruptible-lock\", failure, () -> {\n            entered.countDown();\n            try { mutex.lockInterruptibly(); try { throw new AssertionError(\"acquired\"); }\n                finally { mutex.unlock(); } }\n            catch (InterruptedException expected) { interrupted.set(true); }\n        });\n        try { blocked.start(); Checks.await(entered); blocked.interrupt(); Checks.join(blocked); }\n        finally { mutex.unlock(); }\n        Checks.that(interrupted.get(), \"interruptible acquisition\"); Checks.rethrow(failure);\n        Point point = new Point(); point.move(3, 4);\n        Checks.that(point.distance() == 5, \"validated snapshot\");\n        AtomicBoolean parkFlag = new AtomicBoolean();\n        Thread parked = Checks.thread(\"park-interrupt\", failure, () -> {\n            Thread.currentThread().interrupt();\n            LockSupport.park();\n            parkFlag.set(Thread.currentThread().isInterrupted());\n            Thread.interrupted();\n        });\n        parked.start(); Checks.join(parked); Checks.rethrow(failure);\n        Checks.that(parkFlag.get(), \"park returns without clearing interruption\");\n        System.out.println(\"LockLab OK\");\n    }\n}\n",
+          "label": "code/LockLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-synchronizer-choice",
+      "order": 549,
+      "question": "门闩 屏障 信号量与 Phaser 怎样选？",
+      "shortAnswer": "CountDownLatch 表达一次性的完成事件，CyclicBarrier 表达固定参与者的分代会合，Semaphore 表达可消耗许可，Phaser 适合参与者可动态注册退出的多阶段协作。先区分业务事件与资源数量，再选择工具。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "5 同步工具和读写访问"
+        },
+        {
+          "type": "paragraph",
+          "text": "CountDownLatch 表达一次性的完成事件，CyclicBarrier 表达固定参与者的分代会合，Semaphore 表达可消耗许可，Phaser 适合参与者可动态注册退出的多阶段协作。先区分业务事件与资源数量，再选择工具。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先问“等结束还是等成功”。Latch 计数到零后永久打开，不能 reset。把 countDown 放在 finally，可以确保任务失败也发出“已结束”的事件，却不能证明所有任务成功；需要成功结果时，要另存失败或收集 Future。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再把题目改成“同一组人一轮轮会合”，才轮到 CyclicBarrier。最后一位到达者推进一代，并可执行 barrier action；某位等待者中断、超时或屏障动作失败，会影响这一代，其余参与者也应按失败协议退出。恢复由统一拥有者负责，各线程自行 reset 可能让新旧两代混在一起。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Semaphore 允许一个线程获取、另一个线程按协议归还，它不检查持有者身份；因此只能在确实获得许可后 release，不能因异常发生就无条件增加许可。公平许可也不是绝对完成顺序。信号量控制并发占用，不等同于每秒请求限流；每秒速率要用时间窗口、令牌桶等另一个维度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Phaser 的 arrive 不等于等到本阶段结束；注册数、未到达数和 deregister 必须匹配。参与者失败时要决定注销还是 forceTermination，否则其余人可能永远等一个不存在的到达。Exchanger 适合两个角色交换数据，但仍要给缺少对手的情形设置期限和取消。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-read-write-locks",
+      "order": 561,
+      "question": "读写锁怎样使用和降级？",
+      "shortAnswer": "读写锁允许符合规则的读者并发，写者独占，适合读临界区足够有分量且写相对少的共享状态；读多写少只是候选条件，不保证比互斥锁更快。协调计数、缓存一致性和公平策略本身也有成本。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "读写锁允许符合规则的读者并发，写者独占，适合读临界区足够有分量且写相对少的共享状态；读多写少只是候选条件，不保证比互斥锁更快。协调计数、缓存一致性和公平策略本身也有成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所有读写必须遵循同一把读写锁。get 后再 put 不是原子 putIfAbsent；读锁下发现缺失，应先释放读锁，再获取写锁并重新检查。ReentrantReadWriteLock 不支持持读锁直接升级写锁，因为写者需要包括自己在内的读者全部退出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "降级则可以：持有写锁，取得读锁，再释放写锁，最后在读锁保护下使用刚更新的状态。这保持了连续保护，没有给别的写者插入的空隙。返回快照应防止调用方绕过锁修改内部状态，复制外部输入时也必须要求输入在复制期间稳定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ReadMostlyCache.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.concurrent.locks.ReentrantReadWriteLock;\n\n/** Immutable String values do not expose mutable internals after unlocking. */\npublic final class ReadMostlyCache {\n    private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock(true);\n    private final Map<String, String> data = new HashMap<>();\n    public String get(String key) throws InterruptedException {\n        rw.readLock().lockInterruptibly();\n        try { return data.get(key); }\n        finally { rw.readLock().unlock(); }\n    }\n    public void put(String key, String value) throws InterruptedException {\n        Objects.requireNonNull(key); Objects.requireNonNull(value);\n        rw.writeLock().lockInterruptibly();\n        try { data.put(key, value); }\n        finally { rw.writeLock().unlock(); }\n    }\n    public String putIfAbsent(String key, String candidate) throws InterruptedException {\n        Objects.requireNonNull(key); Objects.requireNonNull(candidate);\n        rw.readLock().lockInterruptibly();\n        try {\n            String existing = data.get(key);\n            if (existing != null) return existing;\n        } finally { rw.readLock().unlock(); } // Release read lock BEFORE requesting write.\n        rw.writeLock().lockInterruptibly();\n        try {\n            // Another writer may have won in the gap. Recheck under write lock.\n            String existing = data.get(key);\n            if (existing == null) { data.put(key, candidate); existing = candidate; }\n            return existing;\n        } finally { rw.writeLock().unlock(); }\n    }\n    public Map<String, String> replaceAndSnapshot(Map<String, String> next)\n            throws InterruptedException {\n        Map<String, String> copy = new HashMap<>(next); // Caller must not mutate next concurrently.\n        rw.writeLock().lockInterruptibly();\n        try {\n            data.clear(); data.putAll(copy);\n            // Downgrade: acquire read before releasing write, leaving no writer gap.\n            rw.readLock().lock();\n        } finally { rw.writeLock().unlock(); }\n        try { return new HashMap<>(data); }\n        finally { rw.readLock().unlock(); }\n    }\n}\n",
+          "label": "code/ReadMostlyCache.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-stamped-lock",
+      "order": 622,
+      "question": "StampedLock 的乐观读为什么必须验证？",
+      "shortAnswer": "StampedLock 的乐观读先取得戳并把需要的字段读入局部变量，再 validate；验证失败就转为真正的读锁重新读取。乐观读不是读锁，它允许与写者同时发生，不能在验证之前把不一致状态用于外部副作用。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "StampedLock 的乐观读先取得戳并把需要的字段读入局部变量，再 validate；验证失败就转为真正的读锁重新读取。乐观读不是读锁，它允许与写者同时发生，不能在验证之前把不一致状态用于外部副作用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如坐标 x、y 要来自同一次写入，就先拿乐观戳，读出局部 x、y，验证成功才计算对外结果。字段之间有结构不变量时，乐观读取期间可能看到中间结构，访问链表或数组下标需要格外防御；验证不是让已经发生的越界、空指针或远程调用自动撤销。"
+        },
+        {
+          "type": "paragraph",
+          "text": "StampedLock 不可重入，不应在持有它时调用可能再次获取同一锁的未知方法。戳是获取凭证，正确类型的 unlock 需要对应戳；转换方法可能返回零，必须处理转换失败。它没有 ReentrantLock 的 Condition 模型，不能因为“更现代”就替换所有锁。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-cas-progress",
+      "order": 632,
+      "question": "CAS ABA 和进展保证？",
+      "shortAnswer": "CAS 原子地比较当前位置是否等于预期值，相等才替换为新值；重试循环是上层算法的选择，不是 CAS 定义中必然存在的一步。单次 CAS 成功只说明当前匹配，不说明期间从未发生过变化。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "6 CAS 原子类与热点争用"
+        },
+        {
+          "type": "paragraph",
+          "text": "CAS 原子地比较当前位置是否等于预期值，相等才替换为新值；重试循环是上层算法的选择，不是 CAS 定义中必然存在的一步。单次 CAS 成功只说明当前匹配，不说明期间从未发生过变化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ABA 指值从 A 变成 B 又变回 A，基于旧历史作出的决定可能错误地通过比较。需要区分历史时，可把引用和版本戳一起比较，例如 AtomicStampedReference；读出引用与戳也应作为一致二元组。版本回绕、对象复用和内存回收仍要符合自己的协议，给任意指针加个整数并不自动解决全部问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CAS 可以通过运行时内建映射到平台原子指令或相应序列，x86 的某条指令不代表所有 CPU。CAS 成功的内存语义取决于具体 API 和访问模式。高争用时失败重算可能浪费 CPU，复杂不变量或很长临界区常更适合阻塞锁；有限重试要定义失败结果，而不是循环到资源耗尽。"
+        },
+        {
+          "type": "paragraph",
+          "text": "lock-free 关注系统整体能够前进，wait-free 要求每个操作在有界步骤内完成，二者不同。用 CAS 写一个自旋锁后，持有者被暂停仍可让其他人一直等待，因此“里面用了 CAS”不等于整个算法 lock-free。Thread.onSpinWait 只是提示，不建立顺序或公平性。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-atomics-contention",
+      "order": 642,
+      "question": "AtomicLong LongAdder 与伪共享？",
+      "shortAnswer": "先看计数要拿来做什么。发一个不重复的序号、判断库存够不够再扣减，需要适合的线性化原子更新；只累计高并发下的统计量，可以考虑 LongAdder。并发的 LongAdder.sum 并非所有计数单元同一时刻的原子快照，所以不能直接把它当作硬限额的判断依据。",
+      "commonPhrasings": [
+        "LongAdder 为什么能降低热点竞争？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先看计数要拿来做什么。发一个不重复的序号、判断库存够不够再扣减，需要适合的线性化原子更新；只累计高并发下的统计量，可以考虑 LongAdder。并发的 LongAdder.sum 并非所有计数单元同一时刻的原子快照，所以不能直接把它当作硬限额的判断依据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "AtomicInteger.incrementAndGet 返回新值，getAndIncrement 返回旧值；先 get 再 set 仍是两个操作。updateAndGet 的函数可能因冲突被重复执行，应保持无副作用。AtomicReference 原子的是根引用，不是引用对象的任意字段；AtomicIntegerArray 原子的是单个元素，不是整组数组事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "LongAdder 通常把竞争分散到 base 和多个 Cell，再在 sum 时汇总，增加了存储与求和成本。无并发更新的静止点可得到精确总量；reset、sumThenReset 与并发写混用不能当成无损切分统计窗口的协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "伪共享是不同线程改动不同变量，但这些变量落在相同缓存行，产生不必要的一致性争用。逻辑无共享不代表硬件不争用。分散计数、减少写频率和适当布局可能有帮助，缓存行宽度、对象布局和 @Contended 的可用性都依平台和运行时，不能用手填若干 long 就宣称稳定对齐。性能判断用隔离基准，避免把正确性断言运行时间当吞吐结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/AtomicsLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.lang.invoke.*;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class AtomicsLab {\n    static final class Inventory {\n        private final AtomicInteger stock;\n        Inventory(int initial) { if (initial < 0) throw new IllegalArgumentException(); stock = new AtomicInteger(initial); }\n        boolean reserve(int amount) {\n            if (amount <= 0) throw new IllegalArgumentException();\n            for (;;) {\n                int old = stock.get();\n                if (old < amount) return false;\n                if (stock.compareAndSet(old, old - amount)) return true;\n            }\n        }\n    }\n    /** Exactly one producer and one consumer; no null values, no MPMC promise. */\n    static final class SpscSlot<E> {\n        private Object value;\n        private volatile boolean full;\n        private static final VarHandle FULL;\n        static {\n            try { FULL = MethodHandles.lookup().findVarHandle(SpscSlot.class, \"full\", boolean.class); }\n            catch (ReflectiveOperationException e) { throw new ExceptionInInitializerError(e); }\n        }\n        boolean offer(E item) {\n            Objects.requireNonNull(item);\n            if ((boolean) FULL.getAcquire(this)) return false;\n            value = item;\n            FULL.setRelease(this, true);\n            return true;\n        }\n        @SuppressWarnings(\"unchecked\") E poll() {\n            if (!(boolean) FULL.getAcquire(this)) return null;\n            E result = (E) value;\n            value = null;\n            FULL.setRelease(this, false);\n            return result;\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        Object a = new Object(), b = new Object();\n        AtomicReference<Object> ordinary = new AtomicReference<>(a);\n        Object observed = ordinary.get(); ordinary.set(b); ordinary.set(a);\n        Checks.that(ordinary.compareAndSet(observed, b), \"identity-only CAS misses ABA\");\n        AtomicStampedReference<Object> stamped = new AtomicStampedReference<>(a, 0);\n        int[] stamp = new int[1]; Object old = stamped.get(stamp);\n        Checks.that(stamped.compareAndSet(a, b, 0, 1), \"A to B\");\n        Checks.that(stamped.compareAndSet(b, a, 1, 2), \"B to A\");\n        Checks.that(!stamped.compareAndSet(old, b, stamp[0], 3), \"stale version rejected\");\n        Inventory inventory = new Inventory(1000); LongAdder admitted = new LongAdder();\n        ExecutorService pool = Executors.newFixedThreadPool(4);\n        try {\n            List<Future<?>> jobs = new ArrayList<>();\n            for (int i = 0; i < 4; i++) jobs.add(pool.submit(() -> {\n                for (int n = 0; n < 1000; n++) if (inventory.reserve(1)) admitted.increment();\n            }));\n            for (Future<?> f : jobs) Checks.get(f);\n            Checks.that(admitted.sum() == 1000 && inventory.stock.get() == 0, \"no oversell at quiescence\");\n            SpscSlot<Integer> slot = new SpscSlot<>();\n            Future<?> producer = pool.submit(() -> {\n                for (int n = 1; n <= 10000; n++) {\n                    while (!slot.offer(n)) {\n                        if (Thread.currentThread().isInterrupted()) return;\n                        Thread.onSpinWait();\n                    }\n                }\n            });\n            Future<?> consumer = pool.submit(() -> {\n                for (int n = 1; n <= 10000; n++) {\n                    Integer value;\n                    while ((value = slot.poll()) == null) {\n                        if (Thread.currentThread().isInterrupted()) return;\n                        Thread.onSpinWait();\n                    }\n                    Checks.that(value == n, \"SPSC publication order\");\n                }\n            });\n            Checks.get(producer); Checks.get(consumer);\n            System.out.println(\"AtomicsLab OK\");\n        } finally { Checks.stop(pool); }\n    }\n}\n",
+          "label": "code/AtomicsLab.java"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "LongAdder 为什么能降低热点竞争"
+        },
+        {
+          "type": "paragraph",
+          "text": "LongAdder 的主要办法是把热点更新分散，而不是让一次全局 CAS 神奇地变快。低竞争可尝试 base，竞争后选择 Cell；线程的探测值决定初始槽位，冲突时重新散列，必要时创建或扩展单元数组。结构调整用专门的短协调状态，正常每个 Cell 的数值更新不都经过一把全局锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Cell 填充用于减轻伪共享，数组扩展有运行时策略和 CPU 数量相关约束；这些是特定实现细节而非业务接口承诺。sum 逐项读取，因此并发更新时不构成同一时刻快照；余额、唯一序号和库存条件扣减仍应选择线性化操作。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-varhandle-boundaries",
+      "order": 742,
+      "question": "VarHandle 与 Unsafe 的边界？",
+      "shortAnswer": "业务代码优先使用标准并发容器和原子类；需要精细访问模式时可研究 VarHandle，避免把内部 Unsafe 当作通用业务接口。普通访问、opaque、acquire/release、volatile 的顺序强度不同，降低强度之前必须有明确证明。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "业务代码优先使用标准并发容器和原子类；需要精细访问模式时可研究 VarHandle，避免把内部 Unsafe 当作通用业务接口。普通访问、opaque、acquire/release、volatile 的顺序强度不同，降低强度之前必须有明确证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如单生产者单消费者环形缓冲可以由生产者独占写入位置、消费者独占读取位置，用 release 发布元素完成，用 acquire 确认元素可读。把它直接扩展到多生产者会让多个写者占用同一槽位，必须重新设计预留、发布与回收协议。Disruptor 也不是“一个数组加 CAS”的同义词，还涉及序号、消费者依赖、等待策略和槽位复用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Unsafe 涉及内部偏移、原子访问、停放及本地内存等能力，受封装和版本约束。它对 Java 对象字段的操作并非都绕过 GC；只有具体手工分配的本地资源才由相应协议释放。不要在普通面试代码中反射获取内部 API 来掩盖同步设计。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

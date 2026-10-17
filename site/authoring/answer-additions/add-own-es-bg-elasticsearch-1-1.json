@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-es-bg-elasticsearch-1-1",
+  "entryId": "bg-elasticsearch-1",
+  "expectedOriginalHash": "5711d385d9deef614ac62f8d542517a9e0f92c398ded8361dfc718acd66e23fc",
+  "title": "分析器、混合语言与检索排障",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.1 一个 analyzer 怎样工作"
+    },
+    {
+      "type": "paragraph",
+      "text": "analyzer 把一段文本变成可供匹配的词元。处理顺序是：先用零个或多个 char filter 处理字符，再由一个 tokenizer 切词，最后用零个或多个 token filter 处理词元。调换顺序，得到的词项和位置关系都可能改变。"
+    },
+    {
+      "type": "paragraph",
+      "text": "char filter 处理字符流，例如移除 HTML 标签或做字符映射；tokenizer 把字符切成词元，生成词元文本、位置与偏移信息；token filter 再转小写、做宽度归一、停用词过滤或同义词扩展。词元不只是字符串数组，短语、多词同义词与高亮还依赖位置、位置长度和 offsets。"
+    },
+    {
+      "type": "paragraph",
+      "text": "索引分析器在写入时产生真实存储的词项；查询分析器在执行 match 等全文查询时产生查询词项。二者不必逐项相同，但必须兼容。例如索引保留正常词项、查询时扩展同义词很常见；若索引把 RedisCache 全部转成 rediscache，查询却坚持区分大小写，就可能漏召回。修改 search_analyzer 不会重新分词旧索引，改变索引分析策略通常需要新字段或新索引重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "term 查询面向词项，不会像 match 一样把输入当全文分析；keyword 的 normalizer 在支持的索引和查询路径上仍有归一化作用，所以“term 永远逐字节不处理”也不够准确。调试时把索引侧和查询侧分别送入 _analyze，看词项、位置、偏移和每个组件的中间输出，而不是只看原字符串。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.2 中文 英文 代码和专有名词怎样兼顾"
+    },
+    {
+      "type": "paragraph",
+      "text": "先问用户要搜自然语言、完整型号，还是代码标识符，再选分词粒度。中文二元组、词典分词、英文词干化和代码标识符解析解决的问题不同，不能期待同一条分析链同时保住所有含义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "standard 分析器不是业务中文词典。CJK bigram 能把连续中日韩词元组成相邻二元组，例如“缓存一致性”可形成“缓存、存一、一致、致性”。它能减少仅共享单字的误匹配，但不会自动知道“缓存一致性”是一个完整术语，也不自动处理简繁转换、拼音、专名别称。孤立 CJK 字符可保留为单字，是否同时输出 unigram 由过滤器参数决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "混合正文可使用 standard tokenizer，再做 cjk_width、lowercase、cjk_bigram。宽度归一能让全角英数与半角对齐，lowercase 让 ES 与 es 对齐；这条链仍不会自动把 camelCase 拆成 camel 与 case。代码搜索应保留一条 keyword 精确路径，再按需要增加标识符拆分、路径分段或 ngram 子字段。错误码 ERR_HTTP_409-v2、产品型号 A-100 与 A-100S、库名 C++，如果只走普通全文链，标点丢失或错误合并会改变含义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "中文专名、英文缩写和领域术语最好有明确的规范名与别名规则。停用词也不能照搬：自然语言里的普通词，在函数名、型号或否定句中可能是关键条件。启用前用正例、近似负例和短查询对照，检查召回和误召回。不要仅凭分出来“看起来像词”就判断效果好。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同义词适合表达已确认的词汇等价，不等于任意语义相近。ES 8.15 的 synonym_graph 用于搜索分析链，能表达多词同义词的图关系；索引期同义词会增加索引词项，修改规则后还面临重建。过滤器顺序会影响同义词规则的解析，前置停用词或产生多位置词元的组件可能让规则无效或报错。下面把英文同义词放在独立链，只演示 es 与 elasticsearch、db 与 database，避免把 CJK 二元组与复杂同义词图混在一个未经检验的配置里。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.9 面试中的排障追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "“存进去但搜不到”先固定一条文档和一个查询。查目标索引/别名与 routing，确认找的是同一份数据；查 mapping、索引侧与查询侧分析结果，确认词项能否对上；再查 ignore_above/缺值、过滤条件和 refresh，区分未索引、被排除与尚不可见。拿到这些证据后再决定修哪里，不直接重建整个集群。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“为什么换了分词器旧数据还搜不对”要说明已落盘词项没有被自动重算，需要明确重建或重新写入计划。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“同义词让召回多了就是更好吗”要同时测不该命中的型号、代码、专名和否定条件。硬资格不能靠相似度解决，别名等价也必须有业务依据。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    }
+  ],
+  "questionId": "1"
+}

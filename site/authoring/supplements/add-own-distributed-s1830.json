@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s1830",
+  "entryId": "database-93",
+  "expectedOriginalHash": "21db3f7852238853be3e5e33073e6f9e94de829c9ef8ef9032a8de22cf202e3c",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Outbox与Inbox如何关闭双写窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "把业务变化与出站义务放在同一本地事务，把消费收据与业务效果放在同一本地事务，允许重复投递而避免同一事件重复生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：先提交数据库再发MQ有什么问题；发布确认丢失怎样恢复；数据库成功但offset失败怎么办；去重记录要留多久。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库和 MQ 分两步写，无论先后都可能留下空档。先提交订单再发消息，进程中途退出，会有订单没消息；先发消息再提交，数据库若回滚，又会有消息没订单。"
+    },
+    {
+      "type": "paragraph",
+      "text": "try/catch 只处理程序实际走到的异常，afterCommit 也挡不住提交后的硬退出。所以需要持久记录“必须发送”的义务，不能只留一段准备执行的回调。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是MySQL 8.4/InnoDB风格的最小表结构，业务表另行定义。它展示唯一约束和索引，不是完整生产迁移脚本；租户命名空间、租约列、重试和归档策略需按部署补齐。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "006/fence-006.sql",
+      "value": "CREATE TABLE s6_request (\n  request_id VARCHAR(64) PRIMARY KEY,\n  payload_hash CHAR(64) NOT NULL,\n  order_id BIGINT NULL,\n  result_json JSON NULL\n) ENGINE=InnoDB;\nCREATE TABLE s6_outbox (\n  event_id VARCHAR(64) PRIMARY KEY,\n  aggregate_id BIGINT NOT NULL,\n  aggregate_version BIGINT NOT NULL,\n  event_type VARCHAR(40) NOT NULL,\n  payload JSON NOT NULL,\n  created_at DATETIME(6) NOT NULL,\n  sent_at DATETIME(6) NULL,\n  UNIQUE KEY uk_event (aggregate_id,aggregate_version,event_type),\n  KEY ix_pending (sent_at,created_at,event_id)\n) ENGINE=InnoDB;\nCREATE TABLE s6_inbox (\n  consumer_name VARCHAR(64) NOT NULL,\n  event_id VARCHAR(64) NOT NULL,\n  handled_at DATETIME(6) NOT NULL,\n  PRIMARY KEY (consumer_name,event_id)\n) ENGINE=InnoDB;\n\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产事务依次登记request_id，校验并修改业务表，插入唯一event_id的outbox，保存稳定响应后提交。请求占位、订单和结果必须同事务完成，不能提前提交空占位后永久阻塞重试。同request_id同规范化参数返回已有结果，不同参数报冲突；payload摘要需包含租户、主体、金额、数量和语义版本等真正决定效果的字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Relay 的成功点，是收到符合可靠性合同的 Broker 确认后再标已发。它可通过轮询或 CDC 取待发事件；如果发布已成功、标记前却退出，恢复时重发同 event_id，这是协议允许的重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多 Relay 可以按租约领取，但还要处理租约过期和旧回包，用条件更新保护状态。领取成功不等于发布成功，事件保留期与最老待发年龄也要可观察。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费去重要和业务效果一起提交。消费者开启本地事务，插入 (consumer_name, event_id) 收据，更新业务，提交后才 ACK 或推进消费进度；业务失败时，收据也回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有确认属于唯一键冲突，才能认定已处理。磁盘满、SQL 错误、提交未知都不能吞成重复。先 Redis SETNX 再 MySQL 扣款，会留下标记已写、效果未发生的崩溃窗口，反而永久挡住重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "逐个画失败窗口：生产提交前重试同请求；生产提交后未发靠待办补发；Broker已收但确认或标记丢失重发同事件；消费者提交前全部回滚；消费者提交后ACK丢失，重投命中同事务收据。这套协议保障的是本地一次业务效果，不是网络物理只传一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "event_id 判断是不是同一件事，实体 version 判断事实新旧，两个字段不能互换。版本 8 的完整快照可以覆盖更旧状态；但增量事件缺了 9、先来了 10，不能顺手把 9 永远丢掉，应补齐、缓冲或从权威快照重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使多个发布者把同 key 都发进同一分区，也不自动证明业务版本按顺序到达。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重保留期必须覆盖最长重试、回放和灾备恢复窗口。上游能回放七天，下游只保留一天收据，旧事件会再次生效；无限历史重放需永久业务唯一约束、版本语义或隔离重建策略。外部支付、邮件或文件发布不在本地事务内，仍需目的端幂等与结果查询。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka事务可以协调特定Kafka输入位移与输出消息，却不会自动提交或回滚外部MySQL。端到端保证最终依赖恢复器继续工作、必要记录尚未过期以及故障可解除；永久业务错误应形成可查询失败或待人工处理，而不承诺永远自动成功。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

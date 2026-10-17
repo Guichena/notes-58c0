@@ -1,0 +1,38 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">为什么 MySQL InnoDB 常用 B+Tree 索引？聚簇索引和二级索引有什么区别？什么是回表？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这是 MySQL 索引面试必考。很多慢 SQL、深度分页、覆盖索引问题都建立在这道题之上。</p>
+<p class="md-p">InnoDB 表按主键组织数据，主键索引的叶子节点存整行数据，因此叫聚簇索引。二级索引叶子节点不存整行，而是存索引列和主键值；如果查询列不在二级索引中，需要拿主键再查聚簇索引，这就是回表。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>B+Tree 多路平衡树，树高低，适合磁盘页读取。</li><li>B+Tree 叶子节点有序，适合范围查询和排序。</li><li>聚簇索引：叶子节点存整行数据。</li><li>二级索引：叶子节点存主键值。</li><li>回表：通过二级索引找到主键后，再查主键索引取完整行。</li><li>覆盖索引：查询列都在二级索引中，不需要回表。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">InnoDB 使用 B+Tree 的原因：</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>树高低，查找一次通常只需要少量页 IO。</li><li>非叶子节点只存 key 和指针，能容纳更多 key。</li><li>叶子节点有序并通过链表连接，范围查询高效。</li><li>等值、范围、排序都能较好支持。</li></ol></div>
+<p class="md-p">聚簇索引和二级索引：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="text">PRIMARY KEY(id) 的叶子节点：id + 整行数据
+idx_user_id(user_id) 的叶子节点：user_id + 主键 id</pre></div></section>
+<p class="md-p">查询：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT amount
+FROM orders
+WHERE user_id = 100;</pre></div></section>
+<p class="md-p">如果只有索引 <code class="tok-inline">idx_user_id(user_id)</code>，执行过程是：</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>在 <code class="tok-inline">idx_user_id</code> 上找到 user_id=100 的主键 id。</li><li>用 id 回到主键索引查整行。</li><li>取出 amount。</li></ol></div>
+<p class="md-p">这一步 2 就是回表。</p>
+<p class="md-p">如果建立覆盖索引：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE INDEX idx_user_amount
+ON orders(user_id, amount);</pre></div></section>
+<p class="md-p">查询 <code class="tok-inline">user_id, amount</code> 时二级索引已经包含所需列，就不需要回表。</p><p class="md-p">覆盖索引是执行计划性质；InnoDB 的 MVCC 可见性检查等情况下仍可能访问聚簇记录，不能把 Using index 当成物理零回表证明。页缓存命中时树层数也不等于磁盘 I/O 次数。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：为什么主键建议短且递增？</strong></p>
+<p class="md-p">问题分析：主键是聚簇索引，所有二级索引叶子节点也保存主键。</p>
+<p class="md-p">知识点：索引空间、页分裂。</p>
+<p class="md-p">答案：短主键能减少所有索引体积；递增主键减少随机插入和页分裂。随机 UUID v4 常导致随机写；有序 UUID 需分别讨论布局、存储大小和热点。</p>
+<p class="md-p"><strong>变体 2：没有主键会怎样？</strong></p>
+<p class="md-p">问题分析：InnoDB 必须有聚簇索引。</p>
+<p class="md-p">知识点：隐藏 row_id。</p>
+<p class="md-p">答案：如果没有显式主键，InnoDB 会选择唯一非空索引；如果也没有，会生成隐藏 row_id。工程上应显式定义主键。</p>
+<p class="md-p"><strong>变体 3：覆盖索引是不是越多越好？</strong></p>
+<p class="md-p">问题分析：索引能加速读，但会拖慢写。</p>
+<p class="md-p">知识点：写放大、存储成本。</p>
+<p class="md-p">答案：不是。索引会占空间，插入/更新/删除都要维护。只为高频、核心查询设计覆盖索引。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

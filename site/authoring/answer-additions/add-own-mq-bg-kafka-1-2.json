@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-kafka-1-2",
+  "entryId": "bg-kafka-1",
+  "expectedOriginalHash": "bf9020dc82343fa6520961ebd5bbc3ba52c835b1c2d8b6ac42305d98e255b220",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Segment 如何切分，稀疏索引查什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "Leader 为追加记录确定分区位置，副本保留相同日志位置。活动 segment 接收追加，达到大小、时间或索引边界等滚动条件后产生新 segment。文件名中的 base offset 用来定位区间，日志文件保存实际批次，offset index 保存相对 base offset 的位置与物理地址映射，time index 辅助按时间定位；事务索引还有自己的用途。不能用“一分区一个文件”概括长期运行的日志。"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设某段 base offset 为 1000，要查 offset=1150："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "先定位包含 1150 的 segment。",
+        "再找不超过目标的稀疏索引近邻，例如索引保存了 1000、1100、1200 附近的文件地址，就从 1100 附近开始。",
+        "从这个物理地址继续扫描日志批次，直到目标位置。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "1150 是逻辑位置，不能直接当字节地址。压缩批次也是读取、解码边界之一，索引项未必对应一条独立未压缩消息。Kafka 4.0.0 的 LogSegment.translateOffset 先调用 OffsetIndex.lookup，再到 FileRecords 查找，可用来观察这两层坐标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "稀疏索引节省空间，代价是查找后还要扫描；更密的索引缩短扫描但增加索引大小、更新和缓存压力。整体代价包含 segment 定位、索引查找和扫描，不是无条件 O(1)。索引损坏可依据仍存在的日志重建，日志已被保留策略删除则不能凭索引恢复正文。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-mq/figure-1.png",
+      "alt": "各分区 offset 独立且可见位置允许空洞；segment 的逻辑位置不等于字节地址。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "2"
+}

@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-noteweave",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "NoteWeave 固定提交怎样分离 Java 控制面与长任务执行面？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-noteweave",
+      "order": 4149,
+      "question": "NoteWeave 固定提交怎样分离 Java 控制面与长任务执行面？",
+      "shortAnswer": "以 c60decb1a94470e732ce54a7b3cc854410095073 为代码阅读边界，沿领取、快照、完成事务和回执说明真实职责。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "28 结合 NoteWeave 讲清 Java 控制面与长任务执行面"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 以公开代码固定提交 c60decb1a94470e732ce54a7b3cc854410095073 为例，我会沿“接入与鉴权 → Java/MySQL 业务状态 → 异步任务 → Worker 执行 → 证据/候选回交 → Host 验收 → 展示”来讲。最值得展开的是租约、冻结快照、完成回执和权威验收边界，而不是把所有模块都叫 Agent。以下是代码阅读结论，不代表个人实现经历或线上压测结果。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "技术栈和能力入口"
+        },
+        {
+          "type": "paragraph",
+          "text": "主服务声明 Java 17、Spring Boot 3.3.5，使用 Web、JDBC、Validation、Actuator、Kafka、Redis、Flyway 与 MySQL；不能据此说成 JPA/MyBatis 或 Spring Cloud。Java chat/embedding 采用官方 OpenAI SDK 客户端工厂，rerank 存在 Java HttpClient 实现，不能概括成所有 Provider 请求统一走同一个 SDK。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java/MySQL 持有业务真源，Research 与 Artifact Python Worker 执行长任务。QA/Note/Wiki 按 answer_mode 进入能力链，Artifact 依赖显式 skill_key。架构文档把覆盖所有能力的通用 Intent Router 作为目标，因此面试中不能把统一语义路由、跨能力自动拆分当作已经完成的现状。"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "label": "技术栈和能力入口",
+          "value": "浏览器 / SSE 投影\n       │ 授权请求、查询、取消\n       ▼\nJava Host ───────────► MySQL：Run、Task、审批/候选、预算、Checkpoint、Receipt\n   │                        ▲\n   │ Outbox → Kafka         │ 带 lease epoch / fencing / snapshot digest 的回交\n   ▼                        │\nResearch Worker / Artifact Worker ─► 受限模型、检索、媒体工具\n   │                                    │\n   └─ 候选与证据/产物引用 ────────────────┘\n       Host 检验后才进入业务结果；Redis 流/限流、对象存储和 ES 各司其职\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "Compose 中 MySQL 8.4、Redis 7.2、Elasticsearch 8.15.3，Kafka 使用固定 digest 的 KRaft 配置，MinIO 镜像有明确版本。此配置不是多可用区、容灾或高可用验证，不从 digest 猜 Kafka 语义版本。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "领取与续约：为什么已经拿到 taskId 还不能执行"
+        },
+        {
+          "type": "paragraph",
+          "text": "ResearchAgentTaskService 在事务内按 Run/Task 锁定并检查可运行性；领取通过条件更新增加 lease_epoch、fencing_token 和 attempt 数，记录 worker 与数据库时钟计算的到期时间。续约要求状态、worker、epoch、token 全匹配且尚未过期。旧 Worker 即使网络恢复，也不能凭旧 taskId 当现任执行者。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ResearchAgentPermitService 还校验权威快照摘要、角色工具白名单与运行状态，再申请 Provider 配额。工具身份来自角色能力表，不让 Worker 自称“我是管理员”。同 task/lease/tool 的授权记录可幂等回放，新 lease 有新记录，避免重领抹掉之前已授权的预算消耗。该授权回执证明可进入特定能力，不证明远端工具已完成。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完成事务：证据、候选、预算为何一起提交"
+        },
+        {
+          "type": "paragraph",
+          "text": "先看入口与事务各负责什么。ResearchAgentCompletionService 做规范化 envelope/digest 校验和已存在 receipt 的回放，再把实际写入委托给独立事务组件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ResearchAgentCompletionCommitter 在事务内按 Run → Task → completion/execution → reservation → cells → child keys 的顺序加锁，重新读取权威条件，验证证据来源和候选。随后保存 execution/completion、规范化 receipt、证据与候选，再执行合并 CAS 和预算结算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，同一份提交可以解析为同一回执，冲突提交不能覆盖已确定的历史。解释代码时，把“回查已提交事实”和“获得资格提交新结果”分开，才能接住旧 Worker 回来或 HTTP 响应丢失的追问。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这解决的是“Host 已提交，HTTP 响应丢失后可回查/回放”的窗口，不是把所有外部模型调用变成 exactly-once。对已执行但无法查询的外部写操作，仍需要第 8 节的 UNKNOWN 与人工对账边界。@Transactional 只覆盖参加该事务的数据库修改，不能替 Kafka、MinIO 或模型服务提交。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Checkpoint、恢复与功能门禁"
+        },
+        {
+          "type": "paragraph",
+          "text": "Checkpoint 保存 sequence、wave/round、plan revision、entity set version、ledger hash 和 task/candidate/merge 高水位；追加时拒绝水位倒退。恢复关注业务事实和可验证快照，而非 Python/JVM 的栈帧。"
+        },
+        {
+          "type": "paragraph",
+          "text": "代码区分 AUTO、HYDRATE_REQUIRED、CONTEXT_RESTART，记录实际选择与原因；要求 hydration 的请求不能静默退回从头思考，hydration-only 数据也不能假装支持 context restart。需要校验快照 schema、大小、摘要和账本一致性，再决定哪些任务重开。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Run 捕获功能开关，执行时还受当前开关约束，便于停用能力而不篡改历史。并非所有角色默认可调度：DEEP_CELL、COUNTERFACTUAL 与受门禁的审计、综合、广域发现角色不同，Verifier 还有内部角色边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Context V2 必须分三层说：application.yml 的未注入变量兜底是 shadow=false、active=false、mode=OFF；仓库根 Compose 提供的缺省环境值是 true、true、ACTIVE，.env.example 也写 true、true、ACTIVE。Research/Artifact 的专用 active 开关是另外两项；实际部署是否覆写环境变量，没有运行证据便未知。不能用任一文件代表所有环境的“默认关闭”或“默认全启用”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "终态不能只有成功和失败"
+        },
+        {
+          "type": "paragraph",
+          "text": "研究 Run 的业务结论区分 COMPLETED_VERIFIED、COMPLETED_WITH_LIMITATIONS、INSUFFICIENT_EVIDENCE、INFRASTRUCTURE_FAILURE。证据不足是诚实业务结果，不应都混成基础设施失败；有已验证结论时，后续基础设施异常仍保留原因。冲突、冲突修复耗尽与证据缺失也分开记录。终止策略先检查取消、deadline 和预算，再看允许修复的缺口，防止无限补证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Artifact 也体现 Host/Worker 分工：Worker 返回候选，Host 检查可见性、Memory revision、材料引用等，再完成 CAS、不可变版本与回执。工具进程退出码为零，不等于最终产物已通过业务发布条件。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "SSE、Outbox 和本地文件各自的边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "聊天入口有独立取消接口；事件读取考虑 after 与 Last-Event-ID、权限、持久事件和终态快照。Redis 实时桥使用 Streams，以序号构造流 ID，并设置长度和 TTL。这不是 Redis Pub/Sub，也不能直接称为全量 AG-UI 兼容实现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Outbox 将业务修改与待发送意图放在同一数据库事务；投递成功而标记发送失败，仍可能重复投递，所以消费者需要幂等。独立 Worker 的本地文件 store 即使使用 flush/fsync、原子替换和文件租约，也只证明对应文件系统上的行为，不自动具备跨主机一致性和 HA。Redis 限流的 fail-closed 与本地降级配置也应明确：允许降级通常意味着改变全局配额保证，不能只把它宣传成可用性优化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "项目追问怎样答？ 先说明自己真正做过哪一层；如果这里只完成代码阅读，就讲已定位的类、事务与失败窗口，并提出测试方案。个人职责、生产采用、性能提升、制造场景落地没有证据时，不填上看似漂亮的数字。单机教学测试、仓库里的测试文件、CI 声明和真实生产运行是四类不同证据。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-es-reading-guide",
+  "kind": "doc",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "Elasticsearch",
+  "title": "Elasticsearch 手册：检索链路与版本边界",
+  "sections": [
+    {
+      "id": "section-es-guide-1",
+      "title": "先把搜索需求和系统承诺说清楚",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "回答 Elasticsearch 问题，先说清楚要查什么、结果允许多旧、失败时怎样处理，再解释索引结构与执行过程，最后说明代价和验证办法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以沿着一条业务链展开：数据怎样建模和写入，什么时候可搜索，查询怎样找到候选并排序，结果怎样跨分片合并，节点故障和数据重建怎样恢复。每一步都要落到具体条件，而不是只报组件名。"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "问“为什么用 ES”，先列出需要的检索能力、更新频率、访问控制和运维成本，再和关系库查询比较。",
+            "问“为什么结果不对”，先固定输入、分词、字段类型、过滤范围、排序规则和可见性时点，再定位链路。",
+            "问“怎样优化”，先观察瓶颈和请求分布，再比较方案；不能离开数据规模、并发和延迟目标给出万能参数。",
+            "问“项目里怎么做”，从真实代码和本人负责的范围展开，区分已经实现的机制、仍需核验的运行条件与可讨论的改进方案。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "复习时先用一句话回答，再补完整机制、一个失败场景和取舍。代码与请求示例应连同版本、输入和验证条件一起理解，不能把演示结果直接当成生产系统承诺。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-2",
+      "title": "搜索系统与 Lucene 倒排索引",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Elasticsearch 把文档预先组织成适合检索的索引，由 Lucene 完成单分片检索，再用分片、副本和协调节点扩展容量与可用性；它适合搜索投影，是否值得引入取决于查询语义、新鲜度和维护成本。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-3",
+      "title": "分析链与字段模型",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "分析器决定文本会变成哪些可匹配词项，mapping 决定字段保存哪些检索能力；先定义查询语义，再设计分析链和字段，才能避免“明明存进去了却搜不到”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本章教学请求以 Elasticsearch 8.15.3、Lucene 9.11.1 为版本基线，使用内置组件，不依赖中文分词插件。该基线用于说明具体行为，不是当前新部署的版本推荐。部署应核对真实服务的版本、支持周期和兼容说明；HTTP 示例未连接服务执行，后文说明的是应观察的语义，不是粘贴的运行结果。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-4",
+      "title": "分片布局与读写路由",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "主分片把逻辑数据分开，副本复制同一份分片数据，协调节点组织请求，master 管理集群状态。数据面写确认和控制面多数决策有不同协议，不能用一句“多数派成功”概括所有读写。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-5",
+      "title": "从 JSON 写入到搜索可见",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "写入成功说明当前写协议已经完成，search 可见还要经过 refresh；持久化、复制、可见性和业务版本必须分别解释，才能正确处理超时、重试与乱序更新。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本章以 Elasticsearch 8.15.3 的普通文档索引为教学基线。具体部署、durability、refresh、副本数与路由设置会改变失败窗口；示例 HTTP 请求没有连接集群执行。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-6",
+      "title": "查询与过滤",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "查询先决定哪些文档有资格出现，再决定合格文档如何匹配和排序。权限、租户、有效版本与时间是硬条件，相关性只是排序信号；一篇分数很高的旧文档或越权文档仍不能返回。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本章沿用 Elasticsearch 8.15.3 的教学基线。字段建模和分析链见“分析链与字段模型”，写入与可见性见“从 JSON 写入到搜索可见”。理解这两层后，DSL 才不会变成只背语法。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-7",
+      "title": "TopK 与分布式聚合",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "TopK 只返回最好的少量命中，但仍可能访问大量候选。分片局部 TopK 能精确归并为全局 TopK，前提是各片使用同一套已确定的全序、文档身份不重复且没有遗漏分片；聚合按 key 汇总时不能直接套用这个证明。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-8",
+      "title": "稳定分页与深分页",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "深分页的核心是避免每页重复收集前面所有命中；稳定分页还必须固定数据视图和完整排序边界。search_after 解决从哪里继续，PIT 解决沿着哪份搜索视图继续，二者都不自动解决当前撤权或源库同步缺口。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-9",
+      "title": "性能诊断与容量",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "性能优化必须在相同查询语义、召回质量、新鲜度和持久性目标下比较。先找到 CPU、堆、页缓存、磁盘、排队或热点中的实际瓶颈，再改变一个有解释的变量，不能靠关闭副本、漏返回结果或绕过权限制造漂亮数字。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-10",
+      "title": "扩容 迁移与恢复",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "数据增长先定位瓶颈，再选择加节点、rollover、split 或 reindex。加节点移动现有分片，rollover 改变以后写到哪里，split 按约束生成更多主分片，reindex 重建新的索引结构；没有一种操作会自动解决所有旧数据、并发新写和回滚问题。"
+        }
+      ]
+    },
+    {
+      "id": "section-es-guide-11",
+      "title": "Java 客户端与版本化向量检索",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Java API Client 把请求和响应映射成类型化对象，应用仍要负责连接生命周期、授权范围、超时预算、逐项错误和业务一致性。向量搜索也必须固定服务版本、模型与距离合同，不能把“字段里有数组”直接等同可靠语义检索。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "bg-elasticsearch-1"
+    },
+    {
+      "entryId": "bg-elasticsearch-2"
+    },
+    {
+      "entryId": "bg-elasticsearch-3"
+    },
+    {
+      "entryId": "bg-elasticsearch-4"
+    },
+    {
+      "entryId": "bg-elasticsearch-5"
+    }
+  ]
+}

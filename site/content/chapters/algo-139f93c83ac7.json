@@ -1,0 +1,485 @@
+{
+  "entries": [
+    {
+      "id": "p-heap",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "title": "堆 · 排序 · Top K · 专题",
+      "number": "专题",
+      "summary": "这个专题用堆动态维护最值，用比较排序得到全序，用选择算法在不必排完的数组里定位第 K 名。前 K 高频、第 K 大、数据流中位数、多路归并，以及手写插入、快排、归并、堆排，都是同一套结构。",
+      "recognize": [
+        "只要前 K 个或第 K 大/小，其余元素不用排成全序。",
+        "插入和查询交替（数据流中位数、数据流第 K 大），每次重排会超时。",
+        "多段序列已经各自有序，要合成一段总序。",
+        "面试点名手写某种排序，并追问稳定性、最坏时间或额外空间。",
+        "无序数组只取中位数或某一个名次。",
+        "集合持续插入删除，每次都要当前最大或最小。"
+      ],
+      "notApplicable": [
+        "要完整且稳定的排序结果时用归并或插入；快排和堆排都不稳定。",
+        "n 很小且只查一次第 K 名时，直接排序取下标更清楚；快选最坏是 O(n²)，延迟要有上界时改用大小为 K 的堆。",
+        "滑动窗口最值、下一个更大元素用单调队列或单调栈；频次上界很小的 Top K 按频次装桶，线性扫桶即可。"
+      ],
+      "templates": [
+        {
+          "name": "小顶堆维护前 K 高频",
+          "when": "元素按出现次数取前 K 个，种类数远大于 K，并列时输出顺序没有要求。",
+          "java": "static int[] topKFrequent(int[] nums, int k) {\n    Map<Integer, Integer> freq = new HashMap<>();\n    for (int x : nums) freq.merge(x, 1, Integer::sum);\n    // 小顶堆，堆顶是当前 K 个里频次最低的；频次相同再比数值，比较器必须是全序\n    // 换成「数值前 K 大」：去掉 Map，比较器改为 (a, b) -> Integer.compare(a, b)，堆里直接放元素\n    PriorityQueue<Integer> pq = new PriorityQueue<>((a, b) -> {\n        int c = Integer.compare(freq.get(a), freq.get(b));\n        return c != 0 ? c : Integer.compare(a, b);\n    });\n    for (int x : freq.keySet()) {\n        pq.offer(x);\n        if (pq.size() > k) pq.poll();\n    }\n    int[] ans = new int[k];\n    // poll 是频次从低到高；倒着填后高频在前。样例 k=2 得到 [1, 2]\n    for (int i = k - 1; i >= 0; i--) ans[i] = pq.poll();\n    return ans;\n}",
+          "demo": "LC 347 前 K 个高频元素",
+          "demoMain": "System.out.println(Arrays.toString(topKFrequent(new int[]{1,1,1,2,2,3}, 2)));\nSystem.out.println(Arrays.toString(topKFrequent(new int[]{1}, 1)));",
+          "expected": "[1, 2]\n[1]"
+        },
+        {
+          "name": "对顶堆维护数据流中位数",
+          "when": "addNum 与 findMedian 交替调用，每次查询都要当前全部数字的中位数。",
+          "java": "static class MedianFinder {\n    // lo 存较小的一半（大顶堆，堆顶是左半最大）；hi 存较大的一半（小顶堆）\n    // 始终保持 lo 中每个数 <= hi 中每个数，且 lo.size() == hi.size() 或恰好多 1\n    private final PriorityQueue<Integer> lo = new PriorityQueue<>((a, b) -> Integer.compare(b, a));\n    private final PriorityQueue<Integer> hi = new PriorityQueue<>();\n\n    public void addNum(int num) {\n        lo.offer(num);\n        hi.offer(lo.poll());\n        if (hi.size() > lo.size()) lo.offer(hi.poll());\n    }\n\n    public double findMedian() {\n        // 调用前至少 add 过一个数。奇数个答案是 lo 堆顶；偶数个是两顶的平均\n        if (lo.size() > hi.size()) return lo.peek();\n        return ((long) lo.peek() + hi.peek()) / 2.0;\n    }\n}",
+          "demo": "LC 295 数据流的中位数",
+          "demoMain": "MedianFinder mf = new MedianFinder();\nmf.addNum(1);\nmf.addNum(2);\nSystem.out.println(mf.findMedian());\nmf.addNum(3);\nSystem.out.println(mf.findMedian());",
+          "expected": "1.5\n2.0"
+        },
+        {
+          "name": "Lomuto 划分：快速选择与快排",
+          "when": "可以改原数组。只问一次第 K 大就停在目标下标；要全排序就让划分后的两侧都递归。",
+          "java": "// 枢轴固定取 a[hi]。返回后 a[返回值] 已在最终位置，左侧都 <= 枢轴，右侧都 > 枢轴\nstatic int partition(int[] a, int lo, int hi) {\n    int pivot = a[hi];\n    int i = lo;\n    for (int j = lo; j < hi; j++) {\n        if (a[j] <= pivot) {\n            int t = a[i];\n            a[i] = a[j];\n            a[j] = t;\n            i++;\n        }\n    }\n    int t = a[i];\n    a[i] = a[hi];\n    a[hi] = t;\n    return i;\n}\n\n// 第 k 大（k 从 1 数）。换第 k 小时，只把 target 改成 k - 1\nstatic int findKthLargest(int[] nums, int k) {\n    int target = nums.length - k;\n    int lo = 0, hi = nums.length - 1;\n    while (true) {\n        int p = partition(nums, lo, hi);\n        if (p == target) return nums[p];\n        if (p < target) lo = p + 1;\n        else hi = p - 1;\n    }\n}\n\nstatic void quickSort(int[] a, int lo, int hi) {\n    if (lo >= hi) return;\n    int p = partition(a, lo, hi);\n    quickSort(a, lo, p - 1);\n    quickSort(a, p + 1, hi);\n}",
+          "demo": "LC 215 数组中的第 K 个最大元素（第二行用同一 partition 做快排，输入为 LC 912 样例 [5,2,3,1]）",
+          "demoMain": "System.out.println(findKthLargest(new int[]{3,2,1,5,6,4}, 2));\nSystem.out.println(findKthLargest(new int[]{3,2,3,1,2,4,5,5,6}, 4));\nint[] a = {5,2,3,1};\nquickSort(a, 0, a.length - 1);\nSystem.out.println(Arrays.toString(a));",
+          "expected": "5\n4\n[1, 2, 3, 5]"
+        },
+        {
+          "name": "插入排序、归并排序、堆排序",
+          "when": "要手写完整排序。插入用来讲已排序前缀且稳定；归并保证最坏 O(n log n) 且稳定；堆排最坏同样 O(n log n)，额外空间 O(1)，不稳定。",
+          "java": "static int[] insertionSort(int[] a) {\n    for (int i = 1; i < a.length; i++) {\n        int x = a[i];\n        int j = i - 1;\n        // 已排序区间是 [0, i)。用 > 而不是 >=，相等元素保持原顺序\n        while (j >= 0 && a[j] > x) {\n            a[j + 1] = a[j];\n            j--;\n        }\n        a[j + 1] = x;\n    }\n    return a;\n}\n\nstatic int[] mergeSort(int[] a) {\n    int[] aux = new int[a.length];\n    mergeRange(a, aux, 0, a.length - 1);\n    return a;\n}\n\nstatic void mergeRange(int[] a, int[] aux, int lo, int hi) {\n    if (lo >= hi) return;\n    int mid = lo + (hi - lo) / 2;\n    mergeRange(a, aux, lo, mid);\n    mergeRange(a, aux, mid + 1, hi);\n    int i = lo, j = mid + 1, k = lo;\n    while (i <= mid && j <= hi) {\n        // <= ：左半相等元素先写回，排序稳定。统计逆序对时改成在取右半元素时累加 mid - i + 1\n        if (a[i] <= a[j]) aux[k++] = a[i++];\n        else aux[k++] = a[j++];\n    }\n    while (i <= mid) aux[k++] = a[i++];\n    while (j <= hi) aux[k++] = a[j++];\n    for (int t = lo; t <= hi; t++) a[t] = aux[t];\n}\n\nstatic int[] heapSort(int[] a) {\n    int n = a.length;\n    // 最后一个非叶节点是 n/2-1，自底向上下沉，建堆是 O(n)\n    for (int i = n / 2 - 1; i >= 0; i--) siftDown(a, i, n);\n    for (int end = n - 1; end > 0; end--) {\n        int t = a[0];\n        a[0] = a[end];\n        a[end] = t;\n        siftDown(a, 0, end);\n    }\n    return a;\n}\n\n// 大顶堆下沉。子节点 2*i+1、2*i+2；相等不下沉，所以堆排序不稳定\nstatic void siftDown(int[] a, int i, int n) {\n    while (true) {\n        int best = i;\n        int left = 2 * i + 1, right = 2 * i + 2;\n        if (left < n && a[left] > a[best]) best = left;\n        if (right < n && a[right] > a[best]) best = right;\n        if (best == i) break;\n        int t = a[i];\n        a[i] = a[best];\n        a[best] = t;\n        i = best;\n    }\n}",
+          "demo": "排序 1/3/4：插入、归并、堆排序（前两行是 LC 912 排序数组样例，第三行是 [3,2,1,5,6,4]）",
+          "demoMain": "System.out.println(Arrays.toString(insertionSort(new int[]{5,2,3,1})));\nSystem.out.println(Arrays.toString(mergeSort(new int[]{5,1,1,2,0,0})));\nSystem.out.println(Arrays.toString(heapSort(new int[]{3,2,1,5,6,4})));",
+          "expected": "[1, 2, 3, 5]\n[0, 0, 1, 1, 2, 5]\n[1, 2, 3, 4, 5, 6]"
+        }
+      ],
+      "variants": [
+        "第 K 大改第 K 小 → 小顶堆改成大顶堆，大小仍保持 K；快选的 target 从 nums.length - k 改成 k - 1。",
+        "只查一次的无序中位数 → 用同一 partition。奇数取升序下标 n/2；偶数再取 n/2-1 与 n/2，平均时先转 long。",
+        "数据流第 K 大 → 只留一个大小为 K 的小顶堆，新元素入堆后若 size > k 就 poll，堆顶即答案。",
+        "前 K 高频要按频次从高到低 → 模板已倒序填答案；频次上界 ≤ n 时改成下标为频次的桶，从高桶往低桶取满 K 个。",
+        "合并 N 个有序数组 → 小顶堆存 {值, 数组号, 下标}，弹出后把该数组的下一个下标入堆；链表则堆内存 ListNode，弹出后把 next 入堆。",
+        "冒泡 / 选择 → 每轮把一个最值换到未排序区间的边界，都是 O(n²)。选择交换不相邻元素，不稳定；冒泡只交换相邻逆序对，可以写成稳定。"
+      ],
+      "pitfalls": [
+        "PriorityQueue 默认是小顶堆。大顶堆写成 (a, b) -> b - a 会在极值附近溢出，用 Integer.compare(b, a)。",
+        "第 K 大的堆方向写反：要留下 K 个最大的，堆顶必须是其中最小的那个，超过 K 才 poll。",
+        "partition 里 <= 与 < 混用，或缩区间时把已经落位的枢轴又划进去，lo、hi 会不再前进。",
+        "归并用 < 会打乱相等元素的左右顺序；某一侧耗尽后另一侧必须全部拷贝，aux 最后要写回原数组对应区间。",
+        "对顶堆把较大一半放进大顶堆，或偶数个时用 int 相加再除 2，会溢出并把 x.5 截成整数。",
+        "堆排序若对 n 个元素逐个 offer，建堆退化成 O(n log n)；要从最后一个非叶下标下沉。Java 的堆没有 decrease-key。"
+      ],
+      "groups": [
+        {
+          "name": "手写比较排序",
+          "note": "先说清不变量：插入的已排序前缀、冒泡/选择每轮确定一个端点、partition 后枢轴不再参加递归、归并用 <= 保持稳定、堆排自底向上建堆再原地收缩。",
+          "items": [
+            [
+              "#/e/sort-basic",
+              "排序 1. 基础排序：冒泡 / 选择 / 插入"
+            ],
+            [
+              "#/e/sort-quick",
+              "排序 2. 快速排序（手写）"
+            ],
+            [
+              "#/e/sort-merge",
+              "排序 3. 归并排序（手写）"
+            ],
+            [
+              "#/e/sort-heap",
+              "排序 4. 堆排序（手写）"
+            ],
+            [
+              "#/e/nonlc-1-5",
+              "手撕快速排序"
+            ]
+          ]
+        },
+        {
+          "name": "第 K 名与一次中位数",
+          "note": "分治要求下把第 K 大收成升序下标 length-k 上的快选。无序中位数是同一次划分：奇数看 n/2，偶数看中间两个的平均。要求最坏时间就改成大小为 K 的堆。",
+          "items": [
+            [
+              "#/e/215",
+              "215. 数组中的第 K 个最大元素"
+            ],
+            [
+              "#/e/nonlc-1-14",
+              "数组中第 K 大的数怎么做？如果提到快速选择是变种，后面可以怎么接？"
+            ],
+            [
+              "#/e/nonlc-1-3",
+              "给定完全无序数组，输出无序数组中的中位数"
+            ]
+          ]
+        },
+        {
+          "name": "堆：频次、对顶堆、多路归并",
+          "note": "347 按频次维持大小为 K 的小顶堆。295 较小一半用大顶堆、较大一半用小顶堆，两边个数差不超过 1。N 路合并的堆节点要带数组号和下标，每次只把这一路的下一个放进来。",
+          "items": [
+            [
+              "#/e/347",
+              "347. 前 K 个高频元素"
+            ],
+            [
+              "#/e/295",
+              "295. 数据流的中位数"
+            ],
+            [
+              "#/e/merge-n-sorted-arrays",
+              "面试变体 B. 合并 N 个有序数组"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "原专题笔记 · 排序与选择",
+          "html": "<h3 class=\"md-h md-h3\">1. 排序稳定性和复杂度</h3>\n<div class=\"md-table-wrap\"><table class=\"md-table\"><thead><tr><th>算法</th><th>平均时间</th><th>额外空间</th><th>稳定性</th><th>面试用途</th></tr></thead><tbody><tr><td>快速排序</td><td>O(n log n)</td><td>O(log n)</td><td>不稳定</td><td>手写排序、快选</td></tr><tr><td>归并排序</td><td>O(n log n)</td><td>O(n)</td><td>稳定</td><td>链表排序、逆序对</td></tr><tr><td>堆排序</td><td>O(n log n)</td><td>O(1)</td><td>不稳定</td><td>Top K</td></tr><tr><td>计数排序</td><td>O(n + k)</td><td>O(k)</td><td>可稳定</td><td>值域小</td></tr><tr><td>桶排序</td><td>近似 O(n)</td><td>O(n)</td><td>取决于桶内</td><td>高频统计</td></tr></tbody></table></div>\n<h3 class=\"md-h md-h3\">2. Comparator 的坑</h3>\n<p class=\"md-p\">Java 比较器不要直接写 <code class=\"tok-inline\">a - b</code>，可能溢出。字符串拼接排序常用：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">排序与选择总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">(a, b) -&gt; (b + a).compareTo(a + b)</pre></div></section>\n<h3 class=\"md-h md-h3\">3. Top K 三种解法</h3>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>小顶堆：维护 k 个最大元素，时间 O(n log k)。</li><li>快速选择：平均 O(n)，最坏 O(n^2)。</li><li>桶排序：适合频次题，值域或频次范围有限。</li></ul></div>\n<h3 class=\"md-h md-h3\">4. 归并排序统计</h3>\n<p class=\"md-p\">归并排序不仅能排序，还能统计跨区间关系：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>逆序对。</li><li>右侧小于当前元素个数。</li><li>翻转对。</li></ul></div><h3 class=\"md-h md-h3\">1. 基础排序实现型</h3><p class=\"md-p\">目标：能手写快排、归并排序，说明复杂度和边界。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 912 排序数组</li><li>剑指 Offer 51 数组中的逆序对</li></ul></div><h3 class=\"md-h md-h3\">2. Top K 与第 K 大型</h3><p class=\"md-p\">目标：找第 K 大/小，不需要完整排序。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>数据静态且追求平均最快：快速选择。</li><li>数据流或需要持续维护：堆。</li><li>高频词和频次统计：哈希 + 堆/桶。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 215 数组中的第 K 个最大元素</li><li>LC 347 前 K 个高频元素</li><li>LC 692 前 K 个高频单词</li><li>LC 703 数据流中的第 K 大元素</li><li>LC 973 最接近原点的 K 个点</li></ul></div><h3 class=\"md-h md-h3\">3. 自定义排序型</h3><p class=\"md-p\">目标：排序依据不是数值本身，而是拼接、频次、区间或业务规则。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 56 合并区间</li><li>LC 179 最大数</li><li>LC 406 根据身高重建队列</li><li>LC 937 重新排列日志文件</li><li>LC 1356 根据数字二进制下 1 的数目排序</li></ul></div><h3 class=\"md-h md-h3\">4. 颜色分类与原地分区型</h3><p class=\"md-p\">目标：按类别把数组原地分区。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>两类：快慢指针。</li><li>三类：荷兰国旗，维护 <code class=\"tok-inline\">&lt; pivot</code>、<code class=\"tok-inline\">= pivot</code>、<code class=\"tok-inline\">&gt; pivot</code> 三段。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 75 颜色分类</li><li>LC 283 移动零</li><li>LC 324 摆动排序 II</li></ul></div><h3 class=\"md-h md-h3\">5. 归并统计型</h3><p class=\"md-p\">目标：在归并过程中统计跨左右区间的贡献。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 315 计算右侧小于当前元素的个数</li><li>LC 493 翻转对</li><li>剑指 Offer 51 数组中的逆序对</li></ul></div><h3 class=\"md-h md-h3\">6. 链表排序型</h3><p class=\"md-p\">目标：链表不能随机访问，优先用归并排序。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 148 排序链表</li><li>LC 147 对链表进行插入排序</li><li>LC 23 合并 K 个升序链表</li></ul></div>"
+        },
+        {
+          "title": "专题精讲 · LC 347 前 K 个高频元素",
+          "html": "<p class=\"md-p\">考点：频次统计 + 桶排序。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>统计频次，桶排序（下标为频次）收集结果。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，第二行 n 个整数，第三行 k。 输出格式：前 k 个高频元素。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int[] solve(int[] nums, int k) {\n        Map&lt;Integer, Integer&gt; freq = new HashMap&lt;&gt;();\n        for (int num : nums) freq.put(num, freq.getOrDefault(num, 0) + 1);\n        // 桶：下标为频次\n        List&lt;Integer&gt;[] buckets = new List[nums.length + 1];\n        for (int i = 0; i &lt;= nums.length; i++) buckets[i] = new ArrayList&lt;&gt;();\n        for (Map.Entry&lt;Integer, Integer&gt; e : freq.entrySet()) {\n            buckets[e.getValue()].add(e.getKey());\n        }\n        int[] res = new int[k];\n        int idx = 0;\n        for (int i = nums.length; i &gt;= 0 &amp;&amp; idx &lt; k; i--) {\n            for (int num : buckets[i]) {\n                res[idx++] = num;\n                if (idx == k) break;\n            }\n        }\n        return res;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        int k = sc.nextInt();\n        int[] res = solve(nums, k);\n        for (int i = 0; i &lt; k; i++) System.out.print(res[i] + (i &lt; k - 1 ? &quot; &quot; : &quot;&quot;));\n        System.out.println();\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 347 前 K 高频元素",
+          "html": "<p class=\"md-p\">先哈希统计频次，再用小顶堆保留 k 个最高频；也可以按频次桶排序。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">排序与选择总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int[] solve(int[] nums, int k) {\n        // 第一步：哈希统计每个数出现的频次\n        Map&lt;Integer, Integer&gt; freq = new HashMap&lt;&gt;();\n        for (int x : nums) freq.merge(x, 1, Integer::sum);\n\n        // 第二步：按频次放入桶中（桶排序法，时间 O(n)）\n        // 频次最大不超过 n，建 n+1 个桶\n        List&lt;List&lt;Integer&gt;&gt; buckets = new ArrayList&lt;&gt;();\n        for (int i = 0; i &lt;= nums.length; i++) buckets.add(new ArrayList&lt;&gt;());\n        for (Map.Entry&lt;Integer, Integer&gt; e : freq.entrySet()) {\n            buckets.get(e.getValue()).add(e.getKey());\n        }\n\n        // 第三步：从高频到低频收集 k 个元素\n        int[] res = new int[k];\n        int idx = 0;\n        for (int i = buckets.size() - 1; i &gt;= 0 &amp;&amp; idx &lt; k; i--) {\n            for (int val : buckets.get(i)) {\n                res[idx++] = val;\n                if (idx == k) break;\n            }\n        }\n        return res;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int k = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        int[] res = solve(nums, k);\n        for (int i = 0; i &lt; k; i++) {\n            if (i &gt; 0) System.out.print(&quot; &quot;);\n            System.out.print(res[i]);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 295 数据流中位数",
+          "html": "<p class=\"md-p\">考点：双堆。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>大根堆存较小一半。</li><li>小根堆存较大一半。</li><li>保持两个堆大小差不超过 1。</li><li>中位数来自堆顶。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n 为操作次数，接下来 n 行每行一个整数（add）或 &quot;median&quot;（查询中位数）。 输出格式：每次查询输出当前中位数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = Integer.parseInt(sc.nextLine().trim());\n        // 大根堆存较小一半\n        PriorityQueue&lt;Integer&gt; lo = new PriorityQueue&lt;&gt;(Collections.reverseOrder());\n        // 小根堆存较大一半\n        PriorityQueue&lt;Integer&gt; hi = new PriorityQueue&lt;&gt;();\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; n; i++) {\n            String line = sc.nextLine().trim();\n            if (line.equals(&quot;median&quot;)) {\n                // 两堆大小相等时取平均，否则取较大堆堆顶\n                if (lo.size() == hi.size()) {\n                    double med = ((double) lo.peek() + hi.peek()) / 2.0;\n                    sb.append(String.format(&quot;%.1f\\n&quot;, med));\n                } else {\n                    sb.append(lo.size() &gt; hi.size() ? lo.peek() : hi.peek()).append(&quot;\\n&quot;);\n                }\n            } else {\n                int val = Integer.parseInt(line);\n                // 先加入大根堆，再把大根堆堆顶移到小根堆，保证 lo 元素 &lt;= hi 元素\n                lo.offer(val);\n                hi.offer(lo.poll());\n                // 保持 lo.size() &gt;= hi.size()，最多差 1\n                if (hi.size() &gt; lo.size()) {\n                    lo.offer(hi.poll());\n                }\n            }\n        }\n        System.out.print(sb);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 215 第 K 大元素",
+          "html": "<p class=\"md-p\">转成找下标 <code class=\"tok-inline\">n - k</code> 的元素。快速选择每次 partition 后只递归一边。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">排序与选择总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static Random rand = new Random();\n\n    public static int solve(int[] nums, int k) {\n        // 第 k 大 = 第 (n - k) 小（升序第 n-k 个）\n        return quickSelect(nums, 0, nums.length - 1, nums.length - k);\n    }\n\n    // 快速选择：返回排序后下标为 k 的元素\n    public static int quickSelect(int[] nums, int lo, int hi, int k) {\n        if (lo == hi) return nums[lo];\n        // 随机 pivot + 三路 partition\n        int idx = lo + rand.nextInt(hi - lo + 1);\n        swap(nums, lo, idx);\n        int pivot = nums[lo];\n        int lt = lo, gt = hi, i = lo + 1;\n        while (i &lt;= gt) {\n            if (nums[i] &lt; pivot) swap(nums, lt++, i++);\n            else if (nums[i] &gt; pivot) swap(nums, i, gt--);\n            else i++;\n        }\n        // 根据 k 落在哪个区间决定递归哪边\n        if (k &lt; lt) return quickSelect(nums, lo, lt - 1, k);\n        else if (k &gt; gt) return quickSelect(nums, gt + 1, hi, k);\n        else return pivot; // k 在 [lt, gt] 范围内，即为答案\n    }\n\n    public static void swap(int[] nums, int a, int b) {\n        int t = nums[a]; nums[a] = nums[b]; nums[b] = t;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int k = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(solve(nums, k));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 215 数组中的第 K 个最大元素",
+          "html": "<p class=\"md-p\">考点：快速选择 / 堆。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>维护大小为 k 的最小堆。</li><li>遍历完后堆顶即第 k 大。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，第二行 n 个整数，第三行 k。 输出格式：第 k 个最大元素。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int solve(int[] nums, int k) {\n        // 最小堆，大小为 k\n        PriorityQueue&lt;Integer&gt; pq = new PriorityQueue&lt;&gt;();\n        for (int num : nums) {\n            pq.offer(num);\n            if (pq.size() &gt; k) pq.poll();\n        }\n        return pq.peek();\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        int k = sc.nextInt();\n        System.out.println(solve(nums, k));\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "id": "sort-basic",
+      "number": "排序 1",
+      "title": "基础排序：冒泡 / 选择 / 插入",
+      "slug": "",
+      "category": "排序",
+      "source": "常考排序补充",
+      "time": "最坏 O(n²)",
+      "space": "O(1)",
+      "idea": "bubbleSort 用 end 作为本轮右边界，相邻元素若逆序就 swap，并把 swapped 标为 true；一轮结束若没有交换就直接 return。selectionSort 在 [i, n) 里用 minIndex 记下最小下标，再与 i 交换。insertionSort 取出 key，while 中把左侧大于 key 的元素右移一格，最后把 key 写入 nums[j+1]。",
+      "description": "手写冒泡、选择、插入三种基础排序。冒泡不断把当前区间的最大值交换到右端；选择每轮选出最小值放到左端；插入把当前元素插进左侧已经有序的区间。",
+      "code": "class Solution {\n    public void bubbleSort(int[] nums) {\n        // end 是尚未就位的右端，本轮最大值会沉到这里\n        for (int end = nums.length - 1; end > 0; end--) {\n            boolean swapped = false;\n            for (int i = 0; i < end; i++) {\n                if (nums[i] > nums[i + 1]) {\n                    swap(nums, i, i + 1);\n                    swapped = true;\n                }\n            }\n            if (!swapped) return; // 本轮无交换，数组已经有序\n        }\n    }\n\n    public void selectionSort(int[] nums) {\n        for (int i = 0; i < nums.length - 1; i++) {\n            int minIndex = i;\n            // 在尚未排序的 [i, n) 中找最小元的下标\n            for (int j = i + 1; j < nums.length; j++) {\n                if (nums[j] < nums[minIndex]) minIndex = j;\n            }\n            swap(nums, i, minIndex);\n        }\n    }\n\n    public void insertionSort(int[] nums) {\n        for (int i = 1; i < nums.length; i++) {\n            int key = nums[i];\n            int j = i - 1;\n            // 大于 key 的元素右移，给 key 腾出插入位置\n            while (j >= 0 && nums[j] > key) {\n                nums[j + 1] = nums[j];\n                j--;\n            }\n            nums[j + 1] = key;\n        }\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "排序与选择",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "手写冒泡、选择、插入三种基础排序。冒泡不断把当前区间的最大值交换到右端；选择每轮选出最小值放到左端；插入把当前元素插进左侧已经有序的区间。",
+        "req": [],
+        "analysis": "bubbleSort 用 end 作为本轮右边界，相邻元素若逆序就 swap，并把 swapped 标为 true；一轮结束若没有交换就直接 return。selectionSort 在 [i, n) 里用 minIndex 记下最小下标，再与 i 交换。insertionSort 取出 key，while 中把左侧大于 key 的元素右移一格，最后把 key 写入 nums[j+1]。",
+        "cx": "时间 最坏 O(n²)，空间 O(1)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "排序"
+    },
+    {
+      "id": "sort-quick",
+      "number": "排序 2",
+      "title": "快速排序（手写）",
+      "slug": "",
+      "category": "排序",
+      "source": "",
+      "time": "平均 O(n log n)，最坏 O(n²)",
+      "space": "平均 O(log n)",
+      "idea": "quickSort 在 left>=right 时返回。枢轴值取 nums[left+random.nextInt(right-left+1)]，less、current、greater 把区间收成小于、等于、大于三段：小于则与 less 交换并两边都前进，大于则与 greater 交换且只缩右端，相等则 current++。循环结束后等于段 [less, greater] 已在最终位置，只对 [left, less-1] 和 [greater+1, right] 递归。",
+      "description": "手写快速排序，并说明 partition 维护的区间不变量、递归在何处停下，以及输入退化时为什么会变成 O(n²)。",
+      "code": "import java.util.*;\n\nclass Solution {\n    private final Random random = new Random();\n\n    public int[] sortArray(int[] nums) {\n        quickSort(nums, 0, nums.length - 1);\n        return nums;\n    }\n\n    private void quickSort(int[] nums, int left, int right) {\n        if (left >= right) return;\n\n        // 随机取枢轴值，降低固定一端在有序输入上退化的概率\n        int pivot = nums[left + random.nextInt(right - left + 1)];\n        int less = left;\n        int current = left;\n        int greater = right;\n\n        while (current <= greater) {\n            if (nums[current] < pivot) {\n                // 划入小于段，current 换来的值已经看过\n                swap(nums, less++, current++);\n            } else if (nums[current] > pivot) {\n                // 划入大于段，换到 current 的新值还要再比较\n                swap(nums, current, greater--);\n            } else {\n                current++;\n            }\n        }\n\n        // [less, greater] 等于枢轴，已在最终位置\n        quickSort(nums, left, less - 1);\n        quickSort(nums, greater + 1, right);\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "排序与选择",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "手写快速排序，并说明 partition 维护的区间不变量、递归在何处停下，以及输入退化时为什么会变成 O(n²)。",
+        "req": [
+          "能够解释 partition 的不变量、递归边界，以及最坏退化到 O(n²) 的原因"
+        ],
+        "analysis": "quickSort 在 left>=right 时返回。枢轴值取 nums[left+random.nextInt(right-left+1)]，less、current、greater 把区间收成小于、等于、大于三段：小于则与 less 交换并两边都前进，大于则与 greater 交换且只缩右端，相等则 current++。循环结束后等于段 [less, greater] 已在最终位置，只对 [left, less-1] 和 [greater+1, right] 递归。",
+        "cx": "时间 平均 O(n log n)，最坏 O(n²)，空间 平均 O(log n)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "排序"
+    },
+    {
+      "id": "sort-merge",
+      "number": "排序 3",
+      "title": "归并排序（手写）",
+      "slug": "",
+      "category": "排序",
+      "source": "常考排序补充 · 本批手撕",
+      "time": "O(n log n)",
+      "space": "O(n)",
+      "idea": "sortArray 只分配一次 temp。mergeSort 在 left>=right 时返回，否则用 mid=left+(right-left)/2 分成 [left, mid] 与 [mid+1, right] 分别递归，再 merge。merge 里 i、j、write 同时前进，nums[i]<=nums[j] 时先写左边；两侧剩余各自抄进 temp 后，按 k 从 left 到 right 写回 nums。",
+      "description": "手写归并排序，用分治处理递归区间，并把两个已经有序的序列合并成一个。最坏时间稳定为 O(n log n)，需要额外数组。",
+      "code": "class Solution {\n    public int[] sortArray(int[] nums) {\n        int[] temp = new int[nums.length];\n        mergeSort(nums, temp, 0, nums.length - 1);\n        return nums;\n    }\n\n    private void mergeSort(int[] nums, int[] temp, int left, int right) {\n        if (left >= right) return;\n\n        // 避免 (left+right) 溢出，并切成左右两段\n        int mid = left + (right - left) / 2;\n        mergeSort(nums, temp, left, mid);\n        mergeSort(nums, temp, mid + 1, right);\n        merge(nums, temp, left, mid, right);\n    }\n\n    private void merge(int[] nums, int[] temp, int left, int mid, int right) {\n        int i = left;\n        int j = mid + 1;\n        int write = left;\n\n        while (i <= mid && j <= right) {\n            // 相等先取左边，相等元素的相对顺序不变\n            if (nums[i] <= nums[j]) temp[write++] = nums[i++];\n            else temp[write++] = nums[j++];\n        }\n\n        while (i <= mid) temp[write++] = nums[i++];\n        while (j <= right) temp[write++] = nums[j++];\n\n        // temp 中 [left, right] 已合并有序，抄回原数组\n        for (int k = left; k <= right; k++) {\n            nums[k] = temp[k];\n        }\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "排序与选择",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "手写归并排序，用分治处理递归区间，并把两个已经有序的序列合并成一个。最坏时间稳定为 O(n log n)，需要额外数组。",
+        "req": [
+          "最坏时间复杂度为 O(n log n)，需要额外数组"
+        ],
+        "analysis": "sortArray 只分配一次 temp。mergeSort 在 left>=right 时返回，否则用 mid=left+(right-left)/2 分成 [left, mid] 与 [mid+1, right] 分别递归，再 merge。merge 里 i、j、write 同时前进，nums[i]<=nums[j] 时先写左边；两侧剩余各自抄进 temp 后，按 k 从 left 到 right 写回 nums。",
+        "cx": "时间 O(n log n)，空间 O(n)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "排序"
+    },
+    {
+      "id": "sort-heap",
+      "number": "排序 4",
+      "title": "堆排序（手写）",
+      "slug": "",
+      "category": "排序",
+      "source": "常考排序补充",
+      "time": "O(n log n)",
+      "space": "O(1)",
+      "idea": "先让 root 从 n/2-1 降到 0，对每个根调用 siftDown(nums, root, n)，把数组调成最大堆。再让 end 从 n-1 降到 1：swap(nums, 0, end) 把堆顶最大值放到末尾，并以 heapSize=end 对下标 0 做 siftDown，已就位的后缀不再参与。siftDown 用 left=root*2+1、right=left+1 选出更大的孩子，根不小于它就停，否则交换后沿该孩子继续向下。",
+      "description": "手写堆排序，使用完全二叉树在数组中的下标关系以及 siftDown。最坏时间为 O(n log n)，额外空间为 O(1)，排序不稳定。",
+      "code": "class Solution {\n    public int[] sortArray(int[] nums) {\n        int n = nums.length;\n\n        // 最后一个非叶结点开始，自底向上建成最大堆\n        for (int root = n / 2 - 1; root >= 0; root--) {\n            siftDown(nums, root, n);\n        }\n\n        // 堆顶是当前最大值，换到 end 后不再属于堆\n        for (int end = n - 1; end > 0; end--) {\n            swap(nums, 0, end);\n            siftDown(nums, 0, end);\n        }\n\n        return nums;\n    }\n\n    private void siftDown(int[] nums, int root, int heapSize) {\n        while (true) {\n            int left = root * 2 + 1;\n            if (left >= heapSize) return;\n\n            int right = left + 1;\n            int largest = left;\n            // 右孩子存在且更大时，沿右孩子下沉\n            if (right < heapSize && nums[right] > nums[left]) {\n                largest = right;\n            }\n\n            if (nums[root] >= nums[largest]) return;\n\n            swap(nums, root, largest);\n            root = largest;\n        }\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "排序与选择",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "手写堆排序，使用完全二叉树在数组中的下标关系以及 siftDown。最坏时间为 O(n log n)，额外空间为 O(1)，排序不稳定。",
+        "req": [
+          "最坏时间 O(n log n)，额外空间 O(1)"
+        ],
+        "analysis": "先让 root 从 n/2-1 降到 0，对每个根调用 siftDown(nums, root, n)，把数组调成最大堆。再让 end 从 n-1 降到 1：swap(nums, 0, end) 把堆顶最大值放到末尾，并以 heapSize=end 对下标 0 做 siftDown，已就位的后缀不再参与。siftDown 用 left=root*2+1、right=left+1 选出更大的孩子，根不小于它就停，否则交换后沿该孩子继续向下。",
+        "cx": "时间 O(n log n)，空间 O(1)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "排序"
+    },
+    {
+      "id": "nonlc-1-5",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "title": "手撕快速排序",
+      "number": "通6",
+      "description": "实现快速排序，把给定的整数数组按升序排好。",
+      "idea": "sort 在区间不足两个元素时直接返回。否则在 left 到 right 之间随机选一个主元，partition 先把它换到右端，扫描时把小于主元的元素换到 store 左侧，再把主元换回 store，返回分界下标。主元已经就位，再对它左边和右边两个区间分别递归。",
+      "code": "import java.util.Random;\n\npublic class QuickSortDemo {\n    private final Random random = new Random();\n\n    public void quickSort(int[] nums) {\n        sort(nums, 0, nums.length - 1);\n    }\n\n    private void sort(int[] nums, int left, int right) {\n        if (left >= right) {\n            return;\n        }\n\n        // 随机主元，避免序列接近有序时总选到端点\n        int pivotIndex = left + random.nextInt(right - left + 1);\n        int newIndex = partition(nums, left, right, pivotIndex);\n\n        // 主元已在最终位置，左右两段分开排\n        sort(nums, left, newIndex - 1);\n        sort(nums, newIndex + 1, right);\n    }\n\n    private int partition(int[] nums, int left, int right, int pivotIndex) {\n        int pivot = nums[pivotIndex];\n        swap(nums, pivotIndex, right);\n\n        int store = left;\n        for (int i = left; i < right; i++) {\n            // 小于主元的元素换到左侧\n            if (nums[i] < pivot) {\n                swap(nums, store, i);\n                store++;\n            }\n        }\n\n        // 主元放到 store，该下标就是左右分界\n        swap(nums, store, right);\n        return store;\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n }",
+      "progressKey": "nonlc-1#5",
+      "faceParent": "nonlc-1",
+      "faceIdx": 5,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "实现快速排序，把给定的整数数组按升序排好。",
+        "req": [],
+        "analysis": "sort 在区间不足两个元素时直接返回。否则在 left 到 right 之间随机选一个主元，partition 先把它换到右端，扫描时把小于主元的元素换到 store 左侧，再把主元换回 store，返回分界下标。主元已经就位，再对它左边和右边两个区间分别递归。",
+        "cx": "时间平均 O(n log n)（最坏 O(n^2)），空间平均 O(log n)（最坏 O(n)）",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      }
+    },
+    {
+      "number": 215,
+      "title": "数组中的第 K 个最大元素",
+      "slug": "kth-largest-element-in-an-array",
+      "category": "分治",
+      "time": "期望 O(n)，最坏 O(n²)",
+      "space": "O(1)",
+      "idea": "target 取 nums.length - k。在 [left, right] 里随机选 pivot，partition3 把小于、等于、大于 pivot 分别放到 [left, less)、[less, greater]、(greater, right]，返回 less 和 greater。target 小于 equalRange[0] 就只把 right 收到左侧，大于 equalRange[1] 就只把 left 收到右侧，否则返回 nums[target]。",
+      "code": "import java.util.*;\n\nclass Solution {\n    private final Random random = new Random();\n\n    public int findKthLargest(int[] nums, int k) {\n        // 第 k 大 = 升序数组中下标 n-k 的元素。\n        int target = nums.length - k;\n        int left = 0;\n        int right = nums.length - 1;\n\n        while (left <= right) {\n            // 随机选枢轴，降低已经有序等输入导致退化的概率。\n            int pivot = nums[left + random.nextInt(right - left + 1)];\n            int[] equalRange = partition3(nums, left, right, pivot);\n\n            if (target < equalRange[0]) {\n                right = equalRange[0] - 1;\n            } else if (target > equalRange[1]) {\n                left = equalRange[1] + 1;\n            } else {\n                // target 落在等于 pivot 的区间内，答案已经确定。\n                return nums[target];\n            }\n        }\n\n        throw new IllegalArgumentException(\"k 超出范围\");\n    }\n\n    // 三路划分：\n    // [left, less) < pivot\n    // [less, greater] == pivot\n    // (greater, right] > pivot\n    private int[] partition3(int[] nums, int left, int right, int pivot) {\n        int less = left;\n        int current = left;\n        int greater = right;\n\n        while (current <= greater) {\n            if (nums[current] < pivot) {\n                swap(nums, less++, current++);\n            } else if (nums[current] > pivot) {\n                swap(nums, current, greater--);\n            } else {\n                current++;\n            }\n        }\n\n        return new int[]{less, greater};\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n}",
+      "description": "在无序数组中找到第 k 大元素。第 k 大等价于升序后的第 n-k 个元素。",
+      "source": "",
+      "id": "215",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "排序与选择",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "在无序数组中找到第 k 大元素。第 k 大等价于升序后的第 n-k 个元素。",
+        "req": [
+          "使用分治求解"
+        ],
+        "analysis": "target 取 nums.length - k。在 [left, right] 里随机选 pivot，partition3 把小于、等于、大于 pivot 分别放到 [left, less)、[less, greater]、(greater, right]，返回 less 和 greater。target 小于 equalRange[0] 就只把 right 收到左侧，大于 equalRange[1] 就只把 left 收到右侧，否则返回 nums[target]。",
+        "cx": "时间 期望 O(n)，最坏 O(n²)，空间 O(1)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "分治"
+    },
+    {
+      "id": "nonlc-1-14",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "title": "数组中第 K 大的数怎么做？如果提到快速选择是变种，后面可以怎么接？",
+      "number": "通15",
+      "description": "如何求数组中第 K 大的数？若回答里提到快速选择是快排的变种，后面可以怎么把这个点接下去讲清楚？",
+      "idea": "一种做法是维护大小为 k 的最小堆，遍历数组时只留下当前最大的 k 个元素，堆顶就是第 k 大，时间是 O(n log k)。另一种是快速选择：每次按主元把数组分成两侧，只递归进入包含目标下标的那一侧，平均可以到 O(n)。快排必须把两侧都排完，快速选择只处理目标排名所在的那一边，因此不会把整个数组排完。",
+      "code": "",
+      "progressKey": "nonlc-1#14",
+      "faceParent": "nonlc-1",
+      "faceIdx": 14,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "如何求数组中第 K 大的数？若回答里提到快速选择是快排的变种，后面可以怎么把这个点接下去讲清楚？",
+        "req": [],
+        "analysis": "一种做法是维护大小为 k 的最小堆，遍历数组时只留下当前最大的 k 个元素，堆顶就是第 k 大，时间是 O(n log k)。另一种是快速选择：每次按主元把数组分成两侧，只递归进入包含目标下标的那一侧，平均可以到 O(n)。快排必须把两侧都排完，快速选择只处理目标排名所在的那一边，因此不会把整个数组排完。",
+        "cx": "",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      }
+    },
+    {
+      "id": "nonlc-1-3",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "title": "给定完全无序数组，输出无序数组中的中位数",
+      "number": "通4",
+      "description": "给定一个完全无序的整数数组，求出它的中位数。长度为奇数时取正中间的数；长度为偶数时取上中位数，即排序后下标为 length/2 的那个数。",
+      "idea": "median 把目标下标定成 nums.length/2，交给 quickSelect。循环中在当前区间随机选主元，partition 先把主元换到右端，再把小于主元的元素换到 store 左侧，最后把主元换回 store 并返回该下标。新下标等于目标就返回该元素；偏小则把 left 移到新下标右侧，偏大则把 right 移到左侧，只继续处理剩下的一侧。",
+      "code": "import java.util.Random;\n\npublic class MedianInUnsortedArray {\n    private final Random random = new Random();\n\n    public int median(int[] nums) {\n        // 偶数长度取上中位数，目标就是下标 length/2\n        int targetIndex = nums.length / 2;\n        return quickSelect(nums, 0, nums.length - 1, targetIndex);\n    }\n\n    private int quickSelect(int[] nums, int left, int right, int targetIndex) {\n        while (left <= right) {\n            // 随机主元，避免总挑到固定位置\n            int pivotIndex = left + random.nextInt(right - left + 1);\n            int newIndex = partition(nums, left, right, pivotIndex);\n\n            if (newIndex == targetIndex) {\n                return nums[newIndex];\n            } else if (newIndex < targetIndex) {\n                // 目标在右半，丢掉左侧\n                left = newIndex + 1;\n            } else {\n                right = newIndex - 1;\n            }\n        }\n        return -1;\n    }\n\n    private int partition(int[] nums, int left, int right, int pivotIndex) {\n        int pivot = nums[pivotIndex];\n        // 主元先放到末尾，扫描时不会被换走\n        swap(nums, pivotIndex, right);\n\n        int store = left;\n        for (int i = left; i < right; i++) {\n            // 更小的元素堆到 store 左侧\n            if (nums[i] < pivot) {\n                swap(nums, store, i);\n                store++;\n            }\n        }\n\n        // store 左侧都更小，主元归位后的下标就是排名\n        swap(nums, store, right);\n        return store;\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n}",
+      "progressKey": "nonlc-1#3",
+      "faceParent": "nonlc-1",
+      "faceIdx": 3,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "给定一个完全无序的整数数组，求出它的中位数。长度为奇数时取正中间的数；长度为偶数时取上中位数，即排序后下标为 length/2 的那个数。",
+        "req": [
+          "偶数长度时中位数定义为上中位数（下标 length/2）"
+        ],
+        "analysis": "median 把目标下标定成 nums.length/2，交给 quickSelect。循环中在当前区间随机选主元，partition 先把主元换到右端，再把小于主元的元素换到 store 左侧，最后把主元换回 store 并返回该下标。新下标等于目标就返回该元素；偏小则把 left 移到新下标右侧，偏大则把 right 移到左侧，只继续处理剩下的一侧。",
+        "cx": "时间平均 O(n)（最坏 O(n^2)），空间 O(1)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      }
+    },
+    {
+      "number": 347,
+      "title": "前 K 个高频元素",
+      "slug": "top-k-frequent-elements",
+      "category": "堆",
+      "time": "O(n)",
+      "space": "O(n)",
+      "idea": "frequency 先数每个 num 出现的次数。再建长度 nums.length + 1 的 buckets，下标就是次数，把 entry.getKey() 放进 buckets.get(entry.getValue())。answer 长度为 k，write 从 0 开始；count 从 nums.length 降到 1，只要 write 还小于 k，就把该桶里的 value 依次写入 answer，write 到 k 就停。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public int[] topKFrequent(int[] nums, int k) {\n        Map<Integer, Integer> frequency = new HashMap<>();\n        for (int num : nums) {\n            frequency.put(num, frequency.getOrDefault(num, 0) + 1);\n        }\n\n        // 频率最大不会超过 nums.length，用“频率”作为桶下标。\n        List<List<Integer>> buckets = new ArrayList<>(nums.length + 1);\n        for (int i = 0; i <= nums.length; i++) {\n            buckets.add(new ArrayList<>());\n        }\n\n        for (Map.Entry<Integer, Integer> entry : frequency.entrySet()) {\n            buckets.get(entry.getValue()).add(entry.getKey());\n        }\n\n        int[] answer = new int[k];\n        int write = 0;\n\n        // 从最高频率向下收集，直到拿满 k 个。\n        for (int count = nums.length; count >= 1 && write < k; count--) {\n            for (int value : buckets.get(count)) {\n                answer[write++] = value;\n                if (write == k) break;\n            }\n        }\n        return answer;\n    }\n}",
+      "description": "统计数组中每个数字的出现频率，返回出现频率最高的 k 个元素。题目希望复杂度优于对全体元素排序的 O(n log n)。",
+      "source": "",
+      "id": "347",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数据结构（栈 / 堆 / 设计）",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "统计数组中每个数字的出现频率，返回出现频率最高的 k 个元素。题目希望复杂度优于对全体元素排序的 O(n log n)。",
+        "req": [
+          "返回出现频率最高的 k 个元素",
+          "复杂度优于整体排序 O(n log n)"
+        ],
+        "analysis": "frequency 先数每个 num 出现的次数。再建长度 nums.length + 1 的 buckets，下标就是次数，把 entry.getKey() 放进 buckets.get(entry.getValue())。answer 长度为 k，write 从 0 开始；count 从 nums.length 降到 1，只要 write 还小于 k，就把该桶里的 value 依次写入 answer，write 到 k 就停。",
+        "cx": "时间 O(n)，空间 O(n)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "堆"
+    },
+    {
+      "number": 295,
+      "title": "数据流的中位数",
+      "slug": "find-median-from-data-stream",
+      "category": "堆",
+      "time": "添加 O(log n)，查询 O(1)",
+      "space": "O(n)",
+      "idea": "smaller 是大根堆，保存较小的一半；larger 是小根堆，保存较大的一半。addNum 一律先 smaller.offer(num)，再把 smaller 的堆顶 poll 进 larger，使跨过边界的最大值进入较大一半；若 larger 比 smaller 多，再把 larger 的最小值送回 smaller，让较小一半的数量等于较大一半或只多一个。findMedian 在 smaller 更多时直接返回其堆顶，否则把两个堆顶先转成 long 再相加，除以 2.0。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass MedianFinder {\n    // smaller：大根堆，保存较小的一半；larger：小根堆，保存较大的一半。\n    private final PriorityQueue<Integer> smaller =\n            new PriorityQueue<>(Collections.reverseOrder());\n    private final PriorityQueue<Integer> larger = new PriorityQueue<>();\n\n    public MedianFinder() {\n    }\n\n    public void addNum(int num) {\n        // 先放入较小一半，再把其中最大值移动到较大一半，保证左右有序关系。\n        smaller.offer(num);\n        larger.offer(smaller.poll());\n\n        // 让 smaller 的数量始终等于 larger，或只多 1 个。\n        if (larger.size() > smaller.size()) {\n            smaller.offer(larger.poll());\n        }\n    }\n\n    public double findMedian() {\n        if (smaller.size() > larger.size()) {\n            return smaller.peek(); // 奇数个时中位数在较小一半的堆顶。\n        }\n\n        // 先转 long 再相加，避免两个 int 边界值相加溢出。\n        return ((long) smaller.peek() + larger.peek()) / 2.0;\n    }\n}",
+      "description": "设计一个数据结构，持续接收整数，并能随时返回当前已收到的全部数字的中位数。需要动态维护有序的两半数据。",
+      "source": "",
+      "id": "295",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数据结构（栈 / 堆 / 设计）",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "设计一个数据结构，持续接收整数，并能随时返回当前已收到的全部数字的中位数。需要动态维护有序的两半数据。",
+        "req": [
+          "持续接收整数",
+          "随时返回当前所有数字的中位数"
+        ],
+        "analysis": "smaller 是大根堆，保存较小的一半；larger 是小根堆，保存较大的一半。addNum 一律先 smaller.offer(num)，再把 smaller 的堆顶 poll 进 larger，使跨过边界的最大值进入较大一半；若 larger 比 smaller 多，再把 larger 的最小值送回 smaller，让较小一半的数量等于较大一半或只多一个。findMedian 在 smaller 更多时直接返回其堆顶，否则把两个堆顶先转成 long 再相加，除以 2.0。",
+        "cx": "时间 添加 O(log n)，查询 O(1)，空间 O(n)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "堆"
+    },
+    {
+      "id": "merge-n-sorted-arrays",
+      "number": "面试变体 B",
+      "title": "合并 N 个有序数组",
+      "slug": "",
+      "category": "堆",
+      "source": "面经补充",
+      "time": "O(T log N)",
+      "space": "O(N)",
+      "idea": "Entry 同时带着 value、arrayIndex 和 elementIndex，小根堆按 value 排序。先累加每个数组的 length 得到 total，并且每个 length 大于 0 的数组只把 arrays[i][0] 放进堆。弹出 cur 写入 answer 后，计算 nextIndex = cur.elementIndex + 1，若还没超出该数组长度，就把 arrays[cur.arrayIndex][nextIndex] 再包成 Entry 入堆，其它数组的当前头不动。",
+      "description": "给定 N 个各自升序的整数数组，把它们合并成一个整体升序的数组。所有数组的元素总数记为 T。",
+      "code": "import java.util.*;\n\nclass Solution {\n    static class Entry {\n        int value;\n        int arrayIndex;\n        int elementIndex;\n\n        Entry(int value, int arrayIndex, int elementIndex) {\n            this.value = value;\n            this.arrayIndex = arrayIndex;\n            this.elementIndex = elementIndex;\n        }\n    }\n\n    public int[] mergeSortedArrays(int[][] arrays) {\n        int total = 0;\n        // 堆中每个元素是某条数组当前尚未合并的头。\n        PriorityQueue<Entry> heap = new PriorityQueue<>(Comparator.comparingInt(e -> e.value));\n\n        for (int i = 0; i < arrays.length; i++) {\n            total += arrays[i].length;\n            if (arrays[i].length > 0) {\n                heap.offer(new Entry(arrays[i][0], i, 0));\n            }\n        }\n\n        int[] answer = new int[total];\n        int write = 0;\n\n        while (!heap.isEmpty()) {\n            Entry cur = heap.poll();\n            answer[write++] = cur.value;\n\n            int nextIndex = cur.elementIndex + 1;\n            // 只把刚弹出的那一条数组的下一个元素补回堆。\n            if (nextIndex < arrays[cur.arrayIndex].length) {\n                heap.offer(new Entry(\n                        arrays[cur.arrayIndex][nextIndex],\n                        cur.arrayIndex,\n                        nextIndex));\n            }\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数据结构（栈 / 堆 / 设计）",
+      "mod": "algo",
+      "part": "栈 · 堆 · 二分",
+      "cat": "堆 · 排序 · Top K",
+      "simple": {
+        "statement": "给定 N 个各自升序的整数数组，把它们合并成一个整体升序的数组。所有数组的元素总数记为 T。",
+        "req": [
+          "每个数组各自升序",
+          "合并成一个整体升序数组"
+        ],
+        "analysis": "Entry 同时带着 value、arrayIndex 和 elementIndex，小根堆按 value 排序。先累加每个数组的 length 得到 total，并且每个 length 大于 0 的数组只把 arrays[i][0] 放进堆。弹出 cur 写入 answer 后，计算 nextIndex = cur.elementIndex + 1，若还没超出该数组长度，就把 arrays[cur.arrayIndex][nextIndex] 再包成 Entry 入堆，其它数组的当前头不动。",
+        "cx": "时间 O(T log N)，空间 O(N)",
+        "topic": "p-heap",
+        "topicName": "堆 · 排序 · Top K"
+      },
+      "oldCat": "堆"
+    }
+  ]
+}

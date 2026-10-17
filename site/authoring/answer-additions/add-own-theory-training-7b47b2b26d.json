@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-theory-training-7b47b2b26d",
+  "entryId": "ai-模型与评测-3",
+  "questionId": "6",
+  "expectedOriginalHash": "f60326d14ffbada8023e4a5da246a4ba668a873393c17c4abea8ca94cd782c6c",
+  "title": "训练数据微调与分布式训练面试手册：机制与条件",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10 DP DDP TP PP EP 与通信"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法： DP/DDP/TP/PP/EP 有何差异？4EP 改 2EP×2TP 通信一定增加吗？设备限制与节点限制路由怎么比？"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心回答：DP 切数据，TP 切层内张量，PP 切层，EP 切专家；ZeRO/FSDP 切重复训练状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "通用数据并行 DP 与 PyTorch DataParallel 类要区分，后者通常单进程多线程 scatter/replicate/gather；DDP 通常每 GPU 一个进程，在反向按桶同步梯度，支持多机，数据分片仍需应用处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PyTorch DataParallel 的主设备还承担聚合输出等负载，重复复制与线程调度会限制扩展。DDP 的输入通常配合 DistributedSampler 等分片；按 epoch 改变洗牌时调用 sampler.set_epoch(epoch)，并处理补齐/丢尾造成的重复样本和不同 rank 步数，不能以模型被包装为 DDP 代替数据检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DDP 的各 rank 梯度平均只有在样本/token 权重正确时才等价于全局目标。例如两 rank 有 2 与 5 个样本，局部 mean 不能简单各占一半。"
+    },
+    {
+      "type": "paragraph",
+      "text": "梯度累积也要按有效监督 token 总数归一，尾批不能仍按完整累积步数错误缩放。合适的 no_sync 可以减少中间 microbatch 同步，但最后一步必须正常聚合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先遮住末章验算的结果，解释局部平均为什么会让较小分片的样本占更大权重，再说该怎样按目标计数恢复全局平均。若改用有效 token 作为单位，也要重新核对分母，而不是沿用样本数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "梯度同步与参数广播要分开。 常规 DDP 迭代通过梯度归约后各 rank 使用相同优化规则更新，并不是每步把 rank0 的全部参数广播来代替梯度同步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "初始化参数对齐、某些 buffer 广播、特殊 join 收尾同步是其他机制，需按版本配置说明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步训练会等待慢 rank；异步更新可减少等待，却引入陈旧梯度及不同优化语义，不是免费的等价加速。"
+    },
+    {
+      "type": "paragraph",
+      "text": "梯度桶小可以较早开始通信，桶大减少启动次数、可能更好利用带宽；两者对反向重叠的影响要看计算图与消息大小。NCCL 路径还受 NVLink/PCIe、跨机网络、GPU 到网卡亲和性及拓扑影响；有 RDMA 不等于所有传输和 CPU 开销都消失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TP 切矩阵列时并行产生不同输出，切行时局部输出需要求和，常用 all-reduce/all-gather/reduce-scatter。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PP 在 stage 间传激活与梯度，microbatch 减少空泡，仍需平衡各段负载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EP 按 router 把 token 发给专家，dispatch/combine 的 all-to-all 可能被热点拖尾。网络拓扑、数据类型和实际张量大小比“用了几种并行”更重要。"
+    },
+    {
+      "type": "paragraph",
+      "text": "理想 ring all-reduce 每 rank 发送量约 2(N−1)/N×X，X 为参与规约张量字节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EP 若全组 T 个唯一 token、宽度 H、元素字节 b、top-k、跨所计链路比例 ρ，未做同目的设备复用时双向总发送约 2THbkρ。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要把 EP 全组流量与 TP 每 rank 流量直接比较。"
+    },
+    {
+      "type": "paragraph",
+      "text": "4EP 改 2EP×2TP 时，专家内 TP 通信增加，但跨设备 EP 扇出与载荷可能减少。总变化=新 EP−旧 EP+新增 TP+重排成本，不必然上升。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若新增通信留在快 NVLink、减少的是慢跨机网络，字节更多仍可能时延更低。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DeepSeek-V2 的 device-limited routing、V3 的 node-limited routing 和框架 group-limited routing 限制目的设备/节点，负载均衡还需另一组机制；不能把 Switch/GShard 的一般平衡损失都叫同一分组 top-k 算法。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4EP 与 2EP×2TP 的可核对反例"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法： EP 哪些情况下比 TP 通信少？4EP 改成 2EP×2TP 是不是多了 TP 就一定更贵？还有谁做专家分组加组内 top-k？"
+    },
+    {
+      "type": "paragraph",
+      "text": "先画同样四张卡：原先四个 EP 成员各持有完整专家；混合后是两个 EP 分组，每组专家由两个 TP 成员切分。dense attention 的 TP 与 expert TP 可以分别配置，不能看到一个 TP 参数就推断所有层都按相同方式切分。比较时固定模型层、唯一 token 数、hidden、精度、top-k、专家布局和互联。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如旧 EP 跨所计链路发送 150MiB，新 EP 发送 80MiB：若新增 TP 与重排共 40MiB，新总量 120MiB，比原来少；若新增为 100MiB，新总量 180MiB，反而更多。这是明确预算下的算术反例。跨慢链路字节、每 rank 最大通信量和实际关键路径还要分别测，平均流量不能揭示热点拖尾。"
+    },
+    {
+      "type": "paragraph",
+      "text": "2THbkρ 只适用于每个 token—expert 副本各发一次完整激活的估算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个 token 选中同设备的多个专家时，可以只跨设备传一次再本地分发，此时要数不同目的设备而不是简单乘 top-k。"
+    },
+    {
+      "type": "paragraph",
+      "text": "稀疏 k 小、路由局部性强且可复用时，EP 可能比反复同步大激活的 TP 更省；k 大、跨慢网络、padding 或热点严重时未必。"
+    },
+    {
+      "type": "paragraph",
+      "text": "训练前向、反向、参数梯度同步及推理 Prefill/Decode 应按实际 collective 次数和张量逐项计算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DeepSeek-V2 先选择包含高亲和专家的至多 M 个设备，再在这些设备的专家中取 top-k；它是 V3 之前可明确指出的同类例子。V3 按每节点最高若干专家亲和分数之和选择至多 M 个节点，再限制专家选择范围。V3 的动态专家 bias 与小的 sequence-wise 辅助损失用于平衡负载，和限制目的节点不是同一个机制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Megatron Core 的 group-limited routing 提供专家分组和所选组数配置，可以对应设备或节点边界；这是框架机制支持，不能说成另一个模型的独立首创。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分层 all-to-all、通信计算重叠、热点专家复制可能只改变传输或放置，并不等同先 group top-k 再 expert top-k。"
+    },
+    {
+      "type": "paragraph",
+      "text": "限制组数也会缩小可选专家集合，可能损失质量或使热点组容量不足；同时观察专家 token 数、每节点收发字节、丢 token 率、最慢 rank 和任务效果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Expert Choice 则改变选择方向。 常规 token-choice 是每个 token 选择 top-k 个专家；Expert Choice 让每个专家从 token 中选择自己的 top-k，固定专家桶容量，而同一个 token 可以被不同数量的专家选中。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这有助于按专家容量组织负载，但不自动限制这些专家落在哪些设备或节点，也不保证每个 token 都获得同样计算量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它与 Switch/GShard 的 token-choice、容量控制和辅助平衡目标，以及 V2/V3 的目的设备/节点约束，应按“谁选谁、每边容量、通信目的地”三个问题分别比较。"
+    },
+    {
+      "type": "paragraph",
+      "text": "张量切分的求和或拼接必须放在数学上正确的位置，不能把非线性任意移过规约。"
+    },
+    {
+      "type": "paragraph",
+      "text": "流水线某个 stage 故障会影响整条训练迭代；恢复需一致的 step 和 checkpoint，不能把不同 rank 在不同 step 的分片拼起来。改变 world size 后能否恢复还取决于 checkpoint 的重分片支持及并行组布局；一个 rank 失败时，剩余 rank 不应继续用缺失或旧梯度更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Collective 的参与 rank、形状和调用次序必须一致；一个 rank OOM 或跳过通信会让其他 rank 等待。所谓 GPU 死锁常要检查 host/collective 次序、流依赖、非法跨 block 自旋和故障退出，不能只看 GPU 利用率。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-theory-training-guide",
+      "label": "使用与验证边界"
+    }
+  ]
+}

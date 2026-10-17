@@ -1,0 +1,475 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-distributed-ch03",
+  "kind": "qa",
+  "module": "design",
+  "part": "分布式系统工程",
+  "category": "分片与鉴权语义",
+  "title": "分片与鉴权语义",
+  "tags": [
+    "分布式系统",
+    "故障边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-distributed-cache-shard",
+      "order": 0,
+      "question": "一致性哈希如何实现，扩缩容迁移与脑裂怎么处理",
+      "shortAnswer": "一致性哈希通过稳定环位置减少成员变化时的重映射，扩缩容仍需版本化拓扑、数据迁移和写权威协议。",
+      "commonPhrasings": [
+        "一致性哈希如何实现，扩缩容迁移与脑裂怎么处理",
+        "一致性哈希怎么实现",
+        "虚拟节点解决什么",
+        "扩容时如何避免丢写和脑裂",
+        "手撕分布式LRU：一致性哈希分片、节点淘汰与热点key",
+        "手撕分布式LRU",
+        "一致性哈希怎样路由",
+        "节点失效和热点key怎么办"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "3.1 一致性哈希如何实现，扩缩容迁移与脑裂怎么处理"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：一致性哈希怎么实现；虚拟节点解决什么；扩容时如何避免丢写和脑裂。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "一致性哈希处理路由变化和迁移范围，不提供副本一致性，也不会自动搬运数据。etcd协调与一致性保证按v3.5讨论，节点号发放还须遵守自己的代际和持久高水位协议。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "环与虚拟节点的精确映射"
+        },
+        {
+          "type": "paragraph",
+          "text": "一致性哈希先把节点放上环，再让 key 找顺时针第一个节点。用节点标识和虚拟节点序号做稳定 hash，形成有序环；key 用同一 hash 找到首个后继虚拟节点，由它的物理 owner 负责。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以用排序数组二分，或 TreeMap.ceilingEntry，超过最大点就回到 firstEntry。所有客户端必须统一 hash、字符编码、无符号比较、碰撞处理和拓扑版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "虚拟节点改善节点少时的分布并支持权重，但真实热key仍会集中到一个owner，虚拟节点不能拆分单key操作。增加节点主要接管新节点前驱到它之间的区间，移除节点则由后继承接；理想均匀下迁移比例较小，但不能对任意key分布保证固定比例。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "迁移是单独的状态协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "扩容迁移不能只换路由表，还要交接写权威。先规划区间、复制基线，旧 owner 继续接受权威写，把增量可靠送到新 owner。"
+        },
+        {
+          "type": "paragraph",
+          "text": "到了切换屏障，确认新副本追到指定版本，才原子发布新 epoch。旧 owner 随后拒绝旧路由写，或转发到新 owner；校验完成后再回收旧副本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "也可采用受控双写，但须定义双写中一侧失败、重复/乱序、写版本冲突及回滚；“先读新，不存在读旧”只解决部分读空，不解决旧值覆盖新值。删除要传tombstone，增量必须保留足够长，不能仅复制现存键就丢掉迁移期间删除。缓存可从数据库回源时可选择失效重建，但要限速防全量击穿。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "脑裂不能靠一致性哈希修复"
+        },
+        {
+          "type": "paragraph",
+          "text": "一致性哈希算对了，也可能脑裂。两侧拿着不同拓扑，各自认为拥有同一个 key，在自己的环上都能算出合法结果，却仍然形成双写。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要求单写或线性一致时，要由共识元数据、epoch 和资源端 fencing 裁决归属；只有获得权威多数或租约的一侧能写，失联侧拒绝或只读。不能只靠客户端自觉更新配置，来阻止暂停的旧进程恢复后继续写。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若选择可用性优先允许两侧写，必须定义冲突解决如业务可合并操作、版本向量/CRDT或明确最后写规则。LWW可能丢更新且依赖时间/版本定义，不能对余额或库存用“最终会合并”敷衍。读缓存允许陈旧与主数据强一致是不同层级。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "测试与成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "环有V虚拟节点时定位约O(log V)、元数据O(V)，每次拓扑更新需传播版本；更多虚拟节点增加配置和迁移开销。测试边界wrap、哈希碰撞、不同语言编码、节点权重、热key、复制中断、切换后旧writer、tombstone和回滚。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "3.7 手撕分布式LRU：一致性哈希分片、节点淘汰与热点key"
+        },
+        {
+          "type": "paragraph",
+          "text": "分布式LRU可用一致性哈希定位分片、分片内维护LRU，并用拓扑代际拒绝错误路由；这不等于全局精确LRU。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：手撕分布式LRU；一致性哈希怎样路由；节点失效和热点key怎么办。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java教学实现采用固定拓扑上的分片LRU，三个本地HTTP节点各自淘汰；value限定UTF-8文本且有4096字节上限。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "路由环与节点内淘汰"
+        },
+        {
+          "type": "paragraph",
+          "text": "客户端和各节点使用相同UTF-8编码、SHA-256截取的64位无符号哈希与虚拟节点配置。环点排序按哈希、节点名和虚拟序号确定；对key的哈希二分查找首个不小于它的环点，到末尾则回绕。查找O(log V)，V为虚拟节点数，元数据O(V)。测试用逐点线性查找作为独立oracle，避免只验证几个碰巧正确的键。"
+        },
+        {
+          "type": "paragraph",
+          "text": "LRU 的 Get 也会改状态，不能按普通只读操作放开同步。这个节点用访问顺序 LinkedHashMap，Get 命中和 Put 已有键都要晋升最近使用，因此读写必须服从同一同步协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "超出本节点容量，淘汰最久未用项；零容量明确不保留。这里按条数计容量，不等于真实内存字节上限，生产还要补权重、TTL 与租户约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每个分片内部精确 LRU，不等于整个集群精确 LRU。节点之间没有共享全部访问顺序，一个分片开始淘汰时，另一片可能还有空位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要保证全局最老项被淘汰，就需要更贵的协调。分片 LRU 通常接受一些命中率代价，换取扩展性。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "真实HTTP边界与错误语义"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例使用JDK HttpServer启动三个loopback分片，客户端按owner发送。请求携带固定epoch，服务端重算owner并拒绝错误节点或过时代际；节点关闭时客户端返回显式错误，不临时改hash到另一空节点伪造正确结果。客户端配置连接超时与等待响应返回的超时，并限制响应体字节数。这里使用BodyHandlers.ofInputStream，随后readNBytes读体没有单独截止时间；生产需增加覆盖读体与重试的整体deadline和取消，不能只依靠HttpRequest.timeout。"
+        },
+        {
+          "type": "paragraph",
+          "text": "拓扑更新不是把epoch数字加一就结束。生产扩容需固定新旧视图，用快照加增量迁移，切换时以写屏障或资源代际挡住旧writer；缓存可丢且数据库为权威时可以选择受控失效重建。这个实现没有在线迁移、复制、持久化、共识、TLS和鉴权，不能作为余额或库存事实库。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "热key与失效风暴"
+        },
+        {
+          "type": "paragraph",
+          "text": "虚拟节点分散许多不同key，不能把一个热key拆开。只读热点可用本地副本、预热、请求合并和版本化失效；写热点只有业务能分解时才可分桶，任意value不能随机写多处后假定一致。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同key的miss可做single-flight，但等待者和总回源并发都要有上限。软过期与后台刷新必须说明可接受陈旧窗口，不能无限返回旧数据。大value限制、按租户隔离、节点故障时降速回源，避免缓存失效直接击穿数据库。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "如何验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "main包含10000个环路由对拍、10000次LRU操作独立oracle检查、特殊编码key、错误owner、过期epoch、超长value、60个真实并发HTTP写以及节点关闭。它们验证本地算法和loopback协议，不证明跨机器网络分区、生产安全或吞吐上限。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java实现"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "005/DistributedLru.java",
+          "value": "import com.sun.net.httpserver.*;\nimport java.io.*;\nimport java.net.*;\nimport java.net.http.*;\nimport java.nio.*;\nimport java.nio.charset.StandardCharsets;\nimport java.security.*;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Real loopback HTTP shards with exact per-shard LRU and immutable routing epoch.\n * A cache teaching implementation: no global LRU, replication, online migration, auth, TLS or durability.\n */\npublic final class DistributedLru {\n    static byte[] bytes(String s){return s.getBytes(StandardCharsets.UTF_8);}\n    public static final class Lru {\n        private final int capacity;\n        private final LinkedHashMap<String,String> entries=new LinkedHashMap<>(16,.75f,true);\n        public Lru(int capacity){if(capacity<0)throw new IllegalArgumentException();this.capacity=capacity;}\n        public synchronized String get(String key){return entries.get(Objects.requireNonNull(key));}\n        public synchronized void put(String key,String value){\n            Objects.requireNonNull(key);Objects.requireNonNull(value);if(capacity==0)return;\n            entries.put(key,value);\n            if(entries.size()>capacity)entries.remove(entries.keySet().iterator().next());\n        }\n        public synchronized int size(){return entries.size();}\n        synchronized Map<String,String> snapshot(){return new LinkedHashMap<>(entries);}\n    }\n    record Point(long hash,String node,int virtual) {}\n    static long hash(String s){\n        try{return ByteBuffer.wrap(MessageDigest.getInstance(\"SHA-256\").digest(bytes(s))).getLong();}\n        catch(NoSuchAlgorithmException e){throw new AssertionError(e);}\n    }\n    public static final class Ring {\n        private final List<Point> points;public final long epoch;\n        public Ring(List<String> nodes,int virtual,long epoch){\n            if(nodes==null||nodes.isEmpty()||virtual<=0||epoch<=0)throw new IllegalArgumentException();\n            this.epoch=epoch;Set<String> seen=new HashSet<>();List<Point> p=new ArrayList<>();\n            for(String n:nodes){\n                if(n==null||n.isBlank()||!seen.add(n))throw new IllegalArgumentException(\"node names\");\n                for(int i=0;i<virtual;i++)p.add(new Point(hash(\"node:\"+n+\":\"+i),n,i));\n            }\n            p.sort((a,b)->{int c=Long.compareUnsigned(a.hash(),b.hash());if(c!=0)return c;\n                c=a.node().compareTo(b.node());return c!=0?c:Integer.compare(a.virtual(),b.virtual());});\n            points=List.copyOf(p);\n        }\n        public String owner(String key){return ownerHash(hash(\"key:\"+Objects.requireNonNull(key)));}\n        String ownerHash(long h){\n            int lo=0,hi=points.size();while(lo<hi){int mid=(lo+hi)>>>1;\n                if(Long.compareUnsigned(points.get(mid).hash(),h)<0)lo=mid+1;else hi=mid;}\n            return points.get(lo==points.size()?0:lo).node();\n        }\n        String linearOwner(String key){long h=hash(\"key:\"+key);for(Point p:points)if(Long.compareUnsigned(p.hash(),h)>=0)return p.node();return points.getFirst().node();}\n    }\n    public static final class Node implements AutoCloseable {\n        final String id;final Ring ring;final Lru cache;final HttpServer server;final ExecutorService executor;\n        Node(String id,Ring ring,int capacity)throws IOException{\n            this.id=id;this.ring=ring;cache=new Lru(capacity);\n            server=HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(),0),64);\n            executor=new ThreadPoolExecutor(4,4,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(64),new ThreadPoolExecutor.AbortPolicy());\n            server.setExecutor(executor);server.createContext(\"/cache\",this::handle);server.start();\n        }\n        URI endpoint(){return URI.create(\"http://localhost:\"+server.getAddress().getPort());}\n        void handle(HttpExchange e)throws IOException {\n            try(e){\n                if(!e.getRequestURI().getPath().equals(\"/cache\")){reply(e,404,\"\");return;}\n                String raw=e.getRequestURI().getRawQuery();\n                if(raw==null||!raw.startsWith(\"key=\")||raw.indexOf('&')>=0){reply(e,400,\"invalid key\");return;}\n                String key;\n                try{key=URLDecoder.decode(raw.substring(4),StandardCharsets.UTF_8);}catch(IllegalArgumentException ex){reply(e,400,\"encoding\");return;}\n                if(key.isEmpty()||bytes(key).length>256){reply(e,400,\"invalid key\");return;}\n                if(!Long.toString(ring.epoch).equals(e.getRequestHeaders().getFirst(\"X-Epoch\"))||!ring.owner(key).equals(id)){\n                    reply(e,409,\"stale route or wrong owner\");return;\n                }\n                switch(e.getRequestMethod()) {\n                    case \"GET\" -> {String v=cache.get(key);reply(e,v==null?404:200,v==null?\"\":v);}\n                    case \"PUT\" -> {\n                        byte[] value=e.getRequestBody().readNBytes(4097);\n                        if(value.length>4096){reply(e,413,\"invalid value\");return;}\n                        // This example's value contract is UTF-8 text; reject malformed replacement decoding.\n                        String decoded=new String(value,StandardCharsets.UTF_8);\n                        if(!Arrays.equals(value,bytes(decoded))){reply(e,400,\"invalid UTF8\");return;}\n                        cache.put(key,decoded);reply(e,204,\"\");\n                    }\n                    default -> reply(e,405,\"\");\n                }\n            }\n        }\n        static void reply(HttpExchange e,int code,String body)throws IOException {\n            byte[] out=bytes(body);e.getResponseHeaders().set(\"Content-Type\",\"text/plain; charset=utf-8\");\n            if(code==204||out.length==0){e.sendResponseHeaders(code,-1);return;}\n            e.sendResponseHeaders(code,out.length);e.getResponseBody().write(out);\n        }\n        public void close(){server.stop(0);executor.shutdownNow();}\n    }\n    record Reply(int status,String body){}\n    public static final class Client implements AutoCloseable {\n        final Ring ring;final Map<String,URI> endpoints;\n        final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();\n        public Client(Ring ring,Map<String,URI> endpoints){this.ring=ring;this.endpoints=Map.copyOf(endpoints);}\n        Reply call(String method,String key,String value,long epoch)throws Exception{\n            return callAt(endpoints.get(ring.owner(key)),method,key,value,epoch);\n        }\n        Reply callAt(URI base,String method,String key,String value,long epoch)throws Exception {\n            if(base==null)throw new IOException(\"owner unavailable\");\n            URI uri=base.resolve(\"/cache?key=\"+URLEncoder.encode(key,StandardCharsets.UTF_8));\n            HttpRequest req=HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(2))\n                .header(\"X-Epoch\",Long.toString(epoch)).method(method,HttpRequest.BodyPublishers.ofString(value)).build();\n            HttpResponse<InputStream> res=http.send(req,HttpResponse.BodyHandlers.ofInputStream());\n            try(InputStream in=res.body()){\n                byte[] b=in.readNBytes(8193);if(b.length>8192)throw new IOException(\"oversize response\");\n                return new Reply(res.statusCode(),new String(b,StandardCharsets.UTF_8));\n            }\n        }\n        public void close(){http.close();}\n    }\n    static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args)throws Exception {\n        Lru c=new Lru(2);c.put(\"a\",\"1\");c.put(\"b\",\"2\");check(c.get(\"a\").equals(\"1\"));c.put(\"c\",\"3\");check(c.get(\"b\")==null);\n        c.put(\"a\",\"4\");c.put(\"d\",\"5\");check(c.get(\"c\")==null&&c.size()==2);Lru zero=new Lru(0);zero.put(\"a\",\"b\");check(zero.size()==0);\n        Ring ring=new Ring(List.of(\"n0\",\"n1\",\"n2\"),32,1),reverse=new Ring(List.of(\"n2\",\"n0\",\"n1\"),32,1);\n        for(int i=0;i<10000;i++){String k=Integer.toString(i);check(ring.owner(k).equals(reverse.owner(k)));check(ring.owner(k).equals(ring.linearOwner(k)));}\n        check(ring.ownerHash(-1L).equals(ring.points.getFirst().node()));\n        // Independent recency-list oracle, including updates and misses.\n        Random random=new Random(168);Lru tested=new Lru(3);List<Map.Entry<String,String>> reference=new ArrayList<>();\n        for(int i=0;i<10000;i++){\n            String k=\"k\"+random.nextInt(20);String expected=null;for(var e:reference)if(e.getKey().equals(k))expected=e.getValue();\n            if(random.nextBoolean()){\n                String v=\"v\"+i;tested.put(k,v);reference.removeIf(e->e.getKey().equals(k));reference.add(Map.entry(k,v));\n                if(reference.size()>3)reference.removeFirst();\n            }else{\n                check(Objects.equals(tested.get(k),expected));\n                if(expected!=null){reference.removeIf(e->e.getKey().equals(k));reference.add(Map.entry(k,expected));}\n            }\n            check(new ArrayList<>(tested.snapshot().entrySet()).equals(reference));\n        }\n        Map<String,Node> nodes=new LinkedHashMap<>();Map<String,URI> endpoints=new HashMap<>();\n        try{\n            for(String id:List.of(\"n0\",\"n1\",\"n2\")){Node n=new Node(id,ring,2);nodes.put(id,n);endpoints.put(id,n.endpoint());}\n            try(Client client=new Client(ring,endpoints)){\n                String key=\"中 +/key\";check(client.call(\"PUT\",key,\"value\",1).status()==204);\n                check(client.call(\"GET\",key,\"\",1).equals(new Reply(200,\"value\")));\n                check(client.call(\"GET\",key,\"\",2).status()==409);\n                check(client.call(\"PUT\",key,\"x\".repeat(4097),1).status()==413);\n                String wrong=ring.owner(key).equals(\"n0\")?\"n1\":\"n0\";\n                check(client.callAt(endpoints.get(wrong),\"GET\",key,\"\",1).status()==409);\n                try(var pool=Executors.newFixedThreadPool(12)){\n                    List<Callable<Reply>> work=new ArrayList<>();for(int i=0;i<60;i++){final int n=i;work.add(()->client.call(\"PUT\",\"load\"+n,\"v\",1));}\n                    for(Future<Reply> f:pool.invokeAll(work))check(f.get().status()==204);\n                }\n                for(Node n:nodes.values())check(n.cache.size()<=2);\n                nodes.get(ring.owner(key)).close();\n                try{client.call(\"GET\",key,\"\",1);throw new AssertionError(\"dead owner was hidden\");}catch(IOException expected){}\n            }\n        }finally{for(Node n:nodes.values())n.close();}\n        System.out.println(\"PASS DistributedLru: 10000 unsigned ring routes vs linear oracle, 10000 LRU operations vs recency oracle, three real HTTP shards, UTF8/encoded key, stale epoch/wrong owner, bounded value, 60 concurrent writes, dead owner surfaced; fixed topology only.\");\n    }\n}\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-auth-revocation",
+      "order": 1,
+      "question": "Workers KV用于JWT鉴权迁移时，最终一致性会产生哪些风险与替代方案",
+      "shortAnswer": "最终一致KV可承载允许缓存延迟的鉴权数据，但要求立即撤销的状态不能只依赖其异步传播。",
+      "commonPhrasings": [
+        "Workers KV用于JWT鉴权迁移时，最终一致性会产生哪些风险与替代方案",
+        "Workers KV做JWT鉴权有什么风险",
+        "最终一致能否接受",
+        "撤销令牌有哪些替代方案",
+        "JWT与共享Session怎样实现多实例登录校验",
+        "JWT与Session怎么选",
+        "多实例怎样共享登录",
+        "JWT怎样退出登录",
+        "高并发Token校验如何减少数据库查询并支持多端独立失效",
+        "高并发Token校验如何优化",
+        "怎样只退出手机不退出电脑",
+        "缓存撤销延迟怎样控制"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "3.10 Workers KV用于JWT鉴权迁移时，最终一致性会产生哪些风险与替代方案"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：Workers KV做JWT鉴权有什么风险；最终一致能否接受；撤销令牌有哪些替代方案。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "JWT鉴权迁移先说明Workers KV保存公钥、会话还是撤销记录，不同数据的新鲜度要求不同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "KV语义与真实边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "Cloudflare官方说明KV通过边缘缓存实现高读吞吐和最终一致；写入地也只是通常立即可见而非保证，其他位置可延迟60秒或更久，缓存不存在的负查询也会延迟看见新键。不能把“最多一分钟”当硬SLA，也不能把一次写成功等同所有鉴权节点已同步。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把所有写串到一个 Durable Object，只能协调写顺序，不能自动把后面的 KV 读取变强一致。直接对 KV 做同 key 的并发读改写缺少所需原子事务，两个节点基于旧值更新仍会丢逻辑修改。"
+        },
+        {
+          "type": "paragraph",
+          "text": "即使用 Durable Object 串行写，其他 Worker 若继续读 KV，仍会遇到陈旧值。必须沿真实读写路径判断保证。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "JWT场景必须先问KV存的是什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "若存签名验证公钥/JWKS，发布新kid后部分边缘查不到可能误拒合法新token；保留旧key过久又可能扩大已泄露key的接受窗口。若存sessionVersion、封禁或jti撤销状态，撤销写已成功而边缘读旧值会继续放行；负缓存“未撤销”尤其不能当实时证明。若存权限，降权滞后可能访问不该再看的资源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JWT密码学验签只能证明签发/完整性，不证明当前仍允许。必须固定允许算法、验证issuer/audience、exp/nbf和token用途，不能直接相信header指定算法或未经可信来源选择任意key。短有效期限制部分风险，但不能实现要求立即撤销的语义。token有效期和撤销传播上限应由实际风险与业务承诺确定。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "按允许的撤销窗口分层设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "允许明确短期陈旧的低风险操作，可短寿命access token、权威refresh校验、版本化公钥预发布与安全重叠期，并度量实际跨地域延迟；未知kid受控刷新与限流，不能回退到不验签。token在到期后必须拒绝，密钥撤销涉及安全事故时不能一概继续旧key直到便利窗口结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要即时封禁/高风险操作，应向强一致权威检查会话或权限，可按用户/会话路由到相应Durable Object及其事务存储，或使用合适数据库/鉴权服务。请求必须实际经过这个权威检查，不能查完再无限缓存“允许”。在权威不可达时fail-closed或按已批准风险降级，不能既承诺强撤销又无条件离线放行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "迁移怎么验证才算完成"
+        },
+        {
+          "type": "paragraph",
+          "text": "先记录旧新路径的鉴权决策差异但不泄露原token；迁移基准状态/版本、灰度并保留撤回路线。对账户新建、注销、改权限、key轮换、负缓存、跨地域并发与失联分别测错误放行和误拒，区分可用性失败与越权风险；观察等待时间分位数而非只看平均。"
+        },
+        {
+          "type": "paragraph",
+          "text": "业务可接受最终一致需要具体合同：保存什么对象、陈旧会触发什么风险、允许多长传播窗口，以及超窗后如何拒绝或回权威读取。最终一致不是必然错误，放在实时撤销场景却没有补充机制才是问题。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "13.6 JWT与共享Session怎样实现多实例登录校验"
+        },
+        {
+          "type": "paragraph",
+          "text": "多实例登录校验可用共享Session或验证JWT，但立即撤销、多端隔离和密钥轮换仍需明确状态与时效协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：JWT与Session怎么选；多实例怎样共享登录；JWT怎样退出登录。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "JWT是令牌格式，Session是服务端会话模式，JWT也可以关联服务端可撤销状态。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "共享Session的完整请求路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "共享Session让任意应用实例都能验证同一登录态。认证成功后生成高熵随机sessionId，在共享存储保存主体、权限/会话版本、创建时间、最后活动，以及绝对/空闲过期时间；客户端用安全Cookie或明确会话头携带ID。"
+        },
+        {
+          "type": "paragraph",
+          "text": "请求到达哪台实例，都按同一namespace和序列化合同查询共享状态、检查有效性，再建立本次请求的身份上下文。因此负载均衡不必一直粘在最初登录的机器上。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Spring Session可将HttpSession管理接到Redis/JDBC等实现，仍须正确配置Cookie、认证与存储访问。登录/提权时旋转sessionId防固定会话，退出按会话撤销，Cookie采用HTTPS下Secure、HttpOnly及合适SameSite/CSRF防护。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "JWT验证与状态代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "签名JWT把声明装在token里，服务可以用可信密钥本地验签，减少会话查询。但普通JWS载荷可读，签名不等于加密。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验证必须限制算法，核对可信issuer、audience、exp/nbf等合同。不能让token头任意指定密钥来源，也不能把解码成功当成登录成功；密钥轮换要保留合理验证过渡，并拒绝不受信任的kid。"
+        },
+        {
+          "type": "paragraph",
+          "text": "无状态短期access token便于跨实例验证，但退出、封禁、权限收紧不能自动撤销所有已发token。可用短有效期、集中撤销/会话版本及可旋转refresh token，权衡查询量与失效传播窗口。每次仍查状态便不再是完全无状态；这是需求取舍而非JWT失效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "共享存储高可用不等于登录状态强一致"
+        },
+        {
+          "type": "paragraph",
+          "text": "会话丢失常使用户重新登录，撤销记录丢失可能使已退出token再次有效，二者风险不同。关键注销/封禁需要权威版本及明示最大陈旧时间，故障时不能默认所有请求认证通过。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Redis Cluster把key映射到16384个哈希槽：CRC16(key) mod 16384；有合法hash tag时，用该tag计算。客户端按MOVED和ASK处理重定向。"
+        },
+        {
+          "type": "paragraph",
+          "text": "槽数均分，只能说明逻辑分区较均匀，不能保证字节量和QPS均匀。大session、共享hash tag和热用户都会造成偏斜，要采样槽大小及访问量，结合迁槽和限制会话体积处理；迁走一个热key，不会把这个key自动拆开。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "测登录后换实例、session固定攻击、退出与并发请求、token过期边界、错误issuer/audience/算法、密钥轮换、Redis切换及撤销传播。权限每次在业务对象上检查，session/token有效不代表可读所有短链接或订单。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "13.9 高并发Token校验如何减少数据库查询并支持多端独立失效"
+        },
+        {
+          "type": "paragraph",
+          "text": "减少数据库查询可用短期本地缓存与共享会话状态，但多端撤销必须按设备会话维度维护版本和失效传播。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：高并发Token校验如何优化；怎样只退出手机不退出电脑；缓存撤销延迟怎样控制。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "场景允许电脑与手机同时登录并单独撤销其中一个，会话身份和撤销时效必须独立建模。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先把账号与会话拆开"
+        },
+        {
+          "type": "paragraph",
+          "text": "user表存身份基础信息，会话表按sessionId/deviceSessionId记录userId、设备标识、凭证摘要/引用、签发过期、撤销和权限版本。一个user对应多会话，撤销电脑仅改变其会话状态，不更新user行里唯一token使手机也退出。deviceId只是辅助属性，不能作为认证秘密。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "两种主要优化路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "不透明token由共享会话存储验证，可将活跃会话放Redis，权威持久库承担恢复/审计按需落盘；应用短期本地缓存降低热点往返，但每层缓存都引入撤销传播窗口。key使用会话ID而非直接把原token写日志，值带状态/版本/有效期，读路径检查到期而非仅等后台清理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "短期签名JWT能在本地验签，并校验issuer、audience和时间，减少逐请求查库。refresh会话则集中保存并轮换；撤销某一端，可以阻止该会话继续刷新。"
+        },
+        {
+          "type": "paragraph",
+          "text": "但已经发出的access token，在过期前仍可能被接受。要求即时失效，就必须增加在线会话版本/撤销查询或等价机制，不能同时承诺“没有任何在线状态”和“没有传播代价的即时退出”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "缓存和故障策略"
+        },
+        {
+          "type": "paragraph",
+          "text": "撤销先持久化权威状态，再用可靠通知失效缓存；短TTL是有界陈旧方案，通知不是绝对即时。权限敏感操作可强查权威/提高验证要求。缓存不可用时有容量预算地回源或拒绝，不无限并发把数据库打垮；负缓存防随机token探测也要短期和有界基数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据库连接池、会话更新频率和滑动过期写放大需要控制，不必每个请求都同步更新lastSeen。共享身份缓存部署在服务私网，使用访问控制/加密传输；私密token/会话内容不能作为公共CDN缓存对象。容量需要按实际峰值、缓存与强失效要求验证。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试多端各有会话、只撤一端、refresh重放、退出与缓存更新交错、密钥轮换、缓存全失效、数据库回源受限和时钟偏差。观测缓存命中之外还要看已撤销凭证最大接受时长，性能优化不能隐藏鉴权错误。JWT与Session验证基础复用第13.6节。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

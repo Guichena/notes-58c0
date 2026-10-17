@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-elasticsearch-4",
+  "id": "q-own-es-java-client",
+  "order": 41,
+  "question": "Java API Client 怎样限定版本、超时、bulk 重试和 PIT 资源？",
+  "shortAnswer": "复用受控 TLS 客户端，以业务总预算约束每次调用；只重试明确可恢复的失败项，未知结果先核验，分页检查完整性并关闭最新 PIT。",
+  "commonPhrasings": [
+    "客户端兼容是否等于自动拥有新版 API？",
+    "Future 取消能保证远端写回滚吗？",
+    "完整教学工程怎样运行和验收？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10.1 明确版本和客户端分层"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面教学工程固定 Elasticsearch server 8.15.3、Java API Client 8.15.0、低层 REST Client 8.15.0、Jackson 2.17.0、JDK 21。客户端与服务端同 major/minor，服务端补丁更高；程序还会检查实际服务版本。这组旧版本用于与本手册基线对照，不是新的生产部署推荐。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java API Client 有同步与异步接口，底层 transport 负责 HTTP、连接池和序列化。客户端面向同 major 中后续 minor 的兼容策略，不意味着旧客户端凭空拥有新版 API，也不保证任意较新客户端能调用旧服务器的全部能力。跨 major、第三方发行版以及旧 High Level REST Client 的兼容模式需分别核对，不能仅改 Maven 版本号就认为迁移完毕。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端与连接池通常按应用生命周期复用，结束时关闭 transport；不要每次请求创建一个线程池和 HTTP client。请求 builder 则按请求构建，不在多个线程同时修改。业务对象的并发安全、调用者身份和结果缓存边界不会因为 client 可复用而自动解决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TLS 要验证 CA 和主机名，不使用 trust-all 或关闭 hostname verification。URL、CA 文件位置与凭据由受控环境提供，凭据不写源码、命令参数、异常全文或请求日志。权限只覆盖独立测试索引和本次需要的操作，不要为一个搜索程序默认使用超级管理员。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10.2 三类超时和一个总预算"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接建立超时、连接池等待超时、socket 等待超时各约束一部分网络阶段；ES search 的 timeout 是服务端搜索预算，也不是整个客户端调用的硬截止。一个业务 deadline 要覆盖排队、请求、响应处理、重试和退避。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例使用单调时钟计算30秒工作预算，每次发起异步请求前检查剩余时间，等待也只使用剩余预算；最多一个业务请求在途，bulk 最多两条且有保守字节上界。PIT 清理另留最多3秒等待预算，关闭连接资源本身仍可能需要系统清理时间，因此不能承诺整个进程精确33秒退出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future 取消不证明 ES 停止或回滚。超时之后程序终止后续业务步骤，关闭客户端并要求核验同一个索引中的写入状态；不会自动换 ID、换索引或补发非幂等操作。服务端在途写可能已经生效，关闭连接也不能撤销它。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10.9 面试收尾的完整回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "“从 Java 发起一次搜索”时，先复用客户端并正确配置 TLS，用可信身份生成硬过滤，再确定索引代、查询和总预算。请求到达 ES 后，由分片执行 query，协调后 fetch；返回应用时，先检查结果完整性，再做当前资格 hydration，并按稳定排序和分页合同交付结果，最后清理资源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "讲完这条正常路径，再沿各步回答：输入和输出是什么，失败时是否允许重试，恢复责任由谁保存。这样能把客户端、搜索引擎与应用的责任接起来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“向量搜索怎么调优”先固定模型/版本/维度/度量与合法集合，用精确基线区分模型相关性、ANN 漏召回和重排损失，再比较候选预算、延迟、资源和新鲜度。技术选项多不是亮点，能够说清一个结果为什么有资格、为什么排在这里、为什么在失败时仍不会被误当完整答案，才是可靠的工程回答。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10.3 完整教学工程的运行合同"
+    },
+    {
+      "type": "paragraph",
+      "text": "本节给出完整教学工程，包含所需构建文件、主类、mapping、四份数据和运行说明。它与第五章只依赖 JDK 的算法示例不同，需要有权限的独立 Elasticsearch 8.15.3 测试环境、JDK 21、Maven 3.9.x 和对应依赖。先理解每一请求的意图，再在独立测试环境逐项验证 mapping、索引写入、查询结果与异常分支。"
+    },
+    {
+      "type": "paragraph",
+      "text": "程序创建一个全新、以 interview_java_ 开头的索引；若同名已存在就停止，不删除或覆盖旧索引。一个主分片、零副本仅适用于这份单节点测试数据，不能验证高可用。四份记录中 a、b 合格，c 属于其他租户，d 已删除；三维向量是手工构造的数值夹具，不对应任何真实 Embedding 模型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本程序的幂等前提很窄：只有一个写者，每篇文档都是不可变的版本1完整快照。因此才使用 external_gte，让相同 payload 可以重投；这不能直接替代线上多写者的版本裁决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重试也只处理已经明确返回的失败项：bulk 中的429、502、503、504最多尝试三次。解析、鉴权、冲突等错误会停止，并只输出有限的 ID、状态和错误类型。请求级异常表示结果未知，程序不会悄悄重发。"
+    },
+    {
+      "type": "paragraph",
+      "text": "程序不实现生产身份登录、动态 ACL 服务、CDC 位置账本或持久死信队列。固定 tenant/acl/generation 是隔离夹具的查询条件；接入真实用户前，必须按第四章用可信身份构造它们，并在输出前核验当前授权。这里没有任何待补的 Java helper 或省略文件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "建立目录 es-interview，在其中保存 pom.xml；建立 src/main/java/demo，把主类保存为 EsInterview.java。完整文件如下。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "pom.xml"
+    },
+    {
+      "type": "code",
+      "language": "xml",
+      "value": "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n  <groupId>demo</groupId><artifactId>es-interview</artifactId><version>1.0.0</version>\n  <properties><maven.compiler.release>21</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>\n  <dependencies>\n    <dependency><groupId>co.elastic.clients</groupId><artifactId>elasticsearch-java</artifactId><version>8.15.0</version></dependency>\n    <dependency><groupId>org.elasticsearch.client</groupId><artifactId>elasticsearch-rest-client</artifactId><version>8.15.0</version></dependency>\n    <dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId><version>2.17.0</version></dependency>\n  </dependencies>\n  <build><plugins>\n    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin>\n    <plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.3.0</version><configuration><mainClass>demo.EsInterview</mainClass></configuration></plugin>\n  </plugins></build>\n</project>\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "EsInterview.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "package demo;\n\nimport co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;\nimport co.elastic.clients.elasticsearch._types.FieldValue;\nimport co.elastic.clients.elasticsearch._types.Refresh;\nimport co.elastic.clients.elasticsearch._types.SortOrder;\nimport co.elastic.clients.elasticsearch._types.VersionType;\nimport co.elastic.clients.elasticsearch._types.query_dsl.Query;\nimport co.elastic.clients.elasticsearch.core.BulkRequest;\nimport co.elastic.clients.elasticsearch.core.SearchRequest;\nimport co.elastic.clients.elasticsearch.core.SearchResponse;\nimport co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;\nimport co.elastic.clients.elasticsearch.core.search.Hit;\nimport co.elastic.clients.json.JsonData;\nimport co.elastic.clients.json.jackson.JacksonJsonpMapper;\nimport co.elastic.clients.transport.rest_client.RestClientTransport;\nimport co.elastic.clients.transport.TransportUtils;\nimport org.apache.http.Header;\nimport org.apache.http.HttpHost;\nimport org.apache.http.message.BasicHeader;\nimport org.elasticsearch.client.RestClient;\nimport java.io.File;\nimport java.io.StringReader;\nimport java.net.URI;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.function.Supplier;\n\n/** Isolated, single-writer fixture. No production ACL provider or CDC consumer is implied. */\npublic final class EsInterview {\n    private static final int MAX_ITEMS = 2, MAX_BYTES = 64 * 1024, MAX_ATTEMPTS = 3;\n    private record Doc(String id, String json) {\n        Doc {\n            if (!id.matches(\"[a-z0-9]{1,20}\") || json.length() > 8192)\n                throw new IllegalArgumentException(\"bounded fixture document required\");\n        }\n        long wireBudget() { return 6L * json.length() + 1024; }\n    }\n    private static final class Deadline {\n        private final long end;\n        Deadline(Duration budget) { end = System.nanoTime() + budget.toNanos(); }\n        long remaining() throws TimeoutException {\n            long value = end - System.nanoTime();\n            if (value <= 0) throw new TimeoutException(\"operation deadline exceeded\");\n            return value;\n        }\n        <T> T await(Supplier<CompletableFuture<T>> call) throws Exception {\n            remaining();\n            CompletableFuture<T> future = call.get();\n            try { return future.get(remaining(), TimeUnit.NANOSECONDS); }\n            catch (TimeoutException ex) { future.cancel(true); throw ex; }\n            catch (InterruptedException ex) {\n                future.cancel(true); Thread.currentThread().interrupt(); throw ex;\n            } catch (ExecutionException ex) {\n                if (ex.getCause() instanceof Exception cause) throw cause;\n                throw ex;\n            }\n        }\n        void pause(long millis) throws Exception {\n            if (TimeUnit.MILLISECONDS.toNanos(millis) >= remaining())\n                throw new TimeoutException(\"no retry budget\");\n            try { Thread.sleep(millis); }\n            catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw ex; }\n        }\n    }\n    private static String env(String name) {\n        String value = System.getenv(name);\n        if (value == null || value.isBlank()) throw new IllegalArgumentException(\"missing \" + name);\n        return value;\n    }\n    private static Query scope() {\n        // Fixed evaluation time and generation; identical in all pages/channels.\n        return Query.of(q -> q.withJson(new StringReader(\"\"\"\n            {\"bool\":{\"filter\":[\n              {\"term\":{\"tenant_id\":\"demo\"}}, {\"term\":{\"acl\":\"reader\"}},\n              {\"term\":{\"generation\":\"r1\"}}, {\"term\":{\"deleted\":false}},\n              {\"range\":{\"created_at\":{\"lte\":\"2026-10-10T12:00:00Z\"}}}\n            ]}}\n            \"\"\")));\n    }\n    private static Query textQuery() {\n        return Query.of(q -> q.bool(b -> b.filter(scope())\n                .must(m -> m.match(t -> t.field(\"body\").query(\"缓存\")))));\n    }\n    private static void complete(SearchResponse<?> response) {\n        if (response.timedOut() || response.shards().failed().intValue() != 0\n                || response.shards().total().intValue() != 1\n                || response.shards().successful().intValue() != 1)\n            throw new IllegalStateException(\"incomplete fixture search; cursor unchanged\");\n    }\n    private static void bulk(ElasticsearchAsyncClient client, String index,\n                             List<Doc> documents, Deadline deadline) throws Exception {\n        List<Doc> batch = new ArrayList<>(); long bytes = 0;\n        for (Doc document : documents) {\n            long cost = document.wireBudget();\n            if (cost > MAX_BYTES) throw new IllegalArgumentException(\"document exceeds batch budget\");\n            if (!batch.isEmpty() && (batch.size() == MAX_ITEMS || bytes + cost > MAX_BYTES)) {\n                writeBatch(client, index, batch, deadline); batch.clear(); bytes = 0;\n            }\n            batch.add(document); bytes += cost;\n        }\n        if (!batch.isEmpty()) writeBatch(client, index, batch, deadline);\n    }\n    private static void writeBatch(ElasticsearchAsyncClient client, String index,\n                                    List<Doc> batch, Deadline deadline) throws Exception {\n        List<Doc> pending = List.copyOf(batch);\n        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {\n            BulkRequest.Builder builder = new BulkRequest.Builder().refresh(Refresh.WaitFor);\n            for (Doc document : pending) builder.operations(op -> op.index(i -> i\n                    .index(index).id(document.id()).version(1L).versionType(VersionType.ExternalGte)\n                    .document(JsonData.fromJson(document.json()))));\n            var request = builder.build();\n            // Any exception here is request-level/unknown outcome. Do not silently retry it.\n            var response = deadline.await(() -> client.bulk(request));\n            if (response.items().size() != pending.size())\n                throw new IllegalStateException(\"bulk response count mismatch\");\n            List<Doc> retry = new ArrayList<>(); List<String> fatal = new ArrayList<>();\n            for (int i = 0; i < pending.size(); i++) {\n                BulkResponseItem item = response.items().get(i); Doc document = pending.get(i);\n                if (!document.id().equals(item.id()))\n                    throw new IllegalStateException(\"bulk response identity mismatch\");\n                boolean success = item.error() == null && item.status() >= 200 && item.status() < 300;\n                if (success) continue;\n                int status = item.status();\n                if (status == 429 || status == 502 || status == 503 || status == 504) retry.add(document);\n                else fatal.add(document.id() + \":\" + status + \":\"\n                        + (item.error() == null ? \"unknown\" : item.error().type()));\n            }\n            if (!fatal.isEmpty()) {\n                System.err.println(\"bulk terminal items=\" + fatal + \"; unresolved transient IDs=\"\n                        + retry.stream().map(Doc::id).toList());\n                throw new IllegalStateException(\"bulk requires operator repair\");\n            }\n            if (retry.isEmpty()) return;\n            if (attempt == MAX_ATTEMPTS) throw new IllegalStateException(\"bulk retries exhausted: \"\n                    + retry.stream().map(Doc::id).toList());\n            pending = List.copyOf(retry);\n            deadline.pause((100L << (attempt - 1)) + ThreadLocalRandom.current().nextLong(51));\n        }\n    }\n    private static void run(ElasticsearchAsyncClient client, String index, Deadline deadline) throws Exception {\n        var info = deadline.await(client::info);\n        if (!info.version().number().equals(\"8.15.3\"))\n            throw new IllegalStateException(\"fixture requires Elasticsearch server 8.15.3\");\n        if (deadline.await(() -> client.indices().exists(e -> e.index(index))).value())\n            throw new IllegalStateException(\"choose a new, unused ES_INDEX\");\n        var created = deadline.await(() -> client.indices().create(c -> c.index(index)\n                .withJson(new StringReader(\"\"\"\n            {\"settings\":{\"number_of_shards\":\"1\",\"number_of_replicas\":\"0\",\"refresh_interval\":\"1s\",\n              \"analysis\":{\"analyzer\":{\"cjk_mixed\":{\"type\":\"custom\",\"tokenizer\":\"standard\",\n                \"filter\":[\"cjk_width\",\"lowercase\",\"cjk_bigram\"]}}}},\n             \"mappings\":{\"dynamic\":\"strict\",\"properties\":{\n              \"tenant_id\":{\"type\":\"keyword\"},\"doc_id\":{\"type\":\"keyword\"},\n              \"acl\":{\"type\":\"keyword\"},\"generation\":{\"type\":\"keyword\"},\n              \"deleted\":{\"type\":\"boolean\"},\"version\":{\"type\":\"long\"},\n              \"created_at\":{\"type\":\"date\"},\"tags\":{\"type\":\"keyword\"},\n              \"body\":{\"type\":\"text\",\"analyzer\":\"cjk_mixed\"},\n              \"embedding\":{\"type\":\"dense_vector\",\"dims\":3,\"index\":true,\n                \"similarity\":\"cosine\",\"index_options\":{\"type\":\"hnsw\",\"m\":16,\"ef_construction\":100}}\n             }}}\n            \"\"\"))));\n        if (!created.acknowledged() || !created.shardsAcknowledged())\n            throw new IllegalStateException(\"index creation not fully acknowledged; inspect before retry\");\n        var analyzed = deadline.await(() -> client.indices().analyze(a -> a.index(index)\n                .analyzer(\"cjk_mixed\").text(\"缓存一致性 ES\")));\n        System.out.println(\"tokens=\" + analyzed.tokens().stream().map(t -> t.token()).toList());\n        List<Doc> docs = List.of(\n            new Doc(\"a\", \"{\\\"tenant_id\\\":\\\"demo\\\",\\\"doc_id\\\":\\\"a\\\",\\\"acl\\\":[\\\"reader\\\"],\\\"generation\\\":\\\"r1\\\",\\\"deleted\\\":false,\\\"version\\\":1,\\\"created_at\\\":\\\"2026-10-10T00:00:00Z\\\",\\\"tags\\\":[\\\"java\\\"],\\\"body\\\":\\\"缓存一致性\\\",\\\"embedding\\\":[1,0,0]}\"),\n            new Doc(\"b\", \"{\\\"tenant_id\\\":\\\"demo\\\",\\\"doc_id\\\":\\\"b\\\",\\\"acl\\\":[\\\"reader\\\"],\\\"generation\\\":\\\"r1\\\",\\\"deleted\\\":false,\\\"version\\\":1,\\\"created_at\\\":\\\"2026-10-10T00:00:00Z\\\",\\\"tags\\\":[\\\"search\\\"],\\\"body\\\":\\\"缓存搜索\\\",\\\"embedding\\\":[0.8,0.2,0]}\"),\n            new Doc(\"c\", \"{\\\"tenant_id\\\":\\\"other\\\",\\\"doc_id\\\":\\\"c\\\",\\\"acl\\\":[\\\"reader\\\"],\\\"generation\\\":\\\"r1\\\",\\\"deleted\\\":false,\\\"version\\\":1,\\\"created_at\\\":\\\"2026-10-10T00:00:00Z\\\",\\\"tags\\\":[\\\"private\\\"],\\\"body\\\":\\\"缓存一致性\\\",\\\"embedding\\\":[1,0,0]}\"),\n            new Doc(\"d\", \"{\\\"tenant_id\\\":\\\"demo\\\",\\\"doc_id\\\":\\\"d\\\",\\\"acl\\\":[\\\"reader\\\"],\\\"generation\\\":\\\"r1\\\",\\\"deleted\\\":true,\\\"version\\\":1,\\\"created_at\\\":\\\"2026-10-10T00:00:00Z\\\",\\\"tags\\\":[\\\"deleted\\\"],\\\"body\\\":\\\"缓存一致性\\\",\\\"embedding\\\":[1,0,0]}\"));\n        bulk(client, index, docs, deadline);\n        var aggregation = deadline.await(() -> client.search(s -> s.index(index).size(0)\n                .allowPartialSearchResults(false).timeout(\"5s\").query(scope())\n                .aggregations(\"by_tag\", a -> a.terms(t -> t.field(\"tags\").size(10)\n                        .showTermDocCountError(true))), JsonData.class));\n        complete(aggregation);\n        System.out.println(\"by_tag=\" + aggregation.aggregations().get(\"by_tag\"));\n        var vector = deadline.await(() -> client.search(s -> s.index(index).size(2)\n                .allowPartialSearchResults(false).timeout(\"5s\")\n                .knn(k -> k.field(\"embedding\").queryVector(1.0f, 0.0f, 0.0f)\n                        .k(2).numCandidates(10).filter(scope())), JsonData.class));\n        complete(vector);\n        Set<String> vectorIds = new HashSet<>();\n        for (Hit<JsonData> hit : vector.hits().hits()) vectorIds.add(hit.id());\n        if (!vectorIds.equals(Set.of(\"a\", \"b\"))) throw new IllegalStateException(\"vector fixture mismatch\");\n        String pit = null;\n        try {\n            pit = deadline.await(() -> client.openPointInTime(o -> o.index(index)\n                    .keepAlive(t -> t.time(\"1m\")))).id();\n            List<FieldValue> after = List.of(); List<String> received = new ArrayList<>();\n            for (int page = 0; page < 10; page++) {\n                SearchRequest.Builder builder = new SearchRequest.Builder();\n                final String currentPit = pit;\n                builder.pit(p -> p.id(currentPit).keepAlive(t -> t.time(\"1m\")))\n                        .size(1).allowPartialSearchResults(false).timeout(\"5s\")\n                        .trackTotalHits(t -> t.enabled(false)).query(textQuery())\n                        .sort(s -> s.field(f -> f.field(\"doc_id\").order(SortOrder.Asc)))\n                        .sort(s -> s.field(f -> f.field(\"_shard_doc\").order(SortOrder.Asc)));\n                if (!after.isEmpty()) builder.searchAfter(after);\n                var request = builder.build();\n                var result = deadline.await(() -> client.search(request, JsonData.class));\n                if (result.pitId() != null) pit = result.pitId(); // Also retain latest ID for cleanup.\n                complete(result); // Do not advance the sort cursor before validating completeness.\n                if (result.hits().hits().isEmpty()) {\n                    if (!received.equals(List.of(\"a\", \"b\"))) throw new IllegalStateException(\"page fixture mismatch\");\n                    System.out.println(\"complete pages=\" + received); return;\n                }\n                for (Hit<JsonData> hit : result.hits().hits()) received.add(hit.id());\n                after = List.copyOf(result.hits().hits().getLast().sort());\n                if (after.size() != 2) throw new IllegalStateException(\"missing full sort tuple\");\n            }\n            throw new IllegalStateException(\"fixture page safety bound reached\");\n        } finally {\n            if (pit != null) {\n                final String lastPit = pit;\n                try {\n                    var closed = new Deadline(Duration.ofSeconds(3)).await(\n                            () -> client.closePointInTime(c -> c.id(lastPit)));\n                    if (!closed.succeeded()) System.err.println(\"PIT cleanup incomplete; expires by keep_alive\");\n                } catch (Exception cleanup) {\n                    System.err.println(\"PIT cleanup failed: \" + cleanup.getClass().getSimpleName());\n                }\n            }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        if (!\"yes\".equals(env(\"ES_DEMO_ALLOW_CREATE\")))\n            throw new IllegalArgumentException(\"set ES_DEMO_ALLOW_CREATE=yes only for an isolated fixture\");\n        String url = env(\"ES_URL\"), key = env(\"ES_API_KEY\"), index = env(\"ES_INDEX\");\n        URI uri = URI.create(url);\n        if (!\"https\".equals(uri.getScheme()) || uri.getHost() == null || uri.getUserInfo() != null\n                || uri.getQuery() != null || uri.getFragment() != null\n                || !(uri.getPath().isEmpty() || uri.getPath().equals(\"/\")))\n            throw new IllegalArgumentException(\"ES_URL must be an HTTPS origin without credentials\");\n        if (!index.matches(\"interview_java_[a-z0-9_]{1,40}\"))\n            throw new IllegalArgumentException(\"ES_INDEX must use isolated interview_java_ prefix\");\n        var ssl = TransportUtils.sslContextFromHttpCaCrt(new File(env(\"ES_CA_CERT\")));\n        RestClient low = RestClient.builder(new HttpHost(uri.getHost(), uri.getPort(), uri.getScheme()))\n                .setDefaultHeaders(new Header[]{new BasicHeader(\"Authorization\", \"ApiKey \" + key)})\n                .setRequestConfigCallback(r -> r.setConnectTimeout(2000)\n                        .setConnectionRequestTimeout(2000).setSocketTimeout(5000))\n                .setHttpClientConfigCallback(h -> h.setSSLContext(ssl)\n                        .setMaxConnTotal(2).setMaxConnPerRoute(2)).build();\n        RestClientTransport createdTransport;\n        try { createdTransport = new RestClientTransport(low, new JacksonJsonpMapper()); }\n        catch (RuntimeException | Error constructionFailure) {\n            try { low.close(); }\n            catch (Throwable closeFailure) {\n                if (closeFailure != constructionFailure) constructionFailure.addSuppressed(closeFailure);\n            }\n            throw constructionFailure;\n        }\n        try (RestClientTransport transport = createdTransport) {\n            var client = new ElasticsearchAsyncClient(transport);\n            try { run(client, index, new Deadline(Duration.ofSeconds(30))); }\n            catch (Exception failure) {\n                // Avoid printing request bodies, authentication headers or full exception messages.\n                System.err.println(\"Stopped: \" + failure.getClass().getSimpleName()\n                        + \"; an in-flight write may have succeeded; inspect the same index before retry.\");\n                throw new IllegalStateException(\"fixture did not complete; inspect unresolved writes\");\n            }\n        }\n    }\n\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10.4 保存 运行与应观察的结果"
+    },
+    {
+      "type": "paragraph",
+      "text": "通过环境管理或密钥管理设置以下变量：ES_URL 是 HTTPS 服务地址；ES_CA_CERT 是本机已信任来源的 CA 文件路径；ES_API_KEY 是该测试账号的已有编码 API key；ES_INDEX 是尚不存在的测试索引名，例如 interview_java_demo；ES_DEMO_ALLOW_CREATE 设为 yes 表示允许运行者在此独立环境创建夹具。不要把真实 key 粘进共享脚本或聊天，也不需要为阅读示例生成凭据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面只展示非秘密值的环境占位和运行命令。ES_API_KEY 必须已由安全环境注入，程序缺少它会停止："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "value": "export ES_URL='https://localhost:9200'\nexport ES_CA_CERT='/path/to/http_ca.crt'\nexport ES_INDEX='interview_java_demo'\nexport ES_DEMO_ALLOW_CREATE='yes'\nmvn -q -DskipTests package\nmvn -q exec:java\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这两条 Maven 命令必须在含 pom.xml 的目录执行。首次构建需要依赖仓库可达或本机已有缓存；网络/依赖不可用不是集群测试成功。程序没有自动启动 ES、安装软件或调整真实集群配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整成功时，应观察 CJK 分析 token、仅合格记录贡献的 by_tag 聚合、只含 a/b 的向量候选，以及按页依次取到 a、b 后遇到空页结束。排序分页使用普通 bool 查询和 PIT，不使用 RRF retriever。图搜索夹具只是接口与过滤检查，不是语义质量或大规模 ANN 性能测试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端构建的单批字节预算是保守估计：每个 JSON 字符最多按6字节转义计，加1024字节动作行与有界元数据余量，同时限制原文长度、ID长度和批条数。它不是通用流式批处理器；生产应按真实编码字节计量并把待处理队列和响应内存也纳入预算。本例串行提交使业务在途批数为1。"
+    },
+    {
+      "type": "paragraph",
+      "text": "finally 使用最新 PIT ID 尝试关闭，清理失败仅输出异常类型，不记录 PIT ID 或认证头；短 keep_alive 是资源兜底。开 PIT 的响应若在网络中丢失，客户端可能不知道对应 ID，只能让短 TTL 到期并监控泄漏。索引保留供检查，程序不会自动执行删除。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进一步的集成验收应在隔离环境分别注入：无效 CA、错误权限、同名索引、mapping 错误、明确瞬时拒绝、超时但已写入、PIT 过期、分片失败和执行中撤权。使用生产数据之前，还要验证持久修复责任、更新删除及源水位；夹具通过不能代替这些测试。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    }
+  ]
+}

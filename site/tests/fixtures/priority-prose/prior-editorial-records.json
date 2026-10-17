@@ -1,0 +1,80 @@
+[
+  {
+    "entryId": "own-mq-reliability",
+    "questionId": "q-own-mq-relay-ownership",
+    "entryIdentity": {
+      "id": "own-mq-reliability",
+      "kind": "qa",
+      "mod": "design",
+      "part": "消息队列与异步系统",
+      "cat": "持久责任、事务与未知结果",
+      "title": "持久责任、事务与未知结果",
+      "number": "",
+      "source": "自建知识库"
+    },
+    "questionIdentity": {
+      "id": "q-own-mq-relay-ownership",
+      "q": "多实例 Outbox Relay 怎样领取、重试并拒绝旧确认？",
+      "leadType": "authored"
+    },
+    "fields": {
+      "lead": {
+        "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>用条件领取、有限租约和发布尝试身份管理责任；确认后按 token 回写，未知允许同事件重投，旧外部请求仍需幂等。</p>",
+        "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">先给结论</span>多实例 Outbox Relay 的核心，是把发布责任持久化，再用条件领取、有限租约和本次尝试的 token 管理处理权。业务变更与发送意图先在同一数据库事务提交，发布者收到符合合同的确认后，才能按当前 token 回写。租约过期允许别人接手，旧 token 防止迟到确认覆盖新状态；但旧请求仍可能在 Broker 成功，所以未知结果可能导致同一 eventId 重投，接收侧必须幂等。吞吐再高，也要限制未决发布量，并按业务需要单独保证实体内顺序。</p>",
+        "beforeSha256": "bc8919bbe7704012450e4f315f4008d821c34cfcd18668a6fc4ae381cb671815",
+        "afterSha256": "3c3f62fddcb14e4e487a4f3bbffb5563b657e01511f9a0544861defcc7bd9492"
+      },
+      "a": {
+        "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>用条件领取、有限租约和发布尝试身份管理责任；确认后按 token 回写，未知允许同事件重投，旧外部请求仍需幂等。</p><h3 class=\"md-h md-h3\">Q08 Relay 多实例怎样领取 重试和防旧写</h3><p class=\"md-p\">领取用数据库原子条件更新，完成用本次领取 token 校验；租约负责重新分配，token 负责拒绝旧领取者的状态写回。</p><p class=\"md-p\">A 领取事件 E，token=a，租约 60 秒；A 卡住，租约到期后 B 以 token=b 重领。A 晚到时，UPDATE ... WHERE event_id=E AND lease_token=a 必须影响 0 行，不能把 B 的处理中状态覆盖为完成。</p><p class=\"md-p\">这只保护 Outbox 表。A 的 Kafka send 仍可能成功，B 也可能发送，所以消费者必须幂等。若任务访问共享外部资源，只有该资源也校验递增 fencing token，才能拒绝旧执行者操作；在本地忽略回调并不能取消已经发出的远程扣款。</p><p class=\"md-p\">重试记录 attempts 和 next_attempt_at，采用指数退避加抖动；先分清临时依赖故障、永久消息错误与系统配置故障，再决定下一步。预算耗尽后进入 DEAD_LETTER 或人工修复，不能删掉记录当作处理完。</p><p class=\"md-p\">监控最老 READY 年龄、过期租约、SENT 延迟和失败分类，才能看出责任卡在哪一段。重驱仍保留原 eventId，另记重驱批次与操作者，避免把旧事件误当成新业务。</p><p class=\"md-p\">若要求同一 aggregate 的版本顺序，不能仅按 created_at 扫描就认为已保证。多个 relay 可并行发送 v2、v1；要按 aggregate 串行领取、仅发布前序已确认的事件，或由下游按版本门控。热点实体的串行性是业务约束，不能靠无限扩 relay 消除。</p><h3 class=\"md-h md-h3\">Outbox 怎样把双写变成可恢复责任？</h3><p class=\"md-p\">把业务变更与发布意图写在同一可原子提交的数据库事务内，提交后由独立发布者重试传播，就是 Outbox。</p><p class=\"md-p\">一次受理可以包含：验证后的 requestId、规范化输入、订单或任务状态、必要资源预留、稳定响应，以及含 eventId 的 outbox 事件。任何本地写失败，整个事务回滚；只有提交成功，接口才宣告已受理。控制器收到事务方法返回，不应先发送 HTTP 成功再等待提交；提交响应丢失时，客户端仍只能知道“结果未知”，要用原请求身份查询或重试。</p><p class=\"md-p\">发布者读取待发事件，取得有限处理权，再发布；得到符合契约的确认后，才写入已发布状态。Broker 已收而标记未提交时，恢复程序会重发同一 eventId。这种重复是协议允许的窗口，需要下游吸收，不能通过“提前标已发送”消除。</p><p class=\"md-p\">多实例场景必须区分扫描与领取。普通 SELECT 让多个发布者看到同一行；领取通过条件更新或明确锁协议完成，只有取得当前尝试号的实例才继续。回写同时检查当前状态和本次 publishAttemptId，旧确认不能覆盖后续尝试。恢复扫描要覆盖“已领取却没有完成”的记录，不能只扫 PENDING。领取期限到期只允许重新争取责任，不证明旧网络请求已经消失。</p><p class=\"md-p\">发布容量先拿许可、后领取，避免领取数千条后在本地排队把租约耗完。许可释放必须一次完成，确认、异常和截止恢复竞争释放时应有唯一裁决。批量大小受条数、字节、等待时间、数据库连接和未决确认数量共同限制。固定分片只有配套所有权和接管协议才有故障恢复能力，给每台机器分几个号段不会自动完成接管。</p><h3 class=\"md-h md-h3\">Q61 Outbox 重投与旧 token 怎样推演</h3><p class=\"md-p\">发送后标记前崩溃会造成重投，新 token 拒绝旧领取者完成，接收侧幂等使业务只产生一次本地效果。</p><p class=\"md-p\">这是确定性内存状态模型，synchronized 只模拟一个原子转移，不提供磁盘持久性、跨进程锁或 broker 确认。观察例子的事件序列，再把每个状态转移映射到真实数据库事务、条件更新和消息协议，才能形成生产设计。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>Relay 多实例怎样领取 重试和防旧写</li><li>Outbox 重投与旧 token 怎样推演</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>消息队列</li><li>Java</li></ul><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">教学版本、项目证据与运行范围</a></li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>消息队列</li><li>Java</li></ul>",
+        "after": "<h3>先把发送责任交接清楚</h3>\n<p class=\"md-p\">我会把它看成一条可恢复的责任链：先用本地事务保证业务变更和发送意图一起落库，再让发布者有限期地领取这份责任；确认回写必须证明自己仍是当前领取者。这样可以恢复故障、拒绝旧回写，但仍可能重复发送，所以不能把租约和 token 当成消息恰好一次的保证。</p>\n<p class=\"md-p\">先看为什么需要 Outbox。业务数据库提交和 Broker 收到消息是两次动作，任意一个先做，都可能在另一个发生前退出。Outbox 把业务变更与发布意图写进同一个可原子提交的数据库事务，提交后再由独立发布者传播。一次受理可同时保存已验证的 requestId、规范化输入、订单或任务状态、必要资源预留、稳定响应以及带 eventId 的事件。任何本地写失败，整体回滚；只有事务提交成功，接口才宣告已受理，不能先发送 HTTP 成功再等提交。提交响应若丢失，对客户端仍是结果未知，需要沿原请求身份查询或重试。</p>\n<h3>追问：多个实例都查到同一事件，怎样避免责任混乱？</h3>\n<p class=\"md-p\">多实例时，看到一条记录和取得处理权是两回事。普通 SELECT 可能让多个实例同时看到事件；真正领取应由数据库条件更新或明确的锁协议裁决，并生成本次领取的 token 或 publishAttemptId。得到符合消息协议的确认后，再校验当前状态和本次身份，写回已发布。若 Broker 已收到，但发布标记尚未提交就崩溃，恢复时会再发同一 eventId。提前标成已发送虽然能减少重发，却把故障变成无人负责的漏发，因此不是正确的替代方案。</p>\n<h3>追问：A 卡住、B 接手后，A 的迟到确认会怎样？</h3>\n<p class=\"md-p\">可以用一次接管说明 token 的作用。A 领取事件 E，token=a，租约是示例性的 60 秒；A 卡住后，B 在租约到期时以 token=b 重新领取。A 的迟到确认只有在 E 的当前 token 仍为 a 时才能回写，这时应影响零行，不能覆盖 B 的状态。恢复扫描也必须找到已经领取却没有完成的事件，不能只扫描 PENDING。</p>\n<h3>追问：token 已经拒绝旧写，为什么仍可能重复发送？</h3>\n<p class=\"md-p\">这里有个重要边界：租约到期只是允许重新争取责任，并不证明 A 发出的网络请求已经消失。A 的 Kafka send 仍可能成功，B 也可能成功，所以消费者要用稳定事件身份幂等处理。只有去重记录与业务变更在所述本地事务边界内原子提交，才能把同一事件的重复处理收敛为一次本地业务效果；这不等于端到端恰好一次。如果旧执行者访问的是共享外部资源，只有资源端也验证递增 fencing token，才能拒绝旧操作；本地忽略旧回调不会撤销已经发出的远程扣款。Outbox 表的领取身份与资源端的 fencing 合同应分别说明。</p>\n<h3>追问：Relay 增加实例就能一直提升吞吐吗？</h3>\n<p class=\"md-p\">然后再谈吞吐与顺序。发布容量应先取得许可，再领取任务，避免领取数千条后在本地排队，把租约耗尽。确认、异常和截止恢复可能同时争着释放许可，必须只有一次释放生效。批量大小同时受条数、字节、等待时间、数据库连接和未决确认数量约束。固定分片可以减少争抢，但必须有所有权和接管协议；给每台机器分几个号段，本身不会产生故障恢复能力。</p>\n<h3>追问：按 created_at 扫描，能否保证同一实体的事件顺序？</h3>\n<p class=\"md-p\">若业务要求同一个 aggregate 的事件按版本发布，也不能因为扫描按 created_at 排序，就认为顺序已保证。两个 Relay 仍可能把 v2 发在 v1 前。可以按 aggregate 串行领取、只发布前序已经确认的事件，或让下游按版本门控。这些选择把等待放在不同位置；热点实体所需的串行性不能靠无限增加 Relay 消除。</p>\n<h3>追问：重试耗尽后谁负责，怎样看出投递卡在哪里？</h3>\n<p class=\"md-p\">重试要记录 attempts 和 next_attempt_at，采用有界的指数退避与抖动。先区分临时依赖故障、永久消息错误和系统配置故障，再决定重试还是修复；预算耗尽后进入死信或人工处置，不能删除记录当成已经完成。重驱继续用原 eventId，另记重驱批次和操作者，才能既保留幂等语义，又查清这次修复是谁发起的。监控应能指出责任卡在哪一段，例如最老 READY 的等待时间、过期租约、SENT 延迟和失败分类。</p>\n<h3>追问：内存模型验证通过，能证明生产恢复正确吗？</h3>\n<p class=\"md-p\">进一步验证时，我会推演“发送成功但标记前崩溃”和“新领取者接手后旧确认到达”。现有教学示例是确定性内存状态模型，synchronized 只模拟一个原子转移，不提供磁盘持久性、跨进程锁或 Broker 确认。它能帮助检查事件顺序，但落地仍要把每次转移对应到真实数据库事务、条件更新和消息协议，不能把模型通过当成生产故障恢复已经验证。</p>\n<details class=\"answer-related\"><summary>其他问法与关联知识</summary><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>Relay 多实例怎样领取 重试和防旧写</li><li>Outbox 重投与旧 token 怎样推演</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>消息队列</li><li>Java</li></ul><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">教学版本、项目证据与运行范围</a></li></ul></details>",
+        "beforeSha256": "782f63a881b4f20fa22de637caad4f46b288a08f9efd022f613aafc23528aa69",
+        "afterSha256": "bc26410391266c081be54f0d40f7259196e6261aaf88be7a4e88bd150ef01cf7"
+      }
+    },
+    "provenance": {
+      "proposalFile": "editorial-answer-structure/guarded-editorial-proposals.json",
+      "originalAnswerRawSha256": "8c965118d8cbc0271a61169552045f9f5a343f51ab0bf378caec5b0d59f33c47",
+      "originalLeadRawSha256": "e3d79432c910ae33b15f2ad25fc0eb99fa7a369efd876e074270b871761b7120",
+      "coverageReview": "editorial-coverage-review.md"
+    }
+  },
+  {
+    "entryId": "own-spring-async",
+    "questionId": "q-own-spring-webflux-model",
+    "entryIdentity": {
+      "id": "own-spring-async",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "Spring 与 Java 服务端",
+      "cat": "响应式、异步与上下文",
+      "title": "响应式、异步与上下文",
+      "number": "",
+      "source": "自建知识库"
+    },
+    "questionIdentity": {
+      "id": "q-own-spring-webflux-model",
+      "q": "WebFlux 的响应式边界？",
+      "leadType": "authored"
+    },
+    "fields": {
+      "lead": {
+        "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>WebFlux 擅长用非阻塞数据流协调大量等待 I/O 的请求。它改变的是并发处理方式，不会把阻塞 JDBC 变成非阻塞，也不会让 CPU 计算或下游服务自动更快。</p>",
+        "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">先给结论</span>WebFlux 的价值，是用非阻塞数据流和少量事件循环线程，协调大量等待 I/O 的请求。它改变并发组织方式，不会让 CPU 或下游本身变快，也不会把阻塞 JDBC 自动变成非阻塞。我会先看整条调用链：主要是阻塞 JDBC、请求模型清楚时，MVC 往往更直接；端到端非阻塞且流式组合较多时，再考虑 WebFlux。暂时无法替换的阻塞调用可以隔离到有界执行器，但仍要限制连接、排队和超时，不能把成本当作消失。</p>",
+        "beforeSha256": "3bf33239f93105e5d50172d378aac8da927e5034c018fa0dd28cb17102bd47f5",
+        "afterSha256": "9b31fd6b322061a9575ad6ed328a5e70dcea4364f18ec3857e3dcdafa5dafba9"
+      },
+      "a": {
+        "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>WebFlux 擅长用非阻塞数据流协调大量等待 I/O 的请求。它改变的是并发处理方式，不会把阻塞 JDBC 变成非阻塞，也不会让 CPU 计算或下游服务自动更快。</p><h2 class=\"md-h md-h2\">32 WebFlux 的响应式边界</h2><p class=\"md-p\">WebFlux 擅长用非阻塞数据流协调大量等待 I/O 的请求。它改变的是并发处理方式，不会把阻塞 JDBC 变成非阻塞，也不会让 CPU 计算或下游服务自动更快。</p><p class=\"md-p\">Mono 表示零或一个值，Flux 表示零到多个值。Publisher 通常等订阅后才开始执行；Subscriber 发出 demand，上游按协议发数据、完成或错误，算子负责转换、组合和安排执行位置。</p><p class=\"md-p\">一个容易验证的反例是 Flux.just(blockingCall())：Java 要先算出参数，blockingCall 已经执行完，才会构造流。把返回值装进 Flux 不会让调用异步。需要延迟调用时，用 fromCallable 等合适工厂，再结合实际调度和资源限制。</p><p class=\"md-p\">事件循环用少量线程照看许多连接。若一个任务在这个线程上等阻塞 I/O，同一线程负责的其他连接也会被拖慢。</p><p class=\"md-p\">无法避免的阻塞调用，可以隔离到合适的有界工作执行器，比如 boundedElastic。这样保护了事件循环，却没减少阻塞调用本身占用的连接和时间，所以仍需连接上限、队列和超时。CPU 密集工作也要限制并发，增加线程切换不是免费增加计算能力。</p><p class=\"md-p\">publishOn 通常改变其后信号处理的执行位置，subscribeOn 影响订阅及上游源执行路径，具体链路需看算子；不要用无限多个切换掩盖线程模型不清。组合异步流优先用 flatMap 等，控制并发度并明确是否要求顺序；需要保持顺序时 concatMap 或适合的顺序组合会牺牲部分并行度。</p><p class=\"md-p\">MVC 适合已有阻塞 JDBC 技术栈和清楚的请求模型，也可返回响应式类型或使用 WebClient。WebFlux 更适合端到端非阻塞调用链和流式组合，前提是团队能处理信号、取消与调试。引入两个 Web starter 时自动选择的应用类型要核对，不能根据某个依赖名字认定正在运行 Reactor Netty。</p><p class=\"md-p\">继续追问：Python 中跨 event loop 复用连接池的问题能直接套 Java 吗？两者都要尊重资源所属运行上下文，但具体错误来自各自库与事件循环契约。Java JDBC Connection 不应并发跨线程共享，Netty Channel 的操作也受对应 EventLoop 管理，不能把不同语言的对象归属机制混为一谈。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>项目如何实现响应式编程？</li><li>Mono 与 Flux 是什么？</li><li>事件循环为什么怕阻塞？</li><li>MVC 与 WebFlux 怎么选？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Spring</li><li>Java17教学</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Spring</li><li>Java17教学</li></ul>",
+        "after": "<h3>先明确改善的是哪一类等待</h3>\n<p class=\"md-p\">WebFlux 主要改变大量 I/O 等待时的并发组织方式：用非阻塞数据流和少量事件循环线程协调许多连接。它不会让 CPU 计算或下游服务本身变快，也不会把阻塞 JDBC 自动变成非阻塞。因此我会先看整条调用链和团队维护成本，再决定是否选择它。</p>\n<h3>追问：已有 MVC，要不要为了高并发换成 WebFlux？</h3>\n<p class=\"md-p\">如果系统主要使用阻塞 JDBC，请求模型也很清楚，MVC 往往更直接；MVC 也能使用 WebClient 或返回响应式类型。若链路能端到端非阻塞，且需要大量流式组合，WebFlux 更值得考虑，但团队要能处理信号、取消和调试。选择框架不能只看依赖名字：同时引入两个 Web starter 时，还要核对自动配置实际选中的应用类型，不能据此认定一定运行在 Reactor Netty 上。</p>\n<h3>追问：Mono、Flux 和事件循环怎样配合？</h3>\n<p class=\"md-p\">理解机制可以从一条流开始。Mono 表示零或一个值，Flux 表示零到多个值；Publisher 通常在订阅后启动执行，Subscriber 通过 demand 表达需要多少数据，上游按协议发送数据、完成或错误信号，算子负责转换、组合和安排执行位置。事件循环不是为每个连接配一个一直等待的线程，而是让少量线程照看许多连接，因此适合协调 I/O 等待。</p>\n<h3>追问：把阻塞调用包进 Flux，为什么仍然阻塞？</h3>\n<p class=\"md-p\">也正因为线程被共享，一个任务在事件循环上阻塞，会拖慢同一线程负责的其他连接。把结果包进 Flux 并不能消除这个问题。例如 Flux.just(blockingCall()) 必须先按 Java 参数求值规则执行 blockingCall，之后才构造流。要延迟调用，可以使用 fromCallable 等合适工厂，但还要结合真实调度与资源限制；“延迟到订阅”与“非阻塞”是两个不同承诺。</p>\n<h3>追问：隔离到 boundedElastic 后，还要付出什么代价？</h3>\n<p class=\"md-p\">暂时无法替换的阻塞调用，可以隔离到有界工作执行器，例如 boundedElastic。这能保护事件循环，代价是等待仍占用工作线程、连接和时间，所以连接上限、队列和超时仍要控制。CPU 密集任务也要限制并发；多创建线程和增加切换，不等于增加计算能力。这里的取舍是把阻塞影响隔离开，而不是宣称阻塞成本消失。</p>\n<h3>追问：怎样安排执行线程，同时处理并发与顺序？</h3>\n<p class=\"md-p\">深入到算子时，publishOn 通常改变其后信号处理的执行位置，subscribeOn 影响订阅及上游源执行路径，具体效果需要沿实际算子链判断。不要用大量线程切换掩盖线程模型不清。组合异步任务可以使用 flatMap 等，并限制并发度；若结果必须有序，可以选择 concatMap 或适合的有序组合，但会牺牲部分并行度。先问业务是否必须顺序，再选算子，比背方法名更容易解释设计。</p>\n<h3>追问：Python 的 event loop 问题能直接套到 Java 吗？</h3>\n<p class=\"md-p\">还有一种跨语言追问：Python 跨 event loop 复用连接池的问题，能否直接套到 Java？共同原则是尊重资源的所属运行上下文，但具体错误取决于各自库的合同。Java JDBC Connection 不应并发跨线程共享，Netty Channel 的操作也受对应 EventLoop 管理；这些并不是同一种对象归属机制，不能因为都叫事件循环就把诊断结论照搬。</p>\n<details class=\"answer-related\"><summary>其他问法与关联知识</summary><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>项目如何实现响应式编程？</li><li>Mono 与 Flux 是什么？</li><li>事件循环为什么怕阻塞？</li><li>MVC 与 WebFlux 怎么选？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Spring</li><li>Java17教学</li></ul></details>",
+        "beforeSha256": "9c0e1b12f0db4a49d2fb597432d6a541a307a1466f5f3b5a6fd22d8e21e065b1",
+        "afterSha256": "48212c7fc4b0fb6eb7eb68a22f3d9aebba0f4709b172908f6065ab624a2491e8"
+      }
+    },
+    "provenance": {
+      "proposalFile": "editorial-answer-structure/guarded-editorial-proposals.json",
+      "originalAnswerRawSha256": "6b06688337efb0e73a164ba307a737f84a0bd5a8f189b59252f3ad9aeea7bd22",
+      "originalLeadRawSha256": "9afa9abc608f0db537f95e1f813fe73da2cab3896f5263acafe3b7225d551805",
+      "coverageReview": "editorial-coverage-review.md"
+    }
+  }
+]

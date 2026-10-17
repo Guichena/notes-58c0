@@ -1,0 +1,559 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-execution",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 并发与 JUC",
+  "category": "任务结果、取消与执行预算",
+  "title": "任务结果、取消与执行预算",
+  "tags": [
+    "Java",
+    "JUC",
+    "Java21教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-juc-task-failure-observation",
+      "order": 820,
+      "question": "execute submit 和 ThreadFactory？",
+      "shortAnswer": "execute 与 submit 最容易混淆的是“任务抛异常后，谁来看到它”。execute 提交执行命令，直接执行的 Runnable 若有未捕获异常，可能结束 worker 并触发它的未捕获异常处理。submit 通常先把计算包装成 FutureTask，再返回结果句柄；任务异常通常被保存进结果，调用者要通过 Future.get 或明确回调观察。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "8 任务失败 取消和优雅关闭"
+        },
+        {
+          "type": "paragraph",
+          "text": "execute 与 submit 最容易混淆的是“任务抛异常后，谁来看到它”。execute 提交执行命令，直接执行的 Runnable 若有未捕获异常，可能结束 worker 并触发它的未捕获异常处理。submit 通常先把计算包装成 FutureTask，再返回结果句柄；任务异常通常被保存进结果，调用者要通过 Future.get 或明确回调观察。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，提交后没有再看 Future，只能说明你没有读取失败，不能说明任务执行成功。排查时先找提交方式，再找对应的异常观察入口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ThreadFactory 决定线程名称、守护属性、异常处理等，不决定业务是否可靠完成。工厂无法创建线程可能影响接收与推进，生产实现还需处理 worker 创建失败、异常退出补位和生命周期。afterExecute 中的 Throwable 对 submit 任务可能为空，因为异常已经被 FutureTask 捕获，不能只靠这一参数统计全部业务失败。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-executor-termination",
+      "order": 828,
+      "question": "shutdown shutdownNow 和终止确认？",
+      "shortAnswer": "shutdown 停止接收新任务并继续处理已接收任务；shutdownNow 尝试中断运行者并返回尚未开始的排队任务；只有实际终止检查通过，才能宣布池已停止。任务不响应中断时，任何一个名字里带 Now 的方法也不能保证瞬间结束。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "shutdown 停止接收新任务并继续处理已接收任务；shutdownNow 尝试中断运行者并返回尚未开始的排队任务；只有实际终止检查通过，才能宣布池已停止。任务不响应中断时，任何一个名字里带 Now 的方法也不能保证瞬间结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对于直接 submit 后排在队列中的 FutureTask，拿到 shutdownNow 返回项后可以取消这些句柄，让等待者进入明确终态。若队列里是 CompletionService 等产生的包装对象，返回项与调用者 Future 未必一一同型，应保存自己持有的句柄并由任务拥有者取消，不能随手强转。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有严格总期限时，从 System.nanoTime 计算已用时间，每次等待使用剩余预算。连续两次各等三秒，最坏就可能接近六秒；这不是三秒总期限。close 或 try-with-resources 的执行器自动关闭也可能等待任务，不能把它放在要求迅速返回的超时路径中却不说明等待行为。"
+        },
+        {
+          "type": "paragraph",
+          "text": "取消要观察两个时点。Future.cancel(true) 可以先把句柄置为取消，再请求中断；此时调用者已看到终态，任务的 finally、连接释放或子进程退出却可能还没发生。若工作要求“资源已经收回”，就必须另有退出或释放的证据。下面测试故意让任务暂时忽略中断，以显示这个时间差。"
+        },
+        {
+          "type": "paragraph",
+          "text": "清理还可能自己失败，不能让清理异常覆盖原始失败。保存次要失败前，要先确认两个 Throwable 不是同一对象，否则自抑制会再抛异常；还不能依赖所有 Throwable 都启用了 suppression。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/PoolLifecycleLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class PoolLifecycleLab {\n    /** Attach cleanup errors without replacing the primary error or self-suppressing. */\n    static void record(Throwable primary, Throwable cleanup) {\n        if (primary != cleanup) primary.addSuppressed(cleanup);\n    }\n    static final class NoSuppression extends Exception {\n        NoSuppression() { super(\"suppression disabled\", null, false, true); }\n    }\n    public static void main(String[] args) throws Exception {\n        ThreadPoolExecutor pool = new ThreadPoolExecutor(1, 2, 1, TimeUnit.SECONDS,\n                new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.AbortPolicy());\n        CountDownLatch firstStarted = new CountDownLatch(1), extraStarted = new CountDownLatch(1);\n        CountDownLatch release = new CountDownLatch(1);\n        AtomicInteger interrupted = new AtomicInteger();\n        Callable<Integer> blocker = () -> {\n            try { Checks.await(release); return 1; }\n            catch (InterruptedException e) { interrupted.incrementAndGet(); throw e; }\n        };\n        try {\n            Future<Integer> first = pool.submit(() -> { firstStarted.countDown(); return blocker.call(); });\n            Checks.await(firstStarted);\n            Future<Integer> queued = pool.submit(() -> 2);\n            Future<Integer> extra = pool.submit(() -> { extraStarted.countDown(); return blocker.call(); });\n            Checks.await(extraStarted);\n            Checks.that(pool.getPoolSize() == 2 && pool.getQueue().size() == 1, \"core -> queue -> max\");\n            try { pool.submit(() -> 4); throw new AssertionError(\"saturation accepted\"); }\n            catch (RejectedExecutionException expected) { }\n            List<Runnable> neverStarted = pool.shutdownNow();\n            Checks.that(neverStarted.size() == 1, \"queued task returned\");\n            Checks.that(!queued.isDone(), \"shutdownNow alone did not cancel returned FutureTask\");\n            for (Runnable task : neverStarted) if (task instanceof Future<?> f) f.cancel(false);\n            Checks.that(queued.isCancelled(), \"owner gives unstarted future a terminal state\");\n            Checks.that(pool.awaitTermination(5, TimeUnit.SECONDS), \"interruptible tasks ended\");\n            Checks.that(interrupted.get() == 2, \"both running tasks observed interruption\");\n            for (Future<Integer> f : List.of(first, extra)) {\n                try { Checks.get(f); throw new AssertionError(\"expected interrupted failure\"); }\n                catch (ExecutionException e) { Checks.that(e.getCause() instanceof InterruptedException, \"cause\"); }\n            }\n            try { pool.submit(() -> 5); throw new AssertionError(\"shutdown accepted\"); }\n            catch (RejectedExecutionException expected) { }\n        } finally { release.countDown(); Checks.stop(pool); }\n        ExecutorService single = Executors.newSingleThreadExecutor();\n        try {\n            Future<?> failed = single.submit(() -> { throw new IllegalStateException(\"business failure\"); });\n            try { Checks.get(failed); throw new AssertionError(\"failure hidden\"); }\n            catch (ExecutionException e) { Checks.that(e.getCause() instanceof IllegalStateException, \"submit failure captured\"); }\n            Checks.that(Checks.get(single.submit(() -> 7)) == 7, \"worker remains usable\");\n        } finally { Checks.stop(single); }\n        CountDownLatch entered = new CountDownLatch(1), cooperate = new CountDownLatch(1), exited = new CountDownLatch(1);\n        ExecutorService stubborn = Executors.newSingleThreadExecutor();\n        try {\n            Future<?> f = stubborn.submit(() -> {\n                entered.countDown();\n                try {\n                    boolean done = false;\n                    while (!done) {\n                        try { done = cooperate.await(100, TimeUnit.MILLISECONDS); }\n                        catch (InterruptedException ignored) { /* deliberate counterexample, bounded by owner */ }\n                    }\n                } finally { exited.countDown(); }\n            });\n            Checks.await(entered); f.cancel(true);\n            Checks.that(f.isDone() && exited.getCount() == 1, \"cancelled future != ended computation\");\n            cooperate.countDown(); Checks.await(exited);\n        } finally { cooperate.countDown(); Checks.stop(stubborn); }\n        Exception primary = new Exception(\"primary\"), cleanup = new Exception(\"cleanup\");\n        record(primary, primary); record(primary, cleanup); record(primary, cleanup);\n        Checks.that(primary.getSuppressed().length == 2, \"same primary guarded; repeated secondary allowed\");\n        NoSuppression disabled = new NoSuppression(); record(disabled, disabled); record(disabled, cleanup);\n        Checks.that(disabled.getSuppressed().length == 0, \"suppression may be disabled\");\n        System.out.println(\"PoolLifecycleLab OK\");\n    }\n}\n",
+          "label": "code/PoolLifecycleLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-future-contracts",
+      "order": 938,
+      "question": "Future 与 CompletableFuture 的角色？",
+      "shortAnswer": "Future 表达一个可能尚未完成的结果，CompletableFuture 在此基础上增加主动完成与依赖阶段编排；它并不自动拥有底层 I/O 的全部控制权。CountDownLatch 表示事件计数，不保存类型化成功值，也没有完整的依赖图语义。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "9 Future CompletableFuture 和任务依赖"
+        },
+        {
+          "type": "paragraph",
+          "text": "Future 表达一个可能尚未完成的结果，CompletableFuture 在此基础上增加主动完成与依赖阶段编排；它并不自动拥有底层 I/O 的全部控制权。CountDownLatch 表示事件计数，不保存类型化成功值，也没有完整的依赖图语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Future.get 可中断，失败通过 ExecutionException 暴露；带期限的 get 只限制本次等待，超时不自动取消任务。CompletableFuture.join 常通过 CompletionException 传播失败，与 Thread.join 等线程终止不是一个接口契约。取消和异常都有可能先于真实业务清理结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "OpenJDK 的 CompletableFuture 用结果状态的原子完成与依赖节点组织推进，一个终态通常只能由某位完成者赢得；注册依赖与完成并发发生时还需处理注册竞争及触发。它不是为每条 thenApply 永久创建一条等待线程。SettableFuture 是 Guava 提供的可手动完成 Future，属于另一套库接口，不能把未说明的追问自动补成这个类。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-stage-composition",
+      "order": 946,
+      "question": "thenApply thenCompose 和执行线程？",
+      "shortAnswer": "thenApply 转换结果，thenCompose 展平返回的下一阶段，thenCombine 合并两个结果；是否带 Async 决定是否通过异步执行设施调度，不能只看方法出现在异步链上。非 Async 回调可能由完成源结果的线程执行，也可能在注册时由调用线程立即执行。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "thenApply 转换结果，thenCompose 展平返回的下一阶段，thenCombine 合并两个结果；是否带 Async 决定是否通过异步执行设施调度，不能只看方法出现在异步链上。非 Async 回调可能由完成源结果的线程执行，也可能在注册时由调用线程立即执行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "默认的 Async 方法通常使用 ForkJoinPool.commonPool，但有公共池并行度不足时的替代规则。阻塞 I/O、长计算和轻量结果转换应根据预算显式选择执行器，避免把不同工作都压到公共池。显式 executor 也可能内联执行或拒绝，所以不能把 Async 后缀当成绝对“新线程”承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "结果处理也要先明确目的。只观察终态用 whenComplete；要把成功或失败转换成新结果，可用 handle；只处理失败可用 exceptionally。兜底必须保留业务含义：权限拒绝、数据损坏或副作用结果未知，不能一律变成空列表并宣称成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "组合多个任务时再问“等全部，还是谁先到就算谁”。allOf 等所有阶段完成，给出的是 Void 阶段，不会自动收集类型化结果，也不自动取消兄弟任务。anyOf 取首个完成，失败也是完成，所以一个快速失败可能先赢；它并不等同于“等第一个成功”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "三个独立成功任务分别耗时 3、5、7 秒且有足够执行资源，并行等待全部结果的耗时约由最慢的 7 秒决定，再加调度开销。若串行依赖，则可能接近 15 秒；执行资源不足会排队；若出现失败，究竟快速返回还是等全部结束由组合策略决定。不能脱离这些条件直接回答一个固定秒数。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-dependent-workflow",
+      "order": 958,
+      "question": "前五个任务完成后非阻塞执行第六个？",
+      "shortAnswer": "把五个任务先提交，再用 allOf 建立第六步的依赖，并返回一个代表最终结果的阶段，才能让调用主线程不必同步等待。allOf 正常完成后的转换可以读取已经完成的五个结果，但要明确失败和取消是否取消剩余任务。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "把五个任务先提交，再用 allOf 建立第六步的依赖，并返回一个代表最终结果的阶段，才能让调用主线程不必同步等待。allOf 正常完成后的转换可以读取已经完成的五个结果，但要明确失败和取消是否取消剩余任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面先建立五个任务各自的结果阶段，再把第六步接到它们全部成功之后。返回给调用者的是最终阶段，同时保留所有底层 Future，以便取消真正提交的任务。若任一输入失败，第六步不运行；若提交中途被拒绝，已经接收的任务也要取消，避免调用失败后留下无人管理的工作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这条非阻塞提交路径有执行器前提：使用普通非内联 ThreadPoolExecutor 与 AbortPolicy。不能换成 direct executor 或 CallerRuns，却仍要求提交路径永不执行任务。总期限限制整组等待；任务能否实际退出，还取决于合作中断和自己的 I/O 超时。main 等待结果只是测试拥有者的行为，不改变业务 API 返回阶段的非阻塞契约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/AsyncWorkflowLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.function.Function;\n\n/** Five parallel inputs followed by one dependent computation. Executors belong to the caller. */\npublic final class AsyncWorkflowLab {\n    public static final class Batch<R> {\n        private final Object gate = new Object();\n        private final List<FutureTask<?>> tasks = new ArrayList<>();\n        private final CompletableFuture<R> result = new CompletableFuture<>();\n        private final AtomicReference<ScheduledFuture<?>> alarm = new AtomicReference<>();\n        public CompletionStage<R> stage() { return result.minimalCompletionStage(); }\n        public boolean cancel() { return fail(new CancellationException(\"batch cancelled\")); }\n        private boolean fail(Throwable error) {\n            boolean won = result.completeExceptionally(error);\n            if (won) {\n                List<FutureTask<?>> copy;\n                synchronized (gate) { copy = List.copyOf(tasks); }\n                for (FutureTask<?> task : copy) task.cancel(true);\n            }\n            return won;\n        }\n        private void enqueue(FutureTask<?> task, Executor executor) {\n            synchronized (gate) {\n                if (result.isDone()) { task.cancel(false); return; }\n                tasks.add(task);\n            }\n            // Cancellation can race this call. A cancelled FutureTask.run does no user work.\n            try { executor.execute(task); }\n            catch (RuntimeException e) { fail(e); task.cancel(false); }\n        }\n        private void setAlarm(ScheduledFuture<?> scheduled) {\n            alarm.set(scheduled);\n            if (result.isDone()) scheduled.cancel(false);\n        }\n        private Batch() {\n            result.whenComplete((v, e) -> {\n                ScheduledFuture<?> scheduled = alarm.get();\n                if (scheduled != null) scheduled.cancel(false);\n            });\n        }\n    }\n    private static <T> FutureTask<T> bridge(Callable<T> work, CompletableFuture<T> stage) {\n        return new FutureTask<>(work) {\n            protected void done() {\n                try { stage.complete(get()); } // done() runs only after this FutureTask is terminal.\n                catch (CancellationException e) { stage.completeExceptionally(e); }\n                catch (ExecutionException e) { stage.completeExceptionally(e.getCause()); }\n                catch (InterruptedException e) {\n                    Thread.currentThread().interrupt(); stage.completeExceptionally(e);\n                }\n            }\n        };\n    }\n    public static <T, R> Batch<R> start(List<? extends Callable<T>> inputs,\n            Function<List<T>, R> sixth, ThreadPoolExecutor executor, ScheduledExecutorService timer,\n            Duration timeout) {\n        Objects.requireNonNull(sixth); Objects.requireNonNull(executor); Objects.requireNonNull(timer);\n        if (!(executor.getRejectedExecutionHandler() instanceof ThreadPoolExecutor.AbortPolicy))\n            throw new IllegalArgumentException(\"non-inlining AbortPolicy executor required\");\n        List<? extends Callable<T>> work = List.copyOf(inputs);\n        if (work.size() != 5 || timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException();\n        long nanos = timeout.toNanos();\n        Batch<R> batch = new Batch<>();\n        List<CompletableFuture<T>> stages = new ArrayList<>();\n        List<FutureTask<T>> tasks = new ArrayList<>();\n        for (Callable<T> input : work) {\n            CompletableFuture<T> stage = new CompletableFuture<>();\n            stages.add(stage); tasks.add(bridge(input, stage));\n            stage.whenComplete((v, e) -> { if (e != null) batch.fail(e); });\n        }\n        CompletableFuture.allOf(stages.toArray(CompletableFuture[]::new)).thenRun(() -> {\n            List<T> values = stages.stream().map(CompletableFuture::join).toList();\n            CompletableFuture<R> sixthStage = new CompletableFuture<>();\n            sixthStage.whenComplete((v, e) -> {\n                if (e == null) batch.result.complete(v); else batch.fail(e);\n            });\n            batch.enqueue(bridge(() -> sixth.apply(values), sixthStage), executor);\n        });\n        try {\n            batch.setAlarm(timer.schedule(() -> batch.fail(new TimeoutException(\"batch deadline\")),\n                    nanos, TimeUnit.NANOSECONDS));\n            for (FutureTask<T> task : tasks) batch.enqueue(task, executor);\n        } catch (RuntimeException e) { batch.fail(e); }\n        return batch; // No get/join on incomplete work on the caller's path.\n    }\n    private static Throwable failure(Batch<?> batch) throws Exception {\n        try { batch.stage().toCompletableFuture().get(5, TimeUnit.SECONDS); throw new AssertionError(\"expected failure\"); }\n        catch (ExecutionException e) { return e.getCause(); }\n    }\n    public static void main(String[] args) throws Exception {\n        ThreadPoolExecutor pool = new ThreadPoolExecutor(5, 5, 0, TimeUnit.SECONDS,\n                new ArrayBlockingQueue<>(5), new ThreadPoolExecutor.AbortPolicy());\n        ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();\n        CountDownLatch release = new CountDownLatch(1);\n        try {\n            CountDownLatch started = new CountDownLatch(5);\n            List<Callable<Integer>> jobs = new ArrayList<>();\n            for (int n = 1; n <= 5; n++) {\n                int value = n;\n                jobs.add(() -> { started.countDown(); Checks.await(release); return value; });\n            }\n            AtomicInteger sixthCalls = new AtomicInteger();\n            Batch<Integer> ok = start(jobs, values -> {\n                sixthCalls.incrementAndGet(); return values.stream().mapToInt(Integer::intValue).sum();\n            }, pool, timer, Duration.ofSeconds(4));\n            Checks.await(started);\n            Checks.that(!ok.stage().toCompletableFuture().isDone(), \"start returned while tasks still blocked\");\n            release.countDown();\n            Checks.that(Checks.get(ok.stage().toCompletableFuture()) == 15 && sixthCalls.get() == 1, \"five then sixth once\");\n            List<Callable<Integer>> broken = List.of(() -> 1, () -> { throw new IllegalArgumentException(\"input\"); }, () -> 3, () -> 4, () -> 5);\n            Batch<Integer> bad = start(broken, v -> { throw new AssertionError(\"sixth must not run\"); }, pool, timer, Duration.ofSeconds(4));\n            Checks.that(failure(bad) instanceof IllegalArgumentException, \"input failure\");\n            ThreadPoolExecutor rejecting = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,\n                    new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.AbortPolicy());\n            rejecting.shutdown();\n            Checks.that(failure(start(jobs, v -> 0, rejecting, timer, Duration.ofSeconds(4))) instanceof RejectedExecutionException,\n                    \"submission rejection is terminal\");\n            CountDownLatch blocking = new CountDownLatch(1), cleanup = new CountDownLatch(1);\n            List<Callable<Integer>> slow = List.of(() -> {\n                blocking.countDown(); try { new CountDownLatch(1).await(); return 1; }\n                finally { cleanup.countDown(); }\n            }, () -> 2, () -> 3, () -> 4, () -> 5);\n            Batch<Integer> timed = start(slow, v -> 0, pool, timer, Duration.ofMillis(300));\n            Checks.await(blocking);\n            Checks.that(failure(timed) instanceof TimeoutException, \"overall deadline\");\n            Checks.await(cleanup); // Separately observe the cooperative operation's cleanup.\n            Batch<Integer> cancelled = start(slow, v -> 0, pool, timer, Duration.ofSeconds(4));\n            cancelled.cancel();\n            Checks.that(failure(cancelled) instanceof CancellationException, \"explicit cancellation\");\n            System.out.println(\"AsyncWorkflowLab OK\");\n        } finally { release.countDown(); Checks.stop(pool); Checks.stop(timer); }\n    }\n}\n",
+          "label": "code/AsyncWorkflowLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-shared-timeouts",
+      "order": 1107,
+      "question": "为什么个人超时不能改写共享结果？",
+      "shortAnswer": "CompletableFuture.orTimeout 和 completeOnTimeout 会修改接收者本身，多个调用者共享源结果时，应把个人超时施加在 copy 等独立视图上。根结果由计算拥有者完成，调用者只拥有自己的等待期限。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "CompletableFuture.orTimeout 和 completeOnTimeout 会修改接收者本身，多个调用者共享源结果时，应把个人超时施加在 copy 等独立视图上。根结果由计算拥有者完成，调用者只拥有自己的等待期限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如甲等 30ms，乙等 500ms，甲直接对共享源调用 orTimeout，可能把乙依赖的结果一并变成超时。copy 跟随源完成，但个人超时或取消不会反向结束源。它只复制完成关系，不深复制成功值；可变结果仍需要所有权协议。仅把返回类型声明为 CompletionStage，若实际仍暴露根对象，也不能自动隔离完成权限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CompletableFuture.cancel(true) 不等于 FutureTask 持有执行线程时的中断取消，mayInterruptIfRunning 对其实现没有相同控制意义。个人退出、共享查询无订阅者、全局期限到达是三个不同事件，由哪一个终止实际 HTTP/数据库调用，必须由拥有底层取消句柄的组件决定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/SharedTimeoutDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.*;\n\n/** Java 9+ API，使用 Java 21 实测：调用者的期限不能改写共享计算的结果。 */\npublic final class SharedTimeoutDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static boolean timeoutResult(CompletableFuture<?> future) throws Exception {\n        try { future.get(5, TimeUnit.SECONDS); return false; }\n        catch (ExecutionException ex) {\n            // copy 的异常可增加 CompletionException 包装，按因果链识别。\n            Throwable cause = ex.getCause();\n            while (cause instanceof CompletionException && cause.getCause() != null)\n                cause = cause.getCause();\n            return cause instanceof TimeoutException;\n        }\n        // get 本身的 TimeoutException 不捕获：它表示测试没完成，必须失败。\n    }\n    public static void main(String[] args) throws Exception {\n        CompletableFuture<Integer> shared = new CompletableFuture<>();\n        CompletableFuture<Integer> callerB = shared;\n        CompletableFuture<Integer> callerA = shared.orTimeout(0, TimeUnit.NANOSECONDS);\n        check(\"orTimeout 返回原对象\", callerA == shared);\n        // 根结果没有生产者，永远不会在定时器前完成；不依赖机器快慢。\n        check(\"甲的期限使共享对象失败\", timeoutResult(callerA));\n        check(\"乙被同一个终态连带影响\", timeoutResult(callerB));\n        check(\"真实结果已无法覆盖超时终态\", !shared.complete(42));\n\n        CompletableFuture<Integer> source = new CompletableFuture<>();\n        CompletableFuture<Integer> privateA = source.copy().orTimeout(0, TimeUnit.NANOSECONDS);\n        CompletableFuture<Integer> privateB = source.copy();\n        check(\"甲的私有视图按自己的期限失败\", timeoutResult(privateA));\n        check(\"甲超时不使源计算结束\", !source.isDone());\n        check(\"乙仍在等同一个源计算\", !privateB.isDone());\n        check(\"所有者仍能发布真实结果\", source.complete(42));\n        check(\"乙收到真实成功\", privateB.get(5, TimeUnit.SECONDS) == 42);\n        check(\"甲的终态保持超时\", timeoutResult(privateA));\n\n        CompletableFuture<Integer> nextSource = new CompletableFuture<>();\n        CompletableFuture<Integer> cancelledView = nextSource.copy();\n        check(\"只取消调用者自己的视图\", cancelledView.cancel(true));\n        check(\"视图取消不向源传播\", !nextSource.isDone());\n        nextSource.complete(7);\n        check(\"源仍能成功而视图仍为取消\", nextSource.join() == 7 && cancelledView.isCancelled());\n\n        CompletionStage<Integer> readOnly = nextSource.minimalCompletionStage();\n        CompletableFuture<Integer> clientCopy = readOnly.toCompletableFuture();\n        // 客户端可改它拿到的副本，但不会拥有真实 source 的写权限。\n        clientCopy.obtrudeValue(99);\n        check(\"受限视图不会暴露源的完成权限\", nextSource.join() == 7 && clientCopy.join() == 99);\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n",
+          "label": "code/SharedTimeoutDemo.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-forkjoin-reduction",
+      "order": 1176,
+      "question": "ForkJoinPool 和并行流？",
+      "shortAnswer": "ForkJoinPool 适合能分解并汇合的计算任务，通过工作窃取让空闲 worker 获取其他队列的任务；它不是所有异步工作的默认最佳池。拆分太细会增加调度开销，拆分太粗又无法充分并行，阈值需匹配计算量。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "ForkJoinPool 适合能分解并汇合的计算任务，通过工作窃取让空闲 worker 获取其他队列的任务；它不是所有异步工作的默认最佳池。拆分太细会增加调度开销，拆分太粗又无法充分并行，阈值需匹配计算量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "任务拆分后通常 fork 一支、当前线程计算另一支，再 join 汇合，尽量让当前 worker 有工作做。任意阻塞 I/O、等待外部锁或连接会占住 worker，运行时的补偿能力不是无限资源保证；ManagedBlocker 是特定阻塞协作接口，也不是随意阻塞的免责条款。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并行流描述数据处理管道，线程池描述执行资源，两者不是同一层抽象。parallelStream 中使用共享可变容器收集结果容易产生竞争，使用无副作用转换和正确 collector。流的 encounter order、forEachOrdered 的顺序成本、公共池资源竞争都应单独考虑。自定义 ForkJoinPool 中运行并行流的实现行为，不应包装成所有 JDK 对指定池的通用语言承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并行归约还要求结合律与真正的单位元。求和的单位元是 0，reduce(10, sum) 在多个分区里各加一次 10，不能当作“最终额外加十”。乘方时先提升到 long 再乘，事后转型不能挽救已发生的 int 溢出。终端操作仍由调用者同步等待最终结果，不因 parallel 就自动变为非阻塞 API。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ForkJoinLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.*;\nimport java.util.stream.*;\n\npublic final class ForkJoinLab {\n    static final class Squares extends RecursiveTask<Long> {\n        final int from, to;\n        Squares(int from, int to) { this.from = from; this.to = to; }\n        protected Long compute() {\n            if (to - from <= 128) {\n                long sum = 0;\n                for (long x = from; x < to; x++) sum += x * x;\n                return sum;\n            }\n            int middle = from + (to - from) / 2;\n            Squares left = new Squares(from, middle); left.fork();\n            long right = new Squares(middle, to).compute();\n            return left.join() + right;\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        ForkJoinPool pool = new ForkJoinPool(4);\n        try {\n            long expected = LongStream.range(0, 10000).map(x -> x * x).sum();\n            long actual = pool.submit(new Squares(0, 10000)).get(5, TimeUnit.SECONDS);\n            Checks.that(actual == expected, \"CPU divide and conquer\");\n            long parallel = IntStream.range(0, 10000).parallel().mapToLong(x -> (long) x * x).sum();\n            Checks.that(parallel == expected, \"promotion before multiply\");\n            int single = IntStream.of(1, 2).reduce(10, Integer::sum);\n            int split = IntStream.of(1).reduce(10, Integer::sum) + IntStream.of(2).reduce(10, Integer::sum);\n            Checks.that(single == 13 && split == 23, \"10 is not an addition identity\");\n            Checks.that(IntStream.range(0, 100).parallel().map(x -> x * 2).toArray().length == 100,\n                    \"collector/terminal ownership instead of shared ArrayList writes\");\n            System.out.println(\"ForkJoinLab OK\");\n        } finally { Checks.stop(pool); }\n    }\n}\n",
+          "label": "code/ForkJoinLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-settable-future",
+      "order": 1227,
+      "question": "SettableFuture是什么 与CompletableFuture怎样选？",
+      "shortAnswer": "SettableFuture是Guava里可以由业务主动写入结果的ListenableFuture，适合把回调式接口接成统一的异步结果；它保存和通知结果，本身不会替你启动线程，也不会自动控制底层RPC的生命周期。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "SettableFuture是Guava里可以由业务主动写入结果的ListenableFuture，适合把回调式接口接成统一的异步结果；它保存和通知结果，本身不会替你启动线程，也不会自动控制底层RPC的生命周期。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先用一个回调桥接场景讲清楚"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设旧RPC接口只有成功回调和失败回调。我会先创建一个SettableFuture，让成功回调尝试set结果，失败回调尝试setException，再把ListenableFuture接口返回给调用者。调用者可以等待，也可以注册后续处理，不需要为每个请求再启动一个线程阻塞等待回调。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里分三层：底层请求负责实际I/O；SettableFuture负责结果状态；监听器及其执行器负责后续业务。只有拿到完成权限的一侧才应该写结果，接口对外通常只暴露ListenableFuture，避免调用者随意改写。不过返回接口类型只限制普通编程使用，不是安全隔离边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果任务本来就是向线程池提交一个Callable，优先使用现有的ListeningExecutorService、ListenableFutureTask或Futures组合工具，没必要再手写一套完成、异常和取消转发。手动桥接最容易漏掉同步抛异常、回调重复到达、超时以及注册失败这些分支。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "set和setException是竞争完成 不是反复更新"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下按Guava 33.4.8-jre的接口合同讨论。set正常值和setException失败值都返回boolean：返回true表示这次完成被接受；返回false表示自己的尝试没有取得完成权，不能覆盖已经决定的结果。成功、失败和取消是相互竞争的终态，不是一个能不断修改的共享变量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "比如超时处理和RPC成功回调几乎同时到达，业务只能选一个对调用者生效的结果。落败一方不能再次发通知、重复落库或把另一个终态强行改掉。因此完成Future和业务副作用也要分开设计：set返回false不能证明远端没执行，set返回true也不能代替业务幂等键。"
+        },
+        {
+          "type": "paragraph",
+          "text": "还有一个很容易答错的细节：set返回false不一定说明isDone已经为true。之前若成功调用setFuture，把结果委托给一个还没完成的Future，完成来源已经被选定，但结果仍在等待。此时普通set或setException不能抢走结果，取消仍可能生效。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "setFuture是委托结果 不是阻塞复制"
+        },
+        {
+          "type": "paragraph",
+          "text": "setFuture(delegate)表示让当前Future最终跟随delegate。delegate已经完成时，调用被接受后当前Future随之完成；delegate还在运行时，调用可以先返回true，之后异步继承其结果。这里的true是“接受了委托”，不能解释成“业务已经结束”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "委托建立以后，取消当前Future会把取消请求传播给delegate；甚至当前Future先被取消、随后才调用setFuture，也会把取消传播给传入的Future。反方向，delegate的取消也会使当前Future以取消状态完成，但不能据此认定当前Future执行了线程中断动作。不要将这种明确的委托合同推广为“任意两个Future只要有依赖就一定双向取消”。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "监听器在哪里执行 为什么不要在锁里完成"
+        },
+        {
+          "type": "paragraph",
+          "text": "addListener接收一个Runnable和Executor。监听器在Future完成后交给指定执行器；如果注册时已经完成，就可以立即提交执行。立即提交不等于一定在当前线程内执行，真正在哪个线程上跑，仍取决于执行器。多个监听器的执行顺序没有保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Runnable本身不接收结果。要分别处理成功值和失败原因，通常使用Futures.addCallback更清楚；需要转换或展开异步结果时使用对应的Futures工具，而不是在一个小线程池中层层get，最后把池里的线程全堵住。"
+        },
+        {
+          "type": "paragraph",
+          "text": "directExecutor会直接在调用执行器的线程上运行任务。因此完成结果的I/O线程可能被监听器里的慢查询拖住，已经完成的Future也可能在注册监听器时同步触发后续逻辑。持有业务锁时调用set、setException或cancel，如果监听器再拿其他锁，还可能出现死锁或意料之外的重入。我的习惯是锁内只完成必要状态转换，锁外完成Future，并给耗时回调配置有容量和拒绝策略的执行器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Future终态成功，不代表所有监听器都执行成功。执行器拒绝、监听器抛异常和日志上报失败，都需要自己的监控与恢复策略。重要业务不能只靠一段可能丢失执行机会的内存回调来保证可靠投递。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "超时 取消和资源清理分开回答"
+        },
+        {
+          "type": "paragraph",
+          "text": "get(timeout, unit)超时只是这一次等待结束，不会自动取消Future，更不会自动撤销远端操作。要做请求超时，就明确谁负责截止时间，是否取消底层请求，怎样处理迟到回调，以及怎样清理请求ID映射和定时任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SettableFuture不知道你的网络请求句柄，cancel(true)不能凭空中断一个未关联的RPC。桥接层需要按客户端提供的取消接口做联动；即便发出了取消，远端也可能已经受理或完成，所以写操作还需要稳定幂等键、查询结果和补偿。取消不是事务回滚。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个稳妥的桥接会覆盖：发起请求同步失败、成功回调、失败回调、截止时间先到、调用者主动取消、重复及迟到回调。无论谁赢得最终结果，相关监听注册、超时任务和资源引用都应有明确释放路径，避免Future虽然完成了，请求表却一直泄漏。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "与CompletableFuture的核心区别"
+        },
+        {
+          "type": "paragraph",
+          "text": "两者都能表达异步结果并由外部完成，但生态和编排接口不同。SettableFuture属于Guava的ListenableFuture体系，常配合Futures和显式执行器使用；CompletableFuture是JDK自带的Future与CompletionStage实现，直接提供thenApply、thenCompose、handle等阶段组合。已有RPC库返回ListenableFuture时，沿用它的工具通常更自然；新Java业务若没有Guava接口约束，可以优先评估CompletableFuture。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CompletableFuture的complete、completeExceptionally、cancel也存在竞争完成。非Async回调可能由完成线程执行；Async若不指定执行器，通常进入公共ForkJoinPool，还要注意公共池并行度不足时的替代行为。阻塞下游请求最好显式规划执行资源，而不是看到Async就认为一定不会拖累别的任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CompletableFuture的cancel属于异常完成，mayInterruptIfRunning参数不控制其底层计算中断；Guava setFuture则有明确的委托取消传播合同。两者的取消链不能按名称类比。相互适配时应逐项定义成功值、异常包装、取消传播、截止时间和执行器，不要只把成功回调接起来就算完成适配。"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试最后可以落回一个具体判断：我选择哪一种，主要看已有异步API、取消与超时需求、组合方式和线程资源；不把SettableFuture说成更快的CompletableFuture，也不把Future对象当成实际任务本身。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-virtual-thread-boundaries",
+      "order": 1602,
+      "question": "虚拟线程适合什么 不解决什么？",
+      "shortAnswer": "虚拟线程降低大量等待型任务的平台线程占用，适合一任务一线程的直接阻塞写法，但不会提升 CPU 算力、数据库容量或外部 API 配额。不要为了复用成本把少量虚拟线程再次池化，资源限制应由独立准入和下游闸门表达。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "12 虚拟线程与两层资源预算"
+        },
+        {
+          "type": "paragraph",
+          "text": "虚拟线程降低大量等待型任务的平台线程占用，适合一任务一线程的直接阻塞写法，但不会提升 CPU 算力、数据库容量或外部 API 配额。不要为了复用成本把少量虚拟线程再次池化，资源限制应由独立准入和下游闸门表达。"
+        },
+        {
+          "type": "paragraph",
+          "text": "虚拟线程由 JVM 调度到载体平台线程，运行 Java 指令时仍使用真实 CPU。很多阻塞操作可卸载载体；JDK 21 中在 synchronized 区域内进行特定阻塞可能造成 pinning，JDK 24 的 JEP 491 消除了 synchronized 引起的主要此类限制。本地方法或外部函数相关场景仍要根据实际版本判断，升级也不会释放业务持有的连接或信号量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 21 中结构化并发及 ScopedValue 是预览能力，本书可运行主线不依赖开启预览。Java 17 没有正式虚拟线程 API。讨论迁移时应明确目标版本、驱动适配、ThreadLocal 保留量、取消传播与可观测性，不能仅把 newFixedThreadPool 换成另一个工厂方法。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-two-level-admission",
+      "order": 1610,
+      "question": "为什么只在虚拟线程里 acquire 还不够？",
+      "shortAnswer": "入口需要限制已提交未回收任务数，下游需要限制实际占用资源数，这两个集合不同。若先创建百万条虚拟线程再让它们等待两个许可，连接数可能受控，但请求对象、线程状态和完成句柄仍然大量堆积。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "入口需要限制已提交未回收任务数，下游需要限制实际占用资源数，这两个集合不同。若先创建百万条虚拟线程再让它们等待两个许可，连接数可能受控，但请求对象、线程状态和完成句柄仍然大量堆积。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面用入口窗口 4、下游许可 2 的小实验展示区别。先提交四项，其中两项使用下游，两项等许可；协调者回收一项结果后才补交下一项。保存的 Future 集合只覆盖窗口，不把所有已完成结果句柄永久留住。全量输入和最终结果若仍保留，另有 O(n) 空间，窗口本身不会消除它们。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/VirtualBudgetDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\n/** Java 21：分别约束已提交未回收任务数和进入远端的任务数。 */\npublic final class VirtualBudgetDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch latch) throws InterruptedException {\n        // 只作失败保险；顺序由门闩决定，不靠线程睡眠猜测。\n        if (!latch.await(5, TimeUnit.SECONDS)) throw new AssertionError(\"gate stuck\");\n    }\n    private static final class Probe {\n        final Semaphore remote = new Semaphore(2);\n        final CountDownLatch admitted = new CountDownLatch(1);\n        final CountDownLatch started = new CountDownLatch(4);\n        final CountDownLatch firstRemote = new CountDownLatch(2);\n        final CountDownLatch release = new CountDownLatch(1);\n        final AtomicInteger submitted = new AtomicInteger();\n        final AtomicInteger activeRemote = new AtomicInteger();\n        final AtomicInteger peakRemote = new AtomicInteger();\n        final AtomicInteger peakWindow = new AtomicInteger();\n        final AtomicInteger virtualTasks = new AtomicInteger();\n    }\n    private static int runBatch(Probe p, int count, int window) throws Exception {\n        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();\n        CompletionService<Integer> completed = new ExecutorCompletionService<>(executor);\n        // 集合只保存当前窗口，不把全部 Future 永久留在内存。\n        Set<Future<Integer>> outstanding = new HashSet<>();\n        int next = 0, received = 0, total = 0;\n        try {\n            while (received < count) {\n                while (next < count && outstanding.size() < window) {\n                    final int item = next++;\n                    Future<Integer> f = completed.submit(() -> {\n                        if (Thread.currentThread().isVirtual()) p.virtualTasks.incrementAndGet();\n                        p.started.countDown();\n                        p.remote.acquire(); // 获得许可之前，不算进入远端。\n                        int active = p.activeRemote.incrementAndGet();\n                        p.peakRemote.accumulateAndGet(active, Math::max);\n                        try {\n                            p.firstRemote.countDown();\n                            await(p.release); // 使测试能稳定观察第一批的状态。\n                            return item + 1;\n                        } finally {\n                            p.activeRemote.decrementAndGet();\n                            p.remote.release(); // 仅在 acquire 成功后归还。\n                        }\n                    });\n                    outstanding.add(f);\n                    p.submitted.incrementAndGet();\n                    p.peakWindow.accumulateAndGet(outstanding.size(), Math::max);\n                }\n                p.admitted.countDown();\n                Future<Integer> done = completed.poll(5, TimeUnit.SECONDS);\n                if (done == null) throw new AssertionError(\"missing completion\");\n                outstanding.remove(done);\n                total += done.get(); // 已完成，仍需 get 才会观察任务异常。\n                received++;\n            }\n            return total;\n        } finally {\n            for (Future<?> f : outstanding) f.cancel(true);\n            executor.shutdownNow();\n            if (!executor.awaitTermination(5, TimeUnit.SECONDS))\n                throw new AssertionError(\"virtual tasks did not stop\");\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        Probe p = new Probe();\n        CompletableFuture<Integer> result = new CompletableFuture<>();\n        Thread coordinator = Thread.ofPlatform().name(\"collector\").start(() -> {\n            try { result.complete(runBatch(p, 32, 4)); }\n            catch (Throwable failure) { result.completeExceptionally(failure); }\n        });\n        try {\n            await(p.admitted); await(p.started); await(p.firstRemote);\n            check(\"入口窗口只提交四项\", p.submitted.get() == 4);\n            check(\"远端同时只有两项\", p.activeRemote.get() == 2);\n            check(\"等待远端的任务仍计入窗口\", p.peakWindow.get() == 4);\n            p.release.countDown();\n            check(\"全部结果回收\", result.get(5, TimeUnit.SECONDS) == 528);\n            check(\"所有业务任务使用虚拟线程\", p.virtualTasks.get() == 32);\n            check(\"远端并发上限未被突破\", p.peakRemote.get() == 2);\n            check(\"入口上限未被突破\", p.peakWindow.get() == 4);\n            check(\"许可与活动计数全部归还\", p.remote.availablePermits() == 2\n                    && p.activeRemote.get() == 0);\n        } finally {\n            p.release.countDown();\n            coordinator.join(5000);\n            if (coordinator.isAlive()) {\n                coordinator.interrupt(); coordinator.join(5000);\n            }\n            if (coordinator.isAlive()) throw new AssertionError(\"collector still alive\");\n        }\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n",
+          "label": "code/VirtualBudgetDemo.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "把窗口中的四项换成长视频片段，还要继续问每项有多大。同样是四个任务，小片段和高分辨率片段可能保留完全不同的字节数与解码内存；外部推理并发和结果积压也各有上限。因此数量窗口之外，还需要相应的资源预算。加权许可的 lease 应幂等归还，获取失败不能归还自己从未拥有的额度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多 Agent 任务也不能只看内存大小：账户速率、token 预算、连接、进程以及文件修改冲突，可能分别成为限制。这些都应按实际资源定义，不能由一个“任务数”代替。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-resource-dependency-cycle",
+      "order": 1727,
+      "question": "没有监视器死锁 为什么仍卡住？",
+      "shortAnswer": "没有监视器死锁，也可能是资源已经被“等结果的人”拿光了。假设四个 worker 都在运行父任务，每个父任务提交一个同池子任务后同步等待。子任务必须获得 worker 才能运行，而四个 worker 都要等子任务完成才会空出来，于是形成资源依赖环。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "没有监视器死锁，也可能是资源已经被“等结果的人”拿光了。假设四个 worker 都在运行父任务，每个父任务提交一个同池子任务后同步等待。子任务必须获得 worker 才能运行，而四个 worker 都要等子任务完成才会空出来，于是形成资源依赖环。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把 worker 换成 Semaphore 许可也一样：父任务占住全部许可，子任务必须拿同一组许可才能产出父任务要的结果。线程转储即使没有报告传统锁死锁，业务仍然无法推进。"
+        },
+        {
+          "type": "paragraph",
+          "text": "虚拟线程可以释放载体，却不会自动归还父任务持有的 Semaphore 许可。解决思路包括异步组合而不占 worker 等待、顺序依赖由同一任务持有一次许可执行、释放不再需要的资源再等待，或按真正不同的资源拆分执行域。不能随意释放仍代表事务一致性的资源后继续沿用旧状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "增加线程数只能让某个小输入通过，更深嵌套仍可能耗尽资源。超时让等待有界，但超时后无限重试相同依赖环仍会失败。下面显式确认父子任务已到达等待点，再取消并等待 finally 完成，分别验证句柄终态和资源归还。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/PermitDependencyDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.lang.management.ManagementFactory;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\n/** 虚拟线程释放载体，并不会替任务释放它持有的业务许可。 */\npublic final class PermitDependencyDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch gate) throws InterruptedException {\n        if (!gate.await(5, TimeUnit.SECONDS)) throw new AssertionError(\"gate stuck\");\n    }\n    private static void badDependency() throws Exception {\n        Semaphore quota = new Semaphore(2);\n        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();\n        CountDownLatch parentsOwnBoth = new CountDownLatch(2);\n        CountDownLatch parentsWaiting = new CountDownLatch(2);\n        CountDownLatch childrenAttempt = new CountDownLatch(2);\n        CountDownLatch parentsStopped = new CountDownLatch(2);\n        CountDownLatch childrenStopped = new CountDownLatch(2);\n        List<Future<Integer>> parents = new ArrayList<>();\n        Queue<Future<Integer>> children = new ConcurrentLinkedQueue<>();\n        Queue<Long> virtualIds = new ConcurrentLinkedQueue<>();\n        try {\n            for (int i = 0; i < 2; i++) {\n                parents.add(executor.submit(() -> {\n                    boolean acquired = false;\n                    try {\n                        quota.acquire(); acquired = true;\n                        virtualIds.add(Thread.currentThread().threadId());\n                        parentsOwnBoth.countDown(); await(parentsOwnBoth);\n                        Future<Integer> child = executor.submit(() -> {\n                            boolean childAcquired = false;\n                            try {\n                                childrenAttempt.countDown();\n                                quota.acquire(); childAcquired = true;\n                                return 7;\n                            } finally {\n                                if (childAcquired) quota.release();\n                                childrenStopped.countDown();\n                            }\n                        });\n                        children.add(child);\n                        parentsWaiting.countDown();\n                        return child.get(); // 父任务仍持许可，却等待也需要许可的子任务。\n                    } finally {\n                        if (acquired) quota.release();\n                        parentsStopped.countDown();\n                    }\n                }));\n            }\n            await(parentsWaiting); await(childrenAttempt);\n            check(\"所有业务许可都在父任务手里\", quota.availablePermits() == 0);\n            check(\"两个子任务都已开始但不能取得许可\", children.size() == 2\n                    && children.stream().noneMatch(Future::isDone));\n            check(\"两个父任务的结果都依赖子任务\", parents.stream().noneMatch(Future::isDone));\n            // Java 21 ThreadMXBean 的管理对象是平台线程，不能据其空结果排除虚拟线程问题。\n            boolean invisible = virtualIds.stream().allMatch(id ->\n                    ManagementFactory.getThreadMXBean().getThreadInfo(id) == null);\n            check(\"Java21 ThreadMXBean 不提供这些虚拟线程详情\", invisible);\n        } finally {\n            // 已用门闩确认四个任务开始，所以 finally 门闩确实应当到达。\n            for (Future<?> f : children) f.cancel(true);\n            for (Future<?> f : parents) f.cancel(true);\n            executor.shutdownNow();\n            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError(\"tasks alive\");\n            // Future 被取消与 finally 已执行是不同事实，显式观察业务清理。\n            await(parentsStopped); await(childrenStopped);\n        }\n        check(\"父子任务均完成清理\", parentsStopped.getCount() == 0 && childrenStopped.getCount() == 0);\n        check(\"取消回收后无许可泄漏\", quota.availablePermits() == 2);\n    }\n    private static void flattenedDependency() throws Exception {\n        Semaphore quota = new Semaphore(2);\n        AtomicInteger active = new AtomicInteger(), peak = new AtomicInteger(), steps = new AtomicInteger();\n        List<Future<Integer>> jobs = new ArrayList<>();\n        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();\n        try {\n            for (int i = 0; i < 20; i++) jobs.add(executor.submit(() -> {\n                quota.acquire();\n                int current = active.incrementAndGet();\n                peak.accumulateAndGet(current, Math::max);\n                try {\n                    // 本例两步是顺序依赖；一个任务取得一次许可即可完成完整业务。\n                    int first = 3; steps.incrementAndGet();\n                    int second = first + 4; steps.incrementAndGet();\n                    return second;\n                } finally {\n                    active.decrementAndGet(); quota.release();\n                }\n            }));\n            int total = 0;\n            for (Future<Integer> f : jobs) total += f.get(5, TimeUnit.SECONDS);\n            check(\"展开依赖后全部业务成功\", total == 140 && steps.get() == 40);\n            check(\"修复未取消远端容量限制\", peak.get() <= 2);\n        } finally {\n            for (Future<?> f : jobs) f.cancel(true);\n            executor.shutdownNow();\n            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError(\"tasks alive\");\n        }\n        check(\"修复方案也归还全部许可\", quota.availablePermits() == 2 && active.get() == 0);\n    }\n    public static void main(String[] args) throws Exception {\n        badDependency(); flattenedDependency();\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n",
+          "label": "code/PermitDependencyDemo.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-6-0",
+  "entryId": "bg-redis-6",
+  "expectedOriginalHash": "93de7e35457645a5fb91f4439affcf385e9f40bd32c70552b961f19ccc68e337",
+  "title": "租约获取、owner 释放与 Java 失败语义",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis 分布式锁怎样实现与选择粒度"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 的基础锁方案是用一条 SET 同时完成不存在判断、写入本次 owner 和设置有限租约，再以原子比较 owner 的方式释放或续期。它能协调多个进程争用同一资源，但租约会到期、主从可能丢锁；真正不能重复或不能被旧任务覆盖的业务，还要由资源端的条件写、幂等和代际校验保护。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“SETNX 是什么、底层用了什么结构”“怎样手写 Redis 锁”“Redisson 比 SETNX 多做了什么”“为什么不能直接 DEL”“锁是乐观还是悲观”可以沿着同一个获取、持有、释放流程回答。问到项目粒度、租期和吞吐时，则要先说明保护的业务不变量，不能只给一个通用锁类名。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "SETNX 的存在性判断和底层结构"
+    },
+    {
+      "type": "paragraph",
+      "text": "SETNX 是 String 命令：键不存在才写入，成功返回整数 1，已存在返回 0。它不是 Set 集合的 SADD，也不表示“创建一个 Hash”。以 Redis 7.2 为例，setnxCommand 先尝试对字符串对象进行编码，再调用带 OBJ_SET_NX 标志的 setGenericCommand 路径；在目标数据库查找有效键，不存在才通过 setKey 写入、增加脏计数并传播相关变化。判断和写入在同一次命令执行内完成，其他客户端不能插入这两步之间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的哈希表是数据库的键空间字典：用 SDS 表示的 key 找到 Redis 对象，平均查找复杂度通常按 O(1) 理解；rehash 期间还可能同时涉及新旧两张表。该对象在 SETNX 场景下是 String，具体可能用 int、embstr 或 raw 编码。键空间字典与 Hash 类型内部的“字段到值”字典是两层结构，不能混在一起。长 key 的哈希、大 value 的内存分配、复制和网络传输仍有成本，O(1) 不是任意长度输入都等价。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查键会考虑过期规则。键虽然尚未被后台清理、内存还在，也不代表它在写路径上仍是有效存在的键。应用若先发 EXISTS，再单独 SET，两个请求可能都看到“不存在”；这一组客户端动作没有 SETNX 的条件原子性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Cluster 先把锁 key 路由到负责该槽的主节点，该节点执行单键命令，再进行复制。不同槽可以承载不同资源的锁，但同一把锁仍由一个槽承载；增加分片不能让同一把锁的临界区并行。路由、迁槽和副本切换也不会把单键原子命令变成跨故障的全局互斥协议。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一条 SET 获取租约 原子比较后释放"
+    },
+    {
+      "type": "paragraph",
+      "text": "获取示意为 SET resource-lock owner NX PX ttlMillis。key 标识受保护资源，owner 应在每次新的获取尝试前生成，不能只用固定机器码、线程号或用户 ID。相同线程会多次申请锁，进程也会重启；如果身份反复复用，迟到的旧释放可能认错新一轮持有。随机 UUID 是常用的概率身份方案，它不是有序的 fencing token，也不是数学上绝对无碰撞的证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不带 GET 选项的 SET NX PX 成功返回 OK，条件不满足返回空响应。不要沿用独立 SETNX 的 1/0 返回值。明确成功也只说明锁在服务端执行时被取得，响应耗时、客户端暂停已经消耗一部分租约，不能从收到回复起重新算一个完整 TTL。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单独 SETNX 后再 EXPIRE 有崩溃窗口：第一条成功，进程还没发第二条就退出，锁可能永不过期。把 NX 和 EX/PX 放进同一条 SET，可以消除这个拆分窗口。TTL 解决的是失联后最终能重新竞争，不会让旧业务线程在到期瞬间自动停止。"
+    },
+    {
+      "type": "paragraph",
+      "text": "释放必须把“当前值等于本次 owner”和 DEL 放在同一个原子操作内。需要记住两个不同的误删时间线："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "A 持锁后阻塞，租约到期；B 取得新锁。A 恢复直接 DEL，会删掉 B 的锁，C 又可能进来。",
+        "A 先 GET，确认还是自己的 owner，随后 Full GC；锁到期，B 取得新锁。A 恢复再 DEL，仍会删掉 B 的锁。增加一次 GET，并没有消除检查与删除之间的窗口。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 比较删除能避免这两种误删；当前值不匹配或 key 不存在就不删除。完整参数与调用方式放在“Redis Lua 脚本怎么调用，NOSCRIPT 和 Cluster 怎么处理”一章。这里还要强调：Lua 解锁保护的是锁记录，不能撤回 A 已经写出的旧业务结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“必须用 Lua”要结合操作和版本回答。获取时，SET NX PX 已经能完成单键条件写与租约设置；原子条件释放还可以由正确的 WATCH/MULTI/EXEC 协议表达。Redis 8.4 起的 DELEX IFEQ 也能做字符串值匹配后删除，不能把这个接口照搬到 7.2。无论用哪种接口，比较和删除的原子边界以及超时后的未知结果都要保留。"
+    },
+    {
+      "type": "paragraph",
+      "text": "续期也一样：只有当前 owner 仍属于本次租约，才原子地执行 PEXPIRE。GET 后单独 PEXPIRE 可能把别人的新锁延长；无条件延长更不能证明自己仍有写资源的资格。续期失败时应停止开始新的危险副作用，但已经发到外部系统的调用无法靠停止续期撤回。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "粒度和加锁时机服从业务不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁可用于共享临界区、缓存重建和多实例定时任务协调，但定时任务是否只产生一次业务效果仍依赖幂等与恢复。锁粒度应覆盖“不能同时发生”的全部工作，又尽量不串行化无关资源。如果修改单个订单，可以按 tenant 与 orderId 建锁；如果多个用户争同一 SKU 的共享库存，仅按 userId 加锁就不够，因为他们拿的是不同锁，改的却是同一份额度。全站一把锁通常过粗；把一个跨资源约束随意拆到多把锁，又可能失去正确性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要同时获取多把锁时，统一全局获取顺序，设置总等待预算，获取失败释放已经拿到的锁。租约能帮助失联后恢复，却不能替代多资源操作的失败处理；跨对象约束若本来在同一个数据库内，短事务或版本条件更新通常更容易说清。不能只回答“加细粒度锁”，而不交代跨锁不变量如何成立。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存重建锁与业务排他锁的目的不同。防击穿链路里“第三步为什么加 Redis 锁”，常见目的是让同一热点只有少数重建者回源，布隆过滤器和空值缓存本身并不合并对已存在热点的并发加载。此时先查缓存，miss 后再争该实体的重建资格；拿到锁后第二次查缓存，仍缺失才从权威库新鲜读取、回填并释放。否则等待中的请求会在前一个请求已填好后继续重复加载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果锁用于协调写者与回填者，应在要保护的读取、判断之前拿到，并让数据库事务提交以及必要的失效或版本屏障安排在释放之前。仅在 DEL 缓存时加锁，覆盖不了早先读到旧值、后来再回填的窗口；拿锁之前读出的旧值不能无条件继续用，MySQL 长可重复读事务中的旧快照也不会因后来拿到 Redis 锁而自动刷新。所有相关路径必须使用同一资源和同一协议，否则互斥推理不成立。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若操作最终落在数据库，中间还调用远程服务，不能把 Redis 锁、Spring 事务和数据库事务当作三种等价替代品。数据库事务负责其连接与存储范围内的提交回滚，Spring 事务管理只是组织这些事务边界，Redis 租约负责协作竞争；长 RPC 放在锁内或事务内都会拉长占用时间，而且外部调用的副作用未必随数据库回滚。应先确定数据库条件更新能否直接维护不变量，再为跨系统部分设计稳定请求号、状态查询、可靠事件和补偿。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "租期与 Redisson 看门狗分别解决什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 太短，业务还在执行锁就过期；太长，进程真的崩溃后其他请求要等很久。选择依据应包括临界区耗时分布、调度与 GC 停顿、网络延迟、允许的恢复时间和业务风险，不存在适合所有任务的固定秒数。常见方法是有限短租约加受控续期，同时保留整体任务截止时间；无限续期一个已经卡死的任务也不是理想恢复策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redisson 是 Java Redis 客户端与分布式对象库，除了锁还封装 Map、集合、队列等对象，以及连接、序列化、拓扑和异步接口。它减少了手写协议的工作，但不会让远端对象完全等同于 JVM 内存对象，也不会自动把数据库操作纳入 Redis 事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 Redisson 3.52.0 的普通 RLock 为例，锁用 Hash 保存所有者及重入计数，所有者与客户端实例、线程身份有关。获取脚本在 key 不存在，或当前 owner 已持有时，增加该 owner 的计数并设置租约；其他 owner 不能直接进入。释放时校验合法 owner，计数减一，归零才真正删除并通知等待者。同一线程外层、内层分别拿锁，计数从 1 到 2；内层释放到 1 时，其他线程仍不能进入。基础 SET NX 锁本身没有这套重入语义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "争用时，普通 RLock 的等待者可以订阅释放通知，再尝试原子获取。Pub/Sub 通知只表示“值得重新检查”，并不是直接授予锁；丢通知、订阅断开、超时和多人同时唤醒，都需要重查与等待预算。普通 RLock 是非公平锁，RFairLock 是另一类公平锁实现，不能把所有 Redisson 同步器都描述成公平、可重入且具有同一种等待策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在该版本的常见调用路径里，没有显式指定正的固定 leaseTime 时，获取成功后会登记看门狗续期；默认 watchdog timeout 为 30 秒，可配置，续期任务按超时值约三分之一的间隔调度。续期脚本仍需检查对应 owner 是否存在。显式指定正 leaseTime 的路径使用固定租期，不应默认看门狗继续延长。它检查的是客户端登记和锁所有权，不是理解“业务做完没有”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程长暂停、续期任务调度受阻、网络分区或 Redis 故障，都可能让续期赶不上到期。业务线程出错但客户端还活着、锁未正常释放，也不能指望看门狗自动识别业务应当放弃。普通持有者应在明确获取成功之后按协议释放；异步、响应式代码换线程时要遵守相应 API 的 owner/threadId 约定，普通 RLock 的非法 owner 解锁会抛 IllegalMonitorStateException，不能任意线程 unlock。解锁失败也不能掩盖原业务异常，应分别保留业务失败和释放失败的诊断信息。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "手写 Java 适配器时把失败语义暴露出来"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是最小协议适配器。RedisPort 的两个方法是强约定：第一个必须落成单次 SET NX PX，第二个必须落成同一次原子 owner 比较删除，不能用普通 GET 加 DEL 拼接。false 表示明确没有获取成功；IOException 要视作调用结果未知，不能偷偷转换为 false 后让业务继续。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.io.IOException;\nimport java.util.Objects;\nimport java.util.Optional;\nimport java.util.UUID;\n\n/** Protocol adapter only. A real Redis port must implement each operation atomically. */\npublic final class LeaseLock {\n    public interface RedisPort {\n        boolean setIfAbsentWithTtl(String key, String owner, long ttlMillis) throws IOException;\n        boolean deleteIfOwner(String key, String owner) throws IOException;\n    }\n    private final RedisPort port;\n    public LeaseLock(RedisPort port) { this.port = Objects.requireNonNull(port); }\n    public Optional<Handle> tryAcquire(String key, long ttlMillis) throws IOException {\n        if (key == null || key.isBlank() || ttlMillis <= 0)\n            throw new IllegalArgumentException(\"nonblank key and positive TTL required\");\n        String owner = UUID.randomUUID().toString();\n        // A timeout propagates as UNKNOWN, never converted to a false failure result.\n        return port.setIfAbsentWithTtl(key, owner, ttlMillis)\n                ? Optional.of(new Handle(port, key, owner)) : Optional.empty();\n    }\n    public static final class Handle implements AutoCloseable {\n        private final RedisPort port;\n        private final String key, owner;\n        private boolean released;\n        private Handle(RedisPort port, String key, String owner) {\n            this.port = port; this.key = key; this.owner = owner;\n        }\n        /** Compare-and-delete only. This is not proof that a business write is still authorized. */\n        public synchronized boolean release() throws IOException {\n            if (released) return false;\n            boolean deleted = port.deleteIfOwner(key, owner);\n            released = true;\n            return deleted;\n        }\n        @Override public void close() throws IOException { release(); }\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "release 只有在明确收到结果后才把本地 released 置为 true；若响应丢失，仍可按相同 owner 重试条件释放。即使前一次已删除、随后 B 已取得新锁，重试也不会删除 B。但这段类只展示获取和释放，不提供自动续期、公平、重入、资源端 fencing 或剩余租约保证。取得 Handle 不代表可以放心执行任意时长的业务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还有一个刻意暴露的接口缺口：获取抛异常时，本次 owner 被封装在 tryAcquire 内，调用者没有拿到 Handle，不能利用它主动清理未知租约，只能停止副作用并让有限 TTL 收敛。完整生产适配器若需要查询和条件清理，应让“本次尝试身份、开始时间、状态”在发送之前就可被调用方保留；不能为补这个缺口而改成删除任意 owner。原子端口契约、网络错误分类、连接重试与业务恢复协议必须由具体驱动和应用共同落实。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "0"
+}

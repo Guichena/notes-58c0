@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-spring-advice",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Spring 与 Java 服务端",
+  "category": "权限注解与工具执行边界",
+  "title": "权限注解与工具执行边界",
+  "tags": [
+    "Spring",
+    "Java17教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-spring-tool-authorization",
+      "order": 12,
+      "question": "数据权限注解与 Tool 注解的共同边界？",
+      "shortAnswer": "数据权限注解描述访问规则，Tool 注解描述可调用能力，但两者都不能自己完成授权。程序还要受控注册入口、取得可信身份，并在实际执行处检查权限；只给方法套一层代理并不能覆盖所有入口。",
+      "commonPhrasings": [
+        "AOP 加 MyBatis 动态 SQL 如何实现数据权限？",
+        "多表多角色如何组合？",
+        "@Tool 底层怎样发现、注册并执行？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "12 数据权限注解与 Tool 注解的共同边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据权限注解描述访问规则，Tool 注解描述可调用能力，但两者都不能自己完成授权。程序还要受控注册入口、取得可信身份，并在实际执行处检查权限；只给方法套一层代理并不能覆盖所有入口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "沿一次“查询订单”看数据权限：认证层先确认是谁，授权服务再根据角色算出能看哪些数据，仓储查询最后带着明确约束访问数据库。接口权限回答“能不能执行查询”，数据权限回答“能查哪些行”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多角色的范围取并集还是交集、显式拒绝是否优先，必须先有产品规则。落实到 SQL 时，多表别名、关联表和分页总数查询都要带相同约束，否则列表看似正确，总数或其他关联查询仍可能泄露数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把租户 ID 从请求直接拼入 SQL 不安全。值用参数绑定，表名、列名、排序字段只能映射到服务端白名单。${} 是文本替换，不能用“这是内部权限切面”证明输入可信。AOP 将权限放 ThreadLocal 时，嵌套调用要恢复旧值，线程池必须传播最小可信快照并清理；更显式的参数传递通常更容易测试。权限缓存需包含主体、租户、策略版本并有撤销机制，不能只按角色名缓存所有用户结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "看到 @Tool，先问全限定名和版本：它可能来自 Spring AI、LangChain4j，也可能是自定义框架。通用流程是先发现方法，生成工具名称和参数 Schema，注册“名称到回调”的映射，再把本次允许的工具集合交给模型。"
+        },
+        {
+          "type": "paragraph",
+          "text": "模型返回的是调用请求；应用仍要校验请求、执行方法并处理结果。看到工具描述不等于模型直接执行了 Java。Spring AI 可以把方法包装为 ToolCallback，通过 provider 或明确的工具列表注册，具体 API 要与所用版本匹配。"
+        },
+        {
+          "type": "paragraph",
+          "text": "IoC 构造工具对象，工具注册决定暴露哪些能力，AOP 可以增加事务和审计。如果工具注册表保存的是原 target，或直接反射调用不可代理方法，增强可能被绕过。未知工具、重复名称、参数越界、超时迟到、重复副作用与结果泄露都需要独立防线。NoteWeave 的 Java 主系统使用官方 SDK 和自有业务编排，不能仅因是 Spring 项目就说使用 Spring AI 的 @Tool。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Spring AI 与 Boot 集成时，先选择彼此兼容的版本组合和 BOM，再引入需要的模型或工具 starter，由自动配置结合 classpath、属性和已有 Bean 提供相应模型客户端等组件。业务把这些组件注入服务，组织输入、工具列表和执行结果；不是仅在主类加一个注解就完成整个 Agent。Spring AI 及 Spring AI Alibaba 的具体模块、配置键与支持的 Boot 版本随发行变化，不能直接把当前示例塞入任意旧 Boot 项目。"
+        },
+        {
+          "type": "paragraph",
+          "text": "组装 Agent 时，可以从一次工具调用往前后看：程序先确定任务状态、预算和允许工具，组装 system/user 输入与历史；模型返回结构化工具请求后，程序校验并执行，再把结果放回后续输入，直到终止条件成立。轮数、时间和副作用限制始终由程序落实。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Workflow 的阶段和分支主要由代码确定，Agent 可以在允许范围内选择动作。Spring AI 的 ChatClient Advisor 扩展的是模型调用链，不是 Spring AOP 的方法代理 Advisor。检索、记忆或重排是否由某个 Advisor 完成，要看对应模块源码，不能凭相同名称推断职责。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：不使用 Spring AI 如何传递 Agent 数据？用明确 DTO、状态存储和调用协议即可，IoC 与 Agent 编排是不同层次。选择 Spring AI 的理由可以是 Java 生态集成和模型/工具抽象，代价包括版本兼容、抽象泄漏和对供应商特性的适配；不能把熟悉某框架当效果已经提升的证据。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

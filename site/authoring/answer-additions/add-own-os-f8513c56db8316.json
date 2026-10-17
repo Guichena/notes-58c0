@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-f8513c56db8316",
+  "entryId": "bg-线上排障-2",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "cfd6a6c9111bf1c88bc61a60abcc2b23ddbe5ed99f43d2dcd1389289839ed8d5",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Linux一切皆文件是什么意思 怎样实时跟踪日志并筛选关键词"
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux以文件描述符统一许多I/O对象的访问接口，但普通文件、目录、管道和socket的操作语义并不相同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "如何理解 Linux 中“一切皆文件”？常用的 Linux 命令有哪些？如何查看进程和系统资源状态？如何在终端中实时滚动查看日志并搜索指定关键字？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "统一接口并不等于所有对象都是磁盘文件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux通过文件描述符引用内核对象，用read/write/close、poll等接口统一处理许多普通文件、设备、管道与socket。VFS以dentry/inode/file及不同操作表分派到具体实现，/proc和/sys还可把部分内核状态展示为文件系统接口。路径名、文件描述符和磁盘数据块是不同概念。"
+    },
+    {
+      "type": "paragraph",
+      "text": "socket可通过socket调用取得FD而没有普通文件路径，管道也不一定能seek；并非每种FD都支持每个系统调用，错误可能为ESPIPE等。内核调度、权限控制和所有资源也不是都能靠读一个普通文件完成。“一切皆文件”是统一抽象的概括，不是严格全称定理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先选择要验证的系统假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "路径/文本可用pwd、ls、find、cat、less、head、tail、grep；进程用ps、top和top -H定位，内存用free与/proc口径，磁盘容量用df -h和inode用df -i，目录占用用du，网络连接用ss。load、CPU利用率、磁盘容量和IO延迟不是同一个指标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以请求慢为例，先看CPU还是等待，再关联进程/线程栈、队列、连接池和下游；CPU低且连接池满不应直接加线程。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实时日志组合要处理轮转 缓冲和匹配语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "跟踪日志先想清楚：文件轮转后，要跟旧文件还是跟这个名字。GNU 工具可以用 tail -n 100 -F -- /path/app.log \\| grep --line-buffered -F -- \"ERROR\"：先输出最后 100 行，再持续跟踪。"
+    },
+    {
+      "type": "paragraph",
+      "text": "其中 -F 按名字跟踪并重试打开，适合常见的 rename 后新建同名文件。普通 -f 默认跟描述符，可能还在看旧 inode；copytruncate 则仍有截断间隙丢失等边界，不是换一个参数就能保证日志绝不遗漏。"
+    },
+    {
+      "type": "paragraph",
+      "text": "grep -F是固定字符串，-E才是扩展正则；--阻止前导短横线被当选项，路径和值仍须正确引用。--line-buffered促使每行刷新，避免管道中的grep攒缓冲，但日志生产者本身没flush或没有完整换行时仍可能延迟。多条grep管道会继续引入缓冲和额外过滤语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从本地实验到服务日志的边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "可在只含自造文本的临时目录里启动GNU tail和grep，先确认过滤链已启动，再追加普通行和匹配行，最后重命名旧文件并新建同名文件；检查只输出匹配行并能重新打开，结束后回收两个子进程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "systemd管理的服务可按已有权限用journalctl -u 服务 -f，容器平台也有自己的日志接口；跨实例需时间、请求ID和部署版本关联，单机tail不能证明其他节点没有错误。日志可能含敏感数据，诊断按最小必要字段筛选；本节命令是方法，不是授权对生产环境执行任意命令。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Linux里的read指令可能指什么 怎样正确读取文本或字节"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bash内建read按记录读入变量，read系统调用按字节读取FD；两者的返回值、EOF和缓冲语义不同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "linux read指令等"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Bash read给当前shell变量赋值"
+    },
+    {
+      "type": "paragraph",
+      "text": "read通常是shell内建，从标准输入或指定FD读记录并给变量赋值；默认按IFS分词，反斜杠还参与转义。若要原样读取普通文本行，常用IFS= read -r line：空IFS避免剪掉首尾分隔空白，-r保留反斜杠。read不是cat，也不是CPU机器指令。"
+    },
+    {
+      "type": "paragraph",
+      "text": "逐行读取时，最后一行可能没有换行符，不能因此把它漏掉。可以写 while IFS= read -r line || [ -n \"$line\" ]; do printf \"%s\\n\" \"$line\"; done < \"$file\"，后半条件负责保留最后的非空残行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个循环主动给输出补换行，不是二进制逐字节复制；Bash 变量也不能保存任意 NUL。另一个常见坑是通过管道执行 while，子 shell 里的赋值可能不会回到外部 shell，用输入重定向可以避开这类问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "超时和返回值也需要条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bash read可用-u选FD、-n/-N按字符数量限制、-t指定等待期限，但具体选项和其他shell不同。-t对普通文件并非通用IO截止时间，EOF或不完整读取通常会以非零状态报告，已有部分文本仍可能赋到变量。要按退出状态和协议判断，而不是把空字符串一律当错误。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "read系统调用则按字节返回"
+    },
+    {
+      "type": "paragraph",
+      "text": "C/POSIX read(fd,buf,count)尝试读最多count字节，正数可小于请求数，0对普通文件/字节流通常表示EOF，-1需查看errno。EINTR、非阻塞EAGAIN、设备特殊语义和count为0都应按契约处理；一次成功不代表完整业务帧。当前偏移可能由fork/dup共享的open file description共同维护。"
+    },
+    {
+      "type": "paragraph",
+      "text": "阻塞read没有数据时可进入内核等待，数据到达后先就绪再等调度；页缓存命中则可直接完成。shell内建最终可能用底层读取，但它有行/变量/分词语义，不能把两个API当同一个答案。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Shell怎样提取文件第一万至两万行 怎样避免端点和换行错误"
+    },
+    {
+      "type": "paragraph",
+      "text": "从第10000行到第20000行两端都包含，共10001行；命令还应明确短文件、最终换行和平台扩展。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按从1开始计数且两端都包含解释，10000到20000共10001行。以下示例针对按LF分隔的普通文本，二进制格式或其他行分隔协议需另行处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "使用shell命令取出文件中的第一万至两万行"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先算闭区间再写命令"
+    },
+    {
+      "type": "paragraph",
+      "text": "直观命令是sed -n '10000,20000p' < \"$file\"，-n关闭默认打印，范围p仅输出目标行。若文件不足10000行无输出，介于10000与20000只输出已有尾段，不补空行；空行仍计作一行。无需先cat全部文件再另起sed。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不是所有系统的sed都支持Q，跨平台时用简单范围p并接受继续读取余下文件的成本，或核验当地sed的具体行为。重定向并给文件变量加引号，既保留空格，也避免前导-被识别为sed选项。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "head和tail的算术边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "用 head 和 tail 也可以取闭区间：先 head -n 20000 拿前两万行，再 tail -n +10000 从其中第 10000 行开始，仍是两端包含。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果反过来先 tail -n +10000，再用 head 截断，长文件里 head 可能提前退出，让上游遇到 SIGPIPE。开启 set -o pipefail 时要理解这个退出码，不能仅据此认定目标输出一定错了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要写head -n 20000 \\| tail -n 10000，它在足够长文件中会从10001行开始，漏掉一行，短文件时口径又不同。shell“第几行”不是编辑器视觉折行，也不是Unicode字符数；CRLF、缺最终换行和超长单行要单独定义输出是否逐字节保留。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "extract_lines.sh为GNU Bash/GNU sed版本，检查参数个数，输出到标准输出而不改原文件。测试可用0、1、9999、10000、10001、19999、20000、20001、23000行分别有/无最终LF共18种临时文件，逐字节比较完整输出，并覆盖中文、反斜杠、空格和前导-文件名。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提前停止版本时间与前20000行的字节量有关，额外内存至少受单行长度影响，不宣称任意超长行恒定一字节空间；没有扫描真实大文件或做性能基准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "extract_lines.sh 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "extract_lines.sh",
+      "value": "#!/usr/bin/env bash\nset -eu\nif [ \"$#\" -ne 1 ]; then\n    printf '%s\\n' 'usage: extract_lines.sh FILE' >&2\n    exit 2\nfi\n# Inclusive, one-based interval: 20000 - 10000 + 1 = 10001 lines.\n# GNU sed Q quits without adding a missing final newline.\n# Redirect stdin so a filename beginning with '-' is not an option to sed.\nsed -n '10000,20000p;20000Q' < \"$1\"\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "kill与kill -9有什么区别 su命令怎样改变执行身份"
+    },
+    {
+      "type": "paragraph",
+      "text": "kill默认发送可处理的SIGTERM，kill -9发送不可捕获的SIGKILL；su则在认证和授权约束下切换执行身份。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "kill 和 kill -9"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux怎样查看进程、发送终止信号和使用su切换身份？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "kill默认不是立即强杀"
+    },
+    {
+      "type": "paragraph",
+      "text": "SIGTERM 给应用一次自行收尾的机会，SIGKILL 不给。kill PID 通常默认发 SIGTERM，它可以被捕获、阻塞或忽略；应用可以停止接收，完成或取消在途任务，刷必要数据后退出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "kill -9 PID 发的是 SIGKILL，目标不能捕获、阻塞或忽略，因此不能指望 finally、析构函数或 shutdown hook 帮忙收尾。面试和操作时用信号名更清楚：kill -TERM PID、kill -KILL PID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "SIGKILL并不保证命令返回瞬间已完全退出，不可中断内核等待可能延后处理；僵尸已退出，更不能再kill它让它回收自己。系统会释放进程内核资源，但业务副作用、半写文件和远端请求可能留下未知结果。SIGTERM的默认动作通常也是终止，区别不在于一个“杀”、另一个“永远不杀”，而是处理机会和可控制性。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "操作前核对目标与权限"
+    },
+    {
+      "type": "paragraph",
+      "text": "用pgrep -a -x 名字或ps核实PID、父子关系、启动时间和命名空间，再以服务的正常停止入口优先处理；需要兜底时有限等待后才考虑强制终止。kill成功只表示相关请求成功，不是业务清理已成功。PID会复用，检查与发送间仍可能竞态；有条件可用支持pidfd的管理接口避免误中复用PID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "kill还可以发其他信号，kill -0常用于检查存在/权限而不发实际信号；负PID或0有进程组语义，不要把未经校验的字符串直接拼进shell命令。发送信号应限定在自己拥有或明确获准操作的目标进程。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "su不是修改当前账号数据库"
+    },
+    {
+      "type": "paragraph",
+      "text": "su以另一用户和组身份运行命令或shell，受认证与系统策略限制；不指定用户通常尝试root，但并不绕过密码/PAM或其他授权。su - 用户模拟登录环境，切换到目标home并设置相应环境；不带-与登录shell的环境处理不同，具体行为看发行版和util-linux/PAM配置。exit结束所开的shell后回到原调用上下文。"
+    },
+    {
+      "type": "paragraph",
+      "text": "sudo按授权策略执行命令和su切换shell身份不是完全同一接口。生产应采用最小权限、明确命令和审计，不能把su等同于任意提权。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "2"
+}

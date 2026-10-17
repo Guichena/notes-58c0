@@ -1,0 +1,283 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-incident-workflow",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "线上排障 Agent 怎样从告警、证据和根因候选走到授权处置？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-incident-workflow",
+      "order": 6726,
+      "question": "线上排障 Agent 怎样从告警、证据和根因候选走到授权处置？",
+      "shortAnswer": "只读诊断先固定服务和时间窗，用支持与反证检验候选；处置单独授权并按业务影响验证恢复。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "25 设计一个线上排障 Agent 如何从告警走到闭环"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 我先做只读诊断，围绕固定服务和时间窗采集指标、日志、trace、发布和配置变更，建立候选根因及支持/反证。模型负责提出下一步证据需求，工具限制范围和查询量。处置是独立权限等级，经 runbook、审批和回退约束后执行，再用用户影响指标验证恢复。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "网元断连或服务延迟的通用链路"
+        },
+        {
+          "type": "paragraph",
+          "text": "告警从 MQ 进入，按服务、时间和关联事件去重；读取元数据、依赖拓扑和授权范围；检索相关 runbook 只作为候选方向；并行读取有边界的指标、样本日志和 trace；假设管理器记录候选、证据与缺口；生成根因候选、建议命令、风险、回退和验证标准；关键通信操作经人工复核后再提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不直接给模型任意 shell、SQL 或生产全量日志权限。日志里的命令和 URL 也是数据，不能因为来自内部系统就自动可信。探测要限量，诊断流量本身可能加重事故。多故障、时钟偏差、缺失日志和错误部署记录都应纳入测试。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "错误怎样落到具体诊断节点"
+        },
+        {
+          "type": "paragraph",
+          "text": "诊断入口先把报错变成带版本的事件，包含 tenant、service、cluster/instance、发生时间、errorCode、日志引用、部署版本和已做检查。只有一句“有问题”时，缺失的关键定位信息要先补齐。"
+        },
+        {
+          "type": "paragraph",
+          "text": "路由层先检查权限与确定性规则，模型只能在允许的候选集合中提出 skillId 和理由。未知类别或关键条件缺失就进入补充输入，不能自由生成一个可执行入口。注册表再把 skillId/version 绑定到输入输出 schema、Prompt 版本、受控 handler 或子图、工具白名单和期限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "程序校验参数后才调用；节点返回状态、证据引用、检查结果和不确定性，供后续决定继续诊断还是请求人工审批。这样，“选哪个 Skill”才接上“执行了什么、留下什么证据”；实际 Skill 内容和工具实现仍须另外验收。"
+        },
+        {
+          "type": "paragraph",
+          "text": "规则树按条件选择分支；责任链按固定次序调用 handler，并规定每个 handler 的 CONTINUE、HANDLED、ESCALATE 结果及副作用权限。权限拒绝不能被后续模型分数覆盖，无法处理也不能默认为成功。记录命中规则、链路顺序和规则版本，才能复现一次分派。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一个具体推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "10:05 后查询服务 P95 升高。先核对告警新鲜度、流量和受影响实例；trace 显示数据库等待增长，应用连接池排队上升，数据库 CPU 低。提出数据库饱和、锁等待、网络和配置变更等候选，不能只因 CPU 低就排除数据库。继续查锁、慢 SQL 和发布 diff，发现连接池上限从 50 变为 5；与未升级实例和受控测试对照后，才提高该候选可信度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "未授权生产修改时只交建议；已批准恢复指定配置时，按 expected version、幂等操作、灰度和回退方案执行。验证观察固定窗口中的 P95、错误率、连接等待和业务成功，而不仅是进程存活。无改善或出现新故障则按预案回退或升级人工。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "上千条 10 至 20 MB 日志怎么处理"
+        },
+        {
+          "type": "paragraph",
+          "text": "先按服务和时间窗定位，再按稳定错误指纹去重，保留计数、时间跨度和代表样本；确定性聚合交给代码，原文存受控产物。避免机械过滤所有 heartbeat，因为心跳缺失可能正是断连证据。摘要标注覆盖和缺口，允许按定位回读。仅把前几百行喂模型会错过根因和反例。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“拔网线再插上好了”可能是临时缓解，不证明根因是网线。案例入库分现象、支持证据、反证、处置、结果和因果把握；未经验证的修复只标临时 workaround。模型初步猜测不应直接变成自动运行规则。"
+        },
+        {
+          "type": "paragraph",
+          "text": "评测： 根因候选召回、首条有效证据时间、错误归因、定位耗时、人工接受；处置另看恢复率、MTTR、回归和未授权变更。按事故而非日志片段切分数据，先影子运行。不存在真实测量时不给提升数字。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "同题换问与连续追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 为什么选择 Skill 而不是专用 Agent：为什么把故障诊断能力做成 Skill，而不是为它单独构建一个大 Agent？是否认为实现一个 Skill 就足够，没必要再搭一套大的 Agent 架构？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 你这个智能运维 Agent 为什么做？解决什么痛点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 运维Agent定位故障根因后是否输出处理建议方案"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 聊天机器人项目中引入了哪些 AI 模型能力？接 AI 进来帮助做什么决策？"
+        },
+        {
+          "type": "paragraph",
+          "text": "4. 这个项目类似于监控平台吗？它起辅助定位还是什么作用？\n5. 它可能给出错误信息吗？如何优化或防止幻觉？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 描述一条从告警到闭环的完整链路（以网元断连为例）"
+        },
+        {
+          "type": "paragraph",
+          "text": "2. 单次告警日志可能上千条 / 10-20MB，怎么喂给 LLM？"
+        },
+        {
+          "type": "paragraph",
+          "text": "3. Skill 里哪些是固定、哪些随观察动态调整？"
+        },
+        {
+          "type": "paragraph",
+          "text": "6. RAG的案例库防污染：遇到网络问题拔网线插一下好了，但根因是网络波动——这种\"假案例\"怎么拦住？"
+        },
+        {
+          "type": "paragraph",
+          "text": "7. 不靠大量人力 review，怎么保证进库知识又准又高效？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 用户发给系统发的是什么内容？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 报错信息会告诉他哪些内容，比如说哪个集群、哪个实例，或者还是啥，context 是啥？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 展开讲讲你现在这个诊断 Agent 具体的实现方案吧。"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这里的初步报错，它是带上了什么呢？只有一个关键字，还是说你会带上一些 log id？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 它就是一个报错信息，比如说这个报错信息就叫 crash loop back off，然后你直接把这句话贴过去说「有问题你帮我查一下」，是这么个逻辑吗？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 也就是说你有一个分类的逻辑，这个分类逻辑描述在哪里，是在 prompt 里还是在哪里？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 我怎么知道什么时候该去调用这一个 Skill，或者什么样的场景报错信息我该映射到什么样的类别里去做指定 Skill 的执行，这个是在哪里定义的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 你判断得有一定的依据吧，就这个依据是写在什么地方、怎么描述的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 现在有几个 Skill 呢？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这优化链路做的是哪些事儿呢？具体的。"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. Skill 是怎么去做分发的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这个 Agent 里面的这些逻辑是代码也好、prompt 也好，是怎么关联起来的呢？你这里画了一个流程，这里的流程是怎么和 Agent 里面的逻辑关联起来的，这个是怎么实现的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这个 loop 和它上面的这个 Skill 的关系是啥呀？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这个 Skill Router 到底做了啥？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. Skill 它的输入和输出分别是什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 它是一个节点对吧？这个节点是要给下层去调用，它给下层传递的信息是什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 报错信息会告诉他哪些内容，比如说哪个集群，哪个实例或者还是啥，context 是啥？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 展开讲讲你现在这个诊断 agent 具体的实现方案吧。"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这里的初步报错，它是带上了什么呢？它只有一个关键字，还是说你会带上一些 log id，还是说是啥？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 它就是一个报错信息，比如说这个报错信息就叫 crash loop back off，然后你直接把这句话贴过去说有问题你帮我查一下，是这么个逻辑吗？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 也就是说你有一个分类的逻辑，这个分类逻辑描述是在哪里，是在 prompt 里，还是在哪里？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 我怎么知道什么时候该去调用这一个 skill，或者是什么样的场景报错信息，我该映射到什么样的类别里去做指定 skill 的执行，这个是在哪里定义的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 你判断得有一定的依据吧，就这个依据是写在什么地方，是怎么描述的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 现在有几个 skill 呢？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. skill 是怎么去做分发的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这个 agent 里面的这些逻辑是代码也好，prompt 也好，是怎么关联起来的呢？就你这里画了一个流程，这里的流程是怎么和 agent 里面的逻辑关联起来的，这个是怎么实现的？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这个 loop 和它的这个上面的 skill 的关系是啥呀？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 这个 skill router 到底做了啥？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. skill 它的输入和输出分别是什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "1. 它这是一个节点对吧？它这个节点是要给下层去调用，他给下层传递的信息是什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 规则树、责任链怎么设计的？规则树有哪些规则节点，怎么流转的？"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

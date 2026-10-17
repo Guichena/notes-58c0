@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 1,
+  "id": "own-os-java-process",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "操作系统与 Linux",
+  "category": "Java进程编排与实验",
+  "title": "Java进程编排与实验",
+  "source": "操作系统与 Linux 面试复习手册",
+  "tags": [
+    "Java后端",
+    "Linux",
+    "版本与边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-os-processbuilder-lifecycle",
+      "order": 5265,
+      "question": "Q8 ProcessBuilder start waitFor与退出码？",
+      "shortAnswer": "ProcessBuilder 的准备、启动、等待，是三个阶段。new ProcessBuilder 只配置命令、参数、目录、环境和重定向；start 才启动外部程序并返回 Process，路径或权限问题可能导致 IOException。",
+      "commonPhrasings": [
+        "Q8 ProcessBuilder start waitFor与退出码？",
+        "Q9 为什么Java不能直接复制别的运行时进程启动模型？",
+        "Q13 如何实现有错误协议的跨JVM平方任务？",
+        "Q26 外部命令为什么用ProcessBuilder而不是再套一层JVM？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Q8 ProcessBuilder start waitFor与退出码"
+        },
+        {
+          "type": "paragraph",
+          "text": "ProcessBuilder 的准备、启动、等待，是三个阶段。new ProcessBuilder 只配置命令、参数、目录、环境和重定向；start 才启动外部程序并返回 Process，路径或权限问题可能导致 IOException。"
+        },
+        {
+          "type": "paragraph",
+          "text": "waitFor 等退出并返回退出码；带 timeout 的版本返回是否按时退出，false 后进程仍可能活着。exitValue 在未退出时会抛异常，不能跳过存活检查直接取结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：准备→启动→读写管道→退出与协议校验"
+        },
+        {
+          "type": "paragraph",
+          "text": "边界：waitFor超时后进程可能仍存活"
+        },
+        {
+          "type": "paragraph",
+          "text": "要并发运行多个进程，应先分别start再收集结果，或用有界线程池编排有限数量的外部调用。start后立即waitFor再启动下一个，会使它们串行。Process并不是Java方法的Future，子进程异常不会在父进程waitFor处按原Java异常类型重抛；必须用退出码和结构化错误协议映射。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进程结束不等于业务成功，进程启动也不等于服务就绪。完整流程是：关闭不再写入的 stdin，持续读取 stdout/stderr 防止管道写满，等待退出，再核对协议和退出码，关闭流，并安排必要的终止兜底。"
+        },
+        {
+          "type": "paragraph",
+          "text": "waitFor 只能证明进程已经结束，不能替你验证业务输出。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Q9 为什么Java不能直接复制别的运行时进程启动模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java标准库的ProcessBuilder执行外部程序，不提供把任意lambda或当前堆对象直接迁移到子进程的通用进程池接口。启动另一个JVM要明确java可执行路径、classpath、入口类和参数；子JVM会独立初始化自己的静态字段，不会共享父JVM的静态Map。通常用public static void main区分父/子命令模式，避免两个模式都递归启动新进程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：JVM边界→字符串协议→各自资源生命周期"
+        },
+        {
+          "type": "paragraph",
+          "text": "边界：子JVM静态Map不共享父JVM对象"
+        },
+        {
+          "type": "paragraph",
+          "text": "操作系统层面fork、exec、写时复制仍值得理解，但JVM内部实际启动方式与平台/实现有关，不应把某种底层机制写成应用可依赖的Java API契约。应用无需为了模拟某语言入口保护照搬一套语法；需要的是明确父子职责和不递归启动的不变量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "跨 JVM 传的是字符串或协议数据，不是还活着的 Java 对象。命令行参数适合路径和标识，大数据可通过管道、文件或服务协议传输。"
+        },
+        {
+          "type": "paragraph",
+          "text": "父进程的锁、线程池、数据库连接不会自动变成子 JVM 里的可用对象。子进程要创建并关闭自己的资源，进程启动成本也要算进预算。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Q13 如何实现有错误协议的跨JVM平方任务"
+        },
+        {
+          "type": "paragraph",
+          "text": "需求是输入有限整数列表，子JVM逐项计算，结果按输入顺序返回；空输入、负数、重复值、非法输入和数值溢出都要有明确语义。使用index与value的文本协议，区分成功行和错误行，指定UTF-8，绝不把异常堆栈混入业务stdout。示例使用本机已知java可执行程序，不经过shell。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：index协议→stdout/stderr分离→总期限和清理"
+        },
+        {
+          "type": "paragraph",
+          "text": "边界：waitFor前不排空输出可能管道死锁"
+        },
+        {
+          "type": "paragraph",
+          "text": "ProcessDemo完整展示父子入口、标准流通信、退出码与超时兜底。父进程拥有Process，子进程拥有本地计算；主流程不能在结果还可能填满管道时仅waitFor。代码用三个I/O工作者并发写入和读取两条输出流，以字符数量限制内存，并将进程与I/O等待纳入同一截止时间；终止清理另有有限宽限期。示例是有限受信输入实验，真实大流量还要按业务限制单行和编码字节数，并审查协议鉴权。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：ProcessDemo.java。编译运行：javac -encoding UTF-8 ProcessDemo.java；java ProcessDemo。在JDK9及以上可使用javac --release 8进行Java8 API与字节码兼容检查。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "ProcessDemo.java",
+          "value": "import java.io.*;\nimport java.nio.charset.StandardCharsets;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Small fixture batches, not an unbounded streaming protocol. No shell.\n * UTF-8 requests id:number; replies id:OK:square or id:ERR:reason.\n * '?' is reserved: unidentifiable malformed lines can only be matched by position.\n * Input is capped at 256 Ki characters; stdout and stderr each at 64 Ki characters.\n */\npublic final class ProcessDemo {\n    private static final int OUTPUT_LIMIT = 65536, INPUT_LIMIT = 262144;\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++; System.out.println(\"PASS \" + name);\n    }\n    private static String idFor(String line) {\n        int colon = line.indexOf(':');\n        // '?' is reserved for malformed lines without an identifiable request id.\n        return colon > 0 && !line.substring(0, colon).equals(\"?\") ? line.substring(0, colon) : \"?\";\n    }\n    private static List<String> requestIds(String input) throws IOException {\n        if (input.length() > INPUT_LIMIT) throw new IllegalArgumentException(\"input limit exceeded\");\n        List<String> ids = new ArrayList<>();\n        Set<String> seen = new HashSet<>();\n        try (BufferedReader reader = new BufferedReader(new StringReader(input))) {\n            for (String line; (line = reader.readLine()) != null;) {\n                String id = idFor(line);\n                if (!id.equals(\"?\") && !seen.add(id)) throw new IllegalArgumentException(\"duplicate request id\");\n                ids.add(id);\n            }\n        }\n        return ids;\n    }\n    private static void validate(List<String> expected, String output) throws IOException {\n        Set<String> seen = new HashSet<>();\n        int index = 0;\n        try (BufferedReader reader = new BufferedReader(new StringReader(output))) {\n            for (String line; (line = reader.readLine()) != null; index++) {\n                String[] fields = line.split(\":\", -1);\n                if (index >= expected.size() || fields.length != 3 || !fields[0].equals(expected.get(index)))\n                    throw new IOException(\"reply count, id, or format mismatch\");\n                if (!fields[0].equals(\"?\") && !seen.add(fields[0])) throw new IOException(\"duplicate reply id\");\n                if (fields[1].equals(\"OK\")) {\n                    try { Long.parseLong(fields[2]); } catch (NumberFormatException ex) { throw new IOException(\"invalid result\", ex); }\n                } else if (!fields[1].equals(\"ERR\") || !(fields[2].equals(\"invalid\") || fields[2].equals(\"overflow\")))\n                    throw new IOException(\"invalid reply status\");\n            }\n        }\n        if (index != expected.size()) throw new IOException(\"missing replies\");\n    }\n    private static String readAll(InputStream input) throws IOException {\n        try (Reader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {\n            StringBuilder out = new StringBuilder(); char[] buffer = new char[1024];\n            for (int n; (n = reader.read(buffer)) != -1;) {\n                if (out.length() + n > OUTPUT_LIMIT) throw new IOException(\"output limit exceeded\");\n                out.append(buffer, 0, n);\n            }\n            return out.toString().replace(\"\\r\\n\", \"\\n\");\n        }\n    }\n    private static long remaining(long deadline) throws TimeoutException {\n        long left = deadline - System.nanoTime();\n        if (left <= 0) throw new TimeoutException(\"child deadline expired\");\n        return left;\n    }\n    private static <T> T getBefore(Future<T> future, long deadline) throws Exception {\n        try { return future.get(remaining(deadline), TimeUnit.NANOSECONDS); }\n        catch (ExecutionException ex) {\n            if (ex.getCause() instanceof Exception) throw (Exception) ex.getCause();\n            throw new AssertionError(ex.getCause());\n        }\n    }\n    private static void stop(Process process) throws InterruptedException {\n        if (process.isAlive()) {\n            process.destroy();\n            if (!process.waitFor(2, TimeUnit.SECONDS)) {\n                process.destroyForcibly();\n                if (!process.waitFor(2, TimeUnit.SECONDS)) throw new AssertionError(\"child stuck\");\n            }\n        }\n    }\n    private static String runChild(String mode, String input, long timeoutMillis) throws Exception {\n        List<String> ids = requestIds(input);\n        String java = System.getProperty(\"java.home\") + File.separator + \"bin\" + File.separator\n                + (System.getProperty(\"os.name\").startsWith(\"Windows\") ? \"java.exe\" : \"java\");\n        Process process = new ProcessBuilder(java, \"-cp\", System.getProperty(\"java.class.path\"),\n                ProcessDemo.class.getName(), mode).start();\n        ExecutorService io = Executors.newFixedThreadPool(3);\n        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);\n        try {\n            // Concurrent bounded reads and an asynchronous write avoid pipe deadlocks.\n            Future<String> out = io.submit(() -> readAll(process.getInputStream()));\n            Future<String> err = io.submit(() -> readAll(process.getErrorStream()));\n            Future<Void> sent = io.submit(() -> {\n                try (Writer writer = new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8)) {\n                    writer.write(input); // Close stdin to send EOF, including for an empty batch.\n                }\n                return null;\n            });\n            if (!process.waitFor(remaining(deadline), TimeUnit.NANOSECONDS)) throw new TimeoutException(\"child timeout\");\n            String stdout = getBefore(out, deadline), stderr = getBefore(err, deadline);\n            if (process.exitValue() != 0) throw new IOException(\"exit=\" + process.exitValue() + \": \" + stderr.trim());\n            getBefore(sent, deadline); validate(ids, stdout);\n            return stdout;\n        } finally { // Termination and I/O cleanup have a separate, bounded grace period.\n            try { stop(process); }\n            finally {\n                io.shutdownNow();\n                if (!io.awaitTermination(3, TimeUnit.SECONDS)) throw new AssertionError(\"I/O workers stuck\");\n            }\n        }\n    }\n    private static void child(String mode) throws Exception {\n        if (mode.equals(\"hang\")) { new CountDownLatch(1).await(30, TimeUnit.SECONDS); return; }\n        if (mode.equals(\"exit\")) { System.err.println(\"deliberate child failure\"); System.exit(7); }\n        if (mode.equals(\"flood\")) { System.out.print(new String(new char[OUTPUT_LIMIT + 1])); return; }\n        try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));\n             PrintWriter writer = new PrintWriter(new OutputStreamWriter(System.out, StandardCharsets.UTF_8), true)) {\n            for (String line; (line = reader.readLine()) != null;) {\n                String id = idFor(line); String[] fields = line.split(\":\", -1);\n                try {\n                    if (fields.length != 2 || id.equals(\"?\")) throw new IllegalArgumentException();\n                    long n = Long.parseLong(fields[1]);\n                    writer.println(id + \":OK:\" + Math.multiplyExact(n, n));\n                } catch (IllegalArgumentException ex) { writer.println(id + \":ERR:invalid\"); }\n                  catch (ArithmeticException ex) { writer.println(id + \":ERR:overflow\"); }\n            }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 0) { child(args[0]); return; }\n        check(\"process preserves ids and UTF-8\", runChild(\"child\", \"task-1:5\\n任务-2:3\\n\", 3000)\n                .equals(\"task-1:OK:25\\n任务-2:OK:9\\n\"));\n        check(\"empty input reaches EOF\", runChild(\"child\", \"\", 3000).isEmpty());\n        check(\"negative and zero square correctly\", runChild(\"child\", \"n:-4\\nz:0\\n\", 3000).equals(\"n:OK:16\\nz:OK:0\\n\"));\n        check(\"duplicate values keep distinct ids\", runChild(\"child\", \"a:4\\nb:4\\n\", 3000).equals(\"a:OK:16\\nb:OK:16\\n\"));\n        check(\"invalid input preserves identifiable ids\", runChild(\"child\", \"bad\\nx:nope\\n:3\\n\\n\", 3000)\n                .equals(\"?:ERR:invalid\\nx:ERR:invalid\\n?:ERR:invalid\\n?:ERR:invalid\\n\"));\n        check(\"overflow preserves request id\", runChild(\"child\", \"huge:9223372036854775807\\n\", 3000).equals(\"huge:ERR:overflow\\n\"));\n        boolean timeout = false;\n        try { runChild(\"hang\", \"\", 100); } catch (TimeoutException ex) { timeout = true; }\n        check(\"timeout terminates child\", timeout);\n        boolean writeTimeout = false;\n        try { runChild(\"hang\", new String(new char[128 * 1024]), 100); } catch (TimeoutException ex) { writeTimeout = true; }\n        check(\"timeout also bounds blocked stdin writer\", writeTimeout);\n        boolean badExit = false;\n        try { runChild(\"exit\", \"\", 3000); }\n        catch (IOException ex) { badExit = ex.getMessage().contains(\"exit=7\") && ex.getMessage().contains(\"deliberate child failure\"); }\n        check(\"nonzero exit includes stderr\", badExit);\n        boolean capped = false;\n        try { runChild(\"flood\", \"\", 3000); } catch (IOException ex) { capped = ex.getMessage().contains(\"output limit\"); }\n        check(\"child output has a hard read cap\", capped);\n        boolean missing = false, duplicate = false, duplicateInput = false;\n        try { validate(Arrays.asList(\"a\", \"b\"), \"a:OK:1\\n\"); } catch (IOException ex) { missing = true; }\n        try { validate(Arrays.asList(\"a\", \"b\"), \"a:OK:1\\na:OK:1\\n\"); } catch (IOException ex) { duplicate = true; }\n        try { runChild(\"child\", \"a:1\\na:2\\n\", 3000); } catch (IllegalArgumentException ex) { duplicateInput = true; }\n        check(\"missing reply is rejected\", missing);\n        check(\"duplicate or mismatched reply id is rejected\", duplicate);\n        check(\"duplicate request ids are rejected before launch\", duplicateInput);\n        boolean oversized = false;\n        try { runChild(\"child\", new String(new char[INPUT_LIMIT + 1]), 3000); }\n        catch (IllegalArgumentException ex) { oversized = true; }\n        check(\"oversized request is rejected before launch\", oversized);\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "推演：父进程按参数进入控制模式，子JVM按明确参数进入worker模式；父发送带编号请求并结束输入；子对每条请求产生对应终态；父读取并核对数量、编号、错误和退出状态。n个数字的计算为O(n)，保存完整返回结果是O(n)，进程启动有独立常数成本。多进程并行应在外层用预算限制同时存活的Process，不能无限start。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Q26 外部命令为什么用ProcessBuilder而不是再套一层JVM"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果任务是运行ffmpeg、编译器或命令行工具，ProcessBuilder就是直接的执行边界；用有限线程池编排多个Process即可，不必每个请求先启动一个额外JVM再由它启动工具。必须区分程序已经启动、已经就绪、已经退出和业务已经成功这四个状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：可执行路径→参数白名单→双流排空→输出协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "边界：不用shell减少注入面，仍要验证程序自身参数语义"
+        },
+        {
+          "type": "paragraph",
+          "text": "ProcessBuilder 用参数列表、不经过 shell，可以减少 shell 注入，但仍要验证目标程序怎样解释参数。不能把用户输入拼成命令字符串，也不能因此放开任意程序的任意选项。"
+        },
+        {
+          "type": "paragraph",
+          "text": "核对可执行路径、允许参数、工作目录、环境、输出路径与覆盖策略。多个任务尤其不能默认写同一个 output 文件名。"
+        },
+        {
+          "type": "paragraph",
+          "text": "stdout与stderr都可能写满，分别并发排空，或明确合并、重定向到有界/受管理文件；不要只读stdout而让stderr堵住整个进程。日志与结构化输出分开，限制最大字节数和行长度；输出超限也有清理路径。Q13的ProcessDemo覆盖本地协议和失败路径，真实工具、网络服务、进程树以及跨平台差异需独立集成测试。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-ordered-bounded-pipeline",
+      "order": 5998,
+      "question": "Q28 如何设计有界并发 按序输出且可取消的流水线？",
+      "shortAnswer": "先澄清有限/无限输入、CPU/I/O、输出顺序、部分成功、外部副作用、并发上限与总期限。给每个项目分配连续index，执行结果包含成功值或明确错误；窗口最多保留k个尚未按序交付的任务。收到乱序结果放入index到结果的缓冲，只有nextExpected到齐才输出并递增。",
+      "commonPhrasings": [
+        "Q28 如何设计有界并发 按序输出且可取消的流水线？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Q28 如何设计有界并发 按序输出且可取消的流水线"
+        },
+        {
+          "type": "paragraph",
+          "text": "先澄清有限/无限输入、CPU/I/O、输出顺序、部分成功、外部副作用、并发上限与总期限。给每个项目分配连续index，执行结果包含成功值或明确错误；窗口最多保留k个尚未按序交付的任务。收到乱序结果放入index到结果的缓冲，只有nextExpected到齐才输出并递增。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：index→乱序缓存→连续输出→窗口释放"
+        },
+        {
+          "type": "paragraph",
+          "text": "边界：只限制未完成任务不能限制已完成但未输出的缓存"
+        },
+        {
+          "type": "paragraph",
+          "text": "按序输出要限制的是“已提交但尚未交付”，不能只数还没算完的任务。假如第 0 项一直慢，后面每完成一项就再提交一个，已经完成却不能输出的结果会越积越多。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此窗口要覆盖全部已提交、尚未按序交付的项目，只有连续输出时才释放名额。总计算是 O(n) 加业务成本，额外重排与任务状态 O(k)；如果最后仍把所有结果收进 List，交付物本身还需要 O(n) 空间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PipelineDemo给出有限输入的完整实现与测试，特意把业务输入限定为非负数，负数或null作为逐项参数错误，溢出作为算术错误；数学上负数也能平方，此处是业务校验示范。错误作为带index的结果保留，重复值作为不同任务处理。改为fail-fast时要取消窗口内所有剩余句柄，再在总期限内收尾；不能只抛异常遗留执行器。真实I/O任务还要把剩余deadline传到客户端，否则外层取消不一定能解除底层阻塞。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：PipelineDemo.java。编译运行：javac -encoding UTF-8 PipelineDemo.java；java PipelineDemo。在JDK9及以上可使用javac --release 8进行Java8 API与字节码兼容检查。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "PipelineDemo.java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Ordered outputs with a bounded submitted-but-not-emitted window, including buffered completions. */\npublic final class PipelineDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static final class Item {\n        final int index;\n        final Long value;\n        final String error;\n        Item(int index, Long value, String error) { this.index = index; this.value = value; this.error = error; }\n    }\n    private static final class Batch {\n        final List<Item> items = new ArrayList<>();\n        int maximumOutstanding;\n        int bufferedBeforeFirst, submittedBeforeFirst;\n    }\n    private static Batch square(List<Long> inputs, int window) throws Exception {\n        return square(inputs, window, false);\n    }\n    private static Batch square(List<Long> inputs, int window, boolean testSlowFirst) throws Exception {\n        if (window < 1) throw new IllegalArgumentException(\"window must be positive\");\n        if (testSlowFirst && (window < 2 || inputs.size() < 2))\n            throw new IllegalArgumentException(\"slow-first self-test needs two items and slots\");\n        Batch batch = new Batch();\n        if (inputs.isEmpty()) return batch;\n        ExecutorService pool = Executors.newFixedThreadPool(Math.min(2, window));\n        CompletionService<Item> completed = new ExecutorCompletionService<>(pool);\n        Set<Future<Item>> active = new HashSet<>();\n        Map<Integer, Item> ready = new HashMap<>();\n        int submitted = 0, emitted = 0;\n        // Optional gate forces the first item to finish last in its window during self-testing.\n        CountDownLatch firstGate = new CountDownLatch(testSlowFirst ? 1 : 0);\n        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);\n        try {\n            while (emitted < inputs.size()) {\n                // Counting only running tasks is insufficient: ready results also occupy the window.\n                while (submitted < inputs.size() && submitted - emitted < window) {\n                    final int index = submitted++;\n                    final Long input = inputs.get(index);\n                    active.add(completed.submit(() -> {\n                        if (index == 0 && !firstGate.await(3, TimeUnit.SECONDS)) throw new TimeoutException(\"first-item gate\");\n                        try {\n                            if (input == null || input < 0) throw new IllegalArgumentException(\"nonnegative input required\");\n                            return new Item(index, Math.multiplyExact(input, input), null);\n                        } catch (IllegalArgumentException | ArithmeticException ex) {\n                            return new Item(index, null, ex.getClass().getSimpleName());\n                        }\n                    }));\n                    batch.maximumOutstanding = Math.max(batch.maximumOutstanding, submitted - emitted);\n                }\n                long remaining = deadline - System.nanoTime();\n                if (remaining <= 0) throw new TimeoutException(\"batch deadline\");\n                Future<Item> future = completed.poll(remaining, TimeUnit.NANOSECONDS);\n                if (future == null) throw new TimeoutException(\"batch deadline\");\n                active.remove(future);\n                Item item = future.get(3, TimeUnit.SECONDS); // Already completed; task failures remain per-item records.\n                ready.put(item.index, item);\n                if (testSlowFirst && firstGate.getCount() == 1 && ready.size() == Math.min(window, inputs.size()) - 1) {\n                    batch.bufferedBeforeFirst = ready.size();\n                    batch.submittedBeforeFirst = submitted;\n                    firstGate.countDown(); // Only the collector releases item 0, after its successors are buffered.\n                }\n                while (ready.containsKey(emitted)) batch.items.add(ready.remove(emitted++));\n            }\n            return batch;\n        } finally {\n            firstGate.countDown();\n            for (Future<Item> future : active) future.cancel(true);\n            pool.shutdownNow();\n            if (!pool.awaitTermination(3, TimeUnit.SECONDS)) throw new AssertionError(\"pool stuck\");\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        Batch empty = square(Collections.<Long>emptyList(), 2);\n        check(\"empty input submits no work\", empty.items.isEmpty() && empty.maximumOutstanding == 0);\n        Batch batch = square(Arrays.asList(2L, -3L, 2L, Long.MAX_VALUE, 0L), 3);\n        check(\"one ordered record per input\", batch.items.size() == 5);\n        boolean ordered = true;\n        for (int i = 0; i < batch.items.size(); i++) ordered &= batch.items.get(i).index == i;\n        check(\"outputs retain input indices\", ordered);\n        check(\"valid square succeeds\", Long.valueOf(4).equals(batch.items.get(0).value));\n        check(\"negative input becomes per-item failure\", \"IllegalArgumentException\".equals(batch.items.get(1).error));\n        check(\"duplicate values retain distinct records\", Long.valueOf(4).equals(batch.items.get(2).value)\n                && batch.items.get(0) != batch.items.get(2));\n        check(\"overflow becomes per-item failure\", \"ArithmeticException\".equals(batch.items.get(3).error));\n        check(\"failure does not drop later result\", Long.valueOf(0).equals(batch.items.get(4).value));\n        check(\"outstanding work includes reorder buffer\", batch.maximumOutstanding == 3);\n        Batch serial = square(Arrays.asList(1L, 2L, 3L), 1);\n        check(\"window one is valid\", serial.maximumOutstanding == 1 && serial.items.get(2).value == 9L);\n        check(\"null is an explicit per-item failure\", \"IllegalArgumentException\".equals(\n                square(Arrays.asList((Long) null), 1).items.get(0).error));\n        Batch delayed = square(Arrays.asList(1L, 2L, 3L, 4L, 5L, 6L), 3, true);\n        check(\"early slow item buffers later completions\", delayed.bufferedBeforeFirst == 2);\n        check(\"full reorder window prevents further submissions\", delayed.submittedBeforeFirst == 3\n                && delayed.maximumOutstanding == 3);\n        boolean delayedOrdered = true;\n        for (int i = 0; i < delayed.items.size(); i++) delayedOrdered &= delayed.items.get(i).index == i;\n        check(\"out-of-order completion still emits ordered results\", delayedOrdered && delayed.items.get(5).value == 36L);\n        boolean rejected = false;\n        try { square(Collections.<Long>emptyList(), 0); } catch (IllegalArgumentException ex) { rejected = true; }\n        check(\"zero window is rejected even for empty input\", rejected);\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "逐步演算：概念上窗口k=2先接收0、1；即使1先完成，也不能立即无限接收2、3，因为0尚未交付；0完成后连续输出0、1，窗口才向前移动。代码中的确定性压力测试使用k=3，把0号任务停在门闩上，先观察1、2进入重排缓存而没有接收3，再释放0。重复输入值不影响协议，因为身份是index；错误项也必须占有终态并使指针按约定推进，否则会永久卡在失败编号。串行CPU平方不值得为性能建池，这个实验用于验证协议，实际并发收益需换成代表性任务衡量。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    }
+  ]
+}

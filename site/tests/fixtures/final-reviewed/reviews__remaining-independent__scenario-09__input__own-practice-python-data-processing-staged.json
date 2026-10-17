@@ -1,0 +1,21 @@
+{
+  "id": "own-practice-python-data-processing",
+  "kind": "qa",
+  "mod": "design",
+  "part": "后端场景",
+  "cat": "跨册场景补充",
+  "title": "Python数据处理怎样优化算法、内存、批量与并发",
+  "number": "",
+  "source": "自建知识库",
+  "items": [
+    {
+      "id": "q-own-practice-python-data-processing",
+      "q": "Python数据处理怎样优化算法、内存、批量与并发",
+      "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>先减少算法工作和重复 I/O，再做有界分块、类型明确的向量化与受控并发；事件计数和去重人数不能混用。</p><p class=\"md-p\">以下按原资料的Python/NumPy分块模型解释机制，代码与测试在独立源码中；本页不包含完整程序，也不报告未测的性能收益。</p><h3 class=\"md-h md-h3\">Python数据处理怎样优化算法、内存、批量与并发</h3><p class=\"md-p\">先减少算法工作和重复 I/O，再做有界分块、类型明确的向量化与受控并发；事件计数和去重人数不能混用。</p><p class=\"md-p\">本题明确使用Python，保留原生数据处理示例的输入、合并与内存合同；相邻的10TB观看人数与点击人数是独立去重任务，不能用这里的事件计数替代。</p><p class=\"md-p\">也可能这样问：</p><p class=\"md-p\">- Python 在数据处理中常见的性能优化手段有哪些？</p><h4 class=\"md-h md-h4\">先profile和减少算法工作</h4><p class=\"md-p\">用cProfile/pstats看函数累计耗时与自身耗时，计时取决于所用timer，不能直接把每项当纯CPU时间，用wall time与IO/网络指标区分等待，tracemalloc看Python分配但不完整覆盖NumPy等native内存；代表性数据重复测，profile开销不当作实际延迟。先改O(n²)重复扫描为哈希/排序/索引或批量join，再考虑多进程。</p><p class=\"md-p\">避免循环里逐行访问数据库/网络、反复构造大字符串、重复解析与复制。生成器和itertools可流式消费，但下游list、sorted或需要全量物化的分组聚合仍会把数据拉入内存；itertools.groupby本身按相邻键流式分组，若先为全局分组排序，排序成本要另算；无限不同key的Counter也不是有界内存。</p><h4 class=\"md-h md-h4\">向量化和分块要有数值语义</h4><p class=\"md-p\">NumPy把适合的循环放到编译内核执行，数组紧凑dtype可降低Python对象开销；广播和临时数组可能放大峰值内存，必要时分块、复用缓冲或用合适out参数。Pandas等表处理可选列读取、明确dtype和批量运算，但错误类型转换、NaN、时区和整数溢出会改变结果。</p><p class=\"md-p\">分块后怎样合并，先看统计量的含义。求和、计数可以合并各块结果；均值要保存 sum+count，不能只平均各块均值；去重人数则需要可合并集合、外排，或明确误差的估计器，不能把各块 distinct 人数直接相加。</p><p class=\"md-p\">每次输入仍使用有界 chunk，并确认归并满足业务代数。唯一键域过大时可做 hash 分区或外部排序，还要为磁盘和倾斜留预算。练习时让两块大小不同、再让同一个人跨块出现，分别检查均值和人数的合并规则。</p><h4 class=\"md-h md-h4\">并发依实际Python运行时</h4><p class=\"md-p\">常规CPython3.12中纯PythonCPU计算受GIL，多线程常不能按核线性加速；IO等待可线程/async，NumPy部分内核释放GIL且有自己的线程池，可能过度订阅。多进程能跨核但有序列化、拷贝、启动与共享内存同步成本，不把每行都派一个进程。</p><p class=\"md-p\">当前存在不同Python版本/可选自由线程构建，必须说明运行时，不能永久断言所有Python都有同一GIL限制。限制进程×BLAS线程总数、队列与批次，处理异常/取消/关闭及输入重试幂等，不能为了快丢错行。</p><h4 class=\"md-h md-h4\">流式计数模型与复杂度</h4><p class=\"md-p\">python_pipeline.py按已知有限category域统计liked事件数：Python逐项版本对照chunk+NumPy bincount；每批整数计数转回Python任意精度累加，避免累计int64溢出。校验category是真整数且范围合法、liked是真bool，不能把True误作category1。</p><p class=\"md-p\">输入可迭代流，工作内存O(category数+chunk大小)，不是O(总行数)，前提是类别域上限已给。原资料描述的main只构造小测试数据，真实输入读取、格式解析、distinct观众与10TB磁盘实验未实现；向量化本例含Python校验，不保证比纯循环快。</p><h4 class=\"md-h md-h4\">验收</h4><p class=\"md-p\">空流、1条、跨chunk边界、10000条、多chunk大小等价对照和非法值拒绝。性能评估应另记录机器、版本、数据分布、峰值RSS、CPU/wall、冷/热IO与吞吐，采用多次实验；不能用函数名vectorized就宣布优化成功。</p><h4 class=\"md-h md-h4\">独立源码标识：python_pipeline.py</h4><p class=\"md-p\">Python/NumPy分块统计核心，统计事件数而非distinct人数，不报告未测吞吐收益。</p><h3 class=\"md-h md-h3\">分块成功以后怎样恢复</h3><p class=\"md-p\">块大小不仅看行数，还要看解析后的字节数、临时数组和输出队列。bincount的输出会受最大类别值影响，minlength是最小长度而不是硬上限；必须在分配前验证类别范围，不能先把恶意巨大ID交给NumPy再检查内存。</p><p class=\"md-p\">源输入冻结版本和内容身份，每块记录行范围、处理规则版本、校验和及提交状态。只有输出与检查点共同可靠提交后才能跳过该块；若输出是文件，可先写临时产物并校验，再发布带版本的清单，崩溃留下的孤儿受控回收。</p><p class=\"md-p\">并发完成顺序不代表输入顺序。若结果需要稳定排序，按块号归并；纯计数则按已声明可结合规则合并。取消或进程失败后重新处理未确认块，不能把已经写入外部系统的块再无条件累加。错误行应有可核对的拒绝/隔离计数，输入数等于各类结果之和的口径要先统一。</p>",
+      "sub": "",
+      "mk": false,
+      "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>先减少算法工作和重复 I/O，再做有界分块、类型明确的向量化与受控并发；事件计数和去重人数不能混用。</p>",
+      "leadType": "authored"
+    }
+  ]
+}

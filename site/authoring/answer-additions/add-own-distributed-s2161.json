@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2161",
+  "entryId": "sceneqa-2",
+  "expectedOriginalHash": "1ae3a12ce435fe417f08644335407f87ab0e194a3dcc9684a65065f36513f42c",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.7 幂等键怎样区分下单重试与用户再次购买"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等键应随一次购买意图稳定保留，重试复用同一键，新的合法购买生成新意图并重新通过业务限购校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：怎样区分重试和再次购买；幂等键能否用用户ID；同键不同参数怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等单位是同一次业务意图，多次合法购买由业务规则决定；退出登录不代表新的购买身份。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "身份、意图和请求次数要分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端在一次确认下单时生成或取得operationId，持久保存到收到明确结果；网络重试、页面重载后的查询/重发复用该ID。用户再次主动购买则创建新的operationId，即使userId、商品和数量相同。想买两件可以在一个订单qty=2，也可两次独立订单，取决于产品约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重范围不能把正常复购也挡住。只按 userId 去重，用户就永远只能买一次；按 userId+productId，又会误伤同商品再次购买。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有业务明确要求一人一单，例如秒杀活动，才另外建立 (activityId,userId) 唯一资格约束。资格约束和一次请求的幂等键，是两个独立规则。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "持久去重与结果重放"
+    },
+    {
+      "type": "paragraph",
+      "text": "在(tenantId,operationId)或已定义主体范围建唯一键，保存规范化请求摘要、业务结果/订单ID及状态。摘要包含用户、商品、数量、价格版本等决定效果的字段；同key不同请求拒绝冲突。请求登记、库存/订单变更、结果及outbox在同一事务提交，采用Outbox与Inbox保存传播责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等重放要返回第一次保存的结果，不是重新做一遍后碰巧得到一样状态。并发同 key 只有一次提交，其他请求等待或查询原结果；HTTP 回包丢了，也按原结果返回。"
+    },
+    {
+      "type": "paragraph",
+      "text": "远程长流程需要持久保存 PENDING/UNKNOWN 和查询入口。未完成占位不能当成功，超时更不能直接删 key 再扣一次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "退出重进与过期边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "退出登录使原凭证失效，不应删除已经受理的订单/幂等记录。重新认证后按业务拥有者查询未决operationId；若客户端把ID丢了，服务可提供最近待支付订单确认界面，但不能仅凭同商品猜测用户意图。服务端不得把“退出一次”当作重置购买资格的条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重记录保留期覆盖客户端重试、MQ回放和灾备恢复窗口；过期后是否允许重用key应明确。强交易通常用长期唯一业务流水保底，不靠短Redis TTL。测试双击并发、超时重试、不同payload、退出再进、两次有意购买、qty=2以及旧请求跨保留期重放。账户记账可运行示例见第4.18节，同一意图只产生一次本地效果。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.11 订单幂等为什么不能只靠加锁或限流"
+    },
+    {
+      "type": "paragraph",
+      "text": "加锁只减少同时执行，限流只减少请求数量，幂等仍需稳定身份、持久收据与业务效果原子提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：订单幂等能否只加锁；限流能否防重复下单；锁释放后重试怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等关注同一业务意图的结果，互斥关注同一时刻的竞争，限流关注资源准入。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用反例区分三件事"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁和限流都不能单独提供幂等。限流允许一分钟 10 次，同一订单的两次重试仍可能都进来；锁即使完全串行，A 扣 1 并提交、释放后 B 再扣 1，仍然重复扣减。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以幂等要识别已经做过的同一意图，不只是“同一时刻只有一个线程执行”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "必须识别同一意图，并在效果提交点保存已做过及可重放结果。锁可以保护检查与更新，但锁内要读持久请求记录并和业务效果同事务；单独Redis SETNX去重再写DB又有跨系统崩溃洞，完整反例与DDL在Outbox与Inbox。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "正确流程与边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端确认一次购买生成稳定operationId，提交超时仍用它；新一次自愿购买产生新ID。服务按租户/用户/操作范围建立唯一键，记录关键参数摘要，订单、库存/预留、结果与outbox同事务提交。重复同payload返回保存的订单ID/响应，不同payload拒绝，不把唯一冲突之外的异常吞成成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交结果未知时按原ID查权威状态，异步处理中返回PENDING/UNKNOWN与查询入口；不要删幂等键后重做。去重证据保留覆盖回放与灾备窗口。一人一单额外用活动/用户资格唯一约束，不以永久用户去重阻止所有复购。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "连续而非并发的两次请求同样要只扣一次；再测30个并发重试、不同载荷、DB提交后响应丢失、真实新购买、退出重进、消息回放与过期键。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.12 下单已成功但响应超时，重试时全局ID还要重新生成吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "下单成功但响应超时时，重试必须复用购买操作身份并查询已有订单，不能通过生成新全局ID绕开幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：响应超时后还生成新ID吗；订单号和幂等键有何区别；用户再次购买怎样区分。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "operationId代表购买意图，orderId代表业务订单，attempt或trace标识单次执行；三者不能互换。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "业务结果复用已提交订单ID"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一次购买重试携带稳定operationId；服务命中已提交请求账，返回原orderId与保存响应，不再创建第二张订单。每次HTTP可以有新traceId/attempt以便追踪，但它们不改变业务意图。UUID或Snowflake保证不同号码不冲突，并不保证只创建一单。"
+    },
+    {
+      "type": "paragraph",
+      "text": "生成器再次运行，和业务再建一张订单，是两件事。如果事务前就预生成候选 orderId，重试可能浪费新号码，只留下允许的空洞。"
+    },
+    {
+      "type": "paragraph",
+      "text": "但 operationId 唯一冲突后，必须丢掉候选号，读取原订单。不能拿着新号，就把同一次重试当成新购买继续扣库存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "竞态与失败时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求K创建订单O并提交库存/请求结果/outbox，回包丢失；K重试先插唯一请求记录或查询权威已提交结果，返回O。两个并发K都预生成号码O1/O2时，只能一个业务事务提交，另一个按payload校验重放。不能从延迟副本暂时查不到就认定未下单。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果受理是异步且还没有orderId，返回同taskId和PENDING，后续生成一次权威orderId；超时UNKNOWN先查状态。新的真实购买用新operationId；userId不是永久幂等键，一人一单另有活动资格约束。完整DDL和重放机制见Outbox与Inbox/第4.7节。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证提交后响应丢失、两个候选号同operationId、不同payload冒用同ID、同人真实复购、重启及跨幂等保留期重放。断言一次意图只有一个已提交订单/预留且重放结果稳定，不能只断言每次生成的数字都不同。AccountLedger只展示同库请求与效果原子协议，真实订单服务还需测试库存、支付与消息边界。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

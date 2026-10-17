@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3097",
+  "entryId": "bg-rabbitmq-2",
+  "expectedOriginalHash": "7743b6c1f34bcbfa0e9c93488e81b096eb49553d86f551deee83ef6386e14e87",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.13 RabbitMQ客户端宕机后怎样恢复生产与消费"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产端重连后核对未确认消息并用稳定身份重发，消费端对重投幂等处理，业务提交后再ACK。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：RabbitMQ客户端宕机怎么办；未确认消息怎样恢复；业务成功但ACK丢了怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端可能是生产者或消费者，两者恢复协议不同；重建连接不会自动恢复未持久保存的业务责任。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生产者宕机的三个窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产者宕机，按三个窗口分别回答。业务事务前退出，没有已承诺效果，正常重试；业务提交后、消息发出前退出，若只用内存待发列表，就丢了消息责任，所以业务与 outbox 要同事务，重启 relay 才知道补什么。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第三种是 Broker 已接收，但 confirm 还没被客户端可靠记录。这时结果未知，应重发同 eventId，允许重复，不能重新生成业务身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "确认列表若仅在旧进程内存，进程重启无法凭空还原哪些业务应发，因此应用持久outbox/发送账与客户端连接自动恢复是不同职责。确认到达也不代表业务消费者已处理；需要端到端任务状态时另存业务回执。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费者宕机的窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "manual ack前连接/channel关闭，未确认交付可重入队并发给其他消费者，检测需要心跳/连接故障识别时间，不是进程一死所有消息立即重发。先ack后做业务会在中途宕机时丢效果，正确顺序是本地inbox+效果同事务提交再ack。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交已成功但ack没到Broker时重投，按持久eventId命中既有结果；不要把deliveryTag当跨重连业务ID。外部HTTP副作用不能与本地inbox原子，须对方幂等键、查询或补偿。毒消息限次退避/隔离，反复nack requeue会忙循环。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "连接恢复与拓扑生命周期"
+    },
+    {
+      "type": "paragraph",
+      "text": "按客户端版本启用/实现重连、channel与必要拓扑/订阅恢复，并重新确认consumer已注册、prefetch和确认模式正确。初始连接失败与已连接后自动恢复的范围要核对Java客户端文档；手工关闭通常不是需要自动重连的意外故障。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重建连接，不代表原来的队列和消息都能回来。durable 共享业务队列与 exclusive/auto-delete 临时队列生命周期不同，后者可能随连接消失，重建同名队列也恢复不了已经删除的消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "channel 因协议错误关闭，或者权限、配置错误，都要先修问题，不能无限重连。重连也不会恢复应用丢失的事务、未保存产物或线程内变量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "分别杀生产进程与消费进程，覆盖outbox提交后、confirm丢失、DB提交前后、ack前后与临时队列删除，记录缺失/重复效果而非只看连接恢复。本地H2幂等模型不能替代RabbitMQ与Java客户端的联调，接入后须按上述故障点验证。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.18 RabbitMQ Quorum Queue的Leader宕机、未复制消息和选主怎样解释"
+    },
+    {
+      "type": "paragraph",
+      "text": "Quorum Queue通过多数复制维护已提交消息，leader失效后从合法副本恢复领导权，客户端仍要处理未确认发布的未知结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Quorum Queue主挂了怎么办；未复制消息会不会丢；选主为什么不会随便选最新时间节点。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定RabbitMQ 4.3的quorum queue语义，不能套用Kafka ISR或把未确认写当作已承诺消息。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "确认点决定能承诺什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Quorum Queue用Raft复制，publisher confirm在消息安全复制到队列多数成员后发出。三成员需要至少二成员形成多数，能容忍一成员失效后继续，而不是任意两台都挂仍可用。客户端收到确认的保障依赖多数日志/持久存储仍可恢复和协议假设，删除/TTL/保留策略或灾难损毁不受这句承诺保护。"
+    },
+    {
+      "type": "paragraph",
+      "text": "没收到 confirm，不等于消息一定丢了。如果消息只在旧 Leader、还没多数复制，Leader 故障可能让未提交消息丢失或被覆盖，因此不能提前承诺可靠接收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "但也可能消息已经提交，只是确认回包丢了。这属于 UNKNOWN，生产者沿用同 eventId 重发，消费端防止重复效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "落盘不等于集群已提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "把消息写在旧Leader自己的磁盘上，只抵御该盘仍能恢复的部分进程重启情形；它不能让其他副本凭空拥有该日志，更不能保证该节点永久失联后立即可用。需要持久化、复制与安全选主共同成立，不能用“写磁盘就不丢”跳过多数派。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例A/B/C，A仅有未提交x后失联，B/C可选出没有x的合法Leader；x可能消失。若x按协议已提交，后续合法选举/日志规则必须保留它。旧A恢复要跟随新term修复未提交后缀，不能把自己的旧磁盘任意当权威覆盖新集群。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "新Leader不是随便选活着的节点"
+    },
+    {
+      "type": "paragraph",
+      "text": "Raft按term发起选举，每个节点每term最多投一票，候选日志须满足至少同样新的限制，比较lastLogTerm再lastLogIndex，多数投票产生Leader；随机超时改善活性，不是唯一安全依据。复制匹配前缀与提交规则共同保证已提交记录不被合法覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "少数派可失去推进能力而不是独自继续确认强写；多数不可通信时暂停，不能把降低阈值/删成员当无损容灾。成员变更与快照恢复也须按协议，强行恢复有风险应明确数据损失边界。详见第1.2节对当前term提交、旧term与成员变更的完整解释。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从生产到业务消费仍有两段"
+    },
+    {
+      "type": "paragraph",
+      "text": "publisher confirm确认Broker责任，manual consumer ACK确认消费者责任，二者不是一笔跨系统事务。消费者DB提交后未ACK即退出会重投，inbox和业务同事务使同eventId只生效一次；无路由、死信转移、队列容量/TTL也要有监控和可靠归宿。RabbitMQ4.0起classic mirroring被移除，普通classic队列不能因为节点成集群就假定消息有副本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试Leader在多数复制前后退出、confirm丢失、3副本失去1或2个、旧Leader恢复、消费者DB提交ACK前退出与DLQ目标不可用。生产共识由所选RabbitMQ版本与配置提供，必须在真实副本集上验证分区与恢复，单机状态模型不能代替。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

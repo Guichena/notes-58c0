@@ -1,0 +1,540 @@
+{
+  "entries": [
+    {
+      "id": "p-greedy",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "title": "贪心与区间 · 专题",
+      "number": "专题",
+      "summary": "这个专题处理两类能靠排序或一次扫描做完的题：区间的合并、包含与并发，以及每步只保留一个单调最优边界的贪心。典型问法是并成几段、同一时刻要多少资源、能不能到达、最少跳几步、一次买卖的最大利润。",
+      "recognize": [
+        "给出多段闭区间，问合并后的并集、是否重叠，或同一时刻最多叠在一起的段数",
+        "答案是最少次数、最少资源或最大利润，而且每个元素有明确的排序键（左端点、右端点、价格）",
+        "排好序之后，当前元素只需要和已经收下的最后一段比较",
+        "从左向右扫，决策只依赖一个右边界：最远可达下标，或本段必须盖住的最后出现位置",
+        "局部选择能做交换论证：不按这个规则选，换成按规则选不会更差",
+        "切分点由相邻差恰好为 1、平衡计数回到 0，或段内字母的最后下标唯一决定"
+      ],
+      "notApplicable": [
+        "当前选择会同时打开多个互相约束、压不成一条单调边界的状态（带冷冻或手续费的多次交易、背包）时，用 DP",
+        "要的是方案数、全部切法或所有最优序列时，只留一条贪心边界会丢解",
+        "「被另一段完整包含」和「两段相交」不是同一条件，包含题不能套合并区间的重叠判断"
+      ],
+      "templates": [
+        {
+          "name": "按左端点合并闭区间",
+          "when": "重叠或端点相接的闭区间要并成尽量少的一段，如 LC 56",
+          "java": "// 按左端点升序后，能合并的区间一定相邻，只和当前这一段的右端点比较。\n// LC 56：next[0] <= right（含相接）就合并，右端点取两者的较大值。\n// 换题时若端点相接不算重叠，把 <= 改成 <。\nstatic int[][] mergeIntervals(int[][] intervals) {\n    if (intervals.length == 0) return new int[0][];\n    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));\n    List<int[]> merged = new ArrayList<>();\n    int left = intervals[0][0];\n    int right = intervals[0][1];\n    for (int i = 1; i < intervals.length; i++) {\n        if (intervals[i][0] <= right) {\n            right = Math.max(right, intervals[i][1]);\n        } else {\n            merged.add(new int[]{left, right});\n            left = intervals[i][0];\n            right = intervals[i][1];\n        }\n    }\n    merged.add(new int[]{left, right});\n    return merged.toArray(new int[0][]);\n}",
+          "demo": "LC 56 合并区间",
+          "demoMain": "int[][] merged = mergeIntervals(new int[][]{{1,3},{2,6},{8,10},{15,18}});\nfor (int[] seg : merged) System.out.println(seg[0] + \" \" + seg[1]);",
+          "expected": "1 6\n8 10\n15 18"
+        },
+        {
+          "name": "扫描线求最大并发",
+          "when": "问同一时刻最多有多少段重叠，从而得到最少房间数或资源数，如 LC 253",
+          "java": "// 每段拆成开始 +1、结束 -1。按时间升序；时间相同先处理 -1，表示该时刻先释放。\n// 答案是扫描过程中的最大累加值，不是合并后的段数。\n// 换题时若闭区间在端点上仍算冲突，时间相同时让 +1 排在 -1 前面。\nstatic int minMeetingRooms(int[][] intervals) {\n    int n = intervals.length;\n    int[][] events = new int[n * 2][2];\n    for (int i = 0; i < n; i++) {\n        events[2 * i][0] = intervals[i][0];\n        events[2 * i][1] = 1;\n        events[2 * i + 1][0] = intervals[i][1];\n        events[2 * i + 1][1] = -1;\n    }\n    Arrays.sort(events, (a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(a[1], b[1]));\n    int using = 0;\n    int ans = 0;\n    for (int[] event : events) {\n        using += event[1];\n        if (using > ans) ans = using;\n    }\n    return ans;\n}",
+          "demo": "LC 253 会议室 II",
+          "demoMain": "System.out.println(minMeetingRooms(new int[][]{{0,30},{5,10},{15,20}}));\nSystem.out.println(minMeetingRooms(new int[][]{{7,10},{2,4}}));",
+          "expected": "2\n1"
+        },
+        {
+          "name": "跳跃的可达边界",
+          "when": "从下标 0 出发，nums[i] 是最远跳的步数，问能否到达终点或最少跳数，如 LC 55、LC 45",
+          "java": "// nums[i] 表示从 i 最远到达 i + nums[i]。maxReach 只由已经可达的下标更新。\n// 问能否到达时用 canJump：i 已经超过 maxReach 则失败。\nstatic boolean canJump(int[] nums) {\n    int maxReach = 0;\n    int last = nums.length - 1;\n    for (int i = 0; i <= last; i++) {\n        if (i > maxReach) return false;\n        int reach = i + nums[i];\n        if (reach > maxReach) maxReach = reach;\n        if (maxReach >= last) return true;\n    }\n    return true;\n}\n\n// LC 45 保证能到最后一个下标。end 是当前这一跳的右边界，farthest 是这一层能看到的更远位置。\n// 走到 end 才算一次跳跃，并把 end 扩到 farthest。循环停在倒数第二个下标，最后一跳不另计。\n// 换题若不能保证可达，当 farthest < i 时返回 -1。\nstatic int jump(int[] nums) {\n    int jumps = 0;\n    int end = 0;\n    int farthest = 0;\n    for (int i = 0; i < nums.length - 1; i++) {\n        int reach = i + nums[i];\n        if (reach > farthest) farthest = reach;\n        if (i == end) {\n            jumps++;\n            end = farthest;\n        }\n    }\n    return jumps;\n}",
+          "demo": "LC 55 跳跃游戏、LC 45 跳跃游戏 II",
+          "demoMain": "System.out.println(canJump(new int[]{2,3,1,1,4}));\nSystem.out.println(canJump(new int[]{3,2,1,0,4}));\nSystem.out.println(jump(new int[]{2,3,1,1,4}));\nSystem.out.println(jump(new int[]{2,3,0,1,4}));",
+          "expected": "true\nfalse\n2\n2"
+        },
+        {
+          "name": "一次买卖的历史最低价",
+          "when": "价格序列上只能先买后卖一次，求最大利润，亏则取 0，如 LC 121",
+          "java": "// prices[i] 是第 i 天价格，卖出下标必须严格大于买入下标。\n// 扫到今天时，历史最低价就是最优买点；先用更新前的最低价算利润，再收下更低的价格。\n// 换到 LC 122（可无限次、不可重叠）时，改为把每个正的 prices[i] - prices[i - 1] 累加，不再保留单一最低价。\nstatic int maxProfit(int[] prices) {\n    int minPrice = Integer.MAX_VALUE;\n    int best = 0;\n    for (int price : prices) {\n        if (price < minPrice) {\n            minPrice = price;\n        } else if (price - minPrice > best) {\n            best = price - minPrice;\n        }\n    }\n    return best;\n}",
+          "demo": "LC 121 买卖股票的最佳时机",
+          "demoMain": "System.out.println(maxProfit(new int[]{7,1,5,3,6,4}));\nSystem.out.println(maxProfit(new int[]{7,6,4,3,1}));",
+          "expected": "5\n0"
+        }
+      ],
+      "variants": [
+        "端点相接是否冲突：合并区间把 <= 改成 < 表示相接不合并；扫描线在时间相同时对调 +1 与 -1 的顺序，决定腾出房间还是仍占用",
+        "插入一段新区间：已按左端点排好时分成三段，左段 end < newStart 原样输出，中间与新区间重叠的部分收成一段（右端取 max），右段 start > newEnd 原样输出",
+        "一个人能否开完所有会：沿用会议室扫描线，过程中的并发是否始终不超过 1；或按左端点排序后只检查相邻两场是否重叠",
+        "55 改成 45：能否到达只维护 maxReach；最少跳跃用 end 与 farthest 分层，每走到 end 加一跳，且循环不包含最后一个下标",
+        "121 改成无限次买卖：累加所有相邻正价差；一旦加上冷冻期或手续费，单边界不够，改 DP",
+        "划分字母区间与平衡切分：763 把 farthest 换成当前段每个字母最后下标的 max，走到该右端就按长度切一刀；1221 则在 L/R 计数回到 0 时切一刀"
+      ],
+      "pitfalls": [
+        "合并、插入按左端点排序；最多不重叠区间、射气球按右端点。排序键用反，相邻关系不再代表能否合并或能否多选",
+        "合并时右端点取 max(已有右端, 当前右端)。后一段更短时直接覆盖会把并集缩短",
+        "56 的闭区间端点相接要并成一段；253 在结束时刻释放房间，同一时刻要先处理结束再处理开始",
+        "跳跃先确认 i 仍在 maxReach 内，再用 nums[i] 更新。45 若把最后一个下标也放进分层循环，会多计一跳",
+        "121 用更新前的最低价算今天的利润。先把最低价改成今天的价格，会变成同一天买卖，利润被算成 0",
+        "253 的答案是扫描中的最大并发，合并后的段数回答的是另一题。未被包含要求另一段的左右端点同时盖住自己，仅仅相交的两段都要保留"
+      ],
+      "groups": [
+        {
+          "name": "合并、包含与并发",
+          "note": "56 按左端点排序，起点不超过当前右端（含相接）就合并，右端取 max。未被包含比较的是整段覆盖：A.left<=B.left 且 B.right<=A.right，相交但不被盖住的段仍要输出。253 把起止拆成事件点，答案是同时进行会议数的最大值。",
+          "items": [
+            [
+              "#/e/56",
+              "56. 合并区间"
+            ],
+            [
+              "#/e/interview-uncovered-closed-intervals",
+              "面试变体 3. 输出未被其他闭区间包含的区间"
+            ],
+            [
+              "#/e/253",
+              "253. 会议室 II：最少需要多少会议室"
+            ]
+          ]
+        },
+        {
+          "name": "连续段与切分",
+          "note": "228 数组严格递增且无重复，相邻差恰好为 1 就延长同一段。1221 只含 L/R 且整串已平衡，计数回到 0 就多切一段，这样段数最多。763 每个字母只能进一个片段，段的右端是段内各字母最后下标的 max。",
+          "items": [
+            [
+              "#/e/228",
+              "228. 汇总区间"
+            ],
+            [
+              "#/e/1221",
+              "1221. 分割平衡字符串"
+            ],
+            [
+              "#/e/763",
+              "763. 划分字母区间"
+            ]
+          ]
+        },
+        {
+          "name": "跳跃的可达边界",
+          "note": "两者都只保留从 0 出发的最远可达下标。55 问能不能到 n-1，i 超过 maxReach 即失败。45 保证一定能到，按层把 end 扩到 farthest，每走完一层计一次跳跃。",
+          "items": [
+            [
+              "#/e/55",
+              "55. 跳跃游戏"
+            ],
+            [
+              "#/e/45",
+              "45. 跳跃游戏 II"
+            ]
+          ]
+        },
+        {
+          "name": "一次买卖",
+          "note": "prices[i] 是第 i 天价格，只能买一次再卖一次，卖出下标严格在买入之后。维护历史最低价，用当前价减去它更新利润，全程下跌则答案为 0。",
+          "items": [
+            [
+              "#/e/121",
+              "121. 买卖股票的最佳时机"
+            ]
+          ]
+        },
+        {
+          "name": "数位上的一次贪心",
+          "note": "670 最多交换一次：从左到右，在右侧找比当前位更大的最大数字（相同数字取最右下标）做这一次交换。小于 n 的最大组合从高位构造，前缀仍等于 n 时该位不能超过 n 的对应位，一旦某位变小，低位就取剩余可用数字里的最大。",
+          "items": [
+            [
+              "#/e/lc-face-extra-22",
+              "最大交换"
+            ],
+            [
+              "#/e/nonlc-1-0",
+              "小于 n 的最大数组合"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "原专题笔记 · 贪心",
+          "html": "<h3 class=\"md-h md-h3\">1. 贪心的本质</h3>\n<p class=\"md-p\">贪心是在每一步做局部最优选择，并证明局部最优可以导向全局最优。</p>\n<p class=\"md-p\">面试中不能只说“感觉这样选最好”，要能给出：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>交换论证：如果最优解不按这个策略，可以交换成按策略且不变差。</li><li>反证：假设不选当前最优会更好，推出矛盾。</li><li>单调边界：当前选择只会扩大可达范围或减少未来成本。</li></ul></div>\n<h3 class=\"md-h md-h3\">2. 排序是贪心的前置条件</h3>\n<p class=\"md-p\">很多贪心不是直接选，而是先排序：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>按结束时间：最多不重叠区间。</li><li>按右边界：最少箭射气球。</li><li>按差值：两地调度、分配问题。</li><li>按字典序/数值拼接：最大数。</li></ul></div>\n<h3 class=\"md-h md-h3\">3. 贪心和 DP 的区分</h3>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>如果每一步选择会影响后续状态，而且没有单调性，优先考虑 DP。</li><li>如果能证明“只保留当前最优边界”就足够，才是贪心。</li><li>跳跃游戏是贪心，因为只需要维护当前能到达的最远位置。</li></ul></div><h3 class=\"md-h md-h3\">1. 可达范围型</h3><p class=\"md-p\">目标：每一步扩大能覆盖的最远位置。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>遍历当前位置。</li><li>更新 <code class=\"tok-inline\">farthest = max(farthest, i + nums[i])</code>。</li><li>到达当前层边界时，步数加一并进入下一层。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 55 跳跃游戏</li><li>LC 45 跳跃游戏 II</li><li>LC 1024 视频拼接</li><li>LC 1326 灌溉花园的最少水龙头数目</li></ul></div><h3 class=\"md-h md-h3\">2. 区间选择型</h3><p class=\"md-p\">目标：在一堆区间里选最多、删最少、覆盖最优。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>最多不重叠：按右端点升序，能选就选。</li><li>最少箭射气球：按右端点升序，当前箭尽量射在最早结束点。</li><li>覆盖目标区间：每轮在当前可达范围内选择右端点最远的区间。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 435 无重叠区间</li><li>LC 452 用最少数量的箭引爆气球</li><li>LC 56 合并区间</li><li>LC 763 划分字母区间</li></ul></div><h3 class=\"md-h md-h3\">3. 分配与平衡型</h3><p class=\"md-p\">目标：满足局部约束，同时总成本最小或收益最大。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>糖果：从左到右满足左邻约束，再从右到左满足右邻约束。</li><li>加油站：总油量够时，遇到负收益段就从下一站重新开始。</li><li>两地调度：按去 A 和去 B 的差值排序。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 134 加油站</li><li>LC 135 分发糖果</li><li>LC 406 根据身高重建队列</li><li>LC 455 分发饼干</li><li>LC 1029 两地调度</li></ul></div><h3 class=\"md-h md-h3\">4. 单调栈贪心型</h3><p class=\"md-p\">目标：删除或保留字符/数字，使结果字典序或数值最优。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>维护单调栈。</li><li>当前字符更优，并且还有删除次数或后面还能补足时，弹出栈顶。</li><li>最后处理剩余删除次数和前导零。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 316 去除重复字母</li><li>LC 402 移掉 K 位数字</li><li>LC 321 拼接最大数</li><li>LC 1081 不同字符的最小子序列</li></ul></div><h3 class=\"md-h md-h3\">5. 任务调度与堆贪心型</h3><p class=\"md-p\">目标：每一步选择当前收益最高或最紧急的任务。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>优先队列维护当前可选任务。</li><li>时间推进到下一个任务或冷却结束点。</li><li>如果任务有冷却或过期，需要额外队列记录解锁时间。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 621 任务调度器</li><li>LC 767 重构字符串</li><li>LC 630 课程表 III</li><li>LC 502 IPO</li></ul></div><h3 class=\"md-h md-h3\">6. 序列判定与局部扫描型</h3><p class=\"md-p\">目标：补齐少量看似“数组题”，实则靠贪心判定的题型。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 334 递增的三元子序列</li><li>LC 845 数组中的最长山脉</li><li>LC 905 按奇偶排序数组</li></ul></div>\n<p class=\"md-p\">补充要点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">334</code> 维护两个阈值即可，前面尽量找更小的第一、第二元素。</li><li><code class=\"tok-inline\">845</code> 可以左右扫描找峰值，再向两侧扩展。</li><li><code class=\"tok-inline\">905</code> 本质是按照奇偶性做原地分区。</li></ul></div>"
+        },
+        {
+          "title": "专题精讲 · LC 56 合并区间",
+          "html": "<p class=\"md-p\">思路：按左端点排序，维护当前合并区间。如果新区间左端点不超过当前右端点，更新右端点；否则结算当前区间。</p>\n<p class=\"md-p\">易错点：排序后只需要比较当前区间右端点，不需要回看所有区间。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int[][] solve(int[][] intervals) {\n        // 按左端点排序\n        Arrays.sort(intervals, (a, b) -&gt; a[0] - b[0]);\n        List&lt;int[]&gt; res = new ArrayList&lt;&gt;();\n        int[] cur = intervals[0]; // 当前合并区间\n        for (int i = 1; i &lt; intervals.length; i++) {\n            if (intervals[i][0] &lt;= cur[1]) {\n                // 左端点落在当前区间内，合并（取较大的右端点）\n                cur[1] = Math.max(cur[1], intervals[i][1]);\n            } else {\n                // 不重叠，结算当前区间，开始新区间\n                res.add(cur);\n                cur = intervals[i];\n            }\n        }\n        res.add(cur); // 别忘了最后一个区间\n        return res.toArray(new int[0][]);\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[][] intervals = new int[n][2];\n        for (int i = 0; i &lt; n; i++) {\n            intervals[i][0] = sc.nextInt();\n            intervals[i][1] = sc.nextInt();\n        }\n        int[][] ans = solve(intervals);\n        for (int[] p : ans) System.out.println(p[0] + &quot; &quot; + p[1]);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 56 合并区间",
+          "html": "<p class=\"md-p\">按左端点排序，依次合并重叠区间。</p>\n<p class=\"md-p\"><strong>输入格式</strong>：第一行整数 n，接下来 n 行每行两个整数 start end。 <strong>输出格式</strong>：合并后的区间，每行两个整数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">贪心总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int[][] merge(int[][] intervals) {\n        // 按左端点升序排序\n        Arrays.sort(intervals, (a, b) -&gt; a[0] - b[0]);\n        List&lt;int[]&gt; res = new ArrayList&lt;&gt;();\n        for (int[] cur : intervals) {\n            // 如果结果为空或当前区间不与上一个重叠，直接加入\n            if (res.isEmpty() || cur[0] &gt; res.get(res.size() - 1)[1]) {\n                res.add(cur);\n            } else {\n                // 重叠，扩展上一个区间的右端点\n                res.get(res.size() - 1)[1] = Math.max(res.get(res.size() - 1)[1], cur[1]);\n            }\n        }\n        return res.toArray(new int[0][]);\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[][] intervals = new int[n][2];\n        for (int i = 0; i &lt; n; i++) {\n            intervals[i][0] = sc.nextInt();\n            intervals[i][1] = sc.nextInt();\n        }\n        int[][] ans = merge(intervals);\n        for (int[] seg : ans) {\n            System.out.println(seg[0] + &quot; &quot; + seg[1]);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 56 合并区间",
+          "html": "<p class=\"md-p\">考点：排序 + 线性扫描。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int n=sc.nextInt();int[][] a=new int[n][2];\n        for(int i=0;i&lt;n;i++){a[i][0]=sc.nextInt();a[i][1]=sc.nextInt();}\n        Arrays.sort(a,(x,y)-&gt;x[0]-y[0]);List&lt;int[]&gt; res=new ArrayList&lt;&gt;();res.add(a[0]);\n        for(int i=1;i&lt;n;i++){int[] last=res.get(res.size()-1);\n            if(a[i][0]&lt;=last[1])last[1]=Math.max(last[1],a[i][1]);else res.add(a[i]);}\n        for(int[] inv:res)System.out.println(inv[0]+&quot; &quot;+inv[1]);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 56 合并区间",
+          "html": "<p class=\"md-p\">先按区间起点排序，然后依次合并重叠区间。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">排序与选择总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int[][] solve(int[][] intervals) {\n        // 按区间起点升序排序\n        Arrays.sort(intervals, (a, b) -&gt; a[0] - b[0]);\n        List&lt;int[]&gt; merged = new ArrayList&lt;&gt;();\n        for (int[] interval : intervals) {\n            // 如果结果列表为空，或当前区间与上一个不重叠，直接加入\n            if (merged.isEmpty() || merged.get(merged.size() - 1)[1] &lt; interval[0]) {\n                merged.add(interval);\n            } else {\n                // 有重叠，扩展上一个区间的右端点\n                merged.get(merged.size() - 1)[1] = Math.max(merged.get(merged.size() - 1)[1], interval[1]);\n            }\n        }\n        return merged.toArray(new int[0][]);\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[][] intervals = new int[n][2];\n        for (int i = 0; i &lt; n; i++) {\n            intervals[i][0] = sc.nextInt();\n            intervals[i][1] = sc.nextInt();\n        }\n        int[][] res = solve(intervals);\n        for (int[] seg : res) {\n            System.out.println(seg[0] + &quot; &quot; + seg[1]);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 253 会议室 II",
+          "html": "<p class=\"md-p\">考点：最小堆 / 差分。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int n=sc.nextInt();int[][] a=new int[n][2];\n        for(int i=0;i&lt;n;i++){a[i][0]=sc.nextInt();a[i][1]=sc.nextInt();}\n        Arrays.sort(a,(x,y)-&gt;x[0]-y[0]);PriorityQueue&lt;Integer&gt; pq=new PriorityQueue&lt;&gt;();\n        for(int[] inv:a){if(!pq.isEmpty()&amp;&amp;pq.peek()&lt;=inv[0])pq.poll();pq.offer(inv[1]);}\n        System.out.println(pq.size());\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 253 会议室 II",
+          "html": "<p class=\"md-p\">考点：最小堆 / 扫描线。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>按开始时间排序。</li><li>最小堆维护各会议室的结束时间。</li><li>堆顶结束后再分配。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，接下来 n 行每行 start end。 输出格式：最少需要的会议室数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int solve(int[][] intervals) {\n        Arrays.sort(intervals, (a, b) -&gt; a[0] - b[0]);\n        // 最小堆存各会议室的结束时间\n        PriorityQueue&lt;Integer&gt; pq = new PriorityQueue&lt;&gt;();\n        for (int[] interval : intervals) {\n            // 如果最早结束的会议室已经空闲，复用\n            if (!pq.isEmpty() &amp;&amp; pq.peek() &lt;= interval[0]) {\n                pq.poll();\n            }\n            pq.offer(interval[1]);\n        }\n        return pq.size();\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[][] intervals = new int[n][2];\n        for (int i = 0; i &lt; n; i++) { intervals[i][0] = sc.nextInt(); intervals[i][1] = sc.nextInt(); }\n        System.out.println(solve(intervals));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 121 买卖股票的最佳时机",
+          "html": "<p class=\"md-p\">维护遍历过程中的最低买入价，每天尝试更新最大利润。</p>\n<p class=\"md-p\"><strong>输入格式</strong>：第一行整数 n，第二行 n 个整数表示每日价格。 <strong>输出格式</strong>：一行，最大利润，无法获利则输出 <code class=\"tok-inline\">0</code>。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">贪心总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int maxProfit(int[] prices) {\n        int minPrice = Integer.MAX_VALUE; // 当前最低买入价\n        int maxProfit = 0;                // 当前最大利润\n        for (int price : prices) {\n            // 更新最低买入价\n            minPrice = Math.min(minPrice, price);\n            // 更新最大利润\n            maxProfit = Math.max(maxProfit, price - minPrice);\n        }\n        return maxProfit;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] prices = new int[n];\n        for (int i = 0; i &lt; n; i++) prices[i] = sc.nextInt();\n        System.out.println(maxProfit(prices));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 121 买卖股票的最佳时机",
+          "html": "<p class=\"md-p\">考点：单次扫描 / 维护最小值。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>遍历数组，维护历史最低价格。</li><li>当前价格减去最低价格就是当前利润。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，第二行 n 个整数。 输出格式：最大利润。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">双指针总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int solve(int[] prices) {\n        int minPrice = Integer.MAX_VALUE;\n        int maxProfit = 0;\n        for (int price : prices) {\n            minPrice = Math.min(minPrice, price);\n            maxProfit = Math.max(maxProfit, price - minPrice);\n        }\n        return maxProfit;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] prices = new int[n];\n        for (int i = 0; i &lt; n; i++) prices[i] = sc.nextInt();\n        System.out.println(solve(prices));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 55 跳跃游戏",
+          "html": "<p class=\"md-p\">维护能到达的最远位置 <code class=\"tok-inline\">farthest</code>。如果遍历到某个位置 <code class=\"tok-inline\">i &gt; farthest</code>，说明这个位置不可达。</p>\n<p class=\"md-p\"><strong>输入格式</strong>：第一行一个整数 n，第二行 n 个整数表示数组 nums。 <strong>输出格式</strong>：一行，<code class=\"tok-inline\">true</code> 或 <code class=\"tok-inline\">false</code>。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">贪心总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static boolean canJump(int[] nums) {\n        // 维护当前能到达的最远位置\n        int farthest = 0;\n        for (int i = 0; i &lt; nums.length; i++) {\n            // 如果当前位置超出了最远可达范围，说明不可达\n            if (i &gt; farthest) return false;\n            // 更新最远可达位置\n            farthest = Math.max(farthest, i + nums[i]);\n        }\n        return true;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(canJump(nums));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 45 跳跃游戏 II",
+          "html": "<p class=\"md-p\">把每一步能到达的范围看成 BFS 一层。遍历当前层时更新下一层最远边界，到达当前层末尾时步数加一。</p>\n<p class=\"md-p\"><strong>输入格式</strong>：第一行一个整数 n，第二行 n 个整数表示数组 nums。 <strong>输出格式</strong>：一行，最少跳跃次数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">贪心总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int jump(int[] nums) {\n        int steps = 0;      // 跳跃次数\n        int curEnd = 0;     // 当前层的右边界\n        int farthest = 0;   // 下一层能到达的最远位置\n        for (int i = 0; i &lt; nums.length - 1; i++) {\n            // 更新下一层最远边界\n            farthest = Math.max(farthest, i + nums[i]);\n            // 到达当前层末尾，进入下一层\n            if (i == curEnd) {\n                steps++;\n                curEnd = farthest;\n            }\n        }\n        return steps;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(jump(nums));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 763 划分字母区间",
+          "html": "<p class=\"md-p\">先记录每个字符最后出现位置。扫描时维护当前段最远右边界，到达右边界时切一段。</p>\n<p class=\"md-p\"><strong>输入格式</strong>：一行字符串 s。 <strong>输出格式</strong>：一行，每段长度，空格分隔。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">贪心总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static List&lt;Integer&gt; partitionLabels(String s) {\n        // 记录每个字符最后出现的位置\n        int[] last = new int[26];\n        for (int i = 0; i &lt; s.length(); i++) {\n            last[s.charAt(i) - 'a'] = i;\n        }\n        List&lt;Integer&gt; res = new ArrayList&lt;&gt;();\n        int start = 0, end = 0;\n        for (int i = 0; i &lt; s.length(); i++) {\n            // 当前段的右边界取所有已见字符的最远位置\n            end = Math.max(end, last[s.charAt(i) - 'a']);\n            // 到达右边界，切出一段\n            if (i == end) {\n                res.add(end - start + 1);\n                start = end + 1;\n            }\n        }\n        return res;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String s = sc.next();\n        List&lt;Integer&gt; ans = partitionLabels(s);\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; ans.size(); i++) {\n            if (i &gt; 0) sb.append(' ');\n            sb.append(ans.get(i));\n        }\n        System.out.println(sb);\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "number": 56,
+      "title": "合并区间",
+      "slug": "merge-intervals",
+      "category": "区间",
+      "time": "O(n log n)",
+      "space": "O(n)",
+      "idea": "先用 Arrays.sort 按每个区间的起点 a[0] 升序排列。随后扫描 interval：merged 为空，或 interval[0] 大于最后一段的右端点时，说明与已有结果不相交，新建一段放进 merged。否则取出最后一段 last，把 last[1] 更新为与 interval[1] 的较大值，只拉长右端点。最后用 toArray 返回。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public int[][] merge(int[][] intervals) {\n        // 起点有序后，新区间只可能和结果中的最后一段重叠。\n        Arrays.sort(intervals, Comparator.comparingInt(a -> a[0]));\n        List<int[]> merged = new ArrayList<>();\n\n        for (int[] interval : intervals) {\n            if (merged.isEmpty() || interval[0] > merged.get(merged.size() - 1)[1]) {\n                // 起点落在最后一段右端点之后，两者分离，另开一段。\n                merged.add(new int[]{interval[0], interval[1]});\n            } else {\n                // 有重叠时左端点不用改，把右端点拉到更远即可。\n                int[] last = merged.get(merged.size() - 1);\n                last[1] = Math.max(last[1], interval[1]);\n            }\n        }\n        return merged.toArray(new int[merged.size()][]);\n    }\n}",
+      "description": "给定若干区间，把所有有重叠的区间合并，返回互不重叠的结果区间集合。区间最初的顺序可能是无序的。",
+      "source": "",
+      "id": "56",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "给定若干区间，把所有有重叠的区间合并，返回互不重叠的结果区间集合。区间最初的顺序可能是无序的。",
+        "req": [
+          "返回互不重叠的结果区间集合"
+        ],
+        "analysis": "先用 Arrays.sort 按每个区间的起点 a[0] 升序排列。随后扫描 interval：merged 为空，或 interval[0] 大于最后一段的右端点时，说明与已有结果不相交，新建一段放进 merged。否则取出最后一段 last，把 last[1] 更新为与 interval[1] 的较大值，只拉长右端点。最后用 toArray 返回。",
+        "cx": "时间 O(n log n)，空间 O(n)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "区间"
+    },
+    {
+      "id": "interview-uncovered-closed-intervals",
+      "number": "面试变体 3",
+      "title": "输出未被其他闭区间包含的区间",
+      "slug": "",
+      "url": "",
+      "category": "区间",
+      "source": "面试补充",
+      "time": "O(n log n)",
+      "space": "O(n)",
+      "idea": "先按左端点升序排序，左端点相同时按右端点降序。随后只用一个 for：maxRight 记下此前出现过的最大右端点，right <= maxRight 则当前区间被前面某段包含。若下一格的 left、right 都与当前相同，则 duplicateLater 为真，两份都不收。只有两个标记都为假才加入 answer，然后把 maxRight 更新为与当前 right 的较大值。",
+      "description": "给定一组闭区间 [left, right]，输出不被任何其他闭区间包含的区间。A 包含 B 定义为 A.left <= B.left 且 B.right <= A.right；两个区间完全相等时，彼此都被另一个包含，因此都不输出。排序之后的扫描部分只写一个显式 for 循环。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int[][] keepUncoveredIntervals(int[][] intervals) {\n        // 左端点升序；同左端点时右端点更大的排在前面，才能先挡住后面的短区间。\n        Arrays.sort(intervals, (a, b) -> {\n            if (a[0] != b[0]) {\n                return Integer.compare(a[0], b[0]);\n            }\n            return Integer.compare(b[1], a[1]);\n        });\n\n        List<int[]> answer = new ArrayList<>();\n        long maxRight = Long.MIN_VALUE;\n\n        // 排序后只留这一个 for，同时处理“被前面包含”和“完全重复”。\n        for (int i = 0; i < intervals.length; i++) {\n            int left = intervals[i][0];\n            int right = intervals[i][1];\n\n            // 右端点没有超过此前最大右端点，说明已被前面某个区间包含。\n            boolean coveredByPrevious = right <= maxRight;\n\n            // 完全相同的下一格也会包含当前区间，所以重复的第一份也不能留。\n            boolean duplicateLater = i + 1 < intervals.length\n                    && intervals[i + 1][0] == left\n                    && intervals[i + 1][1] == right;\n\n            if (!coveredByPrevious && !duplicateLater) {\n                answer.add(new int[]{left, right});\n            }\n\n            maxRight = Math.max(maxRight, right);\n        }\n\n        return answer.toArray(new int[answer.size()][]);\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "给定一组闭区间 [left, right]，输出不被任何其他闭区间包含的区间。A 包含 B 定义为 A.left <= B.left 且 B.right <= A.right；两个区间完全相等时，彼此都被另一个包含，因此都不输出。排序之后的扫描部分只写一个显式 for 循环。",
+        "req": [
+          "A 包含 B 定义为 A.left <= B.left 且 B.right <= A.right",
+          "两个完全相等的区间都不输出",
+          "排序之后的扫描只使用一个显式 for 循环"
+        ],
+        "analysis": "先按左端点升序排序，左端点相同时按右端点降序。随后只用一个 for：maxRight 记下此前出现过的最大右端点，right <= maxRight 则当前区间被前面某段包含。若下一格的 left、right 都与当前相同，则 duplicateLater 为真，两份都不收。只有两个标记都为假才加入 answer，然后把 maxRight 更新为与当前 right 的较大值。",
+        "cx": "时间 O(n log n)，空间 O(n)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "区间"
+    },
+    {
+      "id": "253",
+      "number": 253,
+      "title": "会议室 II：最少需要多少会议室",
+      "slug": "meeting-rooms-ii",
+      "url": "https://leetcode.cn/problems/meeting-rooms-ii/",
+      "category": "区间",
+      "source": "本批手撕",
+      "time": "O(n log n)",
+      "space": "O(n)",
+      "idea": "输入为空时返回 0。先按会议开始时间 a[0] 排序。最小堆 endTimes 保存当前仍占用会议室的结束时间。每场会议先不断弹出 peek() 小于等于 meeting[0] 的结束时间，表示这些房间已经空出，再把 meeting[1] 放进堆。answer 取这个过程中 endTimes.size() 的最大值。",
+      "description": "给定二维数组 intervals，其中 intervals[i] = [start, end] 表示一场会议的时间段。计算至少需要多少间会议室，才能让所有会议按给定时间同时举行。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int minMeetingRooms(int[][] intervals) {\n        if (intervals == null || intervals.length == 0) return 0;\n\n        Arrays.sort(intervals, Comparator.comparingInt(a -> a[0]));\n        PriorityQueue<Integer> endTimes = new PriorityQueue<>();\n        int answer = 0;\n\n        for (int[] meeting : intervals) {\n            // 堆顶是最早结束的房间，不晚于当前开始时间就可以释放。\n            while (!endTimes.isEmpty() && endTimes.peek() <= meeting[0]) {\n                endTimes.poll();\n            }\n\n            endTimes.offer(meeting[1]);\n            // 入堆后的大小就是这一时刻同时占用的会议室数。\n            answer = Math.max(answer, endTimes.size());\n        }\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "给定二维数组 intervals，其中 intervals[i] = [start, end] 表示一场会议的时间段。计算至少需要多少间会议室，才能让所有会议按给定时间同时举行。",
+        "req": [
+          "返回能让所有会议按安排同时举行的最少会议室数量"
+        ],
+        "analysis": "输入为空时返回 0。先按会议开始时间 a[0] 排序。最小堆 endTimes 保存当前仍占用会议室的结束时间。每场会议先不断弹出 peek() 小于等于 meeting[0] 的结束时间，表示这些房间已经空出，再把 meeting[1] 放进堆。answer 取这个过程中 endTimes.size() 的最大值。",
+        "cx": "时间 O(n log n)，空间 O(n)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "区间"
+    },
+    {
+      "id": "228",
+      "number": 228,
+      "title": "汇总区间",
+      "slug": "summary-ranges",
+      "category": "区间",
+      "source": "实习面试盘点",
+      "time": "O(n)",
+      "space": "O(1)（不计输出）",
+      "idea": "数组为空时直接返回空列表。start 记下当前连续段在数组中的起点下标。i 从 0 扫到末尾，当 i 已是最后一格，或 (long) nums[i+1] - nums[i] 不等于 1 时，当前段结束。此时 start 等于 i 就只加入 nums[i] 的字符串，否则加入 nums[start] + \"->\" + nums[i]，然后把 start 设为 i+1。",
+      "description": "给定一个严格递增、无重复的整数数组，把连续数字压缩成若干区间。例如 [0,1,2,4,5,7] 输出 [\"0->2\",\"4->5\",\"7\"]。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public List<String> summaryRanges(int[] nums) {\n        List<String> answer = new ArrayList<>();\n        if (nums.length == 0) return answer;\n\n        int start = 0;\n\n        for (int i = 0; i < nums.length; i++) {\n            // 用 long 相减，避免相邻元素相减在整数边界溢出，误判是否连续。\n            boolean endOfRange = i == nums.length - 1\n                    || (long) nums[i + 1] - nums[i] != 1L;\n\n            if (endOfRange) {\n                if (start == i) {\n                    answer.add(String.valueOf(nums[i]));\n                } else {\n                    answer.add(nums[start] + \"->\" + nums[i]);\n                }\n                start = i + 1;\n            }\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "给定一个严格递增、无重复的整数数组，把连续数字压缩成若干区间。例如 [0,1,2,4,5,7] 输出 [\"0->2\",\"4->5\",\"7\"]。",
+        "req": [
+          "数组严格递增且无重复",
+          "连续段输出为 start->end，单个数字只输出该数字"
+        ],
+        "analysis": "数组为空时直接返回空列表。start 记下当前连续段在数组中的起点下标。i 从 0 扫到末尾，当 i 已是最后一格，或 (long) nums[i+1] - nums[i] 不等于 1 时，当前段结束。此时 start 等于 i 就只加入 nums[i] 的字符串，否则加入 nums[start] + \"->\" + nums[i]，然后把 start 设为 i+1。",
+        "cx": "时间 O(n)，空间 O(1)（不计输出）",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "区间"
+    },
+    {
+      "id": "1221",
+      "number": 1221,
+      "title": "分割平衡字符串",
+      "slug": "split-a-string-in-balanced-strings",
+      "category": "贪心",
+      "source": "字节面试手撕盘点",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "把 R 记为 +1、L 记为 -1，累加到 balance。balance 回到 0 时，从上一次为 0 到当前位置的 L 与 R 个数相同，立刻 answer 加一，切出一段尽可能短的平衡子串。原串整体平衡，尽早切开不会挡住后面的切分。",
+      "description": "平衡字符串中 L 和 R 的数量相同。给定一个已经平衡的字符串 s，把它分割成尽可能多的平衡子串，返回最大分割数量。",
+      "code": "class Solution {\n    public int balancedStringSplit(String s) {\n        int balance = 0;\n        int answer = 0;\n\n        for (char ch : s.toCharArray()) {\n            if (ch == 'R') {\n                balance++;\n            } else {\n                balance--;\n            }\n\n            // 前缀 L、R 数量相同，可以切出一段平衡子串\n            if (balance == 0) {\n                answer++;\n            }\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "贪心",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "平衡字符串中 L 和 R 的数量相同。给定一个已经平衡的字符串 s，把它分割成尽可能多的平衡子串，返回最大分割数量。",
+        "req": [
+          "输入字符串 s 已经平衡",
+          "分割成尽可能多的平衡子串",
+          "返回最大分割数量"
+        ],
+        "analysis": "把 R 记为 +1、L 记为 -1，累加到 balance。balance 回到 0 时，从上一次为 0 到当前位置的 L 与 R 个数相同，立刻 answer 加一，切出一段尽可能短的平衡子串。原串整体平衡，尽早切开不会挡住后面的切分。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "贪心"
+    },
+    {
+      "number": 763,
+      "title": "划分字母区间",
+      "slug": "partition-labels",
+      "category": "贪心",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "先把每个字母最后出现的下标写入 last。正式扫描时 end 取 max(end, last[当前字母])，让当前段延伸到已经见过的字母的最远结尾。i 追上 end 时，段内字母都不会出现在 end 右边，于是把 end-start+1 加入 answer，并把 start 设为 i+1。",
+      "code": "import java.util.*; // 使用 ArrayList 收集各段长度\n\nclass Solution {\n    public List<Integer> partitionLabels(String s) {\n        int[] last = new int[26];\n        for (int i = 0; i < s.length(); i++) {\n            last[s.charAt(i) - 'a'] = i;\n        }\n\n        List<Integer> answer = new ArrayList<>();\n        int start = 0;\n        int end = 0;\n\n        for (int i = 0; i < s.length(); i++) {\n            // 已见字母的最后位置可能把当前段终点继续右推\n            end = Math.max(end, last[s.charAt(i) - 'a']);\n\n            if (i == end) {\n                // 段内字母都不会出现在 end 右侧，可以切下这一段\n                answer.add(end - start + 1);\n                start = i + 1;\n            }\n        }\n        return answer;\n    }\n}",
+      "description": "把字符串划分成尽可能多的片段，使每个字母最多只出现在其中一个片段中，返回每个片段的长度。",
+      "source": "",
+      "id": "763",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "贪心",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "把字符串划分成尽可能多的片段，使每个字母最多只出现在其中一个片段中，返回每个片段的长度。",
+        "req": [
+          "划分成尽可能多的片段",
+          "每个字母最多只出现在一个片段中",
+          "返回每个片段的长度"
+        ],
+        "analysis": "先把每个字母最后出现的下标写入 last。正式扫描时 end 取 max(end, last[当前字母])，让当前段延伸到已经见过的字母的最远结尾。i 追上 end 时，段内字母都不会出现在 end 右边，于是把 end-start+1 加入 answer，并把 start 设为 i+1。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "贪心"
+    },
+    {
+      "number": 55,
+      "title": "跳跃游戏",
+      "slug": "jump-game",
+      "category": "贪心",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "farthest 从 0 开始，表示目前能到达的最远下标。i 从 0 扫到末尾时，若 i>farthest 说明这个位置到不了，返回 false；否则用 Math.max(farthest, i+nums[i]) 扩展边界。一旦 farthest>=nums.length-1 就返回 true；循环正常结束也返回 true。",
+      "code": "import java.util.*; // 模板导入，本题只扫描 nums\n\nclass Solution {\n    public boolean canJump(int[] nums) {\n        int farthest = 0;\n\n        for (int i = 0; i < nums.length; i++) {\n            // i 超出目前能落到的最远下标，前面有断点\n            if (i > farthest) return false;\n\n            farthest = Math.max(farthest, i + nums[i]);\n\n            // 最远边界已经盖住末尾，不必再扫\n            if (farthest >= nums.length - 1) return true;\n        }\n        return true;\n    }\n}",
+      "description": "给定非负整数数组，nums[i] 表示从下标 i 最多能向前跳的步数，判断能否从下标 0 到达最后一个下标。",
+      "source": "",
+      "id": "55",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "贪心",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "给定非负整数数组，nums[i] 表示从下标 i 最多能向前跳的步数，判断能否从下标 0 到达最后一个下标。",
+        "req": [
+          "从下标 0 出发，判断能否到达最后一个位置"
+        ],
+        "analysis": "farthest 从 0 开始，表示目前能到达的最远下标。i 从 0 扫到末尾时，若 i>farthest 说明这个位置到不了，返回 false；否则用 Math.max(farthest, i+nums[i]) 扩展边界。一旦 farthest>=nums.length-1 就返回 true；循环正常结束也返回 true。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "贪心"
+    },
+    {
+      "number": 45,
+      "title": "跳跃游戏 II",
+      "slug": "jump-game-ii",
+      "category": "贪心",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "把一次跳跃能覆盖的下标区间看成一层。currentEnd 是再用当前 jumps 次刚好能覆盖到的右端，扫描 i 时只把 farthest 更新为 max(farthest, i+nums[i])。i 走到 currentEnd 说明这一层结束，于是 jumps 加一，并把 currentEnd 换成 farthest。循环只到倒数第二个下标，因为最后一格不必再起跳。",
+      "code": "import java.util.*; // 保留模板导入，本题计算不依赖集合\n\nclass Solution {\n    public int jump(int[] nums) {\n        int jumps = 0;\n        int currentEnd = 0; // 当前跳跃次数刚好覆盖到的右端\n        int farthest = 0;   // 本层内再跳一次能到达的最远下标\n\n        // 末位不用起跳，扫到 length-2 即可\n        for (int i = 0; i < nums.length - 1; i++) {\n            farthest = Math.max(farthest, i + nums[i]);\n\n            // 走到层末必须再跳一次，右端扩到本层最远\n            if (i == currentEnd) {\n                jumps++;\n                currentEnd = farthest;\n            }\n        }\n        return jumps;\n    }\n}",
+      "description": "在保证一定能到达末尾的前提下，求从下标 0 跳到最后一个位置所需的最少跳跃次数。",
+      "source": "",
+      "id": "45",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "贪心",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "在保证一定能到达末尾的前提下，求从下标 0 跳到最后一个位置所需的最少跳跃次数。",
+        "req": [
+          "保证从下标 0 一定能到达最后一个位置",
+          "返回最少跳跃次数"
+        ],
+        "analysis": "把一次跳跃能覆盖的下标区间看成一层。currentEnd 是再用当前 jumps 次刚好能覆盖到的右端，扫描 i 时只把 farthest 更新为 max(farthest, i+nums[i])。i 走到 currentEnd 说明这一层结束，于是 jumps 加一，并把 currentEnd 换成 farthest。循环只到倒数第二个下标，因为最后一格不必再起跳。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "贪心"
+    },
+    {
+      "number": 121,
+      "title": "买卖股票的最佳时机",
+      "slug": "best-time-to-buy-and-sell-stock",
+      "category": "贪心",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "minPrice 初始为 Integer.MAX_VALUE，bestProfit 初始为 0。对每个 price，先用 Math.min 更新至今最低价，再用 Math.max(bestProfit, price-minPrice) 更新利润。同一天先被记入最低价再相减，差值是 0，不会把 bestProfit 变成负数。",
+      "code": "import java.util.*; // 模板导入，本题只扫描价格数组\n\nclass Solution {\n    public int maxProfit(int[] prices) {\n        int minPrice = Integer.MAX_VALUE;\n        int bestProfit = 0;\n\n        for (int price : prices) {\n            // 最低价只来自今天及以前，卖出一定不早于买入\n            minPrice = Math.min(minPrice, price);\n\n            // 今天按历史最低价卖出；差为 0 时利润保持非负\n            bestProfit = Math.max(bestProfit, price - minPrice);\n        }\n        return bestProfit;\n    }\n}",
+      "description": "给定每天的股票价格，只允许先买入一次再卖出一次，求能获得的最大利润；如果怎么买卖都不赚钱，返回 0。",
+      "source": "",
+      "id": "121",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "贪心",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "simple": {
+        "statement": "给定每天的股票价格，只允许先买入一次再卖出一次，求能获得的最大利润；如果怎么买卖都不赚钱，返回 0。",
+        "req": [
+          "只允许先买一次再卖一次",
+          "无法盈利时返回 0"
+        ],
+        "analysis": "minPrice 初始为 Integer.MAX_VALUE，bestProfit 初始为 0。对每个 price，先用 Math.min 更新至今最低价，再用 Math.max(bestProfit, price-minPrice) 更新利润。同一天先被记入最低价再相减，差值是 0，不会把 bestProfit 变成负数。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "oldCat": "贪心"
+    },
+    {
+      "id": "lc-face-extra-22",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "title": "最大交换",
+      "number": "670",
+      "description": "给定一个非负整数 num，最多交换其中两位数字一次，使得到的整数尽可能大，并返回交换后的结果。",
+      "idea": "先把 num 转成字符数组，last 记录每个数字 0 到 9 最后一次出现的下标。从左到右扫描每一位，从 9 往下找比当前位更大、且最后出现位置在右边的数字。找到就和那个位置交换并立刻返回，因为高位应优先换成尽量大、且靠右的数字；若全程没有可换的更大数字，返回原数。",
+      "code": "class Solution {\n    public int maximumSwap(int num) {\n        char[] chars = String.valueOf(num).toCharArray();\n        int[] last = new int[10];\n        // 同一数字多次出现时，只保留最靠右的位置\n        for (int i = 0; i < chars.length; i++) {\n            last[chars[i] - '0'] = i;\n        }\n        for (int i = 0; i < chars.length; i++) {\n            int cur = chars[i] - '0';\n            // 优先换更大的数字，让高位增加最多\n            for (int d = 9; d > cur; d--) {\n                if (last[d] > i) {\n                    char tmp = chars[i];\n                    chars[i] = chars[last[d]];\n                    chars[last[d]] = tmp;\n                    return Integer.parseInt(new String(chars));\n                }\n            }\n        }\n        return num;\n    }\n}",
+      "progressKey": "lc-face-extra#22",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 22,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "给定一个非负整数 num，最多交换其中两位数字一次，使得到的整数尽可能大，并返回交换后的结果。",
+        "req": [],
+        "analysis": "先把 num 转成字符数组，last 记录每个数字 0 到 9 最后一次出现的下标。从左到右扫描每一位，从 9 往下找比当前位更大、且最后出现位置在右边的数字。找到就和那个位置交换并立刻返回，因为高位应优先换成尽量大、且靠右的数字；若全程没有可换的更大数字，返回原数。",
+        "cx": "时间 O(L)，空间 O(L)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      },
+      "lc": "670"
+    },
+    {
+      "id": "nonlc-1-0",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "贪心与动态规划",
+      "cat": "贪心与区间",
+      "title": "小于 n 的最大数组合",
+      "number": "通1",
+      "description": "给定可重复使用的数字集合，拼出一个严格小于 n 的最大整数。若同位数无法构成，则退化为位数少 1、每一位都取集合中最大数字；若 n 只有一位且仍然无法构成，则视为无解。",
+      "idea": "digits 先升序，这样从下标末尾往前试就是从大到小。build 里 alreadyLess 为 false 时，大于当前目标位的数字直接跳过；已经变小或当前位取得更小值时，后面每一位都填 digits 的最大值并立刻返回。当前位与目标位相同才继续递归，且下一层的 alreadyLess 仍为 false。走到末尾时，只有 alreadyLess 为 true 才返回空串表示成功，从而排除等于 n 的情况。同长度得到 null 时，长度大于 1 就用少一位的全最大值，否则返回 -1。",
+      "code": "import java.util.Arrays;\n\npublic class MaxNumberLessThanN {\n    public int buildMaxLessThan(int n, int[] digits) {\n        Arrays.sort(digits);\n        char[] target = String.valueOf(n).toCharArray();\n\n        // 从高位开始，前缀此时仍与 n 对齐\n        String sameLength = build(target, digits, 0, false);\n        if (sameLength != null) {\n            return Integer.parseInt(sameLength);\n        }\n\n        // 同位数失败后，少一位且每位取最大，仍是能拼出的最大数\n        if (target.length == 1) {\n            return -1;\n        }\n\n        StringBuilder shorter = new StringBuilder();\n        for (int i = 0; i < target.length - 1; i++) {\n            shorter.append(digits[digits.length - 1]);\n        }\n        return Integer.parseInt(shorter.toString());\n    }\n\n    private String build(char[] target, int[] digits, int index, boolean alreadyLess) {\n        // 全程贴着 n 走到头会得到 n 本身，必须丢掉\n        if (index == target.length) {\n            return alreadyLess ? \"\" : null;\n        }\n\n        int current = target[index] - '0';\n\n        // 大的先试，第一次成功就是这一层的最大选择\n        for (int i = digits.length - 1; i >= 0; i--) {\n            int d = digits[i];\n\n            // 前缀还没变小，这一位不能超过 n 的对应位\n            if (!alreadyLess && d > current) {\n                continue;\n            }\n\n            // 这一位已经更小，后面再取最大也不会超过 n\n            if (alreadyLess || d < current) {\n                StringBuilder ans = new StringBuilder();\n                ans.append(d);\n                for (int j = index + 1; j < target.length; j++) {\n                    ans.append(digits[digits.length - 1]);\n                }\n                return ans.toString();\n            }\n\n            // 与目标位相同，还要靠后面的位把整个数压小\n            String next = build(target, digits, index + 1, false);\n            if (next != null) {\n                return d + next;\n            }\n        }\n\n        // 这一位所有候选都失败，交给上一层换更小的数字\n        return null;\n    }\n}",
+      "progressKey": "nonlc-1#0",
+      "faceParent": "nonlc-1",
+      "faceIdx": 0,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "给定可重复使用的数字集合，拼出一个严格小于 n 的最大整数。若同位数无法构成，则退化为位数少 1、每一位都取集合中最大数字；若 n 只有一位且仍然无法构成，则视为无解。",
+        "req": [
+          "数字可以重复使用",
+          "结果必须严格小于 n",
+          "同位数无法构成时，返回位数少 1 且每位都是集合最大值的数",
+          "n 只有一位且无法构成时返回无解"
+        ],
+        "analysis": "digits 先升序，这样从下标末尾往前试就是从大到小。build 里 alreadyLess 为 false 时，大于当前目标位的数字直接跳过；已经变小或当前位取得更小值时，后面每一位都填 digits 的最大值并立刻返回。当前位与目标位相同才继续递归，且下一层的 alreadyLess 仍为 false。走到末尾时，只有 alreadyLess 为 true 才返回空串表示成功，从而排除等于 n 的情况。同长度得到 null 时，长度大于 1 就用少一位的全最大值，否则返回 -1。",
+        "cx": "时间 O(k log k + d·k)，空间 O(d)",
+        "topic": "p-greedy",
+        "topicName": "贪心与区间"
+      }
+    }
+  ]
+}

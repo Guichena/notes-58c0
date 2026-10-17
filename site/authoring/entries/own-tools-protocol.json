@@ -1,0 +1,323 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-tools-protocol",
+  "kind": "qa",
+  "module": "ai",
+  "part": "工具与 MCP 工程",
+  "category": "MCP 协议、传输与接入",
+  "title": "MCP 协议、传输与接入",
+  "tags": [
+    "工具调用",
+    "MCP"
+  ],
+  "questions": [
+    {
+      "id": "q-own-tools-protocol-generations",
+      "order": 233,
+      "question": "MCP 2025-11-25 与 2026-07-28 的生命周期有何不同？",
+      "shortAnswer": "先固定协议年代：前者 initialize 协商后进入会话，后者每次请求自带元数据并用 server/discover 发现；业务状态仍由应用维护。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "3.2 2025-11-25：初始化式合同"
+        },
+        {
+          "type": "paragraph",
+          "text": "回答 2025-11-25 这一代的连接建立，可以沿三次消息讲：客户端先发 initialize，提出协议版本、能力和客户端信息；服务端返回它选择的版本、能力及服务端信息；客户端再发 notifications/initialized，随后进入常规交互。这里完成的是能力协商，不能用一个“连接成功”布尔值代替。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这一代 Streamable HTTP 可以包含服务端分配的 Mcp-Session-Id、独立 GET SSE 流，以及可选的事件恢复机制。它们各有前提：有 HTTP 连接不代表一定分配 session，有 SSE 不代表一定支持持久事件重放。旧式独立 server-to-client 请求也应按这一代规则解释。"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定版本的 NoteWeave Python 调用链使用 ClientSession.initialize()，服务端启动也构造 initialization options。这说明该源码实现使用初始化式协议路径。依赖声明 mcp>=1.12,<2 是范围，不是精确安装版本；不能从范围推断实际协商的是哪一天的规范，也不能宣称它已经采用下一代无初始化协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进一步追问旧版 HTTP 时，要保留细节：被接受的客户端通知或响应返回 202 Accepted 且无正文；未提供独立 GET SSE 的服务可对 GET 返回 405，不代表 POST 工具调用不可用。带既有 session ID 的请求收到 404，客户端重新初始化新会话，但不能顺带盲重发结果未知的写操作。旧版 SSE 断开本身不等于取消，恢复事件还取决于服务端是否保留事件；客户端不能取消 initialize，task-augmented 请求使用当代的 tasks/cancel。这些都只属于这里声明的旧版本，不能移植成下一节的现代合同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "3.3 2026-07-28：逐请求元数据合同"
+        },
+        {
+          "type": "paragraph",
+          "text": "到了 2026-07-28，首答要换成“每个请求自己携带协议上下文”：这一代取消初始化握手和协议级 session，每次请求都在 _meta 里携带协议版本与客户端能力，不能继承前一次请求的能力。客户端信息用于诊断，不是认证凭据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "发现支持版本和服务能力用 server/discover；判断结果已完成还是需要继续交互，用 resultType。把这两个作用分开，就不会拿旧版握手去解释下面的现代请求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最小现代请求例如："
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "label": "examples/fence-2.json",
+          "value": "{\"jsonrpc\":\"2.0\",\"id\":\"discover-1\",\"method\":\"server/discover\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/clientInfo\":{\"name\":\"interview-host\",\"version\":\"1.0.0\"}}}}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "客户端拿到不支持版本错误，应看服务端明确提供的版本集合，选择双方实际支持的版本。收到现代错误并不意味着“试一下 initialize 总没错”；随意回退会混合两套合同。只支持现代版本的客户端也可以先做 discover 探测，避免旧服务恰好接受一个同名方法而被误认为兼容。"
+        },
+        {
+          "type": "paragraph",
+          "text": "无协议 session 不等于无业务状态。任务表、用户会话、幂等记录、审批、数据库事务仍然需要存在，只是不再依赖 MCP 协议替你维持它们。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-tools-guide",
+          "label": "接口、运行前提与验证边界"
+        },
+        {
+          "entryId": "own-tools-mcp-python",
+          "label": "完整代码：Python MCP、动态发现与合同测试"
+        }
+      ],
+      "tags": [
+        "工具工程"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-tools-mrtr-reentry",
+      "order": 259,
+      "question": "MCP 的 input_required / MRTR 续接为何不能重复提交业务？",
+      "shortAnswer": "续接换 JSON-RPC id，但保持原业务 operationId；requestState 要绑定身份、请求、版本和有效期，不能拿客户端回传状态代替审批。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "3.4 MRTR 不是第二次业务提交许可"
+        },
+        {
+          "type": "paragraph",
+          "text": "现代服务需要补充输入时，可以返回 resultType=\"input_required\"，给出 inputRequests 和可选的 requestState。客户端处理这些输入请求，再以新的 JSON-RPC id 重新发送原请求，并携带对应 inputResponses 和状态。它替代了此前独立的反向 JSON-RPC 请求模式。 以上描述常见输入交互，并非要求每个 input_required 都同时包含这些字段：存在 requestState 时，inputRequests 可以省略，应按该版本的字段约束处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "协议让客户端再次请求，不代表允许业务再写一次。handler 有副作用时，重入前先查稳定 operationId 和已有阶段，不能每一轮都在开头创建订单。"
+        },
+        {
+          "type": "paragraph",
+          "text": "续接还依赖 requestState 的可信边界：它是不透明数据，必须绑定身份、请求、版本和有效期，并防篡改；客户端回传的内容不能直接当审批记录。最后要给失败留出口：拒绝提供信息、缺少能力、轮数耗尽或状态过期，都应确定地结束或返回相应状态。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-tools-guide",
+          "label": "接口、运行前提与验证边界"
+        },
+        {
+          "entryId": "own-tools-mcp-python",
+          "label": "完整代码：Python MCP、动态发现与合同测试"
+        }
+      ],
+      "tags": [
+        "工具工程"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-tools-stdio-lifecycle",
+      "order": 283,
+      "question": "MCP stdio 怎样管理消息帧、两路输出和子进程退出？",
+      "shortAnswer": "stdout 只放协议帧、stderr 放日志，两路并发有界读取；按可信 argv 启动，关闭输入后等待、必要时终止并核实退出。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "第四章　stdio、Streamable HTTP 与兼容"
+        },
+        {
+          "type": "paragraph",
+          "text": "传输方式决定消息和连接怎样流动，业务完成状态必须由独立的执行与回执合同确认。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可能问法"
+        },
+        {
+          "type": "paragraph",
+          "text": "“stdio 为什么不能 print 日志？”“SSE 和 Streamable HTTP 有什么区别？”“客户端一直收不到 progress 是什么原因？”“断线后能按 Last-Event-ID 续传吗？”“一个 MCP 地址怎样兼容旧客户端？”"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "4.1 stdio：进程和帧都要管理"
+        },
+        {
+          "type": "paragraph",
+          "text": "stdio 由客户端启动子进程，通过 stdin/stdout 交换按行分隔的 UTF-8 JSON-RPC 消息。stdout 只能输出协议消息，普通日志走 stderr。日志出现在 stderr 不等于执行失败，应结合退出码、响应错误和业务状态判断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Host 管 stdio 时，可以沿子进程生命周期检查五件事：启动命令与参数是否可信，环境变量是否最小化，每帧是否限制字节并严格按 UTF-8 解码，stdout/stderr 是否并发读取且有累计限额，最后能否关闭并强制终止子进程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "其中两种故障最适合用来检验理解：只读 stdout、不消费 stderr，大量日志可能填满管道而互相等待；用无界 readAllBytes() 收取未知进程输出，则可能耗尽内存。它们分别说明为什么必须同时消费两路输出、为什么消费仍要有上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "现代 stdio 中客户端发送请求或通知，服务端发送响应或通知；服务端不能再发独立 JSON-RPC 请求。元数据都在消息体，没有 HTTP header。取消某个进行中的调用使用指向该请求 id 的 notifications/cancelled；关闭整个 stdin 是进程级关闭，不是仅取消一条并行请求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正常清理先关子进程输入，等待退出，必要时终止，再确认退出和关闭读端。终止操作失败时仍尝试独立清理阶段；若业务已抛异常，应保留原异常对象，把不同的清理异常作为 suppressed，避免自我 suppression 和重复添加。即使调用了强制终止，仍须检查是否真的结束，子孙进程、不可中断内核等待等需要更强的操作系统隔离。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-tools-guide",
+          "label": "接口、运行前提与验证边界"
+        },
+        {
+          "entryId": "own-tools-mcp-python",
+          "label": "完整代码：Python MCP、动态发现与合同测试"
+        }
+      ],
+      "tags": [
+        "工具工程"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-tools-http-generations",
+      "order": 295,
+      "question": "HTTP+SSE 与两代 Streamable HTTP 怎样区分并恢复？",
+      "shortAnswer": "先认协议年代，再检查 POST、JSON/SSE、元数据与取消合同；连接恢复不能证明事件无损，更不能自动重发结果未知的写操作。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "4.2 三种 HTTP 形态必须分清"
+        },
+        {
+          "type": "paragraph",
+          "text": "2024-11-05 的 HTTP+SSE：典型模式是先建立 SSE 接收通道，收到 endpoint 信息，再向对应入口 POST 客户端消息。这是旧传输形态，不能把任意 text/event-stream 都叫这套协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "2025-03-26 至 2025-11-25 的 Streamable HTTP：统一 MCP endpoint 接收 POST，单次请求可以直接返回 JSON，也可以返回 SSE；另有旧代的初始化、可选 session、GET 通道及恢复语义。是否支持事件恢复仍取决于服务端实现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "2026-07-28 的 Streamable HTTP：每个请求独立 POST；响应是 JSON 或属于该请求的 SSE，客户端应能处理两种。长期变化订阅通过 subscriptions/listen 的响应流承载，不再靠独立 GET 流。协议 session、Mcp-Session-Id 与 Last-Event-ID 恢复不属于这一代核心合同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "现代 HTTP 要求每次 POST 带 MCP-Protocol-Version、Mcp-Method，tools/call、resources/read、prompts/get 还带相应 Mcp-Name，并与消息体一致。Accept 声明 application/json 和 text/event-stream。缺失、非法或不一致的必需元数据返回 HTTP 400 与 -32020；不支持版本返回 400 与 -32022；现代未知方法返回 404 与 -32601。存在且非法的 Origin 必须拒绝为 403，本地服务优先只绑定 loopback。代理与应用不能看到不同的路由目标。存在特殊字符的名称与被声明映射到 header 的参数，必须按规范编码；大小写规则、重复 header、缺失值和非法工具定义都要验证。伴随 http_contract.py 仅演示这些纯函数合同，不代表已经实现 HTTP、OAuth 或 SSE 服务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "4.4 断线、兼容和恢复"
+        },
+        {
+          "type": "paragraph",
+          "text": "兼容客户端明确记录本次使用的协议年代。现代 discover 探测成功，就遵循现代合同；识别到现代不支持版本错误，就根据其版本信息处理。只有产品明确支持旧版且符合对应回退条件时，才进入旧式 initialize 或旧 HTTP+SSE 路径。单看 404/405 就重试旧端点，会把现代“未知方法”的结构化错误误判为旧服务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "现代 HTTP 中，关闭 SSE 响应流就是对该请求发出取消信号。服务端收到后不再为该请求发消息，并尽可能停止工作；这不能保证回滚已经发生的外部效果，stdio 的取消通知也一样。"
+        },
+        {
+          "type": "paragraph",
+          "text": "断线后要再次发起现代请求，JSON-RPC id 用新的，业务 operationId 仍用原来的，并先处理 UNKNOWN。先分清这两个身份，才不会把恢复连接做成重复业务提交。没有事件重放能力，就不能在日志上承诺“无损恢复”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要可恢复的大任务，可以在业务层建持久 job 和结果查询接口。提交返回 jobId、状态和查询方法；客户端掉线后按身份查询已有任务。是否采用协议扩展则另行协商，不能把自定义 job 查询口冒称所有 MCP 客户端天然支持的标准功能。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-tools-guide",
+          "label": "接口、运行前提与验证边界"
+        },
+        {
+          "entryId": "own-tools-mcp-python",
+          "label": "完整代码：Python MCP、动态发现与合同测试"
+        }
+      ],
+      "tags": [
+        "工具工程"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-tools-dify-diagnostics",
+      "order": 726,
+      "question": "Dify 接不上 MCP 时怎样逐层定位？",
+      "shortAnswer": "先固定部署版本和 HTTP 入口，再沿网络、协议年代、认证、发现、回调、结果流六层取证；不能用放大超时掩盖配置错误。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "10.4 Dify 接入分层排障"
+        },
+        {
+          "type": "paragraph",
+          "text": "接 Dify 时先确认传输入口：文档中的入口支持 HTTP transport，本地 stdio 命令不能直接填成远程服务 URL。添加服务器需要正确 URL、名称和稳定服务器标识，后续应用依靠标识引用；标识变化，或刷新工具列表后删除旧工具，都可能破坏已有应用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再确认实际部署版本支持哪一代 MCP，要看真实协商与消息测试。产品文档说明有这一入口，不代表本工程已经集成；排障按下面的六层逐项定位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "按层检查："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "地址与网络：从 Dify 实际运行位置确认 DNS、端口、TLS、反向代理和路径；容器内 localhost 通常指容器自身。不要绕过证书错误。",
+            "传输与年代：请求是不是发到正确 MCP endpoint，是否把旧 SSE 入口当现代入口，版本协商是否成功；观察真实响应体，不能只看状态码。",
+            "认证：资源元数据、授权服务器、回调 URL、令牌受众和 scope 是否一致；静态头和动态用户凭据不能混成共享管理员身份。",
+            "发现：返回 Schema 是否可接受、工具名是否稳定、目录缓存是否刷新、应用所引用的服务器标识是否仍存在。",
+            "执行回调：模型提出了什么参数，哪个回调收到请求，是否越权、超时或返回 isError，关联 id 是否正确。",
+            "结果与流：JSON/SSE 是否都被正确处理，代理缓冲和读超时是否影响通知；最终结果是否满足输出合同和业务断言。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Dify 当前文档仍描述默认动态客户端注册选项；这与现代规范将 DCR 标记为弃用并不矛盾，产品可保留兼容配置。排障不能假定产品版本已经完成协议迁移，也不能只把超时调大掩盖阻塞或认证失败。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-tools-guide",
+          "label": "接口、运行前提与验证边界"
+        },
+        {
+          "entryId": "own-tools-mcp-python",
+          "label": "完整代码：Python MCP、动态发现与合同测试"
+        }
+      ],
+      "tags": [
+        "工具工程"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

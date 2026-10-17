@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-5-2",
+  "entryId": "bg-redis-5",
+  "expectedOriginalHash": "b98bbab3a3bbf6649853f394e41abaf5a2bd2bdecb3553d75987b120f48f1d20",
+  "title": "布隆参数、删除重建与可靠投影",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四 Bloom 的原理 参数和复杂度"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典 Bloom 用 m 个 bit 保存集合摘要。加入一个元素时，用 k 个哈希位置把相应 bit 置 1；查询时，只要任意一位是 0，就知道这个元素没有被完整加入当前过滤器；所有位都是 1，只能说可能存在。不同元素共享位，所以没插入的元素也可能碰巧命中全部位置，产生假阳性。它不保存原元素，不能枚举成员、取业务值或准确还原不同元素个数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "说 Bloom“不会假阴性”之前，先问：这个元素是否已完整加入我们正在查询的这一代过滤器，而且插入结果已对查询可见？插入和查询还必须使用同一哈希、同一序列化规则，过滤器完整构建，没有丢位，也没有错误删除。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务元素虽然存在，查询却读了旧副本，或者重建漏了增量、重启丢了状态，仍可能得到阴性。是否能据此快速拒绝或放行，取决于这些前提是否成立。"
+    },
+    {
+      "type": "paragraph",
+      "text": "近似推导可以这样讲：一次随机置位后，某一位仍为 0 的概率是 1−1/m；插入 n 个元素、共 k n 次定位后，仍为 0 约为 (1−1/m)^(kn)，进一步近似 e^(−kn/m)。假设查询各位置近似独立，未插入元素全部命中的概率 p 约为 (1−e^(−kn/m))^k。这里有均匀哈希和独立性近似，实际实现会受哈希方案、取整和负载影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定 n 和 m，让误判率较小的 k 约为 (m/n) ln 2；给定目标 n 和 p，则 m 约为 −n ln(p)/(ln 2)^2。k 必须取整数，工程实现可能采用不同取整及额外安全余量。例如规划一百万个不同元素、目标 p=0.001，理论上约需要 1438 万 bit，即约 1.71 MiB，k 约为 10。这个数只是位数组量级，尚未包含对象、分层、元数据、对齐、客户端或多副本开销，也不是某个部署的实测内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "p=0.001 表示在相应容量和分布假设下，未插入元素查询的假阳性概率约为千分之一，不表示所有查询有千分之一错误，更不表示每一千次请求必定错一次。若输入里多数是真实成员，按总请求数计算的比例又不同。业务需要用精确结果给负样本标注，区分假阳性、真实存在和同步缺失，不能只看 Bloom 返回 true 的比例。"
+    },
+    {
+      "type": "paragraph",
+      "text": "位操作的插入、查询成本都是 O(k)，查询遇到首个 0 可以提前结束；只有固定 k 时，才常相对于元素数 n 简写 O(1)。哈希处理输入字节 L 也有代价：直接计算 k 个完整哈希约 O(kL)，用合适的派生位置算法可接近 O(L+k)。内存是 O(m)。k 设得更大不总是更好，超过最佳范围会让位更快被置满，还增加 CPU。超过规划容量后，经典 Bloom 仍可能继续置位，但误判率会升高，接近饱和时几乎失去过滤价值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 的 BF.RESERVE、BF.ADD、BF.EXISTS 属于相应 Bloom 能力提供的命令，使用前需要核对部署产品、版本和模块能力，不能假定普通 Redis 7.2 实例一定存在这些命令。显式预留容量和目标误判率比依赖自动创建默认值更可控；还应理解 NONSCALING 的容量失败和可扩展模式的分层成本。BF.ADD 的返回也不能充当精确业务首次执行凭证，因为“可能已存在”仍包含概率误判。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "五 Bloom 不能替代锁 也不能替代唯一约束"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个请求同时创建同一个短码，都先查 Bloom，结果都为阴性，然后一起写数据库。这完全可能发生：Bloom 查询不是互斥操作，先查后写也不是原子事务。即使把“查位并置位”放进同一个原子操作，阳性仍可能误判，成功占了位也不等于业务创建已经提交。短码冲突最终由权威唯一约束或条件写裁决，失败后按规则重试生成或向用户报告自定义码冲突。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存穿透指反复查询根本不存在的数据，使缓存一直 miss、数据库反复承压。先做格式、范围、权限和速率校验；确实不存在的结果可做有界短 TTL 的负缓存，创建成功后处理负缓存失效；大规模存在性集合可以增加 Bloom。Bloom 阴性快速拒绝、阳性查 Redis、Redis miss 再查数据库是一种链路，但只有完整性成立时才可把阴性当成确定不存在。否则新增短链会被错误返回 404，此时宁可受控回源，也不能把未知当不存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存击穿则是热点值失效后，大量真实请求一起回源。可以用 single-flight 或有界互斥合并加载：先读缓存，取得刷新资格后再读一次，因为等待期间别人可能已经回填；仍需加载时才查库。锁有 owner 和租约，释放只允许自己的 owner；旧持有者在租约过期后仍可能运行，锁本身不能保护外部写入免受陈旧结果覆盖。跨 JVM 的并发还要考虑全局回源预算，不能把一个 JVM 的单飞当成全局只有一个查询。"
+    },
+    {
+      "type": "paragraph",
+      "text": "软过期适合允许短暂旧值的展示数据。缓存值包含 version、生成时间、softExpiry 和 hardExpiry：soft 前正常返回；soft 后 hard 前允许返回旧值，并只启动一个受控刷新；hard 后不能无限返回旧数据，要有限等待、受限回源或降级。提前刷新可以在 soft 前启动，和到期后边返回旧值边刷新是不同触发点。刷新失败应退避，并保持旧值原来的年龄和截止时间，不能把失败当作续鲜。物理 TTL 还要覆盖允许的旧值窗口，否则值会提前消失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些机制解决的故障不同。Bloom 减少不存在请求；single-flight 合并同一热点重建；软过期在许可窗口里改善可用性；唯一约束裁决写竞争。缓存雪崩还涉及一批 key 同时失效或整个缓存不可用，需 TTL 抖动、分批预热、容量隔离和总回源限额。涉及安全撤权、资格或严格业务状态时，不应直接沿用“允许旧值”的展示缓存策略。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "六 快满了 必须删除 或要重建时怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 Bloom 不能通过清 bit 删除元素。假设 A 和 B 共用一位，删 A 时清掉这位，B 即使仍在权威集合中，也会被查成不存在。允许删除滞后时，可以保留旧 bit，让已删除元素多做一次精确查询，再定期重建；代价主要是假阳性增加。错误清位则会制造假阴性，破坏正确性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果必须在线删除，Counting Bloom 用小计数替代 bit，但要准确管理真实插入次数、重复插入、删除配对和计数溢出。计数器饱和丢失增量后再减，也可能过早归零。Cuckoo filter 保存短指纹并通过候选桶放置，支持相应的删除操作，但仍有假阳性、负载限制、插入失败和扩容成本。两者都不能因为一次查询阳性，就随意删除一个可能根本没插入的元素。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果业务必须精确判断、删除或枚举，就选 Set、Java HashSet 或数据库索引，再承担元素与索引开销；Java HashSet 也不直接提供多线程原子去重。整数 ID 范围稠密且映射稳定时，Bitmap 每个 ID 一位可以精确判断，稀疏大范围则可能浪费大量空间，可比较压缩位图。HyperLogLog 只估计基数，不能代替精确成员查询。静态过滤结构也可以很紧凑，但静态构建、增量更新及删除能力要按具体实现选择。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可扩展 Bloom 会增加子过滤器，查询通常要覆盖相关层，因此有额外延迟与内存。各层误判预算不能各自都随便设成全局目标 p；全局“任意一层阳性”的概率可用各层 p_i 的和作上界，独立近似下是 1−∏(1−p_i)。正确分配逐层预算可以把总误判限制在目标范围内，不能把“会扩展”理解成没有成本，也不能笼统说任何实现扩展后都必然突破目标误判率。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "重建要处理快照之后的新写入"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种可选协议是：从权威快照水位 W 构建新代过滤器；同时可靠保留 W 之后的增量；重放到明确的切换水位；短暂协调发布者，排空切换前增量并确认新代完整后，切换可信的当前代指针；后续发布必须继续写入当前代。旧代保留到在途读者和回放窗口结束。只扫数据库后替换一个 key，会漏掉扫描过程中发生的新建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 Bloom 阴性要直接决定 404，就要控制“对用户可查询”的发布时间。例如短链先持久化为待发布状态，把新标识写入当前有效过滤代并确认可见，再开放查询；过滤器可能多一些尚未发布的标识，这只是多一次精确查询。另一种方案是用可靠的增量精确集合覆盖尚未并入的部分。无论哪一种，代切换都要和发布路径协调，不能在写旧代成功后恰好切成不包含它的新代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "过滤器丢失、恢复中、读取副本落后或无法证明 READY 状态时，阴性只算未知，进入限流回源或明确降级。恢复应从权威快照与可靠增量重新得到可信代，而不是建一个空过滤器就立即启用快速拒绝。删除可以在权威集合生效后暂留旧 bit；重建时再移除。算法的无假阴性性质要靠这套生命周期协议才能变成业务保证。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "七 用 Java 写一个能解释清楚的 Bloom"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是只增不删的教学实现，使用 AtomicLongArray 对一个 long 内的 bit 做 CAS 合并，避免两个线程更新不同 bit 时互相覆盖。每次调用使用独立 MessageDigest，输入是明确的 byte[]；调用期间输入数组不能被其他线程修改。这里为便于检查，用哈希序号和元素字节计算 k 次 SHA-256，哈希计算量约 O(kL)，不是高性能客户端或 Redis 模块的实现。参数限制了最大位数和最多 64 个哈希，超出就拒绝，应按实际内存预算继续收紧。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.nio.ByteBuffer;\nimport java.security.MessageDigest;\nimport java.security.NoSuchAlgorithmException;\nimport java.util.Objects;\nimport java.util.concurrent.atomic.AtomicLongArray;\n\n/** Append-only teaching filter; completed adds are visible to later queries. */\npublic final class AtomicBloom {\n    private static final int MAX_BITS = 1 << 30;\n    private final int bitSize;\n    private final int hashes;\n    private final AtomicLongArray words;\n\n    public AtomicBloom(long expectedItems, double targetFpp) {\n        if (expectedItems <= 0 || !Double.isFinite(targetFpp)\n                || targetFpp <= 0.0 || targetFpp >= 1.0) {\n            throw new IllegalArgumentException(\"n > 0 and 0 < p < 1 required\");\n        }\n        double ln2 = Math.log(2.0);\n        double required = Math.ceil(-expectedItems * Math.log(targetFpp) / (ln2 * ln2));\n        if (!Double.isFinite(required) || required > MAX_BITS) {\n            throw new IllegalArgumentException(\"teaching implementation exceeds memory budget\");\n        }\n        long rounded = Math.max(64L, (((long) required + 63L) / 64L) * 64L);\n        long k = Math.max(1L, Math.round((double) rounded / expectedItems * ln2));\n        if (k > 64L) {\n            throw new IllegalArgumentException(\"teaching implementation allows at most 64 hashes\");\n        }\n        bitSize = (int) rounded;\n        hashes = (int) k;\n        words = new AtomicLongArray(bitSize / 64);\n    }\n\n    public int bitSize() { return bitSize; }\n    public int hashCount() { return hashes; }\n\n    public void add(byte[] value) {\n        Objects.requireNonNull(value, \"value\");\n        MessageDigest digest = sha256();\n        for (int i = 0; i < hashes; i++) {\n            int bit = position(digest, i, value);\n            int word = bit >>> 6;\n            long mask = 1L << (bit & 63);\n            long old;\n            do {\n                old = words.get(word);\n                if ((old & mask) != 0) { break; }\n            } while (!words.compareAndSet(word, old, old | mask));\n        }\n    }\n\n    public boolean mightContain(byte[] value) {\n        Objects.requireNonNull(value, \"value\");\n        MessageDigest digest = sha256();\n        for (int i = 0; i < hashes; i++) {\n            int bit = position(digest, i, value);\n            if ((words.get(bit >>> 6) & (1L << (bit & 63))) == 0) { return false; }\n        }\n        return true;\n    }\n\n    private int position(MessageDigest digest, int i, byte[] value) {\n        digest.update((byte) (i >>> 24));\n        digest.update((byte) (i >>> 16));\n        digest.update((byte) (i >>> 8));\n        digest.update((byte) i);\n        byte[] hash = digest.digest(value); // digest() resets this local digest\n        long first64 = ByteBuffer.wrap(hash).getLong();\n        return (int) Math.floorMod(first64, (long) bitSize);\n    }\n\n    private static MessageDigest sha256() {\n        try { return MessageDigest.getInstance(\"SHA-256\"); }\n        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "位数组按 64 对齐，因此实际位数和 k 与连续公式有取整差异。floorMod 避免负哈希与 Long.MIN_VALUE 导致负下标。重复 add 只会把同样的位继续置 1；返回值没有宣称“这个元素第一次出现”，也没有提供精确计数或删除。并发 CAS 失败会重试，所以 O(k) 的位操作口径也不是有竞争时的严格延迟上界。多个 bit 的写入不是一个整体原子步骤：add 尚未完成时，并发查询可能看到部分更新；只有插入完成并通过合适同步或发布协议对查询可见后，才能用无假阴性的前提。单机 CAS 解决不了跨机器快照、主从复制或重建发布的问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试时除了普通插入，要覆盖空字节串、二进制零字节、Unicode 的固定编码、大输入、重复插入、非法参数、多线程更新同一 word，以及插入完成后再检查所有成员。对未插入集合应用独立位图计算位置并对比查询，可检查实现错误；固定样本中的假阳性个数只能描述该样本，不能当成生产误判率承诺。生产选成熟实现还需核对线程安全、序列化兼容和版本迁移，不能只看 API 名字。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "2"
+}

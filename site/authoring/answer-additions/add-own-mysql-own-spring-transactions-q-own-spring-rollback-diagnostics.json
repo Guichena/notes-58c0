@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-own-spring-transactions-q-own-spring-rollback-diagnostics",
+  "entryId": "own-spring-transactions",
+  "expectedOriginalHash": "836e6b1de5fb081a74e5656aaf6c1c87aa0f48d8c9a53b2efcfbe03ac693e8f9",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. A 调同类的事务方法 B，究竟有没有事务"
+    },
+    {
+      "type": "paragraph",
+      "text": "自调用绕过的是 B 这次调用的代理拦截，不一定意味着 B 内所有 SQL 都没有事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分四条路径回答最清楚："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "外部经代理调用没有事务的 A，A 用 this.B() 调带注解 B：B 的注解不会新开事务，数据访问可能分别自动提交。",
+        "外部经代理进入已经开启事务的 A，A 内部 this.B()：B 若复用事务感知连接，仍在 A 的事务中，但 B 自己的 REQUIRES_NEW、rollbackFor、isolation 和 timeout 没有被这次自调用应用。",
+        "A 经另一个 Spring bean 的代理调用 B：B 的传播属性才有机会执行，是否加入或独立提交要看传播行为。",
+        "新线程或 @Async 方法：命令式线程绑定的 JDBC 事务不会自动转移给子线程。子任务应自行划定事务并处理失败；把同一连接放进 InheritableThreadLocal 也不是安全修复。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "判断回滚时，跟随真正生效的边界。A 已有事务、this.B() 抛 checked exception，就看 A 的规则，而不是看这次没有经过代理的 B 注解。A 如果 catch 后继续写，事务又没被标 rollback-only，就可能提交半笔业务；异步 Future 后来才失败，也不能回头撤销早已提交的外层事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "修复要先决定业务边界，再选框架手段。需要一起成败，把事务放到外部公共入口 A；确实需要独立事务，再把 B 放进另一受管理 bean，经代理调用，或使用 TransactionTemplate。不能只为让注解生效就随手改 REQUIRES_NEW，让本来该一起回滚的数据独立提交。self 注入和 AopContext 需要额外配置且耦合框架，通常不是首选；AspectJ 确实不同于代理模式，但必须真正配置编译期或加载期织入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "方法可见性也要带版本和代理类型：Spring 6 起类代理默认可处理 protected、包可见事务方法；接口代理要求方法是 public 且在接口中。private 方法、final 类/方法对类代理存在不可覆盖限制。不能背成“非 public 全部无效”，也不能认为标上注解就是任何调用都受管理。初始化阶段的调用同样不能假设已经具备最终代理行为。对象自己 new 出来、事务管理未启用、拿到原对象而非代理，也都要沿实际调用链排查。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "q-own-spring-rollback-diagnostics",
+  "targetOrigin": "authored"
+}

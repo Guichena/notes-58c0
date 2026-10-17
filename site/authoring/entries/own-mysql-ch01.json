@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch01",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · Server、存储引擎与完整读写链路",
+  "title": "Server、存储引擎与完整读写链路",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s131",
+      "order": 131,
+      "question": "MySQL Server 与 InnoDB 怎样合作完成一次读写，INSERT 何时才算成功？",
+      "shortAnswer": "Server 负责 SQL 语义和计划，InnoDB 负责索引、页、并发与事务恢复；写语句成功、事务提交和客户端确认是不同边界。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第01章 Server、存储引擎与完整读写链路"
+        },
+        {
+          "type": "paragraph",
+          "text": "MySQL 把 SQL 的理解和计划放在 Server 层，把记录、索引、缓存及事务存储机制放在存储引擎层；排查问题时，要先判断时间和责任落在哪一层。"
+        },
+        {
+          "type": "paragraph",
+          "text": "也可能这样问：一条 SQL 怎么执行？InnoDB 有什么优点？为什么分层？MyISAM、MEMORY 与 InnoDB 有什么区别？INSERT 从请求到提交经过哪些步骤？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "面试时先把主线讲顺"
+        },
+        {
+          "type": "paragraph",
+          "text": "“一条 SQL 先由 Server 理解，再由执行器按计划请存储引擎读写记录。具体说，客户端连接后，服务端维护身份和会话，解析 SQL、绑定表列、检查权限，选定执行计划；引擎再通过索引、数据页和缓存取出或修改数据。读操作最后编码并返回结果，写事务还要守住约束、协调并发并完成持久化提交。沿这条路排慢查询，才能分清时间花在连接池、锁、扫描、排序还是结果传输，不能上来就认定缺索引。”"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里以 MySQL 8.4.0、InnoDB 为教学基线。8.4 没有旧版 Server 查询缓存；Buffer Pool 是引擎的页缓存，缓存的并非一条 SQL 的最终结果。执行链路不是每次请求必经的刚性流水线：预处理语句、常量折叠、提前发现空结果、缓存页命中都会改变实际工作量。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-mysql/mysql-layers.png",
+          "alt": "MySQL 8.4 的客户端、Server、InnoDB 与日志恢复分层；页缓存不同于结果缓存。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "连接之后，Server 做什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "连接建立涉及协议握手、认证、会话变量和连接资源。应用常先从连接池借连接，这段等待尚未进入数据库执行。随后解析器得到语法结构，名字解析把列绑定到表、校验类型和对象；涉及的权限与元数据锁贯穿准备和执行，不能把权限简化成只在握手时检查一次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "连接池归还连接时还要处理未提交事务、autocommit、隔离级别及其他会话状态；下一位借用者不能继承上一请求的半个事务。归还不等于提交，应用应明确提交/回滚和异常清理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "优化器枚举可行的访问路径、连接顺序与算法，结合表和索引统计估计成本。执行器通过迭代器组合扫描、过滤、连接、聚合、排序和 LIMIT，再向客户端送出结果。逻辑上的 FROM、WHERE、GROUP BY、HAVING、SELECT、ORDER BY、LIMIT 有助于解释 SQL 语义，但不是物理执行的逐步时间表。条件可能下推，连接可能重排，索引可能直接提供顺序。"
+        },
+        {
+          "type": "paragraph",
+          "text": "分层让 SQL 接口、优化器和客户端协议复用，也允许不同引擎采用不同组织方式。代价是 Server 必须了解引擎能力和统计，某些优化只能在两层协作时成立。ICP 就是例子：Server 把适合在二级索引条目上判断的条件交给 InnoDB，减少读取完整行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "InnoDB 接到读请求之后"
+        },
+        {
+          "type": "paragraph",
+          "text": "主键点查从聚簇索引根页向下定位。页在 Buffer Pool 中就读内存；缺页才需要提交读 I/O。二级索引先定位二级条目，再根据其中的主键定位聚簇记录；如果查询能由二级条目覆盖，通常能省去为获取列值的回表，但可见性检查仍有需要聚簇记录的情况。"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通一致性读依赖 ReadView 和 undo 重建可见版本；锁定读、UPDATE、DELETE 则要按实际访问路径协调并发。InnoDB 不能随意取消事务锁：MVCC 主要降低读写互阻，不会自动防住两个写者破坏唯一性或业务不变量。页的短期 latch 保护内部结构，事务锁保护事务间逻辑并发，二者生命周期不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MySQL 8.4 InnoDB 默认隔离级别为 REPEATABLE READ，但会话可以修改。普通一致性读在 READ COMMITTED 下通常逐语句建立读视图，在 REPEATABLE READ 下通常复用事务中首次一致性读建立的快照；READ UNCOMMITTED 与 SERIALIZABLE 又有不同的可见性与锁定要求。普通 RR 范围 SELECT 不会仅因范围和 RR 就自动加 gap lock，锁定读与写操作须另按路径分析。隔离级别不替代唯一约束和业务状态转移协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "undo 服务回滚与旧版本，redo 服务崩溃恢复，doublewrite 等机制处理适用场景中的部分页写风险；Buffer Pool、日志和后台线程配合工作。具体刷盘、原子写能力、配置与故障模型决定持久性，不能把“支持 ACID”讲成任何硬件故障下绝不丢失。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个查询用了 2 秒，其中 1.9 秒在应用连接池等待，给 WHERE 加索引并不是直接命中原因。应该把借连接、发请求、首行、全部结果读取、对象映射分别计时，再结合服务端事件判断。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "INSERT：把一次写入讲到提交"
+        },
+        {
+          "type": "paragraph",
+          "text": "以显式事务里的普通 INSERT VALUES 为例："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Server 解析并绑定列，处理默认值、表达式和适用的触发器、约束，取得必要的元数据保护。",
+            "InnoDB 定位聚簇索引插入位置，执行唯一键和外键等检查，协调自增值、插入意向与记录相关锁。不能说每次 INSERT 都只有一个锁。",
+            "修改聚簇记录及受影响的二级索引，必要时分裂页；生成 undo、redo，内存页成为脏页。写路径也可能因为所需页不在内存而发生读 I/O。",
+            "提交阶段协调引擎事务和启用的 binlog。内部两阶段提交解决本地引擎与 binlog 的可恢复决定，不能据此说副本已应用或所有故障均不丢失。",
+            "满足所配置的日志持久化要求后返回结果。脏数据页通常稍后刷盘，提交并不要求把所有相关页立即写入表文件。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "autocommit=1 的独立语句通常自成事务；显式事务中 INSERT 成功只是语句成功，仍可能随后回滚。连接断开或 ACK 丢失时，客户端可能无法判断是否提交，需要稳定业务键、已有结果查询与幂等契约，不能无条件换号重试。"
+        },
+        {
+          "type": "paragraph",
+          "text": "插入 undo 主要用于回滚，提交后通常即可回收；更新 undo 还可能被旧读视图需要，因此长事务会拖延回收。自增值可能因回滚或分配失败留下空洞，不能用连续号码推断提交次数。唯一性检查、外键和间隙冲突会改变锁等待；死锁通常回滚被选中的事务，锁等待超时默认通常只回滚当前语句，应用须识别结果并主动结束不再可用的业务事务。具体两会话交错应接到事务与锁章节继续分析。"
+        },
+        {
+          "type": "paragraph",
+          "text": "INSERT SELECT 还包括读源表；INSERT IGNORE 改变错误处理；ON DUPLICATE KEY UPDATE 可能走更新分支；REPLACE 可能删除冲突行再插入。它们在触发器、约束、副作用与锁方面不能互换。Change Buffer 只对适用的二级索引修改生效，受配置及索引条件限制，不能把它当成 MySQL 8.4 每次写入必经的一环。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "引擎比较，先区分概念层次"
+        },
+        {
+          "type": "paragraph",
+          "text": "存储引擎是实现表存储和访问能力的组件，B+ 树是数据结构，主键和唯一键是约束，聚簇与二级索引是组织方式。这四者不是同一份分类。"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "InnoDB：MySQL 8.4 默认引擎；支持事务、崩溃恢复、外键、MVCC 及记录级并发控制。普通索引按树组织，聚簇叶子承载行。",
+            "MyISAM：数据与索引分别存放，支持表级锁，不具备 InnoDB 的事务回滚与崩溃恢复语义。它曾是旧版本默认引擎，不是 8.4 的默认选择。",
+            "MEMORY：表定义保留，行数据驻内存，重启后数据丢失；支持 HASH 或 BTREE 索引，采用表级锁，不提供通用事务。不能因为“快”就用来保存不可丢业务事实。",
+            "NDB：面向 MySQL NDB Cluster 的分布式引擎，部署、数据分布和限制独立于普通单实例 InnoDB。",
+            "ARCHIVE、CSV、BLACKHOLE：分别面向特定归档、文本交换或丢弃写入等用途，不是三个能任意替换的 OLTP 引擎。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "历史边界也要说清：MySQL 从 5.5.5 起默认使用 InnoDB，5.6 系列已支持 InnoDB 全文索引；不能继续用“只有 MyISAM 支持全文”作为今天的选型理由。MyISAM 也不提供 InnoDB 式的外键约束，订单扣库存等需要回滚和完整性的业务不能仅凭“读多”选择它。"
+        },
+        {
+          "type": "paragraph",
+          "text": "查看实际环境用 SHOW ENGINES、SHOW CREATE TABLE、SELECT VERSION()，不能仅由“MySQL”推断某张表的引擎。问“MySQL 有哪些类型”时，要先确定问的是引擎、字段类型还是数据库产品类别；字段类型还需讨论整数范围、DECIMAL 精确数、字符集排序规则、时间语义、JSON 等，不应答成引擎清单。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若上下文正在讨论一对一、一对多、多对多，“类型”也可能指实体关系：一对多通常在多方放外键，多对多使用关联表，并定义唯一关系与删除策略。先识别提问层次，再解释约束，不把关系类型与存储引擎混为一谈。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "如何接到真实项目与系统设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "NoteWeave 当前实现快照使用 MySQL/JDBC/Flyway 承载业务关系状态，本地 Compose 声明 MySQL 8.4。这个事实适合解释关系状态为什么与大文件、检索索引分层存储；它不等于个人曾在某个历史生产版本中独立负责 MySQL 运维。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果把资料处理任务建模为可恢复状态，数据库保存任务身份、状态、版本、引用及待投递意图，大对象放对象存储，检索索引作为可重建投影。选择依据是约束和恢复路径，不是把所有内容塞进一张 MySQL 表。制造业场景中的 Outbox、账本和审批可以用来推演事务与状态设计，但具体 MySQL 表、版本和索引仍必须用条件口吻说明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问时应能继续解释：为什么缓存命中仍要做权限判断？为什么没有索引的 UPDATE 不等于自动升级表锁？为什么返回成功不代表副本即时可见？这几问分别落在应用契约、实际锁路径和复制可见性上，不能由“用了 InnoDB”一句包办。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-6",
+          "label": "<code class=\"tok-inline\">update set c = c + 1 where id = 10</code> 这类 SQL 在 InnoDB 里大致是怎么执行的？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

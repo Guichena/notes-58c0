@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-network-own-java-io-q-own-java-buffer-framing",
+  "entryId": "own-java-io",
+  "expectedOriginalHash": "e268c4f3b384812f3942f429589f23609b61958063e7903414fd9e00445955d1",
+  "title": "网络手册：协议机制、适用条件与设计边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "T10 TCP 粘包怎么处理？手写一个真正有边界的 Java 拆帧器"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP 给应用的是连续字节流，消息边界要由应用协议定义，拆帧器必须同时限制长度、内存、每轮工作量和等待时间。 write() 的次数、TCP 段的个数和对端 read() 的次数没有一一对应关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些问法一起准备：什么是粘包、半包？一次发送为什么分两次读？两次发送为什么一次读到？固定长度、分隔符和 TLV 怎么选？Java 怎么处理半个包头？大端、小端有什么用？一个 JSON 字符串到底占多少字节？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先把“包”说清楚"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用写入 A、B 两条消息，对端可能先读到半个 A，再读到剩余 A 加整个 B；也可能一次读到两条消息。发送缓冲、分段、接收缓冲与应用读取时机共同影响观察结果。即使关闭 Nagle，也不会得到消息边界。换成 UDP 虽然保留数据报边界，却改变了可靠性、拥塞控制和大小约束，通常不是解决 TCP 拆帧问题的理由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "三种常见协议："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "固定长度：定位简单，适合真正固定字段的小消息；可变正文要补齐，浪费空间。",
+        "分隔符：文本调试方便，但正文包含分隔符时必须转义，还要限制一行最大字节数；不能无限等到换行符。",
+        "长度前缀或 TLV：先读类型、长度，再读正文，便于扩展；必须规定长度是否包含头部、是否有符号、字节序、版本、上限及非法值处理。"
+      ]
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-network/figure-3.png",
+      "alt": "连续 TLV 帧：Type、Length 与 Value 的消息边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "长度前缀不必含 Type 字段；下例为了突出状态机，采用 Length + Value。生产协议可以增加 magic、version、messageType、requestId，但每加一项都要规定兼容性和校验顺序。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先冻结线格式，再开始编码"
+    },
+    {
+      "type": "paragraph",
+      "text": "本例的协议契约是：前四个字节为有符号 32 位大端正文长度，合法范围 0..1024，长度只计算正文，不包含四字节头。长度为零表示合法空帧。负数或超上限立即终止该连接的解码，不尝试盲目搜索下一个头。正文是原始字节，只有上层确认文本编码后才能解码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如正文 甲🙂 的 UTF-8 是七字节，长度头为 00 00 00 07。Java String.length() 统计 UTF-16 code unit，这个字符串是 3，不能拿它当 UTF-8 字节数。JsonByteSize.java 保留了中英文、emoji 和转义形式的字节对照；JSON 语义相同不意味着传输文本完全相同，压缩后长度还会再次变化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大端表示高位字节在低地址/先传，0x01020304 的线表示是 01 02 03 04。不是“Java 整数在所有机器的内存中都按网络大端摆放”。ByteBuffer 默认大端，但协议代码应显式声明；C/C++ 要警惕有符号 char 扩展、未对齐访问和严格别名问题，逐字节移位或正确使用网络字节序函数更清楚。ByteOrderDemo.java 与 byte_order.cpp 使用同一线格式做跨语言对照。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎么接到 SocketChannel 上"
+    },
+    {
+      "type": "paragraph",
+      "text": "接到 SocketChannel 后，要把“已经读进来但还没解析”的字节也当作待办。连接的同一个事件循环串行调用 feed、checkTimeout、endOfInput 和 close；读缓冲 flip() 后交给 feed。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果预算耗尽而缓冲还有剩余，就保留当前位置，把连接加入应用自己的待处理队列，后续继续消费，再 compact()。不能覆盖未消费字节，也不能只等下一次内核可读事件，否则已经在用户态的字节可能一直没人处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "read()==-1 时，先消化已读入的全部缓冲，再调用 endOfInput。业务消费者必须短小、非阻塞；需要异步处理就交给有界队列，并在饱和时暂停读取或拒绝连接。暂停读取后恢复读兴趣、定时器与 EOF 的顺序要由连接所有者管理。此处每连接解码器最多保留 4 字节头和 1024 字节正文，但调用者输入缓冲、已经交出的正文、队列、连接数仍需独立配额。“单帧有上限”推不出“服务总内存有上限”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "手写完成后，面试官还会追什么"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "为什么不把每次收到的字节直接 new String(bytes)？UTF-8 字符可能跨读取边界；先得到完整帧再解码，或使用保留状态的 CharsetDecoder。非法编码是拒绝还是替换，也要明确。",
+        "length 是否可信？只是待验证的元数据；还需要身份认证、消息类型合法性、字段范围和业务权限检查。",
+        "如果消费者要保留正文怎么办？当前实现每帧数组的所有权移交给消费者，不复用它；换成池化或零拷贝视图则必须规定释放和生命周期。",
+        "超时检查为什么不能只写在 feed？一个发送半个头就停下的对端不会再触发它。",
+        "如何证明边界？对同一条线数据按每个切点分割、随机切片、多个帧拼接，并覆盖空帧、最大帧、坏长度、截断、回调异常、超时和预算中断。完整离线驱动在 BoundedFrameDecoderTest.java，最简状态机对照在 FrameDecoderDemo.java。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "这份实现解决的是有界拆帧，不承担 Socket 生命周期、全局连接限额、TLS、业务确认或生产性能结论。面试回答到这里，才能从“我会用 LengthFieldBasedFrameDecoder”继续说明框架替自己维护了哪些不变量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java NIO 的三件套"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Channel：连接到文件、Socket、Pipe 等 I/O 对象。SocketChannel 可读可写，可配置阻塞模式；FileChannel 不是 SelectableChannel，不能把普通文件直接注册进 Selector。客户端的非阻塞 connect 还可能需要 OP_CONNECT 与 finishConnect。",
+        "Buffer：存放数据并维护 capacity/position/limit。flip 把已写入区域切换为可读区域；compact 把未读数据搬到前面后继续写；clear 只是重置索引，通常不会把所有字节清零。mark/reset 是位置书签，不是网络事务回滚。",
+        "Selector：等待已注册通道的感兴趣操作就绪。SelectionKey 同时承载注册状态与连接上下文；处理 selected set 后应按模型移除已处理条目，失效 key 要清理。超时、wakeup 等允许条件可能让选择返回 0，不能因此进入无限忙循环。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 capacity=8，读入 3 字节后 position=3、limit=8；flip 后 position=0、limit=3。如果向通道写出时只接受 2 字节，position 变成 2，后续继续发送剩下 1 字节即可；再次 flip 会把区域含义改错。read(dst) 和 write(src) 都只按实际传输字节数推进相应 position。只有 hasArray 为真才能按 array/arrayOffset 使用可访问的底层数组；只读堆视图和直接缓冲不保证可访问数组。"
+    },
+    {
+      "type": "paragraph",
+      "text": "allocate 通常创建带堆内数组的 Buffer；allocateDirect 的数据位于直接内存，Java Buffer 对象本身仍由 JVM 管理。直接缓冲有机会减少中间复制，但分配回收成本、池化、生命周期和堆外内存占用都要计入。“堆外”不等于“不受资源限制”，也不等于任意 I/O 都是端到端零拷贝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "slice/duplicate 通常共享内容但维护自己的索引，read-only 视图限制通过该视图写入，却不保证底层内容不会被其他可写视图修改。跨线程传递 Buffer 时，要定义所有权，不要一边复用一边让业务线程读。NioComponents.java 用本地 Pipe 展示注册与读取，BufferStorage.java 展示堆、直接内存和视图语义。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "版本与本批未执行声明"
+    },
+    {
+      "entryId": "own-network-transport-code",
+      "label": "网络传输：完整 Java 与跨语言教学程序"
+    },
+    {
+      "entryId": "own-network-application-code",
+      "label": "网络应用：完整 Java、浏览器与安全教学程序"
+    }
+  ],
+  "questionId": "q-own-java-buffer-framing",
+  "targetOrigin": "authored"
+}

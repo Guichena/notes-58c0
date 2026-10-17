@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s207",
+  "entryId": "bg-redis-7",
+  "expectedOriginalHash": "6148c949f18f8f3714bf31057ea3fae83ba918f1304c52ed78210ac659a4dcc4",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1.4 Redis Sentinel的leader选举与选择新Redis主节点为什么是两件事"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sentinel先选出主持本次故障转移的哨兵，再由它选择合格Redis副本晋升为数据主节点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Redis哨兵的leader怎样选出；quorum与多数派授权有什么区别；选哨兵leader和选Redis新主是一回事吗。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "本节固定Redis 7.2的Sentinel实现语义。Sentinel的故障转移协调者选举与Redis数据主节点选择是两个步骤，二者都不能替代数据复制协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "谁是leader"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一种leader是本节故障转移协调者Sentinel，负责选择/提升副本和重配复制关系；第二种是承担读写的Redis primary。Sentinel互相投票选择执行者，不是所有Redis replica竞选一个Sentinel职位。先完成主故障判定，再取得failover授权，之后才挑新主。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障意见门槛和执行授权，要分开数。单个 Sentinel 达到 down-after，是主观下线；足够其他 Sentinel 也报告该 master 不可达，才形成客观下线，quorum 就是配置的故障意见门槛。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真正执行切换时，还要同时得到多数授权并满足配置 quorum。因此即使 quorum=1，也不代表一个孤立哨兵就能随便切主。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按epoch投票，不能同轮投两个人"
+    },
+    {
+      "type": "paragraph",
+      "text": "发起者进入新epoch并请求其他Sentinel投给某runId。Redis7.2 sentinelVoteLeader保存current_epoch和每master的leader_epoch/leader，在未对该epoch投票且请求不落后时记录一次投票并持久配置；同一master同epoch重复请求返回既有投票，旧epoch不能覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计票只用对应epoch的票，sentinelGetLeader要求票数至少floor(N/2)+1且至少master.quorum，N是所知监控该master的Sentinel数包含自己。多数交集配合一轮一票避免相同成员视图下同epoch两个胜者；超时/冲突后等待再用后续epoch重试，而非永远锁死第一次候选。身份/成员发现和配置持久性是前提，不能只画三票就忽略网络与重启。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "选新主、广播新配置"
+    },
+    {
+      "type": "paragraph",
+      "text": "获得授权者过滤不适合提升的副本，再按priority、复制进度和runId顺序挑选，priority=0不提升，提升命令成功还要观察角色变为master，随后把其他副本指向新主并传播更高configuration epoch。旧主不可达时不能立刻重配，恢复后再按新权威跟随。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sentinel 完成协调，不等于业务写从此零丢失。客户端还要通过它发现新地址并重建连接，直连旧地址不会自动获得正确路由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 异步复制，以及分区时旧主仍可能接受写的窗口，需要另外治理。协调者拿到多数票，不能代替数据本身的复制确认。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子、代价与验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "五个Sentinel、quorum=2，至少三票才能授权；quorum=4则至少四票，只有三者可达时多数虽够仍不满足配置门槛。三个只余一个时quorum=1仍不能授权。用此反例说明故障灵敏度与切换可用性的取舍，不把任意配置都称高可用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "核对SDOWN/ODOWN、new-epoch/vote/elected-leader、候选选取与switch-master日志，测试网络分区、同轮双候选、协调者中途退出、所有合格replica不可用和旧主重连。故障切换时延与丢写窗口需要真实拓扑下的故障实验，票数算例不能证明零丢写。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "2"
+}

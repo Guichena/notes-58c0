@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-own-rag-retrieval-q-own-rag-tfidf-bm25",
+  "entryId": "own-rag-retrieval",
+  "expectedOriginalHash": "dc2dba5fde1c64c9d230c1f7a967084689596e9edfead978cae080b2e8ce8c58",
+  "title": "算法练习补充：稀疏稠密表示与BM25",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "稀疏稠密表示与BM25"
+    },
+    {
+      "type": "paragraph",
+      "text": "稀疏和稠密检索擅长解决不同的匹配问题。稀疏表示大多数维度为零，常用词项或学到的词项权重作为维度，适合倒排检索，以及专名、编号等匹配；稠密表示用较低维连续数值编码语义，适合改写和近义表达。"
+    },
+    {
+      "type": "paragraph",
+      "text": "距离也不能随便选：余弦比较方向，欧氏距离比较绝对位置，会受模长影响。先遵循 embedding 模型训练时采用或官方推荐的度量，再用自己的保留集验证效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "BM25：词频饱和、逆文档频率与长度归一化"
+    },
+    {
+      "type": "paragraph",
+      "text": "score(q,d)=Σt∈q IDF(t)×tf(t,d)(k1+1)/(tf(t,d)+k1(1−b+b×|d|/avgdl))。稀有词权重大，词频递增收益逐渐变小，长文档的天然词频优势得到校正。词项不出现贡献0。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "介绍 BM25 的核心公式与每一项的含义。",
+        "怎样处理词频饱和、文档长度、零词频与参数边界？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "给出短查询中每个不同词项累加的常见教学形式，采用Lucene正IDF变体。N为包含目标字段的文档数、df为包含词项的文档数、tf为该文档词频；分词后的长度与统计必须同口径。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "此处IDF(t)=ln(1+(N−df+0.5)/(df+0.5))。它始终为正；原始概率式ln((N−df+0.5)/(df+0.5))可能对高频词为负，两种形式不能混称数值完全一样。k1控制词频饱和：k1=0时只关心出现与否；k1增大通常让重复词频的影响更显著。b=0不做文档长度归一化，b=1做完全长度比校正。Lucene 9.12.2默认k1=1.2、b=0.75只是该版本默认，不是业务最优结论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "离线分词后建立term→(docID,tf)倒排表，记录docLength、df、N及总长度；查询按同一analyzer分词，遍历命中词的postings对doc累计，再取TopK。中文切词、大小写、停用词、词干、字段权重都会改变结果。标题和正文可分别评分再有依据地融合，短语/位置约束由额外查询机制提供；BM25自身是词项加和，不理解词序、因果或同义词全部关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整Java展示单词项score，调用者对各query词累加。tf=0先返回0，避免k1=0形成0/0；校验文档频率范围、tf≤文档长度和有限参数。本教学接口为避免极端double乘法额外问题，将k1限定[0,10]、avgdl≥1，N/df/tf使用int；它不是无限规模生产索引，也不逐位模拟Lucene压缩norm、boost和优化评分常量。查询词重复的加权策略、字段boost需明确，不能悄悄改变求和合同。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "N=1000、df=10、avgdl=|d|=100：tf=1的贡献是IDF，tf=2为1.375×IDF，而不是2倍；tf继续增大趋近2.2×IDF（k1=1.2）。同tf下长度400比分长度100低；b=0时这项差异消失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "BM25 自测检查词频增加时得分单调且逐渐饱和，并手算 tf=1、tf=2、长文档、b=0 与 tf=0。业务效果仍需独立的相关性标注与检索评测。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "单词项公式O(1)；实际查询成本与命中倒排长度和被评分候选数U有关，朴素累加约O(Σdf)，TopK最小堆O(U log K)，可用WAND/Block-Max等上界剪枝但需合法上界并实际实现，不能直接把朴素版声称为O(log N)。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "df和长度统计要对应同一索引快照；分片局部统计可能与全局排序不同。删除/更新后需刷新相应统计与版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "BM25 适合专有名词和代码编号等词法信号，语义改写可能漏召回；可以与 dense 候选取并集，经 RRF 或校准分数融合后再重排。本章 RankFusion 给出完整加权实现。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ],
+  "questionId": "q-own-rag-tfidf-bm25",
+  "targetOrigin": "authored"
+}

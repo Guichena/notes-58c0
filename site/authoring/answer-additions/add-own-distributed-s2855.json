@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2855",
+  "entryId": "bg-rocketmq-2",
+  "expectedOriginalHash": "2cdbdd5e3bce3f221b02c016f941c006bf1eff09c8aae576393b984dd2d51daa",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.5 RocketMQ如何降低消息丢失风险，数据库提交后进程退出怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "消息不丢依赖生产责任持久化、Broker持久复制与消费者提交后确认；数据库与发送之间的崩溃窗口用Outbox等协议关闭。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：RocketMQ如何降低丢消息；数据库提交后进程退出怎么办；重发为什么仍要业务幂等。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "端到端链路以RocketMQ 5.x机制为具体例子，实际Broker角色、确认条件和SDK消费类型需单独核对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先明确不丢的承诺点"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务返回成功应对应一个可恢复的事实，例如本地业务+outbox事务已持久提交，而不是“调用了异步send”。生产者检查发送结果，失败有限退避重试；网络超时可能Broker已收到，此时是结果未知，重发必须保留业务事件ID。内存队列里的未发消息随进程退出丢失，发送日志和可重投状态需要持久化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Broker可靠性取决于刷盘、复制、确认策略和故障模型。内存接收、单盘落地、复制到多个故障域不是同一等级；同步确认通常增加延迟，副本跨故障域和运维恢复仍重要。保留期届满、磁盘损坏或管理员删除也不由客户端重试解决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据库已提交但还没发送：outbox与事务消息两条路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "通用outbox在同一个数据库本地事务里写业务行和待发事件，后台轮询/CDC持续发布；发送成功后标进度，标记前崩溃会重复发而不是漏发。表中eventId唯一、发送失败可重试且有积压告警。仅在事务afterCommit回调里send仍有提交后退出的空窗。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ 事务消息要先准备消息，再做本地事务：先持久发送暂不可消费的 half message，执行本地事务后，再报告 commit/rollback。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果本地事务成功、报告却丢了，Broker 可以回查。生产者必须查持久业务事务记录，不能看某个 JVM 布尔值，也不能一超时就全回滚。查到还在处理中，就按契约返回未知，等后续检查。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "事务消息不等于所有业务数据库的全局ACID"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务消息协调生产端本地事务状态与消息可见性，消费端还需自己的事务、幂等和恢复。业务修改已发生后才第一次发送half message不能回头补上原子性；必须预先按正确协议组织。若生产端已经丢失所有可查询事务依据，Broker回查无法凭空恢复事实。回查次数/时间与消息存储策略按具体版本核对并监控悬挂事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费时先按eventId做唯一inbox，再在同一事务执行业务变更，提交成功才返回消费成功。数据库提交后确认前退出会再次投递，inbox使其不重复生效；业务失败则回滚inbox和效果，按退避策略重试，超过阈值隔离并人工/自动修复。外部支付/HTTP不在本地事务内，要用对方幂等键及结果查询，不能只靠inbox覆盖。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验收与排障"
+    },
+    {
+      "type": "paragraph",
+      "text": "分段注入故障：业务提交前后、消息发送前后、Broker确认丢失、消费者提交前后、half message回查时重启、磁盘/副本不可用。以业务事务ID追踪outbox、消息、inbox和最终效果，核对缺失与重复效果。记录积压最老年龄、发送失败、消费重试/死信、回查未知数，安排可恢复重放与对账。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.29 RocketMQ“Confirm、同步刷盘、主从同步、手动ACK”怎样按实际版本解释"
+    },
+    {
+      "type": "paragraph",
+      "text": "消息可靠性要分客户端发送结果、刷盘、副本确认和业务提交，异步刷盘与异步发送API不是同一个概念。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：RocketMQ能否绝对不丢；同步刷盘与主从同步区别是什么；手动ACK如何按客户端类型理解。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ 4.x与5.x、不同Broker架构和消费SDK的语义分别解释，不直接套用RabbitMQ的confirm或手动ACK术语。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "异步发送、异步刷盘、异步复制是三件事"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步发送、异步刷盘、异步复制，分别发生在不同位置。客户端异步 send 关心何时等回包；Broker 异步刷盘关心何时 force 到稳定介质；主从异步复制关心副本何时确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步 send 也可能连到异步刷盘的 Broker，不能因为调用阻塞就断言已落盘。客户端回调成功，更不直接证明业务效果完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步刷盘时进程/机器故障的丢失窗口与实现/配置相关，进程崩溃和断电磁盘损坏是不同故障模型。同步落盘增加等待成本；同步副本跨故障域增加可恢复副本，但若所有确认副本同时毁损、人工删消息或超过保留期，仍不存在无条件“绝对不丢”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生产端确认要使用RocketMQ自己的API"
+    },
+    {
+      "type": "paragraph",
+      "text": "4.x DefaultMQProducer同步发送返回SendResult，文档列SEND_OK、FLUSH_DISK_TIMEOUT、FLUSH_SLAVE_TIMEOUT、SLAVE_NOT_AVAILABLE等状态；不仅检查是否抛异常，还要按可靠性合同处理具体结果。异步路径检查回调结果，one-way没有服务端结果确认，不适合据此承诺关键消息可靠到达。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些是4.x API示例，不把旧SYNC_MASTER/flushDiskType配置直接套所有5.x或托管服务。5.x按对应SDK的发送回执、复制组和存储实现核验。发送超时/刷盘超时是可能已受理但未达到期望确认，保留outbox和稳定业务ID，不能换ID盲发或直接当未发生。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费端并非所有类型都显式basicAck"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ传统Push监听器返回消费成功/稍后重试等结果，由SDK提交相应消费进度/重试动作；5.x PushConsumer与SimpleConsumer责任不同，后者按协议取得不可见期内消息并显式ack、必要时调整不可见时间。使用哪种机制取决于产品版本和消费类型，不存在通用Rabbit basicAck代码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "无论回调还是显式ack，业务本地事务成功之后才报告成功；DB提交后报告丢会重投，所以inbox与效果同事务。处理完只代表业务函数返回，若异步线程尚没提交就提前返回成功，仍会漏效果。事务消息解决生产本地状态与消息可见性，也不替代消费事务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "区分漏发与消费失败，再做故障验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地DB提交但消息未发靠outbox/正确事务消息协议；Broker未达到持久/复制条件需配置和发送责任；消费者失败靠有限重试、死信处置与幂等；业务已成但ACK丢则查询已提交inbox，不重做。把这四者都归结“换同步刷盘”会漏掉其他窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按eventId对账受理、发布、消费与最终效果，测试每个确认点前后退出、副本不可用、磁盘失败、长时间消费停机与重放。没有RocketMQ集群/实际断电验证；SegmentJournal的FileChannel测试也不能证明Broker复制策略。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

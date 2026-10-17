@@ -1,0 +1,436 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-contexts",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 并发与 JUC",
+  "category": "线程上下文与并发容器",
+  "title": "线程上下文与并发容器",
+  "tags": [
+    "Java",
+    "JUC",
+    "Java21教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-juc-threadlocal-ownership",
+      "order": 1283,
+      "question": "key 为什么不是线程 ID？",
+      "shortAnswer": "ThreadLocalMap 属于当前 Thread，key 是具体 ThreadLocal 对象，用来区分同一线程中的不同绑定，因此不需要再以线程 ID 作为 key。多个线程拿着同一个 ThreadLocal 调用 get，访问的仍是各自线程的 Map。",
+      "commonPhrasings": [
+        "ThreadLocalMap 为什么不能等 GC 自动收尾？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "10 ThreadLocal 上下文与 Spring 异步边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "ThreadLocalMap 属于当前 Thread，key 是具体 ThreadLocal 对象，用来区分同一线程中的不同绑定，因此不需要再以线程 ID 作为 key。多个线程拿着同一个 ThreadLocal 调用 get，访问的仍是各自线程的 Map。"
+        },
+        {
+          "type": "paragraph",
+          "text": "OpenJDK 的 ThreadLocalMap 使用数组和开放寻址处理冲突，Entry 的 key 弱引用 ThreadLocal，value 通常强引用。ThreadLocal 不再有其他强引用时 key 可被清除，但活线程仍可能经 Map、Entry 保留 value，直到相关操作清理陈旧项或线程终止。弱 key 不会让 value 立即消失。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再用线程池的一次复用看为什么必须清理。请求 A 把身份放进当前 worker 的 ThreadLocal，结束时没有移除；这个 worker 接着运行请求 B，B 就可能读到 A 的身份，或继续替 A 保留大对象。即使 key 由 static final 永久持有，没有弱 key 被回收，这个问题仍然存在。"
+        },
+        {
+          "type": "paragraph",
+          "text": "根源是线程活得比请求久，线程生命周期不能代替请求生命周期。remove 只清理当前线程当前 key 的绑定，不会自动清空别的线程。检查请求边界上的清理，比只问 key 是否为弱引用更接近实际故障。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-juc/threadlocal-retention.png",
+          "alt": "活线程强持有 ThreadLocalMap 与 Entry，Entry 弱 key 不使强 value 自动释放；请求结束须恢复外层绑定或 remove，set(null) 契约不同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "ThreadLocalMap 为什么不能等 GC 自动收尾"
+        },
+        {
+          "type": "paragraph",
+          "text": "ThreadLocalMap 的开放寻址把碰撞项放在后续槽位，删除陈旧项时还要整理探测簇，不能简单置空后让后续键查不到。key 的分布用专门的 hash 增量改善幂次容量上的分散，但它不提供互斥或对象复制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个 Map 没有一个持续消费 ReferenceQueue 的后台线程替每个活线程及时清理所有 stale entry，直接命中 get 也未必扫描其他陈旧项。set(null) 保留 key 的绑定结构，语义不等于 remove；value 若反向持有 ThreadLocal，还可能使 key 保持强可达。最可靠的生命周期仍是作用域拥有者按 finally 恢复或清理。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-threadlocal-hashing",
+      "order": 1295,
+      "question": "ThreadLocal 的哈希值怎么分配 冲突为什么用线性探测？",
+      "shortAnswer": "ThreadLocal 在创建时分配一个固定的内部哈希值，用它定位当前线程的表；多个 key 落到同一槽位时，再逐格向后查找。哈希值分配与冲突处理是两件事，原子递增并不意味着永远没有冲突。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "ThreadLocal 在创建时分配一个固定的内部哈希值，用它定位当前线程的表；多个 key 落到同一槽位时，再逐格向后查找。哈希值分配与冲突处理是两件事，原子递增并不意味着永远没有冲突。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 OpenJDK 21 为例，threadLocalHashCode 是 final 字段，由全局 AtomicInteger 通过 getAndAdd(0x61c88647) 分配；不是每次 get 时重新计算，也不是调用线程 ID。这个步长让连续创建的对象在二次幂容量的表中较好地分散。容量为 16、序列从 0 开始时，初始槽位依次是 0、7、14、5、12、3、10、1、8、15、6、13、4、11、2、9；第 17 个又回到槽位 0。实际 JVM 中可能已有其他对象消耗了序列，所以不能保证自己的第一个对象恰好落在 0。"
+        },
+        {
+          "type": "paragraph",
+          "text": "定位公式是 threadLocalHashCode & (table.length - 1)。原子操作保证并发构造时序列更新正确；取模后的槽位仍有限，非连续对象集合也可能碰撞，32 位序列最终还会回绕。它不是加密哈希，也不是永久唯一的业务 ID。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线性探测可以想成沿数组找位置：当前槽不匹配就看下一个，越过末尾再回到 0。判断是不是同一 key 用对象身份，不靠用户重写 equals。查找会处理遇到的失效弱 key；插入则要区分已经存在的 key、可以清理的陈旧项和真正的空槽。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除为什么不能只把一格清空？假设两个 key 从同一槽位开始查找，第二个因碰撞放到了后面。如果删掉前一个就留下空洞，后一个的查找路径可能在空洞处提前结束，明明还在表中却找不到。清理时因此要调整相关探测链，保持同一探测簇中后续元素可达。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所以它与普通 HashMap 的链表、红黑树冲突结构不同。常见情况下访问很快，但严重聚集或清理陈旧项时会多扫描，不能承诺每次严格 O(1)。Map 主要由所属线程操作，不代表其中的 value 一定不会被别的线程共享；哈希分配用了 AtomicInteger，也不等于 value 的业务更新自动线程安全。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-context-scope",
+      "order": 1309,
+      "question": "父子线程 线程池和嵌套作用域？",
+      "shortAnswer": "普通 ThreadLocal 不自动传给子线程，InheritableThreadLocal 通常在子线程创建时产生继承初值，不能代表线程池每次提交时的请求上下文。默认继承的 value 也不自动深复制，多个线程可能共同持有一个可变对象。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "普通 ThreadLocal 不自动传给子线程，InheritableThreadLocal 通常在子线程创建时产生继承初值，不能代表线程池每次提交时的请求上下文。默认继承的 value 也不自动深复制，多个线程可能共同持有一个可变对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "传播要跟着一次任务的进入和退出走：提交端捕获必要的不可变值；真正开始执行时，先保存执行线程原有的绑定，再安装本次任务的值；退出时恢复旧绑定，原本没有绑定才 remove。旧值必须在实际执行线程上读取，不能在提交端猜测。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么不是 finally 一律 remove？池饱和后，CallerRuns 可能让内层任务就在外层请求线程上执行。内层先安装自己的上下文，结束后若直接 remove，就连外层仍要用的上下文也抹掉了。保存再恢复既能处理这种嵌套，也能处理普通 worker 复用；下面的反例会把两种清理方式放在同一条调用路径里比较。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追踪 ID、用户身份和数据库事务不能混成一个可复制 Map。身份要来自可信鉴权入口，不能让 LLM 生成的字段覆盖租户权限。各并行分支的业务可变状态用独立副本，合并时定义冲突策略；日志上下文的传播不意味着获得了某个事务或连接的所有权。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TransmittableThreadLocal、Micrometer Context Propagation 和 Reactor Context 有各自的集成与包装约定，不能只换类型名就保证任意执行器正确传播。ScopedValue 在 Java 21 是预览 API，在 Java 25 成为正式 API；其作用域与结构化传播也不能推广成任意线程池自动继承。Java 17 项目不能直接使用 Java 21 的这些新能力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/CallerRunsContextDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicReference;\n\n/** 饱和时任务可能嵌套执行在调用者线程，ThreadLocal 必须按作用域恢复。 */\npublic final class CallerRunsContextDemo {\n    private static final ThreadLocal<String> TRACE = new ThreadLocal<>();\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch gate) throws InterruptedException {\n        if (!gate.await(5, TimeUnit.SECONDS)) throw new AssertionError(\"gate stuck\");\n    }\n    private static Runnable scoped(String captured, Runnable body) {\n        return () -> {\n            String previous = TRACE.get(); // 必须在实际执行线程上读取旧值。\n            if (captured == null) TRACE.remove(); else TRACE.set(captured);\n            try { body.run(); }\n            finally {\n                // null 在本示例表示“没有上下文”；不承诺区分显式 null 与不存在。\n                if (previous == null) TRACE.remove(); else TRACE.set(previous);\n            }\n        };\n    }\n    public static void main(String[] args) throws Exception {\n        ThreadPoolExecutor pool = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,\n                new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.CallerRunsPolicy());\n        CountDownLatch workerEntered = new CountDownLatch(1);\n        CountDownLatch releaseWorker = new CountDownLatch(1);\n        Future<?> blocked = pool.submit(() -> {\n            workerEntered.countDown();\n            try { await(releaseWorker); }\n            catch (InterruptedException ex) { Thread.currentThread().interrupt(); }\n        });\n        try {\n            await(workerEntered);\n            Future<?> queued = pool.submit(() -> {}); // 稳定占满唯一队列槽位。\n            TRACE.set(\"outer-request\");\n            long callerId = Thread.currentThread().threadId();\n            AtomicReference<String> observed = new AtomicReference<>();\n            Future<?> inline = pool.submit(scoped(\"inner-request\", () -> {\n                observed.set(TRACE.get());\n                check(\"饱和任务由提交线程执行\", Thread.currentThread().threadId() == callerId);\n            }));\n            inline.get(5, TimeUnit.SECONDS);\n            check(\"任务看见显式捕获的上下文\", \"inner-request\".equals(observed.get()));\n            check(\"内层完成后恢复外层上下文\", \"outer-request\".equals(TRACE.get()));\n\n            Future<?> failed = pool.submit(scoped(\"failed-request\", () -> {\n                throw new IllegalStateException(\"synthetic failure\");\n            }));\n            boolean observedFailure = false;\n            try { failed.get(5, TimeUnit.SECONDS); }\n            catch (ExecutionException ex) { observedFailure = ex.getCause() instanceof IllegalStateException; }\n            check(\"submit 的内联异常仍存入 Future\", observedFailure);\n            check(\"任务抛错也恢复外层上下文\", \"outer-request\".equals(TRACE.get()));\n\n            // 反例：无条件 remove 对可嵌套的执行边界是不够的。\n            Future<?> badCleanup = pool.submit(() -> {\n                TRACE.set(\"inner-request\");\n                try { /* This counterexample only installs and clears the context. */ }\n                finally { TRACE.remove(); }\n            });\n            badCleanup.get(5, TimeUnit.SECONDS);\n            check(\"无条件 remove 会擦掉调用者已有上下文\", TRACE.get() == null);\n\n            releaseWorker.countDown();\n            blocked.get(5, TimeUnit.SECONDS); queued.get(5, TimeUnit.SECONDS);\n            pool.shutdown();\n            check(\"执行器确认终止\", pool.awaitTermination(5, TimeUnit.SECONDS));\n            Future<Integer> ghost = pool.submit(() -> 10);\n            // CallerRunsPolicy 在池关闭后选择丢弃，并不会抛拒绝异常。\n            check(\"关闭后的 CallerRuns 可返回未完成 Future\", !ghost.isDone());\n            check(\"此时没有可执行该任务的线程或队列\", pool.isTerminated() && pool.getQueue().isEmpty());\n            check(\"拥有者显式收回悬空句柄\", ghost.cancel(false) && ghost.isCancelled());\n\n            pool.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());\n            boolean rejected = false;\n            try { pool.submit(() -> 11); }\n            catch (RejectedExecutionException ex) { rejected = true; }\n            check(\"AbortPolicy 明确返回提交失败\", rejected);\n        } finally {\n            TRACE.remove(); releaseWorker.countDown();\n            blocked.cancel(true); pool.shutdownNow();\n            if (!pool.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError(\"pool alive\");\n        }\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n",
+          "label": "code/CallerRunsContextDemo.java"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通业务异常沿调用栈退出时会执行 finally，因此 remove 或恢复逻辑应放在那里。若前一项清理本身可能抛异常，应再用内层 finally 保证上下文恢复不会被跳过；进程终止或永不退出的任务则不能承诺一定执行。下面单独验证创建时继承、线程池旧值残留与异常后的清理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ContextBindingsLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class ContextBindingsLab {\n    public static void main(String[] args) throws Exception {\n        ThreadLocal<String> local = new ThreadLocal<>();\n        InheritableThreadLocal<String> inherited = new InheritableThreadLocal<>();\n        local.set(\"parent-only\"); inherited.set(\"creation-time\");\n        AtomicReference<String> childValue = new AtomicReference<>();\n        AtomicReference<Throwable> failures = new AtomicReference<>();\n        Thread child = Checks.thread(\"inheritance\", failures, () -> {\n            Checks.that(local.get() == null, \"ordinary local not inherited\");\n            childValue.set(inherited.get());\n        });\n        inherited.set(\"start-time\"); child.start(); Checks.join(child); Checks.rethrow(failures);\n        Checks.that(childValue.get().equals(\"creation-time\"), \"inheritance at creation, not start\");\n        inherited.set(\"worker-creation\"); ExecutorService pool = Executors.newSingleThreadExecutor();\n        try {\n            Checks.that(Checks.get(pool.submit(inherited::get)).equals(\"worker-creation\"), \"first worker inherits\");\n            inherited.set(\"new-request\");\n            Checks.that(Checks.get(pool.submit(inherited::get)).equals(\"worker-creation\"), \"existing worker does not inherit each submission\");\n            Checks.get(pool.submit(() -> { local.set(\"leaked-request\"); return null; }));\n            Checks.that(Checks.get(pool.submit(local::get)).equals(\"leaked-request\"), \"pool contamination demonstrated\");\n            Checks.get(pool.submit(() -> {\n                try { local.set(\"request\"); throw new IllegalStateException(\"business\"); }\n                catch (IllegalStateException expected) { return null; }\n                finally { local.remove(); inherited.remove(); }\n            }));\n            Checks.that(Checks.get(pool.submit(local::get)) == null, \"ordinary failure unwinds finally cleanup\");\n        } finally { local.remove(); inherited.remove(); Checks.stop(pool); }\n        AtomicReference<Thread> ranOn = new AtomicReference<>();\n        Thread platform = new Thread(() -> ranOn.set(Thread.currentThread()));\n        platform.run(); Checks.that(ranOn.get() == Thread.currentThread(), \"direct platform run\");\n        AtomicBoolean virtualRan = new AtomicBoolean();\n        Thread virtual = Thread.ofVirtual().unstarted(() -> virtualRan.set(true));\n        virtual.run(); Checks.that(!virtualRan.get(), \"direct virtual run does nothing\");\n        virtual.start(); Checks.join(virtual); Checks.that(virtualRan.get(), \"virtual start executes task\");\n        System.out.println(\"ContextBindingsLab OK\");\n    }\n}\n",
+          "label": "code/ContextBindingsLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-threadlocal-retention-budget",
+      "order": 1464,
+      "question": "ThreadLocal 能降低 GC 压力吗？",
+      "shortAnswer": "ThreadLocal 只有在合理复用对象的具体策略下才可能减少分配，同时会增加每线程保留的活集。几百条长期线程各缓存一个大缓冲区，可能使堆占用和回收负担更大；短寿命虚拟线程也通常没有长期 worker 的复用收益。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "ThreadLocal 只有在合理复用对象的具体策略下才可能减少分配，同时会增加每线程保留的活集。几百条长期线程各缓存一个大缓冲区，可能使堆占用和回收负担更大；短寿命虚拟线程也通常没有长期 worker 的复用收益。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SimpleDateFormat 有可变内部状态，不能任意共享给多个线程。可以每次新建、同一锁保护、或每线程独立并正确清理；更常用的迁移是不可变线程安全的 DateTimeFormatter，同时检查格式符、时区、Locale 和宽松解析等语义，不是直接替换类名。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-spring-async-transactions",
+      "order": 1470,
+      "question": "Async 与事务为什么常在新线程失效？",
+      "shortAnswer": "Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程绑定的内容包括资源持有者和事务同步回调，以及事务名、只读标记、隔离级别、活动状态等元数据，具体由事务管理器决定。把 ThreadLocal 中的 ConnectionHolder 直接复制给另一个线程，不是合法的跨线程事务传播方案，还可能并发使用不允许共享的 JDBC 连接。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设父事务尚未提交，异步线程已经发出“已成功”消息，随后父事务回滚。消息已经跨过了另一个执行边界，父事务的回滚不会替你把它撤回。这正是不能靠复制 ThreadLocal 来补齐的业务问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要异步子操作参与可靠流程时，可以让它建立自己的事务，再以明确的提交后事件、outbox 或任务状态连接两个事务。至于响应式事务，通常使用 Reactor Context，不能继续只按 ThreadLocal 解释全部 Spring 事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "@Async 返回 Future/CompletableFuture 时应观察异步失败；void 方法的异常不能靠调用者 try/catch 捕获，需要相应异常处理与监控。线程池参数、拒绝、上下文恢复、关闭时限和任务持久性都应由配置明确，注解本身不解决这些问题。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-concurrent-map-internals",
+      "order": 1484,
+      "question": "并发映射怎样安全发布和更新，同步包装与写时复制怎样选择？",
+      "shortAnswer": "ConcurrentHashMap 用安全发布、原子更新和局部协调保护自身的映射操作，既不让整张表所有读写都串行，也不承诺任意多步业务具有全表快照一致性。现代 OpenJDK 与 JDK 7 的 Segment 分段实现应分开说明。",
+      "commonPhrasings": [
+        "HashMap 同步包装和 CopyOnWriteArrayList？",
+        "CHM 扩容与树化的具体追问？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "11 并发集合与复合操作"
+        },
+        {
+          "type": "paragraph",
+          "text": "ConcurrentHashMap 用安全发布、原子更新和局部协调保护自身的映射操作，既不让整张表所有读写都串行，也不承诺任意多步业务具有全表快照一致性。现代 OpenJDK 与 JDK 7 的 Segment 分段实现应分开说明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在 OpenJDK 8 及之后的典型实现中，空桶插入可使用 CAS，非空桶更新配合桶级同步，树桶有自己的协调结构；读取通过表和节点字段的内存访问协议进行，遇到转发节点可到新表继续查找。不能说整个 CHM “完全无锁”，也不能说 get 总是获取 synchronized。"
+        },
+        {
+          "type": "paragraph",
+          "text": "扩容时多个线程可领取迁移区间，搬完的桶设置转发节点，随后切换到新表。协作迁移有助于分摊工作，不等于所有业务写操作可在任何旧节点上随意继续。树化阈值还受表容量和具体插入路径影响；小表可能先扩容，不能把 HashMap 某条 put 分支的触发计数机械复制到 CHM 的 compute。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CHM 不允许 null key/value，因此 null 返回可表达未映射。迭代器通常弱一致，不抛出 fail-fast 异常不代表遍历结果是一张固定时刻快照。size 或跨键聚合在并发更新时不适合直接充当事务判断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "get 后判断再 put 会竞争，使用 putIfAbsent、compute、merge 等匹配的原子 API。compute 的函数应短小，避免慢 I/O、递归修改及跨键锁依赖；原子范围是对应操作承诺的映射，不是函数中的所有外部系统副作用。常见计数模式是 computeIfAbsent 得到 LongAdder 再递增，但同时删除 key 与累加器引用的语义也要单独决定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把 ConcurrentHashMap 用作本地缓存，还要补上 TTL、容量、加载失败、失效和统计；表操作安全并不等于缓存协议完整。先看最简单的读穿路径：读未命中，进入同一把加载锁，再检查一次，确实仍缺失才加载并发布。第二次检查防止别人已完成加载；代价是不同 key 也会串行等待。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果不同 key 需要并行加载，可以按 key 保存一个在途 Future，让相同 key 的请求共享结果。旧加载结束时用 remove(key, oldHandle)，避免把后来换上的新一代句柄清掉。某个人等待超时，也不应自动取消别人仍依赖的共享加载。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最后改变一个条件：加载期间发生失效，旧结果随后回来。仅有线程安全的 put 仍可能让过期值复活，提交回填时还要校验版本。不要为了省掉这些协议，就把慢 I/O 随意塞进 computeIfAbsent 的原子计算区域。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "HashMap 同步包装和 CopyOnWriteArrayList"
+        },
+        {
+          "type": "paragraph",
+          "text": "HashMap 和 ArrayList 的普通实现不能承受无同步的并发结构修改，JDK 8 改变扩容实现也没有把它们变成线程安全。JDK 7 头插迁移在特定交错下形成环是一个历史反例，不是说明所有不安全行为都只剩那个环。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个 ArrayList.add 可能覆盖同一位置、丢失 size 更新，扩容还可能产生其他不一致。Collections.synchronizedMap 可通过统一监视器保护单次方法，遍历及复合操作通常要按其文档在同一包装对象上同步；Hashtable 也不会自动把任意两次方法调用变成一个事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CopyOnWriteArrayList 在写入时复制数组，读者和迭代器可观察已有快照，适合读远多于写且列表不大的场景。其迭代器不支持所有修改操作，读到旧快照属于契约；频繁写入大列表带来的复制和 GC 不能忽略。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ConcurrentSkipListMap 提供排序键及相应范围操作，插入顺序、访问顺序、键排序是三种不同的“有序”。需要严格访问顺序的线程安全 LRU，可用统一锁同时保护哈希索引与双链表；每次 get 移动节点也是写操作，不能给它随意套共享读锁。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "CHM 扩容与树化的具体追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "table 引用是 volatile，不等于数组每个槽位因此自动成为 volatile；现代 CHM 通过槽位原子/有序访问及 Node 的相应字段协议发布内容。锁住旧桶头后还要复查它仍是当前桶头，避免结构已经被替换时继续按旧状态更新。"
+        },
+        {
+          "type": "paragraph",
+          "text": "扩容者通过 transferIndex 领取区间，ForwardingNode 指向下一张表，其他线程可协作迁移。sizeCtl 同时承担初始化/阈值和扩容状态编码，在扩容期间涉及代次戳、参与者计数与最终收尾，不是单纯“当前表大小”。切换新表不等于瞬间回收旧对象，仍被读者引用的旧结构由 GC 按可达性管理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "树化不能只回答一个数字。常见常量 TREEIFY_THRESHOLD=8、UNTREEIFY_THRESHOLD=6、MIN_TREEIFY_CAPACITY=64 表达的是取舍，还必须落到具体版本和操作路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用 OpenJDK 21 HashMap 作对照：普通 put 在容量至少 64 时，插入第 9 个同桶新键可触发树化；computeIfAbsent 的计数路径则可在第 8 个触发。这里明确说的是 HashMap 的这两条路径，不能把它直接当成上面 CHM 所有操作的触发计数。小表通常先扩容，更新已有键也不等于新增碰撞节点；退化还受拆分和结构判断影响。记住三个常量以后，还要解释代码在哪一步计数、走哪条分支。"
+        },
+        {
+          "type": "paragraph",
+          "text": "桶长分布的理想化 Poisson 估计是阈值设计背景，恰好八项与至少八项的概率不同，也不是现实哈希输入的安全保证。同 hash 且不可比较的键可能让树查找尝试多条分支，不能只看到红黑树节点就保证任意恶意键都严格 O(log n)。HashMap 的历史扩容环属于另一问题：JDK 7 头插反转与并发迁移可留下循环链，现代路径消除这个特定交错后，普通 HashMap 仍然不安全。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        },
+        {
+          "entryId": "own-java-collections",
+          "questionId": "q-own-java-concurrent-collections",
+          "label": "Java 基础：容器使用契约"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-date-format-migration",
+      "order": 2704,
+      "question": "SimpleDateFormat 迁移不能只换类名？",
+      "shortAnswer": "SimpleDateFormat 的共享可变状态需要隔离或同步，DateTimeFormatter 则可作为不可变共享格式器；迁移时还要校对解析含义。现代 uuuu 表示年，yyyy 是纪元年，YYYY 是基于周的年；MM 是月份，mm 是分钟，旧 SimpleDateFormat 的 u 另有星期语义，不能直接沿用。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "SimpleDateFormat 的共享可变状态需要隔离或同步，DateTimeFormatter 则可作为不可变共享格式器；迁移时还要校对解析含义。现代 uuuu 表示年，yyyy 是纪元年，YYYY 是基于周的年；MM 是月份，mm 是分钟，旧 SimpleDateFormat 的 u 另有星期语义，不能直接沿用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "STRICT 与 SMART 解析策略不同；旧 parse(String) 能返回一个合法前缀的解析结果，并不等于整段输入完全匹配。下面使用 ParsePosition 验证消耗了全部字符，并固定 Locale 与 UTC；实际业务仍需明确时区、DST 重叠或缺口、历史日历以及输入允许范围。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/DateTimeLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.text.*;\nimport java.time.*;\nimport java.time.format.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\npublic final class DateTimeLab {\n    private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern(\"uuuu-MM-dd\", Locale.ROOT)\n            .withResolverStyle(ResolverStyle.STRICT);\n    static Date parseLegacyFully(String text) {\n        SimpleDateFormat format = new SimpleDateFormat(\"yyyy-MM-dd\", Locale.ROOT);\n        format.setLenient(false); format.setTimeZone(TimeZone.getTimeZone(\"UTC\"));\n        ParsePosition position = new ParsePosition(0);\n        Date parsed = format.parse(text, position);\n        if (parsed == null || position.getIndex() != text.length()) throw new IllegalArgumentException(\"full valid date required\");\n        return parsed;\n    }\n    public static void main(String[] args) throws Exception {\n        Checks.that(LocalDate.parse(\"2024-02-29\", DATE).getDayOfMonth() == 29, \"leap day\");\n        for (String bad : List.of(\"2023-02-29\", \"2024-02-29junk\")) {\n            try { LocalDate.parse(bad, DATE); throw new AssertionError(\"invalid date accepted\"); }\n            catch (DateTimeParseException expected) { }\n            try { parseLegacyFully(bad); throw new AssertionError(\"legacy prefix accepted\"); }\n            catch (IllegalArgumentException expected) { }\n        }\n        LocalDate edge = LocalDate.of(2019, 12, 29);\n        Checks.that(edge.format(DateTimeFormatter.ofPattern(\"YYYY\", Locale.US)).equals(\"2020\"), \"week-based year\");\n        Checks.that(edge.format(DateTimeFormatter.ofPattern(\"uuuu\", Locale.US)).equals(\"2019\"), \"calendar year\");\n        ExecutorService pool = Executors.newFixedThreadPool(4);\n        try {\n            List<Future<?>> jobs = new ArrayList<>();\n            for (int t = 0; t < 4; t++) jobs.add(pool.submit(() -> {\n                for (int i = 0; i < 1000; i++) {\n                    Checks.that(LocalDate.parse(\"2024-02-29\", DATE).format(DATE).equals(\"2024-02-29\"), \"shared immutable formatter\");\n                    Checks.that(parseLegacyFully(\"2024-02-29\").toInstant().equals(Instant.parse(\"2024-02-29T00:00:00Z\")), \"per-call legacy state\");\n                }\n            }));\n            for (Future<?> f : jobs) Checks.get(f);\n        } finally { Checks.stop(pool); }\n        System.out.println(\"DateTimeLab OK\");\n    }\n}\n",
+          "label": "code/DateTimeLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        },
+        {
+          "entryId": "own-java-modern",
+          "questionId": "q-own-java-time-versioned-features",
+          "label": "Java 基础：日期与版本"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-context-frameworks",
+      "order": 2757,
+      "question": "自动上下文传播框架各管哪一层？",
+      "shortAnswer": "自动传播需要明确捕获边界、安装边界和恢复责任，框架之间并非互换类型名。TransmittableThreadLocal 通常通过任务/执行器包装或 agent 覆盖支持的提交路径；未经过包装的执行器、框架内部回调和可变值共享仍要检查。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "自动传播需要明确捕获边界、安装边界和恢复责任，框架之间并非互换类型名。TransmittableThreadLocal 通常通过任务/执行器包装或 agent 覆盖支持的提交路径；未经过包装的执行器、框架内部回调和可变值共享仍要检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Micrometer Context Propagation 使用已注册的 ThreadLocalAccessor 和 ContextSnapshot 在不同上下文机制间桥接，它不发明业务身份，也不会自动让任意对象深复制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reactor Context 绑定响应式订阅链，而不是某条固定线程；显式 contextWrite、读取位置和 ThreadLocal 桥接模式需要匹配使用版本。OpenTelemetry 的 Context/Scope 管理执行范围，跨进程还需要传播载体及注入提取协议。不同系统传来的 tenantId 仍需鉴权校验，traceId 不能当成权限证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ScopedValue 适合结构化的不可变绑定，Java 21 是预览、Java 25 为正式 API；它不是“所有已有池自动继承”的开关。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

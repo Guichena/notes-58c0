@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3331",
+  "entryId": "bg-kafka-3",
+  "expectedOriginalHash": "439f00b613cde64c9d38686bf55dd187c740dab7270708ca68545c20b7623995",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.20 消息队列怎样端到端保证顺序消费"
+    },
+    {
+      "type": "paragraph",
+      "text": "端到端有序需要同实体稳定分区、单序执行或版本门槛，以及失败重试不越过未完成前缀。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：消息如何顺序消费；多消费者如何保序；失败消息能否先跳过。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定义同订单、同账户或全局顺序，队列排列、接收顺序和业务提交顺序分别验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先生成业务次序，再保持路由"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一实体的事件带aggregateId和递增业务version，权威事务生成顺序与outbox；多个发布者也要按该序发布，不能两人先发v10再发v9指望Broker猜对。相关key固定partition/queue，分区扩容/映射变更须排空旧路由或有版本迁移协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka常规分区日志有序但跨分区无全局序；生产幂等/重试in-flight配置须按版本正确。Rabbit同channel入队顺序可保持，不同channel序列会交错；多个活动消费者、优先级和重投影响有效顺序，可用同实体分队列+单活动/串行消费并按版本限制重投。RocketMQ顺序消息以message group等当前版本语义约束，不能直接套Kafka术语。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费完成也要按同实体依赖"
+    },
+    {
+      "type": "paragraph",
+      "text": "最简单每个有序单元一个串行执行者，持久完成前一条再做后一条；不同实体可并行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "前序暂态失败在有界预算内重试并阻止该实体后序，其他独立实体可继续；永久毒消息需要保留可恢复隔离与责任。跳到DLQ后放行后续可能违反业务因果，须业务定义允许跳过/补齐/从权威快照重建，不能一行catch就宣称顺序可靠。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "版本与重复不能互代"
+    },
+    {
+      "type": "paragraph",
+      "text": "eventId 管重复，version 管新旧，不能互相代替。inbox 防同一事件重复生效，version 拒绝旧快照覆盖较新状态；但增量扣减缺 v9、先收 v10，不能直接丢 v9，因为每个 delta 都可能必要，需要补缺口或重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "旧 consumer 失去 owner 身份后，仍可能提交外部效果，所以目的端还需幂等或代际检查。忽略本地回调，不等于撤销副作用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如创建v1失败、支付v2到达，应等待/核实订单，而非当不存在就丢支付；如果支付事实已在渠道发生，保留事实与待处理责任。顺序协议要包含结果未知、取消和重启，不只保证正常路径一个线程。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "代价与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "同实体严格串行上限受最慢一步制约，热点key无法无限并行；分片能增加不同实体吞吐，跨实体总顺序要额外协调。测试多个生产者、publish确认丢、前序失败后序成功、重投、扩分区、旧owner迟到和DLQ失败，检查实际业务版本与副作用。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

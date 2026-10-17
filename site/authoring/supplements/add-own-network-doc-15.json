@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-network-doc-15",
+  "entryId": "doc-15",
+  "expectedOriginalHash": "0510b856c3dfed3b6d464f10ea6cab4c0280b600bfed1a2cd92cec1bc2ca40c3",
+  "title": "网络手册：协议机制、适用条件与设计边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A15　WebSocket：连接生命周期与集群消息"
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSocket 提供持久双向消息通道，但认证续期、慢消费者、离线补偿和跨节点路由仍是应用协议的职责。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见换问：WebSocket 怎样从 HTTP 升级？为什么握手还要 Sec-WebSocket-Key？与 SSE 如何选？页面跳转要不要断开？半天没有发送数据是否应关闭？集群怎样找到用户连接？弹幕如何保证顺序与恢复？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "握手与帧层别混成业务安全"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典 HTTP/1.1 握手是 GET 请求，含 Upgrade、Connection、Sec-WebSocket-Key、Sec-WebSocket-Version 等字段，服务器成功返回 101 及 Sec-WebSocket-Accept。Accept 对 key 加固定 GUID 后做 SHA-1 并 Base64 编码，用于确认协议握手，不是用户身份认证，也不是加密密钥。客户端帧的掩码同样不是加密；保密与完整性依赖 wss 上的 TLS。"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP/2、HTTP/3 可以通过各自扩展 CONNECT 机制承载 WebSocket，不能说所有版本都必须走 HTTP/1.1 的 101 升级。帧的分片、控制帧和应用消息边界也要区分；收到一段底层字节不等于收到一条完整 JSON 消息，框架是否已重组需要明确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "底层若是 TCP，丢失字节会由 TCP 恢复，并可能暂时阻塞后续字节交付；JavaScript 不会因为一次 TCP 重传就收到两条相同业务消息。真正断线重建后，应用重发才可能带来重复，仍需 messageId、确认与去重。高频心跳不能消除队头等待，可靠字节与业务确认的区别继续看 T07（https://my.feishu.cn/wiki/IBIsw3LiEifgaOkFnrCcquA1nQH#doxcnhYh0nvWj4lhsiLHyJxbiZb）。"
+    },
+    {
+      "type": "paragraph",
+      "text": "握手要验证身份和 Origin 等接入策略，之后每次加入房间、发送消息、订阅资源仍要授权。Cookie 可能自动携带，因此浏览器 WebSocket 也要关注跨站握手滥用。限制消息大小、速率和订阅数量，不把“握手已鉴权”当作永久无限权限。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "心跳、空闲和重连都是产品策略"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP 存活不保证应用可处理消息，WebSocket Ping/Pong 可以检测一定的端到端响应，但浏览器 JavaScript 没有直接发送协议级 Ping 帧的标准 API。浏览器端若需要应用级心跳，应定义自己的消息类型、超时和服务器响应；服务器也可以使用协议级控制帧。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“很久没发消息”不一定表示连接没价值，用户可能在等待通知或观看弹幕。区分没有任何网络活动、没有业务上下行、没有用户交互，以及后台页面是否仍需通知。按产品约定设置空闲期限，通知场景也可比较低频轮询、推送服务或重新订阅成本。连接容量要考虑内存、文件描述符、代理预算和心跳流量，参见 T04（https://my.feishu.cn/wiki/IBIsw3LiEifgaOkFnrCcquA1nQH#doxcnZBlJVCkDsyrVhXSI3LvoSf）、T06（https://my.feishu.cn/wiki/IBIsw3LiEifgaOkFnrCcquA1nQH#doxcnNaWIXDJniIHZHiIESFtfpd）。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重连采用带抖动的退避并设上限、全局预算和网络恢复触发，防止节点重启时所有客户端同时冲入。每条新连接分配代际号，旧连接的 close/error 回调不能清理新连接。认证失效与临时断网应走不同路径，永久权限错误不能无限重连。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "React 中让连接跟业务会话同寿命"
+    },
+    {
+      "type": "paragraph",
+      "text": "若多页面共享同一登录会话通道，可把连接 store/provider 放在路由之上，页面只订阅和取消订阅，不因某个组件卸载就关闭全局连接。useSyncExternalStore 可以桥接外部消息状态；StrictMode 的 setup → cleanup → setup 应安全，不造成双连接、重复监听或旧回调覆盖新状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话身份或租户变化时应显式重建连接并清理旧缓存，不能只改界面上的 userId。Context 只是在同一 React 树中共享对象，不会自动跨标签页共享连接；跨标签页需要独立协调机制，并考虑主标签页关闭和权限变化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "伴读 socket-store.mjs 和 use-shared-socket.mjs 包含订阅清理、连接代际和发送队列边界。浏览器的 bufferedAmount 反映已排队未发出的字节，仍须加应用层队列字节上限；单看消息条数会漏掉超大消息。浏览器脚本调用 close 时允许的代码范围受 API 限制，不能把收到的所有协议关闭码都原样传入 close；示例使用合法的应用私有码。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "多节点不等于所有节点都持有那条连接"
+    },
+    {
+      "type": "paragraph",
+      "text": "集群里“知道用户在线”，不代表当前节点就能写那条连接。用户的 Socket 由节点 A 持有，业务请求却可能到 B；B 需要通过连接目录找到 A，再用节点 RPC 或消息设施路由过去。"
+    },
+    {
+      "type": "paragraph",
+      "text": "目录至少考虑 user/device/connectionId/nodeId/epoch，并处理过期清理。粘性会话可以帮助相关请求落到固定节点，但不会让 B 直接操作 A 的 Socket，也不会自动补上离线投递能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可靠消息应先进入持久化收件箱或事件日志，再尝试在线推送。Redis Pub/Sub 等临时广播适合在线通知，但订阅断开期间没有自动的离线历史保障。客户端区分收到、持久化应用和已读回执，必要时按用户或会话序列去重和补洞。无需全局有序的系统，不要为了“所有消息都顺序”引入昂贵的全局串行点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "历史分页与实时消息交接仍需要一致水位，避免刚读完历史而未订阅实时之间丢消息。多设备可以共享用户级序列，也可分别维护设备确认游标；长期离线超出保留期时返回快照或明确历史缺失策略。ACK 丢失会导致重复投递，因此至少一次投递通常配合幂等应用，而非宣传“天然恰好一次”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "校正说明（原文保留）：原文第一人称、连接数和可用性数字是材料中的训练模板，未经本批验证为个人业绩。99.9999% 成功率在一百万条中对应约一条失败；一千万条对应约十条，十亿中的 99.999999% 则约十条。接收、业务应用、持久化和已读 ACK 必须分别定义。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "版本与本批未执行声明"
+    },
+    {
+      "entryId": "own-network-transport-code",
+      "label": "网络传输：完整 Java 与跨语言教学程序"
+    },
+    {
+      "entryId": "own-network-application-code",
+      "label": "网络应用：完整 Java、浏览器与安全教学程序"
+    }
+  ]
+}

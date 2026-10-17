@@ -1,0 +1,618 @@
+{
+  "entries": [
+    {
+      "id": "p-backtrack",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "title": "回溯 · 专题",
+      "number": "专题",
+      "summary": "回溯是带路径的深度枚举：每步从当前候选里选一个，不合法就停，返回前撤销选择，使每个可行解恰好出现一次。它用来列出排列、组合、子集、字符串切割、括号以及棋盘、网格上的全部方案。",
+      "recognize": [
+        "题面要“所有/全部”方案，而不是一个最优值或是否存在。",
+        "解由多步选择拼成，候选有限，当前选择会限制后面的合法性。",
+        "结构是排列、组合、子集、括号、回文切割、N 皇后或网格路径。",
+        "选错必须退回再试，状态（路径、used、棋盘标记）要成对修改和恢复。",
+        "约束能在半成品上判断：和超标、括号前缀非法、格冲突、前缀不匹配，从而剪枝。",
+        "n 通常不超过 20，或网格很小，指数级枚举加剪枝可以接受。"
+      ],
+      "notApplicable": [
+        "只要最短路或单一最优，且可以按层扩展时，用 BFS、Dijkstra 或贪心，不必列出全部路径。",
+        "只求方案数且子问题大量重叠时改 DP；回溯适合把方案本身列出来。",
+        "n 更大又没有强剪枝时，子集 2^n、排列 n! 会超时，不能把回溯当成通用搜索。"
+      ],
+      "templates": [
+        {
+          "name": "起始下标：子集/组合",
+          "when": "顺序无关，每个下标最多用一次，要全部组合或全部子集。演示 LC 78；组合只需把“每层都收集”改成“长度或和达标再收集”。",
+          "java": "// LC 78 子集：从 start 往后选，每个下标最多一次。空集在根上被收集。\n// 换题：仍是“选哪些”且不可重复时，保持传入 i+1。\n// 只收集长度为 k 的组合时，把 add 挪到 path.size()==k 再返回。\npublic static List<List<Integer>> subsets(int[] nums) {\n    List<List<Integer>> ans = new ArrayList<>();\n    dfsSubset(nums, 0, new ArrayList<Integer>(), ans);\n    return ans;\n}\n\npublic static void dfsSubset(int[] nums, int start, List<Integer> path, List<List<Integer>> ans) {\n    ans.add(new ArrayList<Integer>(path)); // 子集：每个前缀都是一个答案\n    for (int i = start; i < nums.length; i++) {\n        path.add(nums[i]);\n        dfsSubset(nums, i + 1, path, ans); // i+1：后面的数不能再选到 i\n        path.remove(path.size() - 1);\n    }\n}",
+          "demo": "LC 78 子集",
+          "demoMain": "System.out.println(subsets(new int[]{1, 2, 3}));",
+          "expected": "[[], [1], [1, 2], [1, 2, 3], [1, 3], [2], [2, 3], [3]]\n"
+        },
+        {
+          "name": "used 数组：全排列",
+          "when": "顺序有关，每个元素恰好用一次。演示 LC 46（无重复）。有重复值时先排序，并加上同层去重条件。",
+          "java": "// LC 46 全排列：每层从 0 扫描，用 used 保证每个下标只用一次。\n// 换到 LC 47：先 Arrays.sort(nums)，在 if (used[i]) continue; 之后加\n// if (i > 0 && nums[i] == nums[i - 1] && !used[i - 1]) continue;\npublic static List<List<Integer>> permute(int[] nums) {\n    List<List<Integer>> ans = new ArrayList<>();\n    boolean[] used = new boolean[nums.length];\n    dfsPermute(nums, used, new ArrayList<Integer>(), ans);\n    return ans;\n}\n\npublic static void dfsPermute(int[] nums, boolean[] used, List<Integer> path, List<List<Integer>> ans) {\n    if (path.size() == nums.length) {\n        ans.add(new ArrayList<Integer>(path));\n        return;\n    }\n    for (int i = 0; i < nums.length; i++) {\n        if (used[i]) continue;\n        used[i] = true;\n        path.add(nums[i]);\n        dfsPermute(nums, used, path, ans);\n        path.remove(path.size() - 1);\n        used[i] = false; // 与 used[i]=true 成对\n    }\n}",
+          "demo": "LC 46 全排列",
+          "demoMain": "System.out.println(permute(new int[]{1, 2, 3}));",
+          "expected": "[[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]]\n"
+        },
+        {
+          "name": "可重复选取加剩余剪枝",
+          "when": "候选为正整数，每个数可以选多次，求和恰好等于 target 的全部组合。演示 LC 39。每个数只能用一次时，递归改为传入 i+1。",
+          "java": "// LC 39 组合总和：排序后，当前数已经大于剩余值就 break。\n// 同一数可再用，所以下一层起点仍是 i。\n// 换到“每个下标一次”（LC 40）：调用改成 dfsComb(a, remain-a[i], i+1, path, ans)，\n// 并在循环里加 if (i > start && a[i] == a[i-1]) continue;\npublic static List<List<Integer>> combinationSum(int[] candidates, int target) {\n    int[] a = Arrays.copyOf(candidates, candidates.length);\n    Arrays.sort(a);\n    List<List<Integer>> ans = new ArrayList<>();\n    dfsComb(a, target, 0, new ArrayList<Integer>(), ans);\n    return ans;\n}\n\npublic static void dfsComb(int[] a, int remain, int start, List<Integer> path, List<List<Integer>> ans) {\n    if (remain == 0) {\n        ans.add(new ArrayList<Integer>(path));\n        return;\n    }\n    for (int i = start; i < a.length; i++) {\n        if (a[i] > remain) break; // 升序，后面只会更大\n        path.add(a[i]);\n        dfsComb(a, remain - a[i], i, path, ans);\n        path.remove(path.size() - 1);\n    }\n}",
+          "demo": "LC 39 组合总和",
+          "demoMain": "System.out.println(combinationSum(new int[]{2, 3, 6, 7}, 7));",
+          "expected": "[[2, 2, 3], [7]]\n"
+        },
+        {
+          "name": "计数约束：括号生成",
+          "when": "按位构造固定长度的串，合法性可以用左右数量（或删除次数）在前缀上判断。演示 LC 22。类似题把 open/close 换成题目自己的计数器。",
+          "java": "// LC 22 括号生成：任意前缀中 ')' 不超过 '('，且最终两者都等于 n。\n// 换题时改两处：追加的字符，以及“还能不能追加”的条件。\n// 长度仍是做完 2n 步再收集。\npublic static List<String> generateParenthesis(int n) {\n    List<String> ans = new ArrayList<>();\n    dfsParen(n, 0, 0, new StringBuilder(), ans);\n    return ans;\n}\n\npublic static void dfsParen(int n, int open, int close, StringBuilder path, List<String> ans) {\n    if (path.length() == 2 * n) {\n        ans.add(path.toString());\n        return;\n    }\n    if (open < n) {\n        path.append('(');\n        dfsParen(n, open + 1, close, path, ans);\n        path.deleteCharAt(path.length() - 1);\n    }\n    if (close < open) {\n        path.append(')');\n        dfsParen(n, open, close + 1, path, ans);\n        path.deleteCharAt(path.length() - 1);\n    }\n}",
+          "demo": "LC 22 括号生成",
+          "demoMain": "System.out.println(generateParenthesis(3));",
+          "expected": "[((())), (()()), (())(), ()(()), ()()()]\n"
+        }
+      ],
+      "variants": [
+        "同一元素可重复使用（LC 39）→ 下一层起点传 i；每个下标只用一次 → 传 i+1。",
+        "结果不能含重复组合/排列（LC 40、LC 47）→ 先排序。组合跳过 i > start && a[i]==a[i-1]；排列跳过 i>0 && nums[i]==nums[i-1] && !used[i-1]。",
+        "字符串切割（LC 131、LC 93）→ 枚举右端点，当前段合法才递归到右端点之后；起点走到末尾（93 还要恰好 4 段）再收集。",
+        "网格找词（LC 79）→ 上下左右四向，把当前格改成哨兵再递归，返回前改回；越界、字符不符或已用过立即返回。",
+        "N 皇后（LC 51）→ 一行放一个，列、主对角线、副对角线用布尔数组判断，冲突就不进入下一行。",
+        "只要一个最优构造（小于 n 的最大数）→ 高位优先尝试更大的给定数字，数字可重复；拼出第一个严格小于 n 的数就可以返回。"
+      ],
+      "pitfalls": [
+        "路径 add、used 置真、棋盘改标记之后，返回前必须逐一撤销，否则下一支读到脏状态。",
+        "组合去重条件是 i > start && a[i]==a[i-1]。写成 i > 0 会把上一层已经选过的相同值跳掉，漏解。",
+        "排列去重要看 !used[i-1]（同一层的前一个相同值还没被用）。写成 used[i-1] 会留下重复排列。",
+        "起点传错：子集/普通组合传 i+1，可重复组合传 i，排列每层从 0 配合 used。三种混用会漏解或重复。",
+        "break 剪枝只在升序数组上有效。未排序就 break，或剪掉仍然可能凑出答案的分支，结果不完备。",
+        "子集应在每个节点收集；排列、切割、括号要等用完元素、切到末尾或长度达到 2n 再收集。用 HashSet 给整份结果去重，掩盖不了搜索条件写错。"
+      ],
+      "groups": [
+        {
+          "name": "子集、组合与按位映射",
+          "note": "关心选了哪些或每一位映射成什么。78 用 start 且沿途收集；39 传 i 允许重复；40 传 i+1 并同层去重；17 按数字下标选字母，是定长笛卡尔积。",
+          "items": [
+            [
+              "#/e/78",
+              "78. 子集"
+            ],
+            [
+              "#/e/39",
+              "39. 组合总和"
+            ],
+            [
+              "#/e/40",
+              "40. 组合总和 II"
+            ],
+            [
+              "#/e/17",
+              "17. 电话号码的字母组合"
+            ]
+          ]
+        },
+        {
+          "name": "排列",
+          "note": "顺序有关，每层在未使用的下标里选。46 只看 used；47 先排序，再用 !used[i-1] 去掉重复排列。",
+          "items": [
+            [
+              "#/e/46",
+              "46. 全排列"
+            ],
+            [
+              "#/e/47",
+              "47. 全排列 II"
+            ]
+          ]
+        },
+        {
+          "name": "切割方案",
+          "note": "枚举每一段的右端点，当前段合法才继续。131 要求每段回文；93 还要求恰好四段，且每段是 0–255 的合法 IP 字段。",
+          "items": [
+            [
+              "#/e/131",
+              "131. 分割回文串"
+            ],
+            [
+              "#/e/lc-face-extra-24",
+              "复原 IP 地址"
+            ]
+          ]
+        },
+        {
+          "name": "棋盘与网格",
+          "note": "在二维约束上试放。51 按行放皇后，用列和对角线剪枝；79 四向匹配字符，失败或用过的格子要立刻退回。",
+          "items": [
+            [
+              "#/e/51",
+              "51. N 皇后"
+            ],
+            [
+              "#/e/79",
+              "79. 单词搜索"
+            ]
+          ]
+        },
+        {
+          "name": "括号约束与数字构造",
+          "note": "22 用左右计数保证每个前缀合法；301 在有限删除次数内枚举删掉哪个括号；小于 n 的最大数从高位试更大的给定数字，数字可以重复使用。",
+          "items": [
+            [
+              "#/e/22",
+              "22. 括号生成"
+            ],
+            [
+              "#/e/lc-face-extra-6",
+              "删除无效的括号"
+            ],
+            [
+              "#/e/byte-largest-less-than-n",
+              "字节 T2. 小于 n 的最大数：给定数字可重复使用"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "原专题笔记 · 回溯",
+          "html": "<h3 class=\"md-h md-h3\">1. 回溯的本质</h3>\n<p class=\"md-p\">回溯三要素：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>路径：已经做出的选择。</li><li>选择列表：当前还能做哪些选择。</li><li>结束条件：何时收集答案或返回。</li></ul></div>\n<p class=\"md-p\">模板：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">void backtrack(状态) {\n    if (满足结束条件) {\n        收集答案;\n        return;\n    }\n    for (选择 : 选择列表) {\n        if (不合法) continue;\n        做选择;\n        backtrack(新状态);\n        撤销选择;\n    }\n}</pre></div></section>\n<h3 class=\"md-h md-h3\">2. 回溯与 DFS 的区别</h3>\n<p class=\"md-p\">回溯是 DFS 的一种，但强调：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>枚举所有方案。</li><li>做选择和撤销选择成对出现。</li><li>常需要剪枝和去重。</li></ul></div>\n<p class=\"md-p\">DFS 搜索可能只关心可达性或最短层数，不一定收集所有解。</p>\n<h3 class=\"md-h md-h3\">3. 去重</h3>\n<p class=\"md-p\">常见去重：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>排序后，同层相同元素跳过：<code class=\"tok-inline\">if (i &gt; start &amp;&amp; nums[i] == nums[i - 1]) continue</code></li><li>排列去重：<code class=\"tok-inline\">if (used[i]) continue; if (i &gt; 0 &amp;&amp; nums[i] == nums[i - 1] &amp;&amp; !used[i - 1]) continue</code></li><li>结果去重不要依赖 Set 暴力兜底，面试要讲清剪枝逻辑。</li></ul></div>\n<h3 class=\"md-h md-h3\">4. 剪枝</h3>\n<p class=\"md-p\">剪枝是减少无效搜索。</p>\n<p class=\"md-p\">常见剪枝：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>当前和已经超过目标。</li><li>剩余元素数量不够。</li><li>排序后当前元素过大，后面更大可以 break。</li><li>棋盘冲突提前判断。</li><li>Trie 前缀不存在时停止搜索。</li></ul></div>\n<h3 class=\"md-h md-h3\">5. 组合与排列的区别</h3>\n<p class=\"md-p\">组合：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>关心选哪些，不关心顺序。</li><li>用 <code class=\"tok-inline\">start</code> 控制下一轮从后面选。</li></ul></div>\n<p class=\"md-p\">排列：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>关心顺序。</li><li>每层从所有未使用元素中选。</li><li>用 <code class=\"tok-inline\">used[]</code> 防止重复使用。</li></ul></div>\n<p class=\"md-p\">子集：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>每个元素选或不选。</li><li>可以每层收集当前路径。</li></ul></div><h3 class=\"md-h md-h3\">1. 子集型</h3><p class=\"md-p\">目标：枚举所有子集。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>每层先收集当前路径。</li><li>从 <code class=\"tok-inline\">start</code> 往后选。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 78 子集</li><li>LC 90 子集 II</li></ul></div><h3 class=\"md-h md-h3\">2. 组合型</h3><p class=\"md-p\">目标：从集合中选若干元素。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>用 <code class=\"tok-inline\">start</code> 避免顺序重复。</li><li>达到长度或目标和时收集。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 77 组合</li><li>LC 39 组合总和</li><li>LC 40 组合总和 II</li><li>LC 216 组合总和 III</li></ul></div><h3 class=\"md-h md-h3\">3. 排列型</h3><p class=\"md-p\">目标：枚举所有顺序。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>每层遍历所有元素。</li><li><code class=\"tok-inline\">used[]</code> 控制是否已选。</li><li>重复元素先排序再按规则剪枝。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 46 全排列</li><li>LC 47 全排列 II</li><li>LC 31 下一个排列</li></ul></div><h3 class=\"md-h md-h3\">4. 切割型</h3><p class=\"md-p\">目标：把字符串切成若干合法片段。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">start</code> 表示切割起点。</li><li>枚举 <code class=\"tok-inline\">end</code>。</li><li>判断片段是否合法。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 131 分割回文串</li><li>LC 93 复原 IP 地址</li><li>LC 140 单词拆分 II</li></ul></div><h3 class=\"md-h md-h3\">5. 棋盘型</h3><p class=\"md-p\">目标：在棋盘上放置或移动，满足约束。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>按行递归。</li><li>用列、对角线集合判断冲突。</li><li>做选择后撤销。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 51 N 皇后</li><li>LC 52 N 皇后 II</li><li>LC 37 解数独</li></ul></div><h3 class=\"md-h md-h3\">6. 网格搜索型</h3><p class=\"md-p\">目标：在矩阵中寻找路径或单词。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>每个格子作为起点。</li><li>四方向 DFS。</li><li>visited 标记当前路径，回溯时撤销。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 79 单词搜索</li><li>LC 212 单词搜索 II</li><li>LC 1219 黄金矿工</li></ul></div><h3 class=\"md-h md-h3\">7. 括号与表达式型</h3><p class=\"md-p\">目标：生成合法表达式。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>用计数器约束合法性。</li><li>递归构造字符串。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 22 括号生成</li><li>LC 241 为运算表达式设计优先级</li><li>LC 282 给表达式添加运算符</li></ul></div><h3 class=\"md-h md-h3\">8. 约束满足与强剪枝型</h3><p class=\"md-p\">目标：补齐“搜索空间巨大，但约束很多”的题型。它们不是简单枚举，而是每一步都要利用约束压缩分支。</p>\n<p class=\"md-p\">核心套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>先把约束转成可 O(1) 查询的数据结构，例如行/列/宫集合、bitmask、剩余桶容量。</li><li>递归时优先选择候选最少的位置，减少分支。</li><li>每次选择后立刻更新约束，回溯时恢复现场。</li><li>对称状态要去重，例如火柴拼正方形中相同边长的桶不要重复尝试。</li></ul></div>\n<p class=\"md-p\">常见模型：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>数独/棋盘：行列宫、对角线、列集合。</li><li>表达式：当前位置、累计值、上一段乘法值。</li><li>切割：当前位置 + 当前片段合法性。</li><li>桶划分：数组降序、桶容量、跳过等价桶。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 37 解数独</li><li>LC 93 复原 IP 地址</li><li>LC 301 删除无效的括号</li><li>LC 306 累加数</li><li>LC 698 划分为 k 个相等的子集</li><li>LC 679 24 点游戏</li><li>LC 784 字母大小写全排列</li></ul></div>"
+        },
+        {
+          "title": "专题精讲 · LC 46 全排列",
+          "html": "<p class=\"md-p\">考点：排列树。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>路径长度等于数组长度时收集。</li><li>每层遍历所有元素。</li><li>用 <code class=\"tok-inline\">used[]</code> 避免重复使用。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>注意每层循环从 0 开始，不是从 start 开始。</li><li>撤销选择和做选择必须成对出现，顺序相反。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">输入格式：第一行 n，第二行 n 个整数\n输出格式：每行一个排列，元素空格分隔</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; permute(int[] nums) {\n        res.clear();   // 清空静态变量，防止多次调用时结果累积\n        path.clear();\n        boolean[] used = new boolean[nums.length];\n        backtrack(nums, used);\n        return res;\n    }\n\n    static void backtrack(int[] nums, boolean[] used) {\n        // 结束条件：路径长度等于数组长度\n        if (path.size() == nums.length) {\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        // 每层从所有元素中选一个未使用的\n        for (int i = 0; i &lt; nums.length; i++) {\n            if (used[i]) continue;       // 已经在路径中，跳过\n            used[i] = true;              // 做选择\n            path.add(nums[i]);\n            backtrack(nums, used);        // 递归\n            path.remove(path.size() - 1); // 撤销选择\n            used[i] = false;\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = permute(nums);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 46 全排列",
+          "html": "<p class=\"md-p\">考点：回溯枚举。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>用 used 数组标记哪些元素已在当前路径中。</li><li>每次从未使用的元素中选一个加入路径，递归后回溯。</li><li>路径长度等于数组长度时收集结果。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>回溯时必须同时还原 used 和 path，否则状态泄漏。</li><li>结果必须 <code class=\"tok-inline\">new ArrayList&lt;&gt;(path)</code> 而非直接添加引用。</li></ul></div>\n<p class=\"md-p\"><strong>输入格式</strong>：第一行整数 n，第二行 n 个整数。 <strong>输出格式</strong>：每行一个排列，空格分隔。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">搜索总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    public static void permute(int[] nums, List&lt;Integer&gt; path, boolean[] used) {\n        if (path.size() == nums.length) { res.add(new ArrayList&lt;&gt;(path)); return; }\n        for (int i = 0; i &lt; nums.length; i++) {\n            if (used[i]) continue;\n            used[i] = true; path.add(nums[i]);\n            permute(nums, path, used);\n            used[i] = false; path.remove(path.size() - 1);\n        }\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        permute(nums, new ArrayList&lt;&gt;(), new boolean[n]);\n        for (List&lt;Integer&gt; p : res) System.out.println(p);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 78 / 90 子集",
+          "html": "<p class=\"md-p\">考点：子集枚举与重复元素去重。</p>\n<p class=\"md-p\">LC 78：每个节点都是一个答案。</p>\n<p class=\"md-p\">LC 90：排序后，同层重复元素跳过。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">// LC 78 子集\nimport java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; subsets(int[] nums) {\n        backtrack(nums, 0);\n        return res;\n    }\n\n    static void backtrack(int[] nums, int start) {\n        // 每个节点都是一个子集，先收集\n        res.add(new ArrayList&lt;&gt;(path));\n        for (int i = start; i &lt; nums.length; i++) {\n            path.add(nums[i]);\n            backtrack(nums, i + 1);           // 下一层从 i+1 开始\n            path.remove(path.size() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = subsets(nums);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">// LC 90 子集 II（含重复元素）\nimport java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; subsetsWithDup(int[] nums) {\n        Arrays.sort(nums); // 排序方便去重\n        backtrack(nums, 0);\n        return res;\n    }\n\n    static void backtrack(int[] nums, int start) {\n        res.add(new ArrayList&lt;&gt;(path));\n        for (int i = start; i &lt; nums.length; i++) {\n            // 同层去重：跳过同一层中重复的元素\n            if (i &gt; start &amp;&amp; nums[i] == nums[i - 1]) continue;\n            path.add(nums[i]);\n            backtrack(nums, i + 1);\n            path.remove(path.size() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = subsetsWithDup(nums);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 17 电话号码的字母组合",
+          "html": "<p class=\"md-p\">考点：回溯。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>建立数字到字母的映射。</li><li>对每个数字递归选择对应的字母。</li><li>当组合长度等于数字个数时加入结果。</li></ul></div>\n<p class=\"md-p\">输入格式：一行数字字符串（2-9）。</p>\n<p class=\"md-p\">输出格式：所有可能的字母组合，空格分隔。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">字符串与子串总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static String[] mapping = {&quot;&quot;, &quot;&quot;, &quot;abc&quot;, &quot;def&quot;, &quot;ghi&quot;, &quot;jkl&quot;, &quot;mno&quot;, &quot;pqrs&quot;, &quot;tuv&quot;, &quot;wxyz&quot;};\n    static List&lt;String&gt; res = new ArrayList&lt;&gt;();\n    public static List&lt;String&gt; solve(String digits) {\n        res.clear();\n        if (digits.isEmpty()) return res;\n        backtrack(digits, 0, new StringBuilder());\n        return res;\n    }\n    private static void backtrack(String digits, int idx, StringBuilder cur) {\n        if (idx == digits.length()) {\n            res.add(cur.toString());\n            return;\n        }\n        String letters = mapping[digits.charAt(idx) - '0'];\n        for (int i = 0; i &lt; letters.length(); i++) {\n            cur.append(letters.charAt(i));\n            backtrack(digits, idx + 1, cur);\n            cur.deleteCharAt(cur.length() - 1);\n        }\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String digits = sc.nextLine();\n        List&lt;String&gt; ans = solve(digits);\n        System.out.println(String.join(&quot; &quot;, ans));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 39 / 40 组合总和",
+          "html": "<p class=\"md-p\">考点：组合回溯与去重。</p>\n<p class=\"md-p\">LC 39：元素可重复使用，递归下一层仍传 <code class=\"tok-inline\">i</code>。</p>\n<p class=\"md-p\">LC 40：每个元素只能用一次，递归下一层传 <code class=\"tok-inline\">i + 1</code>，且同层重复元素跳过。</p>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 39 传 <code class=\"tok-inline\">i</code>（允许重复选当前元素），LC 40 传 <code class=\"tok-inline\">i + 1</code>（每个元素只能用一次）。</li><li>LC 40 去重条件是 <code class=\"tok-inline\">i &gt; start</code>，不是 <code class=\"tok-inline\">i &gt; 0</code>，保证只在同层去重。</li><li>排序后可以用 <code class=\"tok-inline\">candidates[i] &gt; remain</code> 提前剪枝 break。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">输入格式：第一行 n 和 target，第二行 n 个整数\n输出格式：每行一个组合，元素空格分隔</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">// LC 39 组合总和（元素可重复选）\nimport java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; combinationSum(int[] candidates, int target) {\n        res.clear();\n        path.clear();\n        Arrays.sort(candidates); // 排序便于剪枝\n        backtrack(candidates, 0, target);\n        return res;\n    }\n\n    static void backtrack(int[] candidates, int start, int remain) {\n        if (remain == 0) {           // 正好凑够目标\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        for (int i = start; i &lt; candidates.length; i++) {\n            if (candidates[i] &gt; remain) break; // 排序后更大元素不可能，剪枝\n            path.add(candidates[i]);\n            // 传 i 而非 i+1，允许重复选取当前元素\n            backtrack(candidates, i, remain - candidates[i]);\n            path.remove(path.size() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt(), target = sc.nextInt();\n        int[] candidates = new int[n];\n        for (int i = 0; i &lt; n; i++) candidates[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = combinationSum(candidates, target);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">// LC 40 组合总和 II（每个元素只能用一次，有重复元素）\nimport java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; combinationSum2(int[] candidates, int target) {\n        Arrays.sort(candidates);\n        backtrack(candidates, 0, target);\n        return res;\n    }\n\n    static void backtrack(int[] candidates, int start, int remain) {\n        if (remain == 0) {\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        for (int i = start; i &lt; candidates.length; i++) {\n            if (candidates[i] &gt; remain) break;\n            // 同层去重：同一层中相同元素只选一次\n            if (i &gt; start &amp;&amp; candidates[i] == candidates[i - 1]) continue;\n            path.add(candidates[i]);\n            backtrack(candidates, i + 1, remain - candidates[i]); // i+1，不重复选\n            path.remove(path.size() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt(), target = sc.nextInt();\n        int[] candidates = new int[n];\n        for (int i = 0; i &lt; n; i++) candidates[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = combinationSum2(candidates, target);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 22 括号生成",
+          "html": "<p class=\"md-p\">考点：合法性剪枝。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>左括号数量小于 n 时可以放左括号。</li><li>右括号数量小于左括号数量时可以放右括号。</li><li>长度为 <code class=\"tok-inline\">2n</code> 时收集。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static List&lt;String&gt; res = new ArrayList&lt;&gt;();\n\n    public static List&lt;String&gt; generateParenthesis(int n) {\n        backtrack(0, 0, n, new StringBuilder());\n        return res;\n    }\n\n    // open: 已放左括号数, close: 已放右括号数, n: 括号对数\n    static void backtrack(int open, int close, int n, StringBuilder sb) {\n        if (sb.length() == 2 * n) {\n            res.add(sb.toString());\n            return;\n        }\n        // 左括号没用完，可以放左括号\n        if (open &lt; n) {\n            sb.append('(');\n            backtrack(open + 1, close, n, sb);\n            sb.deleteCharAt(sb.length() - 1);\n        }\n        // 右括号数小于左括号数时，可以放右括号\n        if (close &lt; open) {\n            sb.append(')');\n            backtrack(open, close + 1, n, sb);\n            sb.deleteCharAt(sb.length() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        List&lt;String&gt; ans = generateParenthesis(n);\n        for (String s : ans) {\n            System.out.println(s);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 22 括号生成",
+          "html": "<p class=\"md-p\">考点：回溯。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>维护当前左括号数和右括号数。</li><li>左括号数不超过 n。</li><li>右括号数不超过左括号数。</li><li>长度为 2n 时加入结果。</li></ul></div>\n<p class=\"md-p\">输入格式：一个整数 n。</p>\n<p class=\"md-p\">输出格式：所有合法括号组合，空格分隔。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">字符串与子串总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static List&lt;String&gt; res = new ArrayList&lt;&gt;();\n    public static List&lt;String&gt; solve(int n) {\n        res.clear();\n        backtrack(n, 0, 0, new StringBuilder());\n        return res;\n    }\n    private static void backtrack(int n, int open, int close, StringBuilder cur) {\n        if (cur.length() == 2 * n) {\n            res.add(cur.toString());\n            return;\n        }\n        if (open &lt; n) {\n            cur.append('(');\n            backtrack(n, open + 1, close, cur);\n            cur.deleteCharAt(cur.length() - 1);\n        }\n        if (close &lt; open) {\n            cur.append(')');\n            backtrack(n, open, close + 1, cur);\n            cur.deleteCharAt(cur.length() - 1);\n        }\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        List&lt;String&gt; ans = solve(n);\n        System.out.println(String.join(&quot; &quot;, ans));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 79 单词搜索",
+          "html": "<p class=\"md-p\">考点：网格路径回溯。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>每个格子作为起点。</li><li>当前字符不匹配直接返回 false。</li><li>四方向搜索，当前路径 visited。</li><li>回溯时撤销 visited。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};\n    static int m, n;\n\n    public static boolean exist(char[][] board, String word) {\n        m = board.length;\n        n = board[0].length;\n        for (int i = 0; i &lt; m; i++) {\n            for (int j = 0; j &lt; n; j++) {\n                if (dfs(board, word, i, j, 0)) return true;\n            }\n        }\n        return false;\n    }\n\n    // 从 board[i][j] 开始匹配 word[k..]\n    static boolean dfs(char[][] board, String word, int i, int j, int k) {\n        if (k == word.length()) return true; // 所有字符都匹配了\n        if (i &lt; 0 || i &gt;= m || j &lt; 0 || j &gt;= n) return false;\n        if (board[i][j] != word.charAt(k)) return false; // 字符不匹配\n\n        char tmp = board[i][j];\n        board[i][j] = '#'; // 标记为已访问（利用原数组，省 visited 数组）\n        for (int[] d : dirs) {\n            if (dfs(board, word, i + d[0], j + d[1], k + 1)) {\n                board[i][j] = tmp; // 回溯恢复\n                return true;\n            }\n        }\n        board[i][j] = tmp; // 回溯恢复\n        return false;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int r = sc.nextInt(), c = sc.nextInt();\n        char[][] board = new char[r][c];\n        for (int i = 0; i &lt; r; i++) {\n            board[i] = sc.next().toCharArray();\n        }\n        String word = sc.next();\n        System.out.println(exist(board, word));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 79 单词搜索",
+          "html": "<p class=\"md-p\">考点：网格 DFS + 回溯。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>遍历每个格子作为起点，对 word 逐字符匹配。</li><li>用临时标记 <code class=\"tok-inline\">#</code> 防止当前路径重复访问，回溯时恢复。</li><li>四方向递归，任一方向找到完整单词即返回 true。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>回溯时必须恢复原始字符，否则影响后续搜索。</li><li>起点字符必须匹配 word 第一个字符再进入 DFS。</li></ul></div>\n<p class=\"md-p\"><strong>输入格式</strong>：第一行两个整数 m n，接下来 m 行每行 n 个字符，最后一行目标单词。 <strong>输出格式</strong>：一行，<code class=\"tok-inline\">true</code> 或 <code class=\"tok-inline\">false</code>。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">搜索总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static int[][] dirs = {{1,0},{-1,0},{0,1},{0,-1}};\n    public static boolean exist(char[][] board, String word, int r, int c, int idx) {\n        if (idx == word.length()) return true;\n        if (r &lt; 0 || r &gt;= board.length || c &lt; 0 || c &gt;= board[0].length) return false;\n        if (board[r][c] != word.charAt(idx)) return false;\n        char tmp = board[r][c]; board[r][c] = '#';\n        for (int[] d : dirs) {\n            if (exist(board, word, r + d[0], c + d[1], idx + 1)) { board[r][c] = tmp; return true; }\n        }\n        board[r][c] = tmp; return false;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int m = sc.nextInt(), n = sc.nextInt();\n        char[][] board = new char[m][n];\n        for (int i = 0; i &lt; m; i++) board[i] = sc.next().toCharArray();\n        String word = sc.next();\n        for (int i = 0; i &lt; m; i++)\n            for (int j = 0; j &lt; n; j++)\n                if (exist(board, word, i, j, 0)) { System.out.println(true); return; }\n        System.out.println(false);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 131 分割回文串",
+          "html": "<p class=\"md-p\">考点：切割 + 回文判断。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>从 <code class=\"tok-inline\">start</code> 枚举切割终点。</li><li>如果 <code class=\"tok-inline\">s[start..end]</code> 是回文，加入路径继续。</li><li>到达字符串末尾时收集。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;String&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;String&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;String&gt;&gt; partition(String s) {\n        backtrack(s, 0);\n        return res;\n    }\n\n    static void backtrack(String s, int start) {\n        // 到达末尾，收集当前分割方案\n        if (start == s.length()) {\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        // 枚举切割终点 end\n        for (int end = start; end &lt; s.length(); end++) {\n            // 如果 s[start..end] 是回文，才继续\n            if (isPalindrome(s, start, end)) {\n                path.add(s.substring(start, end + 1));\n                backtrack(s, end + 1);\n                path.remove(path.size() - 1);\n            }\n        }\n    }\n\n    static boolean isPalindrome(String s, int left, int right) {\n        while (left &lt; right) {\n            if (s.charAt(left++) != s.charAt(right--)) return false;\n        }\n        return true;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String s = sc.next();\n        List&lt;List&lt;String&gt;&gt; ans = partition(s);\n        for (List&lt;String&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 51 N 皇后",
+          "html": "<p class=\"md-p\">考点：棋盘约束。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>按行放皇后。</li><li>用 <code class=\"tok-inline\">cols</code>、<code class=\"tok-inline\">diag1(row - col)</code>、<code class=\"tok-inline\">diag2(row + col)</code> 判断冲突。</li><li>每行放一个，放满 n 行收集。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;String&gt;&gt; res = new ArrayList&lt;&gt;();\n    static int[] queens; // queens[i] = j 表示第 i 行皇后放在第 j 列\n\n    public static List&lt;List&lt;String&gt;&gt; solveNQueens(int n) {\n        queens = new int[n];\n        Arrays.fill(queens, -1);\n        backtrack(n, 0, new HashSet&lt;&gt;(), new HashSet&lt;&gt;(), new HashSet&lt;&gt;());\n        return res;\n    }\n\n    // cols: 已占用的列, diag1: 已占用的主对角线(row-col), diag2: 已占用的副对角线(row+col)\n    static void backtrack(int n, int row, Set&lt;Integer&gt; cols, Set&lt;Integer&gt; diag1, Set&lt;Integer&gt; diag2) {\n        if (row == n) {\n            // 收集棋盘\n            List&lt;String&gt; board = new ArrayList&lt;&gt;();\n            for (int i = 0; i &lt; n; i++) {\n                char[] line = new char[n];\n                Arrays.fill(line, '.');\n                line[queens[i]] = 'Q';\n                board.add(new String(line));\n            }\n            res.add(board);\n            return;\n        }\n        for (int col = 0; col &lt; n; col++) {\n            if (cols.contains(col)) continue;             // 同列冲突\n            if (diag1.contains(row - col)) continue;      // 主对角线冲突\n            if (diag2.contains(row + col)) continue;      // 副对角线冲突\n            // 放置皇后\n            queens[row] = col;\n            cols.add(col);\n            diag1.add(row - col);\n            diag2.add(row + col);\n            backtrack(n, row + 1, cols, diag1, diag2);\n            // 回溯撤销\n            queens[row] = -1;\n            cols.remove(col);\n            diag1.remove(row - col);\n            diag2.remove(row + col);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        List&lt;List&lt;String&gt;&gt; ans = solveNQueens(n);\n        for (List&lt;String&gt; board : ans) {\n            for (String row : board) {\n                System.out.println(row);\n            }\n            System.out.println();\n        }\n        System.out.println(&quot;Total: &quot; + ans.size());\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 39 / 40 组合总和",
+          "html": "<p class=\"md-p\">考点：组合回溯与去重。</p>\n<p class=\"md-p\">LC 39：元素可重复使用，递归下一层仍传 <code class=\"tok-inline\">i</code>。</p>\n<p class=\"md-p\">LC 40：每个元素只能用一次，递归下一层传 <code class=\"tok-inline\">i + 1</code>，且同层重复元素跳过。</p>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 39 传 <code class=\"tok-inline\">i</code>（允许重复选当前元素），LC 40 传 <code class=\"tok-inline\">i + 1</code>（每个元素只能用一次）。</li><li>LC 40 去重条件是 <code class=\"tok-inline\">i &gt; start</code>，不是 <code class=\"tok-inline\">i &gt; 0</code>，保证只在同层去重。</li><li>排序后可以用 <code class=\"tok-inline\">candidates[i] &gt; remain</code> 提前剪枝 break。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">输入格式：第一行 n 和 target，第二行 n 个整数\n输出格式：每行一个组合，元素空格分隔</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">// LC 39 组合总和（元素可重复选）\nimport java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; combinationSum(int[] candidates, int target) {\n        res.clear();\n        path.clear();\n        Arrays.sort(candidates); // 排序便于剪枝\n        backtrack(candidates, 0, target);\n        return res;\n    }\n\n    static void backtrack(int[] candidates, int start, int remain) {\n        if (remain == 0) {           // 正好凑够目标\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        for (int i = start; i &lt; candidates.length; i++) {\n            if (candidates[i] &gt; remain) break; // 排序后更大元素不可能，剪枝\n            path.add(candidates[i]);\n            // 传 i 而非 i+1，允许重复选取当前元素\n            backtrack(candidates, i, remain - candidates[i]);\n            path.remove(path.size() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt(), target = sc.nextInt();\n        int[] candidates = new int[n];\n        for (int i = 0; i &lt; n; i++) candidates[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = combinationSum(candidates, target);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">// LC 40 组合总和 II（每个元素只能用一次，有重复元素）\nimport java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; combinationSum2(int[] candidates, int target) {\n        Arrays.sort(candidates);\n        backtrack(candidates, 0, target);\n        return res;\n    }\n\n    static void backtrack(int[] candidates, int start, int remain) {\n        if (remain == 0) {\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        for (int i = start; i &lt; candidates.length; i++) {\n            if (candidates[i] &gt; remain) break;\n            // 同层去重：同一层中相同元素只选一次\n            if (i &gt; start &amp;&amp; candidates[i] == candidates[i - 1]) continue;\n            path.add(candidates[i]);\n            backtrack(candidates, i + 1, remain - candidates[i]); // i+1，不重复选\n            path.remove(path.size() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt(), target = sc.nextInt();\n        int[] candidates = new int[n];\n        for (int i = 0; i &lt; n; i++) candidates[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = combinationSum2(candidates, target);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 47 全排列 II",
+          "html": "<p class=\"md-p\">考点：重复元素去重。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>先排序。</li><li>如果当前元素等于前一个，且前一个在本层还没被使用，则跳过。</li><li>保证相同数字在同一层只作为同一选择出现一次。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>去重条件是 <code class=\"tok-inline\">!used[i - 1]</code>，不是 <code class=\"tok-inline\">used[i - 1]</code>。前一个没被用过说明前一个在本层已回溯过。</li><li>必须先排序才能用相邻元素比较去重。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">输入格式：第一行 n，第二行 n 个整数\n输出格式：每行一个排列，元素空格分隔</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">回溯总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static List&lt;List&lt;Integer&gt;&gt; res = new ArrayList&lt;&gt;();\n    static List&lt;Integer&gt; path = new ArrayList&lt;&gt;();\n\n    public static List&lt;List&lt;Integer&gt;&gt; permuteUnique(int[] nums) {\n        res.clear();\n        path.clear();\n        Arrays.sort(nums); // 先排序，方便去重\n        boolean[] used = new boolean[nums.length];\n        backtrack(nums, used);\n        return res;\n    }\n\n    static void backtrack(int[] nums, boolean[] used) {\n        if (path.size() == nums.length) {\n            res.add(new ArrayList&lt;&gt;(path));\n            return;\n        }\n        for (int i = 0; i &lt; nums.length; i++) {\n            if (used[i]) continue;\n            // 同层去重：当前元素与前一个相同，且前一个没被用过（说明前一个在本层已经回溯过了）\n            if (i &gt; 0 &amp;&amp; nums[i] == nums[i - 1] &amp;&amp; !used[i - 1]) continue;\n            used[i] = true;\n            path.add(nums[i]);\n            backtrack(nums, used);\n            path.remove(path.size() - 1);\n            used[i] = false;\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        List&lt;List&lt;Integer&gt;&gt; ans = permuteUnique(nums);\n        for (List&lt;Integer&gt; list : ans) {\n            System.out.println(list);\n        }\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "number": 78,
+      "title": "子集",
+      "slug": "subsets",
+      "category": "回溯",
+      "time": "O(n·2ⁿ)",
+      "space": "O(n·2ⁿ)",
+      "idea": "从空的 path 开始回溯。一进入 backtrack 就把当前 path 拷进 answer，因此空集和沿途每个子集都会留下。for 只从 start 扫到末尾，path.add(nums[i]) 后用 i+1 递归，返回再 path.remove(path.size()-1)。没有重复元素且下标严格递增，每种子集只对应一条路径。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public List<List<Integer>> subsets(int[] nums) {\n        List<List<Integer>> answer = new ArrayList<>();\n        backtrack(nums, 0, new ArrayList<>(), answer);\n        return answer;\n    }\n\n    private void backtrack(int[] nums, int start,\n                           List<Integer> path, List<List<Integer>> answer) {\n        // 当前 path 已是一个子集（含最初的空集），进入就拷贝。\n        answer.add(new ArrayList<>(path));\n\n        // 只从 start 往后选，下标递增，同一组元素不会换序再出现。\n        for (int i = start; i < nums.length; i++) {\n            path.add(nums[i]);\n            backtrack(nums, i + 1, path, answer); // 下一层起点后移，不再选更小下标\n            path.remove(path.size() - 1); // 撤销本题选择，改试同层下一个数\n        }\n    }\n}",
+      "description": "给定一个不含重复元素的数组，返回它的所有子集，也就是幂集。结果需要包括空集和原集合本身。",
+      "source": "",
+      "id": "78",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定一个不含重复元素的数组，返回它的所有子集，也就是幂集。结果需要包括空集和原集合本身。",
+        "req": [
+          "数组不含重复元素",
+          "结果包含空集和原集合本身"
+        ],
+        "analysis": "从空的 path 开始回溯。一进入 backtrack 就把当前 path 拷进 answer，因此空集和沿途每个子集都会留下。for 只从 start 扫到末尾，path.add(nums[i]) 后用 i+1 递归，返回再 path.remove(path.size()-1)。没有重复元素且下标严格递增，每种子集只对应一条路径。",
+        "cx": "时间 O(n·2ⁿ)，空间 O(n·2ⁿ)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "number": 39,
+      "title": "组合总和",
+      "slug": "combination-sum",
+      "category": "回溯",
+      "time": "指数级（粗略上界 O(n^(target/minCandidate))）",
+      "space": "O(target/minCandidate)（递归路径；不计输出）",
+      "idea": "先 Arrays.sort(candidates)，再从 start 枚举。remain 变成 0 时拷贝 path。选中 value 后递归仍传入 i，并把 remain 减去 value，所以当前数可以接着用；下一轮 for 从 i 开始，更小的下标不会再选。value 大于 remain 就 break，排序后后面的数更大。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public List<List<Integer>> combinationSum(int[] candidates, int target) {\n        Arrays.sort(candidates); // 排序后可以在 candidate > remain 时直接剪枝。\n        List<List<Integer>> answer = new ArrayList<>();\n        backtrack(candidates, 0, target, new ArrayList<>(), answer);\n        return answer;\n    }\n\n    private void backtrack(int[] candidates, int start, int remain,\n                           List<Integer> path, List<List<Integer>> answer) {\n        if (remain == 0) {\n            answer.add(new ArrayList<>(path)); // 当前路径的和刚好用完 target\n            return;\n        }\n\n        for (int i = start; i < candidates.length; i++) {\n            int value = candidates[i];\n            if (value > remain) break; // 后面的数更大，也不可能再选。\n\n            path.add(value);\n\n            // 仍然传 i 而不是 i + 1，表示同一个候选数可以重复使用。\n            backtrack(candidates, i, remain - value, path, answer);\n\n            path.remove(path.size() - 1); // 撤销 value，改选同层下一个候选\n        }\n    }\n}",
+      "description": "给定一组互不相同的正整数 candidates 和目标值 target，找出所有和为 target 的组合。每个候选数字可以重复选择。",
+      "source": "",
+      "id": "39",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定一组互不相同的正整数 candidates 和目标值 target，找出所有和为 target 的组合。每个候选数字可以重复选择。",
+        "req": [
+          "candidates 互不相同且为正整数",
+          "每个候选数字可以重复选择",
+          "组合之和等于 target"
+        ],
+        "analysis": "先 Arrays.sort(candidates)，再从 start 枚举。remain 变成 0 时拷贝 path。选中 value 后递归仍传入 i，并把 remain 减去 value，所以当前数可以接着用；下一轮 for 从 i 开始，更小的下标不会再选。value 大于 remain 就 break，排序后后面的数更大。",
+        "cx": "时间 指数级（粗略上界 O(n^(target/minCandidate))），空间 O(target/minCandidate)（递归路径；不计输出）",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "id": "40",
+      "number": 40,
+      "title": "组合总和 II",
+      "slug": "combination-sum-ii",
+      "category": "回溯",
+      "source": "",
+      "time": "O(2^n · n)",
+      "space": "O(n)",
+      "idea": "先 Arrays.sort，再从 start 回溯，remain 减到 0 时把 path 拷贝进 answer。同一层里只有 i>start 且 candidates[i] 等于 candidates[i-1] 才 continue，这样同一个值在这一层只作为起点用一次。value 大于 remain 就 break，因为数组已排序，后面只会更大。选中后以 i+1 递归，当前下标不会再用，返回后删掉 path 的最后一项。",
+      "description": "给定可能含有重复数字的 candidates 和目标值 target，找出所有和为 target 的不同组合。每个候选位置只能使用一次，结果里不能出现重复组合。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public List<List<Integer>> combinationSum2(int[] candidates, int target) {\n        Arrays.sort(candidates); // 相同值挨在一起，后面才能按层去重并提前结束。\n        List<List<Integer>> answer = new ArrayList<>();\n        backtrack(candidates, 0, target, new ArrayList<>(), answer);\n        return answer;\n    }\n\n    private void backtrack(int[] candidates, int start, int remain,\n                           List<Integer> path, List<List<Integer>> answer) {\n        if (remain == 0) {\n            answer.add(new ArrayList<>(path));\n            return;\n        }\n\n        for (int i = start; i < candidates.length; i++) {\n            // 同一层只取一次这个值，避免 [1,2] 和 [2,1] 这类重复组合。\n            if (i > start && candidates[i] == candidates[i - 1]) {\n                continue;\n            }\n\n            int value = candidates[i];\n            if (value > remain) {\n                break; // 已排序，后面的数都更大，不可能再凑出 remain。\n            }\n\n            path.add(value);\n            // 下一层从 i+1 开始，当前这个下标不能再选。\n            backtrack(candidates, i + 1, remain - value, path, answer);\n            path.remove(path.size() - 1);\n        }\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定可能含有重复数字的 candidates 和目标值 target，找出所有和为 target 的不同组合。每个候选位置只能使用一次，结果里不能出现重复组合。",
+        "req": [
+          "每个候选位置只能使用一次",
+          "结果中的组合不能重复"
+        ],
+        "analysis": "先 Arrays.sort，再从 start 回溯，remain 减到 0 时把 path 拷贝进 answer。同一层里只有 i>start 且 candidates[i] 等于 candidates[i-1] 才 continue，这样同一个值在这一层只作为起点用一次。value 大于 remain 就 break，因为数组已排序，后面只会更大。选中后以 i+1 递归，当前下标不会再用，返回后删掉 path 的最后一项。",
+        "cx": "时间 O(2^n · n)，空间 O(n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "number": 17,
+      "title": "电话号码的字母组合",
+      "slug": "letter-combinations-of-a-phone-number",
+      "category": "回溯",
+      "time": "O(n·4ⁿ)（最坏输出规模）",
+      "space": "O(n)",
+      "idea": "MAPPING 里 2 对应 \"abc\"，7 对应 \"pqrs\"，9 对应 \"wxyz\"，0 和 1 留空串。digits 为空就直接返回空列表。index 走到 digits.length() 时把 path.toString() 放进 answer；否则取出 letters = MAPPING[digits.charAt(index)-'0']，逐个 append、递归 index+1，再 deleteCharAt 删掉末字符。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    private static final String[] MAPPING = {\n            \"\", \"\", \"abc\", \"def\", \"ghi\", \"jkl\", \"mno\", \"pqrs\", \"tuv\", \"wxyz\"\n    };\n\n    public List<String> letterCombinations(String digits) {\n        List<String> answer = new ArrayList<>();\n        if (digits.isEmpty()) return answer; // 没有数字可映射\n\n        backtrack(digits, 0, new StringBuilder(), answer);\n        return answer;\n    }\n\n    private void backtrack(String digits, int index,\n                           StringBuilder path, List<String> answer) {\n        if (index == digits.length()) {\n            answer.add(path.toString()); // 每一位都已选定一个字母\n            return;\n        }\n\n        String letters = MAPPING[digits.charAt(index) - '0'];\n        for (char c : letters.toCharArray()) {\n            path.append(c);                  // 选择当前数字对应的一个字母。\n            backtrack(digits, index + 1, path, answer);\n            path.deleteCharAt(path.length() - 1); // 回溯，尝试同层下一个字母。\n        }\n    }\n}",
+      "description": "给定由 2~9 组成的电话号码数字串，根据手机九宫格映射返回所有可能的字母组合。",
+      "source": "",
+      "id": "17",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定由 2~9 组成的电话号码数字串，根据手机九宫格映射返回所有可能的字母组合。",
+        "req": [
+          "数字串由 2~9 组成",
+          "按手机九宫格映射返回全部字母组合"
+        ],
+        "analysis": "MAPPING 里 2 对应 \"abc\"，7 对应 \"pqrs\"，9 对应 \"wxyz\"，0 和 1 留空串。digits 为空就直接返回空列表。index 走到 digits.length() 时把 path.toString() 放进 answer；否则取出 letters = MAPPING[digits.charAt(index)-'0']，逐个 append、递归 index+1，再 deleteCharAt 删掉末字符。",
+        "cx": "时间 O(n·4ⁿ)（最坏输出规模），空间 O(n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "number": 46,
+      "title": "全排列",
+      "slug": "permutations",
+      "category": "回溯",
+      "time": "O(n·n!)",
+      "space": "O(n)",
+      "idea": "backtrack 用 path 记录当前选择，used 标记下标是否已用。path.size() 等于 nums.length 时，把 path 复制进 answer 后返回。否则从 0 扫到 nums.length-1，used[i] 为真就跳过；选中则 used[i] 设为 true 并把 nums[i] 加入 path，递归返回后再删掉末尾元素并把 used[i] 设回 false。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public List<List<Integer>> permute(int[] nums) {\n        List<List<Integer>> answer = new ArrayList<>();\n        boolean[] used = new boolean[nums.length];\n        backtrack(nums, used, new ArrayList<>(), answer);\n        return answer;\n    }\n\n    private void backtrack(int[] nums, boolean[] used,\n                           List<Integer> path, List<List<Integer>> answer) {\n        // 长度到 n，当前 path 已是一个完整排列\n        if (path.size() == nums.length) {\n            answer.add(new ArrayList<>(path)); // 复制一份，避免后面撤销时改掉已保存的结果\n            return;\n        }\n\n        for (int i = 0; i < nums.length; i++) {\n            if (used[i]) continue;\n\n            // 占用下标 i，把这个数字放到当前层\n            used[i] = true;\n            path.add(nums[i]);\n\n            backtrack(nums, used, path, answer);\n\n            // 撤销后，同一层才能尝试下一个未使用的数字\n            path.remove(path.size() - 1);\n            used[i] = false;\n        }\n    }\n}",
+      "description": "给定一个不含重复数字的数组，返回它的全部排列。每个排列必须用上所有数字，且每个数字恰好使用一次。",
+      "source": "",
+      "id": "46",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定一个不含重复数字的数组，返回它的全部排列。每个排列必须用上所有数字，且每个数字恰好使用一次。",
+        "req": [
+          "数组中的数字互不重复",
+          "每个排列使用全部数字，且每个数字恰好一次"
+        ],
+        "analysis": "backtrack 用 path 记录当前选择，used 标记下标是否已用。path.size() 等于 nums.length 时，把 path 复制进 answer 后返回。否则从 0 扫到 nums.length-1，used[i] 为真就跳过；选中则 used[i] 设为 true 并把 nums[i] 加入 path，递归返回后再删掉末尾元素并把 used[i] 设回 false。",
+        "cx": "时间 O(n·n!)，空间 O(n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "id": "47",
+      "number": 47,
+      "title": "全排列 II",
+      "slug": "permutations-ii",
+      "category": "回溯",
+      "source": "字节面试手撕盘点",
+      "time": "O(n·n!)",
+      "space": "O(n)",
+      "idea": "先 Arrays.sort，再用 used 记录下标是否已放入 path。path 长度等于 nums.length 时把当前路径拷贝进 answer。used[i] 为 true 就跳过这个下标。若 i>0、nums[i] 等于 nums[i-1] 且 used[i-1] 仍是 false，说明这一层正想跳过前一个相同值改用后面的，和先用 i-1 得到的排列重复，直接 continue。选中后标记 used 并加入 path，递归返回再撤销。",
+      "description": "给定可能包含重复数字的数组 nums，返回它的全部不重复全排列。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public List<List<Integer>> permuteUnique(int[] nums) {\n        Arrays.sort(nums);\n\n        List<List<Integer>> answer = new ArrayList<>();\n        List<Integer> path = new ArrayList<>();\n        boolean[] used = new boolean[nums.length];\n\n        backtrack(nums, used, path, answer);\n        return answer;\n    }\n\n    private void backtrack(int[] nums, boolean[] used,\n                           List<Integer> path, List<List<Integer>> answer) {\n        if (path.size() == nums.length) {\n            answer.add(new ArrayList<>(path));\n            return;\n        }\n\n        for (int i = 0; i < nums.length; i++) {\n            if (used[i]) continue;\n\n            // 前一个相同值还没在本层用过，再用当前值会得到同一条排列。\n            if (i > 0 && nums[i] == nums[i - 1] && !used[i - 1]) {\n                continue;\n            }\n\n            used[i] = true;\n            path.add(nums[i]);\n\n            backtrack(nums, used, path, answer);\n\n            path.remove(path.size() - 1);\n            used[i] = false;\n        }\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定可能包含重复数字的数组 nums，返回它的全部不重复全排列。",
+        "req": [
+          "返回所有不重复的全排列"
+        ],
+        "analysis": "先 Arrays.sort，再用 used 记录下标是否已放入 path。path 长度等于 nums.length 时把当前路径拷贝进 answer。used[i] 为 true 就跳过这个下标。若 i>0、nums[i] 等于 nums[i-1] 且 used[i-1] 仍是 false，说明这一层正想跳过前一个相同值改用后面的，和先用 i-1 得到的排列重复，直接 continue。选中后标记 used 并加入 path，递归返回再撤销。",
+        "cx": "时间 O(n·n!)，空间 O(n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "number": 131,
+      "title": "分割回文串",
+      "slug": "palindrome-partitioning",
+      "category": "回溯",
+      "time": "O(n² + n·2ⁿ)（含输出构造）",
+      "space": "O(n² + n)（不计输出）",
+      "idea": "按长度 len 从 1 到 n 填 palindrome[left][right]：两端字符相等，并且 len 不超过 2 或内部 palindrome[left+1][right-1] 已经为真。回溯只在 palindrome[start][end] 为真时把 s.substring(start, end+1) 放进 path，再从 end+1 继续。start 等于 s.length() 时拷贝 path。",
+      "code": "import java.util.*;\n\nclass Solution {\n    private boolean[][] palindrome;\n\n    public List<List<String>> partition(String s) {\n        int n = s.length();\n        palindrome = new boolean[n][n];\n\n        // 先预处理所有子串是否为回文。按长度递增，保证内部状态已经计算。\n        for (int len = 1; len <= n; len++) {\n            for (int left = 0; left + len - 1 < n; left++) {\n                int right = left + len - 1;\n                palindrome[left][right] = s.charAt(left) == s.charAt(right)\n                        && (len <= 2 || palindrome[left + 1][right - 1]);\n            }\n        }\n\n        List<List<String>> answer = new ArrayList<>();\n        backtrack(s, 0, new ArrayList<>(), answer);\n        return answer;\n    }\n\n    private void backtrack(String s, int start,\n                           List<String> path, List<List<String>> answer) {\n        if (start == s.length()) {\n            answer.add(new ArrayList<>(path)); // 整串切完，记下当前方案\n            return;\n        }\n\n        for (int end = start; end < s.length(); end++) {\n            if (!palindrome[start][end]) continue; // 这一段不是回文，换更长的终点\n\n            path.add(s.substring(start, end + 1));\n            backtrack(s, end + 1, path, answer); // 剩余后缀从 end 的下一位接着切\n            path.remove(path.size() - 1);\n        }\n    }\n}",
+      "description": "把字符串切分成若干段，使每一段都是回文串，并返回所有可能的切分方案。",
+      "source": "",
+      "id": "131",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "把字符串切分成若干段，使每一段都是回文串，并返回所有可能的切分方案。",
+        "req": [
+          "每一段都必须是回文串",
+          "返回所有可能的切分方案"
+        ],
+        "analysis": "按长度 len 从 1 到 n 填 palindrome[left][right]：两端字符相等，并且 len 不超过 2 或内部 palindrome[left+1][right-1] 已经为真。回溯只在 palindrome[start][end] 为真时把 s.substring(start, end+1) 放进 path，再从 end+1 继续。start 等于 s.length() 时拷贝 path。",
+        "cx": "时间 O(n² + n·2ⁿ)（含输出构造），空间 O(n² + n)（不计输出）",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "id": "lc-face-extra-24",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "title": "复原 IP 地址",
+      "number": "93",
+      "description": "给定数字字符串，复原出所有合法的 IP 地址。地址固定为 4 段，每段长度只能是 1 到 3，数值要在 0 到 255，且不能有前导零。",
+      "idea": "dfs 用 index 表示还没切的起点，part 表示已经切了几段，path 暂存各段。part 到 4 时，只有 index 也走到末尾才用点号拼进 ans。剩余字符少于剩余段数，或多于剩余段数的 3 倍，直接返回。循环里 seg 取长度 1 到 3：长度大于 1 且以 0 开头，或数值大于 255，就 break，因为再加长仍然不合法。合法则放进 path 后递归，返回时删掉 path 最后一段。",
+      "code": "import java.util.ArrayList;\nimport java.util.List;\n\nclass Solution {\n    public List<String> restoreIpAddresses(String s) {\n        List<String> ans = new ArrayList<>();\n        dfs(s, 0, 0, new ArrayList<>(), ans);\n        return ans;\n    }\n\n    private void dfs(String s, int index, int part, List<String> path, List<String> ans) {\n        if (part == 4) {\n            // 四段用完且字符也用完才是完整 IP\n            if (index == s.length()) {\n                ans.add(String.join(\".\", path));\n            }\n            return;\n        }\n\n        int remainChars = s.length() - index;\n        int remainParts = 4 - part;\n        // 剩下的字符不够分，或长到每段 3 位仍放不下\n        if (remainChars < remainParts || remainChars > remainParts * 3) {\n            return;\n        }\n\n        for (int len = 1; len <= 3 && index + len <= s.length(); len++) {\n            String seg = s.substring(index, index + len);\n            // 更长仍会带前导零，不必再试\n            if (seg.length() > 1 && seg.charAt(0) == '0') {\n                break;\n            }\n            int val = Integer.parseInt(seg);\n            if (val > 255) {\n                break;\n            }\n            path.add(seg);\n            dfs(s, index + len, part + 1, path, ans);\n            path.remove(path.size() - 1);\n        }\n    }\n}",
+      "progressKey": "lc-face-extra#24",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 24,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "给定数字字符串，复原出所有合法的 IP 地址。地址固定为 4 段，每段长度只能是 1 到 3，数值要在 0 到 255，且不能有前导零。",
+        "req": [
+          "必须恰好分成 4 段",
+          "每段长度只能是 1 到 3",
+          "每段数值要在 0 到 255 之间",
+          "除单独一个 0 外不能有前导零"
+        ],
+        "analysis": "dfs 用 index 表示还没切的起点，part 表示已经切了几段，path 暂存各段。part 到 4 时，只有 index 也走到末尾才用点号拼进 ans。剩余字符少于剩余段数，或多于剩余段数的 3 倍，直接返回。循环里 seg 取长度 1 到 3：长度大于 1 且以 0 开头，或数值大于 255，就 break，因为再加长仍然不合法。合法则放进 path 后递归，返回时删掉 path 最后一段。",
+        "cx": "时间 O(1)，空间 O(1)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "lc": "93"
+    },
+    {
+      "number": 51,
+      "title": "N 皇后",
+      "slug": "n-queens",
+      "category": "回溯",
+      "time": "O(n!)（搜索上界，不计输出构造）",
+      "space": "O(n)",
+      "idea": "从第 0 行开始逐行回溯。queens[row] 只记下这一行皇后的列，进入下一行之前把 columns[col]、diag1[row-col+n-1]、diag2[row+col] 标成 true。某一列上这三个标记任一为 true 就 continue，不再递归到 row+1。走到 row==n 时用 buildBoard 按 queens 生成棋盘并加入 answer，返回前把三个标记和 queens[row] 恢复。",
+      "code": "import java.util.*; // 后面要用 List、ArrayList 和 Arrays。\n\nclass Solution {\n    public List<List<String>> solveNQueens(int n) {\n        List<List<String>> answer = new ArrayList<>();\n        int[] queens = new int[n]; // 一行只放一个皇后，记下它所在的列。\n        Arrays.fill(queens, -1);\n\n        boolean[] columns = new boolean[n];\n        boolean[] diag1 = new boolean[2 * n - 1]; // row-col 相同的格子落在同一条对角线上。\n        boolean[] diag2 = new boolean[2 * n - 1]; // row+col 相同的格子落在另一条对角线上。\n\n        backtrack(0, n, queens, columns, diag1, diag2, answer);\n        return answer;\n    }\n\n    private void backtrack(int row, int n, int[] queens,\n                           boolean[] columns, boolean[] diag1, boolean[] diag2,\n                           List<List<String>> answer) {\n        if (row == n) {\n            answer.add(buildBoard(queens, n));\n            return;\n        }\n\n        for (int col = 0; col < n; col++) {\n            int d1 = row - col + n - 1;\n            int d2 = row + col;\n\n            // 列或对角线已被占用，这一列不用再进入下一行。\n            if (columns[col] || diag1[d1] || diag2[d2]) continue;\n\n            queens[row] = col;\n            columns[col] = diag1[d1] = diag2[d2] = true;\n\n            backtrack(row + 1, n, queens, columns, diag1, diag2, answer);\n\n            // 换下一列前清掉占用，否则后续分支会把这里当成已放皇后。\n            columns[col] = diag1[d1] = diag2[d2] = false;\n            queens[row] = -1;\n        }\n    }\n\n    private List<String> buildBoard(int[] queens, int n) {\n        List<String> board = new ArrayList<>();\n        for (int row = 0; row < n; row++) {\n            char[] line = new char[n];\n            Arrays.fill(line, '.');\n            line[queens[row]] = 'Q';\n            board.add(new String(line));\n        }\n        return board;\n    }\n}",
+      "description": "在 n×n 的棋盘上放置 n 个皇后，使任意两个皇后都不在同一行、同一列或同一条对角线上，并返回所有这样的布局。",
+      "source": "",
+      "id": "51",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "在 n×n 的棋盘上放置 n 个皇后，使任意两个皇后都不在同一行、同一列或同一条对角线上，并返回所有这样的布局。",
+        "req": [
+          "返回所有满足条件的布局"
+        ],
+        "analysis": "从第 0 行开始逐行回溯。queens[row] 只记下这一行皇后的列，进入下一行之前把 columns[col]、diag1[row-col+n-1]、diag2[row+col] 标成 true。某一列上这三个标记任一为 true 就 continue，不再递归到 row+1。走到 row==n 时用 buildBoard 按 queens 生成棋盘并加入 answer，返回前把三个标记和 queens[row] 恢复。",
+        "cx": "时间 O(n!)（搜索上界，不计输出构造），空间 O(n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "number": 79,
+      "title": "单词搜索",
+      "slug": "word-search",
+      "category": "回溯",
+      "time": "O(mn·4ᴸ)",
+      "space": "O(L)",
+      "idea": "exist 对每个 (r,c) 调用 dfs，index 从 0 开始，一旦成功就 return true。dfs 里 index 等于 word.length() 表示前面都匹配上了；越界或 board[r][c] 不等于 word.charAt(index) 则失败。匹配后把格子写成 '#'，四个方向用 || 递归 index+1，最后把格子写回 original 再返回 found。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public boolean exist(char[][] board, String word) {\n        for (int r = 0; r < board.length; r++) {\n            for (int c = 0; c < board[0].length; c++) {\n                if (dfs(board, word, r, c, 0)) return true; // 任一起点匹配成功即可\n            }\n        }\n        return false;\n    }\n\n    private boolean dfs(char[][] board, String word, int r, int c, int index) {\n        // index 已经走到 word.length()，说明前面的字符全部匹配成功。\n        if (index == word.length()) return true;\n\n        if (r < 0 || r >= board.length || c < 0 || c >= board[0].length) return false;\n        if (board[r][c] != word.charAt(index)) return false;\n\n        char original = board[r][c];\n        board[r][c] = '#'; // 临时标记当前格子，防止同一路径重复使用。\n\n        boolean found = dfs(board, word, r + 1, c, index + 1)\n                || dfs(board, word, r - 1, c, index + 1)\n                || dfs(board, word, r, c + 1, index + 1)\n                || dfs(board, word, r, c - 1, index + 1);\n\n        board[r][c] = original; // 回溯：恢复现场，供其他起点/路径继续使用。\n        return found;\n    }\n}",
+      "description": "在字符网格中寻找目标单词。单词必须由上下左右相邻格子依次组成，同一个格子在一条匹配路径中不能重复使用。",
+      "source": "",
+      "id": "79",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "在字符网格中寻找目标单词。单词必须由上下左右相邻格子依次组成，同一个格子在一条匹配路径中不能重复使用。",
+        "req": [
+          "单词由上下左右相邻格子依次组成",
+          "同一格子在一条匹配路径中不能重复使用"
+        ],
+        "analysis": "exist 对每个 (r,c) 调用 dfs，index 从 0 开始，一旦成功就 return true。dfs 里 index 等于 word.length() 表示前面都匹配上了；越界或 board[r][c] 不等于 word.charAt(index) 则失败。匹配后把格子写成 '#'，四个方向用 || 递归 index+1，最后把格子写回 original 再返回 found。",
+        "cx": "时间 O(mn·4ᴸ)，空间 O(L)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "number": 22,
+      "title": "括号生成",
+      "slug": "generate-parentheses",
+      "category": "回溯",
+      "time": "O(Cₙ·n)",
+      "space": "O(n)",
+      "idea": "状态只记 opened 和 closed。path.length() 等于 2*n 时把 path.toString() 放进 answer。opened 小于 n 才 append '(' 并递归 opened+1；closed 小于 opened 才 append ')' 并让 closed 加一。返回后 deleteCharAt 删掉最后一个字符，再试另一种放法。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public List<String> generateParenthesis(int n) {\n        List<String> answer = new ArrayList<>();\n        backtrack(n, 0, 0, new StringBuilder(), answer);\n        return answer;\n    }\n\n    private void backtrack(int n, int opened, int closed,\n                           StringBuilder path, List<String> answer) {\n        if (path.length() == 2 * n) {\n            answer.add(path.toString()); // n 对都已放完\n            return;\n        }\n\n        // 左括号总数不能超过 n。\n        if (opened < n) {\n            path.append('(');\n            backtrack(n, opened + 1, closed, path, answer);\n            path.deleteCharAt(path.length() - 1);\n        }\n\n        // 任何前缀中右括号数量都不能超过左括号，否则一定非法。\n        if (closed < opened) {\n            path.append(')');\n            backtrack(n, opened, closed + 1, path, answer);\n            path.deleteCharAt(path.length() - 1); // 撤销这一位，换另一种括号\n        }\n    }\n}",
+      "description": "给定 n 对括号，生成所有合法的括号组合。生成过程需要保证任何前缀中右括号数都不能超过左括号数。",
+      "source": "",
+      "id": "22",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定 n 对括号，生成所有合法的括号组合。生成过程需要保证任何前缀中右括号数都不能超过左括号数。",
+        "req": [
+          "生成 n 对括号的全部合法组合",
+          "任何前缀中右括号数都不能超过左括号数"
+        ],
+        "analysis": "状态只记 opened 和 closed。path.length() 等于 2*n 时把 path.toString() 放进 answer。opened 小于 n 才 append '(' 并递归 opened+1；closed 小于 opened 才 append ')' 并让 closed 加一。返回后 deleteCharAt 删掉最后一个字符，再试另一种放法。",
+        "cx": "时间 O(Cₙ·n)，空间 O(n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    },
+    {
+      "id": "lc-face-extra-6",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "title": "删除无效的括号",
+      "number": "301",
+      "description": "给定一个包含括号和字母的字符串，删除尽可能少的括号，使剩余字符串合法，并返回所有不同的结果。",
+      "idea": "用队列做 BFS，每个状态是删掉若干字符后的字符串，visited 用来去重。同一层删除的字符数相同，第一次遇到合法串时，把这一层所有合法串放进 ans。found 置位后不再继续删字符向下扩展。isValid 用 balance 检查左右括号是否匹配。",
+      "code": "class Solution {\n    public List<String> removeInvalidParentheses(String s) {\n        List<String> ans = new ArrayList<>();\n        Set<String> visited = new HashSet<>();\n        Queue<String> queue = new LinkedList<>();\n        queue.offer(s);\n        visited.add(s);\n        boolean found = false;\n        while (!queue.isEmpty()) {\n            String cur = queue.poll();\n            if (isValid(cur)) {\n                // 同一层删除次数相同，收集本层合法串\n                ans.add(cur);\n                found = true;\n            }\n            if (found) {\n                // 已有最少删除方案，不再继续删\n                continue;\n            }\n            for (int i = 0; i < cur.length(); i++) {\n                char c = cur.charAt(i);\n                if (c != '(' && c != ')') {\n                    continue;\n                }\n                // 只删一个括号，生成下一层候选\n                String next = cur.substring(0, i) + cur.substring(i + 1);\n                if (visited.add(next)) {\n                    queue.offer(next);\n                }\n            }\n        }\n        return ans;\n    }\n\n    private boolean isValid(String s) {\n        int balance = 0;\n        for (char c : s.toCharArray()) {\n            if (c == '(') {\n                balance++;\n            } else if (c == ')') {\n                // 右括号更多则不合法\n                if (balance == 0) {\n                    return false;\n                }\n                balance--;\n            }\n        }\n        return balance == 0;\n    }\n}",
+      "progressKey": "lc-face-extra#6",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 6,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "给定一个包含括号和字母的字符串，删除尽可能少的括号，使剩余字符串合法，并返回所有不同的结果。",
+        "req": [
+          "返回所有最少删除后的合法字符串"
+        ],
+        "analysis": "用队列做 BFS，每个状态是删掉若干字符后的字符串，visited 用来去重。同一层删除的字符数相同，第一次遇到合法串时，把这一层所有合法串放进 ans。found 置位后不再继续删字符向下扩展。isValid 用 balance 检查左右括号是否匹配。",
+        "cx": "时间 O(n·2^n)，空间 O(n·2^n)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "lc": "301"
+    },
+    {
+      "id": "byte-largest-less-than-n",
+      "number": "字节 T2",
+      "title": "小于 n 的最大数：给定数字可重复使用",
+      "slug": "",
+      "category": "回溯",
+      "source": "字节面试手撕盘点 · 截图 T2",
+      "time": "O(L·D)",
+      "space": "O(L+D)",
+      "idea": "先把 nums 里的 0 到 9 去重并按升序放进 digits。buildSameLength 从 pos=0 由大到小试：还没变小时 limit 取 target[pos]，选到比它小就把 alreadySmaller 设为 true 并继续；整条路径始终相等则最后返回 false。多位数的首位会跳过 0。等长构造失败后，若还能少一位，就用最大的非 0 数字开头、其余位填最大数字；否则有 0 返回 \"0\"，没有则返回 \"-1\"。",
+      "description": "给定一组数字 nums 和目标数 n，可以从 nums 中重复挑选数字组成一个十进制整数，返回严格小于 n 的最大数。例如 nums 为 [5,4,8,2]、n 为 5416 时，答案是 5288。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public String largestLessThanN(int[] nums, String n) {\n        if (nums == null || nums.length == 0 || n == null || n.isEmpty()) {\n            return \"-1\";\n        }\n        // 按非负整数理解，没有任何数严格小于 0。\n        if (n.equals(\"0\")) {\n            return \"-1\";\n        }\n\n        // 只保留 0~9，重复数字对能组成的数没有区别。\n        boolean[] present = new boolean[10];\n        for (int digit : nums) {\n            if (digit < 0 || digit > 9) {\n                throw new IllegalArgumentException(\"nums 中每个元素都必须是 0~9 的数字\");\n            }\n            present[digit] = true;\n        }\n\n        int count = 0;\n        for (boolean exists : present) {\n            if (exists) count++;\n        }\n\n        int[] digits = new int[count];\n        int index = 0;\n        for (int digit = 0; digit <= 9; digit++) {\n            if (present[digit]) digits[index++] = digit;\n        }\n\n        char[] target = n.toCharArray();\n        char[] path = new char[target.length];\n\n        // 位数相同才能比少一位的数更大，所以先尝试等长。\n        if (buildSameLength(0, false, target, digits, path)) {\n            return new String(path);\n        }\n\n        // 每一位都无法变小，只能少一位。\n        int shorterLength = target.length - 1;\n        if (shorterLength <= 0) {\n            return present[0] ? \"0\" : \"-1\";\n        }\n\n        int largestDigit = digits[digits.length - 1];\n        int largestNonZero = -1;\n        for (int i = digits.length - 1; i >= 0; i--) {\n            if (digits[i] != 0) {\n                largestNonZero = digits[i];\n                break;\n            }\n        }\n\n        if (largestNonZero == -1) {\n            // 可用数字只有 0，最大的合法数就是 0。\n            return present[0] ? \"0\" : \"-1\";\n        }\n\n        StringBuilder answer = new StringBuilder();\n        answer.append(largestNonZero);\n        for (int i = 1; i < shorterLength; i++) {\n            answer.append(largestDigit);\n        }\n        return answer.toString();\n    }\n\n    private boolean buildSameLength(int pos, boolean alreadySmaller,\n                                    char[] target, int[] digits, char[] path) {\n        if (pos == target.length) {\n            // 和 n 完全相同不算答案。\n            return alreadySmaller;\n        }\n\n        int limit = alreadySmaller ? 9 : target[pos] - '0';\n\n        // 从大往小试，第一个能走通的就是这一位上的最大选择。\n        for (int i = digits.length - 1; i >= 0; i--) {\n            int digit = digits[i];\n            if (digit > limit) continue;\n\n            // 多位数不能以 0 开头，否则实际位数会变短。\n            if (pos == 0 && target.length > 1 && digit == 0) continue;\n\n            path[pos] = (char) ('0' + digit);\n            boolean nextSmaller = alreadySmaller || digit < target[pos] - '0';\n\n            if (buildSameLength(pos + 1, nextSmaller, target, digits, path)) {\n                return true;\n            }\n        }\n\n        return false;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "回溯",
+      "mod": "algo",
+      "part": "树 · 回溯 · 图",
+      "cat": "回溯",
+      "simple": {
+        "statement": "给定一组数字 nums 和目标数 n，可以从 nums 中重复挑选数字组成一个十进制整数，返回严格小于 n 的最大数。例如 nums 为 [5,4,8,2]、n 为 5416 时，答案是 5288。",
+        "req": [
+          "组成数字时，nums 中的数字可以重复使用",
+          "结果必须严格小于 n，并在所有合法数中最大"
+        ],
+        "analysis": "先把 nums 里的 0 到 9 去重并按升序放进 digits。buildSameLength 从 pos=0 由大到小试：还没变小时 limit 取 target[pos]，选到比它小就把 alreadySmaller 设为 true 并继续；整条路径始终相等则最后返回 false。多位数的首位会跳过 0。等长构造失败后，若还能少一位，就用最大的非 0 数字开头、其余位填最大数字；否则有 0 返回 \"0\"，没有则返回 \"-1\"。",
+        "cx": "时间 O(L·D)，空间 O(L+D)",
+        "topic": "p-backtrack",
+        "topicName": "回溯"
+      },
+      "oldCat": "回溯"
+    }
+  ]
+}

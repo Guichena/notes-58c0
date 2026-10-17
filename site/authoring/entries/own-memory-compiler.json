@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-memory-compiler",
+  "kind": "doc",
+  "module": "ai",
+  "part": "Memory 与上下文工程",
+  "category": "实现参考与验证边界",
+  "title": "完整 Java：上下文编译与摘要发布",
+  "tags": [
+    "Memory",
+    "完整教学代码"
+  ],
+  "sections": [
+    {
+      "id": "s-1032",
+      "title": "29 Java 实作：摘要发布与预算编译",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "摘要绑定覆盖范围和输入版本，编译后按完整请求检查预算。 必需材料必须保留，协议事件整组处理，可选内容按完整序列化后的计量决定是否加入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能问法：后台摘要到达时已经有新消息，怎么办？如何写一个不丢工具结果的压缩器？压缩后如何验证关键约束仍在？中断与清理异常谁优先？"
+        },
+        {
+          "type": "paragraph",
+          "text": "Conversation 管理有界事件序列；每次追加或修改目标都递增 revision。摘要包含覆盖截止序号、精确来源 ID 集和受保护事实快照。publish 先比较输入 revision，再验证覆盖范围和保护字段，只保留至少一组近期原文。新消息到达后旧摘要不会覆盖新状态；真实系统可以选择重新生成或证明安全地重基，不能省略冲突判断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里的 Unit 是调用者已经构造好的完整交互单元，例如一组工具调用与对应结果。编译器整组保留，不会从组内删除一个消息，但它不解析任何模型厂商的 tool-call 协议，也不证明调用者没有传入残缺组。实际适配器要检查角色、调用 ID、并行调用与结果集合，再构造原子单元。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Snapshot 与所有集合做防御性复制，保护字段排序序列化，使相同输入产生稳定字节。编译先拒绝异域候选与重复 ID，即使后续预算会裁掉它们也不能跳过安全检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "目标、保护字段、摘要和原文都是必需材料，超预算直接失败。可选记忆按外部排名依次尝试，每次重新计量整个候选请求，不能假设拼接前后 token 可简单相加。贪心方案易解释，但不保证单位 token 效用最优，优化还需额外计算和评测。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试计量器按 Unicode code point 计数，字段名 inputUnits 正是为了避免冒称真实 token。真实接入时要把完整消息、schema、协议包装与选定模型的计量纳入 TokenCounter，必要时在适配器最终序列化后再检查；本例的方括号标签也只是可读展示，不是系统角色或安全沙箱。"
+        },
+        {
+          "type": "paragraph",
+          "text": "摘要结构校验不能证明摘要正文忠实。即使来源集合相同，模型仍可能把“未完成”写成“已完成”。本例通过独立保护字段避免这类字段被摘要替换；其他语义仍需要原文核验、事实槽对比、抽查与任务评测。不要把一次 schema 校验成功表述成“压缩零损失”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "withCleanup 的规则是主异常继续作为主异常，独立清理异常作为 suppressed 保存。若两者是同一个 Throwable 实例，跳过自抑制，避免真正错误被自抑制异常替换；遇到 InterruptedException 则恢复中断标志。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它只演示异步摘要或读取任务的异常清理边界，不能取消任意阻塞 I/O。真实客户端还需 deadline、连接/读取超时与可关闭资源。"
+        }
+      ]
+    },
+    {
+      "id": "s-1056",
+      "title": "29.1 ContextCompilerLesson.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "java/ContextCompilerLesson.java",
+          "value": "import java.util.ArrayList;\nimport java.util.HashSet;\nimport java.util.LinkedHashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.Set;\nimport java.util.TreeMap;\n\n/** Frozen snapshots and atomic protocol units, with an injectable token counter. */\npublic final class ContextCompilerLesson {\n    @FunctionalInterface\n    public interface TokenCounter { long count(String serializedRequest); }\n\n    public record Budget(long window, long output, long margin) {\n        public Budget {\n            if (window < 1 || window > 1_000_000 || output < 0 || margin < 0\n                    || output > window || margin > window - output) {\n                throw new IllegalArgumentException(\"invalid budget\");\n            }\n        }\n        long inputLimit() { return window - output - margin; }\n    }\n\n    /** The caller builds one complete user exchange or tool call/result group. */\n    public record Unit(long sequence, String id, List<String> messages) {\n        public Unit {\n            if (sequence < 1) throw new IllegalArgumentException(\"sequence\");\n            requireText(id, 64);\n            messages = List.copyOf(messages);\n            if (messages.isEmpty() || messages.size() > 16) {\n                throw new IllegalArgumentException(\"messages\");\n            }\n            for (String message : messages) requireText(message, 8192);\n        }\n    }\n\n    public record Summary(long through, Set<String> sourceIds,\n                          Map<String, String> protectedFacts, String text) {\n        public Summary {\n            if (through < 1) throw new IllegalArgumentException(\"summary range\");\n            sourceIds = Set.copyOf(sourceIds);\n            protectedFacts = Map.copyOf(protectedFacts);\n            requireText(text, 8192);\n        }\n    }\n\n    public record Snapshot(String scope, long revision, String goal,\n                           Map<String, String> protectedFacts, List<Unit> units,\n                           Summary summary) {\n        public Snapshot {\n            requireText(scope, 128); requireText(goal, 8192);\n            if (revision < 1) throw new IllegalArgumentException(\"revision\");\n            protectedFacts = Map.copyOf(protectedFacts);\n            units = List.copyOf(units);\n            if (protectedFacts.size() > 32 || units.size() > 128) {\n                throw new IllegalArgumentException(\"capacity\");\n            }\n            for (Map.Entry<String, String> entry : protectedFacts.entrySet()) {\n                requireText(entry.getKey(), 64); requireText(entry.getValue(), 1024);\n            }\n            long previous = 0;\n            Set<String> ids = new HashSet<>();\n            for (Unit unit : units) {\n                if (unit.sequence() != previous + 1 || !ids.add(unit.id())) {\n                    throw new IllegalArgumentException(\"noncontiguous or duplicate units\");\n                }\n                previous = unit.sequence();\n            }\n            if (summary != null) validateSummary(units, protectedFacts, summary);\n        }\n    }\n\n    /** Already-authorized, current memory projection, not a new instruction authority. */\n    public record MemoryView(String scope, String id, long revision, String text) {\n        public MemoryView {\n            requireText(scope, 128); requireText(id, 64); requireText(text, 4096);\n            if (revision < 1) throw new IllegalArgumentException(\"revision\");\n        }\n    }\n\n    public record Compiled(String request, long inputUnits, long snapshotRevision,\n                           List<String> rawUnitIds, List<String> memoryIds) {\n        public Compiled {\n            rawUnitIds = List.copyOf(rawUnitIds);\n            memoryIds = List.copyOf(memoryIds);\n        }\n    }\n\n    public static final class Conversation {\n        private final String scope;\n        private String goal;\n        private Map<String, String> facts;\n        private long revision = 1;\n        private final List<Unit> units = new ArrayList<>();\n        private Summary summary;\n\n        public Conversation(String scope, String goal, Map<String, String> facts) {\n            Snapshot initial = new Snapshot(scope, revision, goal, facts, List.of(), null);\n            this.scope = initial.scope(); this.goal = initial.goal();\n            this.facts = initial.protectedFacts();\n        }\n\n        public synchronized void append(String id, List<String> messages) {\n            if (units.size() >= 128) throw new IllegalStateException(\"CAPACITY\");\n            if (units.stream().anyMatch(unit -> unit.id().equals(id))) {\n                throw new IllegalArgumentException(\"duplicate id\");\n            }\n            Unit unit = new Unit(units.size() + 1L, id, messages);\n            units.add(unit);\n            revision = Math.addExact(revision, 1);\n        }\n\n        public synchronized void changeGoal(String next, Map<String, String> newFacts) {\n            Snapshot validated = new Snapshot(scope, revision, next, newFacts, units, null);\n            goal = validated.goal(); facts = validated.protectedFacts();\n            summary = null; // Rebuild when protected meaning changes.\n            revision = Math.addExact(revision, 1);\n        }\n\n        public synchronized Snapshot snapshot() {\n            return new Snapshot(scope, revision, goal, facts, units, summary);\n        }\n\n        public synchronized boolean publish(long expectedRevision, Summary candidate) {\n            if (revision != expectedRevision) return false;\n            validateSummary(units, facts, candidate);\n            if (summary != null && candidate.through() <= summary.through()) return false;\n            summary = candidate;\n            revision = Math.addExact(revision, 1);\n            return true;\n        }\n    }\n\n    public static Compiled compile(Snapshot snapshot, Budget budget,\n                                   List<MemoryView> rankedMemories, TokenCounter counter) {\n        Objects.requireNonNull(snapshot); Objects.requireNonNull(budget);\n        Objects.requireNonNull(counter);\n        List<MemoryView> candidates = List.copyOf(rankedMemories);\n        if (candidates.size() > 128) throw new IllegalArgumentException(\"capacity\");\n        Set<String> candidateIds = new HashSet<>();\n        for (MemoryView view : candidates) {\n            if (!snapshot.scope().equals(view.scope())) throw new SecurityException(\"scope\");\n            if (!candidateIds.add(view.id())) throw new IllegalArgumentException(\"duplicate memory\");\n        }\n        long through = snapshot.summary() == null ? 0 : snapshot.summary().through();\n        List<Unit> raw = snapshot.units().stream().filter(unit -> unit.sequence() > through).toList();\n        List<MemoryView> selected = new ArrayList<>();\n        String request = render(snapshot, raw, selected);\n        long used = checkedCount(counter, request);\n        if (used > budget.inputLimit()) throw new IllegalStateException(\"BUDGET_EXCEEDED\");\n        for (MemoryView view : candidates) {\n            selected.add(view);\n            String trial = render(snapshot, raw, selected);\n            long cost = checkedCount(counter, trial);\n            if (cost > budget.inputLimit()) {\n                selected.remove(selected.size() - 1);\n            } else {\n                request = trial;\n                used = cost;\n            }\n        }\n        return new Compiled(request, used, snapshot.revision(),\n                raw.stream().map(Unit::id).toList(), selected.stream().map(MemoryView::id).toList());\n    }\n\n    private static String render(Snapshot snapshot, List<Unit> raw, List<MemoryView> memories) {\n        StringBuilder result = new StringBuilder();\n        result.append(\"[goal]\\n\").append(snapshot.goal()).append('\\n');\n        result.append(\"[protected facts]\\n\");\n        new TreeMap<>(snapshot.protectedFacts()).forEach((key, value) ->\n                result.append(key).append('=').append(value).append('\\n'));\n        if (snapshot.summary() != null) {\n            result.append(\"[derived summary through=\").append(snapshot.summary().through())\n                    .append(\"]\\n\").append(snapshot.summary().text()).append('\\n');\n        }\n        for (MemoryView view : memories) {\n            result.append(\"[memory data \").append(view.id()).append(\" revision=\")\n                    .append(view.revision()).append(\"]\\n\").append(view.text()).append('\\n');\n        }\n        for (Unit unit : raw) {\n            result.append(\"[unit \").append(unit.id()).append(\"]\\n\");\n            for (String message : unit.messages()) result.append(message).append('\\n');\n        }\n        return result.toString();\n    }\n\n    private static void validateSummary(List<Unit> units, Map<String, String> facts,\n                                        Summary summary) {\n        Objects.requireNonNull(summary);\n        if (summary.through() >= units.size()) {\n            throw new IllegalArgumentException(\"keep at least one complete recent unit\");\n        }\n        if (!summary.protectedFacts().equals(facts)) {\n            throw new IllegalArgumentException(\"protected facts changed\");\n        }\n        Set<String> expected = new HashSet<>();\n        for (Unit unit : units) if (unit.sequence() <= summary.through()) expected.add(unit.id());\n        if (expected.size() != summary.through() || !expected.equals(summary.sourceIds())) {\n            throw new IllegalArgumentException(\"coverage mismatch\");\n        }\n    }\n\n    private static long checkedCount(TokenCounter counter, String request) {\n        long count = counter.count(request);\n        if (count < 0) throw new IllegalArgumentException(\"negative count\");\n        return count;\n    }\n\n    private static void requireText(String text, int maximum) {\n        if (text == null || text.isBlank() || text.length() > maximum) {\n            throw new IllegalArgumentException(\"invalid bounded text\");\n        }\n        for (int i = 0; i < text.length(); i++) {\n            char c = text.charAt(i);\n            if (Character.isHighSurrogate(c)) {\n                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {\n                    throw new IllegalArgumentException(\"invalid Unicode\");\n                }\n                i++;\n            } else if (Character.isLowSurrogate(c)) {\n                throw new IllegalArgumentException(\"invalid Unicode\");\n            }\n        }\n    }\n\n    @FunctionalInterface public interface Work<T> { T run() throws Throwable; }\n    @FunctionalInterface public interface Cleanup { void run() throws Throwable; }\n\n    /** Exception-safe cleanup; does not claim to cancel arbitrary blocking I/O. */\n    public static <T> T withCleanup(Work<T> work, Cleanup cleanup) throws Throwable {\n        Objects.requireNonNull(work); Objects.requireNonNull(cleanup);\n        Throwable primary = null;\n        try {\n            return work.run();\n        } catch (Throwable failure) {\n            primary = failure;\n            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();\n            throw failure;\n        } finally {\n            try {\n                cleanup.run();\n            } catch (Throwable closing) {\n                if (closing instanceof InterruptedException) Thread.currentThread().interrupt();\n                if (primary == null) throw closing;\n                if (closing != primary) primary.addSuppressed(closing);\n            }\n        }\n    }\n}\n"
+        }
+      ]
+    }
+  ]
+}

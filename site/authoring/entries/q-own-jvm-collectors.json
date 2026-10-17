@@ -1,0 +1,439 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "q-own-jvm-collectors",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 与 JVM",
+  "category": "JVM 运行机制与诊断",
+  "title": "分代、触发与 G1 回收机制",
+  "number": "3 问",
+  "source": "https://my.feishu.cn/wiki/LHMUwWeOZiLKRZk6tDecxooCnDo",
+  "tags": [
+    "OWN JVM",
+    "Java 21 / HotSpot 21"
+  ],
+  "questions": [
+    {
+      "id": "q-own-jvm-generations",
+      "order": 130,
+      "question": "分代、Survivor和晋升怎样工作，大对象何时走特殊路径？",
+      "commonPhrasings": [
+        "为什么要分代",
+        "Eden 和 Survivor 怎样流转",
+        "对象除了年龄到了，还能怎样进入老年代",
+        "能不能改晋升阈值",
+        "Survivor 应该调大还是调小",
+        "除了刚才说的两种，还有吗"
+      ],
+      "shortAnswer": "分代的价值，是利用对象寿命的差异，把经常发生的回收集中在较小、垃圾比例通常较高的年轻集合；代价是管理年龄、晋升和跨代引用。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "分代的价值，是利用对象寿命的差异，把经常发生的回收集中在较小、垃圾比例通常较高的年轻集合；代价是管理年龄、晋升和跨代引用。新生代就是年轻代，不能再把这两个名字算成两代。"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试可能从“为什么要分代”问起，再追问“Eden 和 Survivor 怎样流转”“对象除了年龄到了，还能怎样进入老年代”“能不能改晋升阈值”“Survivor 应该调大还是调小”。这几种问法可以沿着对象的一生回答。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么年轻对象值得单独收集"
+        },
+        {
+          "type": "paragraph",
+          "text": "很多对象只服务于一次表达式、一次请求或一个处理阶段，业务完成后便不可达。若每次回收这些短命对象都重新扫描整个长期缓存，GC 会反复处理大量仍存活的数据。把新分配对象集中起来，可以用较少工作回收较多空间；已经经历多轮收集的对象则较少接受这种高频检查。这是经验性的分代假设，不是对每个对象未来寿命的保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "年轻代适合复制型回收，是因为它主要需要追踪和搬走幸存者，不必把大量已经死亡的对象逐一复制。假设一次分配了 100 MiB，而回收时仅剩 5 MiB 活数据，搬迁对象的主要负担接近这 5 MiB，另加根扫描和引用处理等工作。不能由此说这次 GC 的总成本就等于“复制 5 MiB”：根数量、跨代引用、对象图形状和可用 CPU 都会影响停顿。"
+        },
+        {
+          "type": "paragraph",
+          "text": "老年代也不能统一回答成“使用标记清除”。HotSpot 的 Parallel Old 采用整理路线，历史 CMS 常规周期主要清除而不移动，G1 通过区域疏散逐步整理。活对象较多时，复制全部活数据可能很贵；到底选择什么策略，还要看暂停目标、空间余量和是否支持并发移动。"
+        },
+        {
+          "type": "paragraph",
+          "text": "局部收集有一个正确性前提：老对象可能持有年轻对象。假设一个长期缓存新增了指向请求对象的字段，即使线程栈已不再引用它，这个请求对象也仍然存活。写屏障配合卡表、记忆集等结构记录需要检查的位置，年轻代收集据此找到从收集范围外指入的引用，避免每次遍历整个老年代。记录会有近似性，扫描时还要验证；维护这些结构需要额外 CPU 和内存。如果工作负载普遍长寿、引用修改又密集，分代收益就可能缩小。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从 Eden 到 Survivor，再到老年代"
+        },
+        {
+          "type": "paragraph",
+          "text": "传统 Serial、Parallel 及历史 ParNew 的年轻代可以用 Eden 和两个 Survivor 空间说明。一次正常年轻代复制收集前，一个 Survivor 承担 From 角色，另一个 To 准备接收对象："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "新对象通常先尝试在年轻代分配，小对象常使用线程的 TLAB。TLAB 属于堆内分配空间，并不把对象变成栈对象。",
+            "收集时，从相关根以及跨代引用出发，确定 Eden 和 From 中必须保留的对象。",
+            "适合继续留在年轻代且目标空间足够的对象复制到 To；达到相应晋升条件或 Survivor 无法容纳的对象尝试进入老年代。",
+            "存活对象及引用处理完成后，Eden 和旧 From 的空间可以复用。From、To 交换角色，下一轮再重复这个过程。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "两个 Survivor 是交替的角色，不能理解为对象必须从 Eden 依次经过“S0 一次、S1 一次”才能晋升。常说的 8∶1∶1 是特定配置下 Eden 与两个 Survivor 的容量比例示例；自动调节、收集器实现和启动参数都会改变实际布局。G1 采用 Region 集合表达这些逻辑角色，不能把固定的三个连续地址段硬套进去。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象年龄表示在相应年轻代存活处理中的年龄累计，不能按运行秒数计算，也不能把所有 GC 事件都当作“年龄加一”。最大晋升年龄只是策略输入。实际进入老年代，至少要区分三类路径："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "年龄策略：年龄达到当前收集器采用的阈值；这个阈值可能比配置上限小。",
+            "容量和分配路径：Survivor 或疏散目标容纳不下，存活对象可能提前晋升；老年代也放不下时，会进入失败恢复，而不是悄悄丢弃对象。",
+            "实现特定的大对象路径：对象创建时就按大小走特殊分配，未必经历 Survivor 年龄累计。这与前两类晋升不是同一件事。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "“除了刚才说的两种，还有吗”必须承接已经回答的内容。没有那两项具体内容时，可以按上面的分类查漏补缺，但不存在一个脱离上下文的固定“第三种”。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "年龄阈值和 Survivor 怎样调整"
+        },
+        {
+          "type": "paragraph",
+          "text": "在使用相应机制的 HotSpot 收集器中，-XX:MaxTenuringThreshold 可以影响最大晋升年龄，但设成 8 不等于每个对象都必须、也必然恰好在第八次 GC 进入老年代。"
+        },
+        {
+          "type": "paragraph",
+          "text": "年龄阈值为什么可能低于配置上限？以 HotSpot 21 的年龄表为例，GC 先统计各年龄幸存对象的占用，再从低年龄开始累加，与目标 Survivor 容量比较。累计量越过目标时，就可能选出一个更低阈值，并继续受最大阈值约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里的依据是累计占用与目标容量，不是“某一个年龄超过整个 Survivor 一半，就把所有对象立即晋升”。算出的阈值怎样用于后续疏散，还要看收集器当轮策略和可用空间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "调 Survivor 要同时看两边的代价。太小，中等寿命对象可能来不及在年轻代死亡就提前晋升，老年代增长加快；太大，在固定堆预算中会减少其他用途的空间，也可能让更多对象在年轻代反复复制。提高最大年龄可能减少过早晋升，却可能增加年轻代搬迁；降低年龄则可能把工作转移给老年代。减少一次暂停、减少回收次数、减少总 GC CPU，是不同目标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "判断顺序应当是：先看 GC 后活集是否稳定，再看年龄分布和晋升量，最后调整参数。HotSpot 21 可用 -Xlog:gc*,gc+age=trace,gc+heap=debug 在有界实验中观察整体事件、年龄表和各类区域变化。重点看日志中的目标 Survivor 大小、实际阈值、各年龄字节数、回收后老年代增长。JDK 8 的 PrintTenuringDistribution 属于旧日志体系，不能原样当作 21 的命令。"
+        },
+        {
+          "type": "paragraph",
+          "text": "传统收集器里的 SurvivorRatio、NewRatio 与 G1 的 Region 数量策略也不是一套通用旋钮。G1 应优先保留年轻代自适应能力；用 -Xmn 或固定年轻代比例限制它，可能让暂停目标驱动的调节失效。能够通过诊断接口读取某个选项，也不代表该选项支持在线修改。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如，假设解析任务的中间对象被一个有界队列保留两轮年轻代回收，随后正常出队死亡，适当保留 Survivor 空间可能避免不必要晋升。但如果任务一直不出队，或者全局集合永久保留结果，调年龄只能推迟压力，不能修复保留关系。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的完整程序只检查启动时的年龄上限和是否可以通过管理接口修改，不通过对象地址猜测真实晋升年龄。保存为 TenuringEvidence.java，使用 HotSpot 21 的 G1 运行。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "TenuringEvidence.java",
+          "value": "import com.sun.management.HotSpotDiagnosticMXBean;\nimport java.lang.management.ManagementFactory;\n\n/** HotSpot 21: inspect a startup setting, not an object's promotion age. */\npublic final class TenuringEvidence {\n    public static void main(String[] args) {\n        if (args.length != 1) {\n            throw new IllegalArgumentException(\"Expected: maximum tenuring threshold\");\n        }\n        int expected = Integer.parseInt(args[0]);\n        var bean = ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class);\n        if (!Boolean.parseBoolean(bean.getVMOption(\"UseG1GC\").getValue())) {\n            throw new IllegalStateException(\"Run this example with -XX:+UseG1GC\");\n        }\n        var threshold = bean.getVMOption(\"MaxTenuringThreshold\");\n        if (Integer.parseInt(threshold.getValue()) != expected || threshold.isWriteable()) {\n            throw new AssertionError(\"Unexpected threshold or management capability\");\n        }\n        System.out.println(\"VM=\" + System.getProperty(\"java.vm.name\") + \" \"\n                + System.getProperty(\"java.runtime.version\"));\n        System.out.println(\"ARGS=\" + ManagementFactory.getRuntimeMXBean().getInputArguments());\n        System.out.println(\"PASS: startup MaxTenuringThreshold=\" + expected\n                + \", manageable=\" + threshold.isWriteable());\n        System.out.println(\"This checks configuration, not any object's actual promotion age.\");\n    }\n}\n"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "jvm-code-06.sh",
+          "value": "javac TenuringEvidence.java\njava -Xms16m -Xmx64m -XX:+UseG1GC -XX:MaxTenuringThreshold=1 TenuringEvidence 1\njava -Xms16m -Xmx64m -XX:+UseG1GC -XX:MaxTenuringThreshold=8 TenuringEvidence 8\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "这两个命令启动两个独立进程。断言成功表示当前选项与预期相符，并且管理接口不允许写这个选项；它不证明某个对象具体在第几轮晋升。这个程序没有制造足够分配来保证发生年轻代收集，不能把一次配置检查当作年龄分布实验。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "数组和“大对象直接进入老年代”的边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "数组同样是对象。int[] 的元素存储属于该数组，Object[] 的元素是引用，所引用对象并不会自动内联进数组。局部变量保存数组引用，不等于数组数据就在栈里；具体分配还可能受到逃逸分析和分配消除影响。"
+        },
+        {
+          "type": "paragraph",
+          "text": "传统 HotSpot 的某些 Serial、ParNew 分配路径支持 PretenureSizeThreshold 这样的预晋升参数，但不是所有收集器都采用它。不能把设置了该选项等同于 Parallel、G1、ZGC 都会遵守同一条大对象规则，也不能忽略 TLAB 与慢分配路径的区别。"
+        },
+        {
+          "type": "paragraph",
+          "text": "G1 的大对象路径另有清晰边界：以 OpenJDK 21 GA 的实现为准，完整、已经对齐的对象大小严格大于半个 Region 时，按 Humongous 对象处理。这里包含对象头、数组长度信息、元素区及对齐，不只计算数组元素的字节数。假设 Region 为 1 MiB，完整对齐大小恰好为 512 KiB 与比它多一个对齐单位，分配分类可能不同；而长度为 512 KiB 的 byte[] 加上对象头后通常已经超过这个界限。没有确认对象布局前，不应直接把数组长度当作精确阈值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Humongous 对象使用老年代中的连续 Region，相关布局和回收见 G1 一节。调整最大年龄不控制这个边界；改 Region 大小才会改变半区阈值，同时又会改变回收粒度与空间浪费。大文件大小、单个数组大小、全部处理中间结果和进程内存峰值也必须分开，不能因为支持 128 MB 文件接入，就推导出只需要 128 MB Java 堆。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-gc-triggers",
+      "order": 140,
+      "question": "Young、并发周期、Mixed与Full在什么条件下发生？",
+      "commonPhrasings": [
+        "什么时候 Full GC",
+        "Minor GC 和 Full GC 的触发条件",
+        "内存没满为什么已经 GC",
+        "调用 System.gc() 是否马上 Full GC",
+        "这行代码会不会触发 GC",
+        "这段代码会不会触发 GC"
+      ],
+      "shortAnswer": "GC 会因分配需要、对未来空间的预测、元数据压力、显式请求或失败恢复而启动，并不只在整个堆完全用尽时才发生。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "GC 会因分配需要、对未来空间的预测、元数据压力、显式请求或失败恢复而启动，并不只在整个堆完全用尽时才发生。回答“什么时候 Full GC”，先交代收集器，再把正常工作与兜底路径分开。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法包括“Minor GC 和 Full GC 的触发条件”“内存没满为什么已经 GC”“调用 System.gc() 是否马上 Full GC”“这行代码会不会触发 GC”。其中 Young、Minor 常用于年轻代回收；Major、Old 的口径并不统一，不能离开日志和监控定义判断它们是否等于 Full。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从一次分配请求看正常路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "TLAB 用完只表示一个线程的本地分配缓冲不足。它可能重新取得 TLAB，或者让较大对象走缓冲外分配；只要年轻代仍有空间，这些操作不必引发 GC。传统分代实现通常在年轻代分配无法继续时尝试年轻代收集。G1 也会根据年轻代目标和可用 Region 调度疏散暂停，而不是要求先把 Xmx 对应的全部空间填满。"
+        },
+        {
+          "type": "paragraph",
+          "text": "年轻代收集必须为幸存对象找到去处。Survivor 放不下，可以尝试晋升；老年代或其他疏散目标也不足，才可能进入更重的处理。一次 Young GC 后老年代增长，并不自动意味着内存泄漏，它可能只是正常晋升。相反，Young GC 后年轻代下降很多，也不能证明长期保留没有问题，还要看老年代或全堆活集的长期基线。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并发 GC 开始时堆还有空闲，往往正是为了避免稍后无处可分配：GC 工作期间，应用还会继续消耗空间。启动得太晚，即使本轮最终能回收很多，也可能来不及支撑这段新增占用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史 CMS 会结合老年代占用和预计完成时间；G1 的自适应 IHOP 则根据近期老年代分配、标记耗时和预留空间预测启动时机。分配率或晋升率突然上升、CPU 被限流，都可能使原本足够的提前量失效。因此“当前还有空闲”不能用来否定这次 GC。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "G1 的几类事件怎样衔接"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通 Young 暂停负责年轻代疏散。需要启动并发标记时，一次年轻代暂停可以同时承担 Concurrent Start；它仍是一次暂停，但后面的并发标记不是整段 STW。不是每次 Young GC 都开启完整的标记周期。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并发标记和收尾为老年代提供存活信息及回收候选。若老区回收值得做，随后进入 Mixed 阶段：每次处理年轻代，再加一部分选中的老年代 Region。Mixed 的“混合”描述收集集合，不表示把整个堆一次性收完；没有值得回收的老区时，也不必强行安排 Mixed。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Full 是另外的整堆重处理路径。G1 在普通分配、疏散或并发进度无法满足需要，以及某些显式请求等条件下，可能执行停顿式整堆整理。疏散失败与 Full 也不是同义词：一次 evacuation failure 可以先完成必要的引用修复、保留未移动对象并恢复应用，若空间仍不足，后续再转 Full。JDK 21 的 G1 Full GC 已采用并行处理，不能把所有 Full GC 都说成单线程 Serial Old。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Humongous 分配可能推动并发周期，也可能因为缺少连续 Region 而失败；并不是每分配一个大对象都要先 Full GC。实际事件应查同一个 GC 编号下的类型、原因、前后容量和阶段耗时，例如 Concurrent Start、Mixed、G1 Compaction Pause，以及该更新版输出的疏散失败标记。不要把日志中表示一个并发周期的记录数当作 STW 次数。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "元数据压力和显式请求"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 堆还有空间时，类元数据分配也可能达到触发回收的高水位。JVM 会尝试回收并在条件允许时卸载类；加载器及其类仍被有效引用时，这些元数据不能凭空释放。触发水位不等于元空间容量硬上限，失败也不能只按堆对象占用解释。某些直接缓冲区的分配重试和清理路径同样可能请求 GC，这不意味着 Java 堆已经满了。"
+        },
+        {
+          "type": "paragraph",
+          "text": "System.gc() 与 Runtime.gc() 表达回收请求，不承诺立即回收指定对象，也不保证所有配置下都走同一种路径。HotSpot 的 -XX:+DisableExplicitGC 可以忽略相应显式请求；对支持的收集器，-XX:+ExplicitGCInvokesConcurrent 可使相关请求采用并发路线。具体适用范围要看收集器，外部诊断命令也不能一律视为已被前一个参数屏蔽。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，不要把定时 System.gc() 当作常规“清理内存”方案。它可能制造额外停顿，也可能掩盖无界保留。文件、连接、锁和事务等资源应按协议显式释放，常用 try-with-resources 或 finally 完成；等待 GC 不是业务资源生命周期管理。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "怎样回答“这段代码会不会触发 GC”"
+        },
+        {
+          "type": "paragraph",
+          "text": "看到 new 只能说明源程序有对象创建语义，实际分配还受编译优化影响；即使确实分配，也要看当前剩余空间、收集器策略、并发线程及请求原因，才能解释某次 GC。单独一行源码不能保证“执行到这里就发生一次 Full”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整分析至少需要源代码、输入规模、实际 JDK/收集器、启动参数和对应日志。缺少代码或前后状态时，应先说明可分析的一般路径，不能编出对象个数、执行行号或 GC 次数。复习时可用两个反例自检：TLAB 耗尽可以不 GC，而预测性并发标记可以在堆尚未满时启动。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-g1",
+      "order": 150,
+      "question": "G1如何组织Region、选回收集合，为什么会超过暂停目标？",
+      "commonPhrasings": [
+        "分区怎样提高效率",
+        "Region 大小会不会动态改变",
+        "标记完为什么不马上清空那个 Region",
+        "目标 200 ms，为什么实际用了 300 ms"
+      ],
+      "shortAnswer": "G1 用固定字节大小的 Region 作为管理单元，保留年轻代和老年代的逻辑分工，通过并发标记获得存活信息，再用 Young 或 Mixed 暂停逐步疏散选中的区域。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "G1 用固定字节大小的 Region 作为管理单元，保留年轻代和老年代的逻辑分工，通过并发标记获得存活信息，再用 Young 或 Mixed 暂停逐步疏散选中的区域。它追求吞吐与暂停的平衡，MaxGCPauseMillis 是软目标，不是硬实时承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试常连续追问：“分区怎样提高效率”“Region 大小会不会动态改变”“标记完为什么不马上清空那个 Region”“目标 200 ms，为什么实际用了 300 ms”。回答要区分布局、选择策略和实际执行成本。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "固定的是 Region 大小，变化的是角色和数量"
+        },
+        {
+          "type": "paragraph",
+          "text": "在同一个 G1 进程中，各 Region 使用相同的字节大小，启动时选定后不会随着每轮 GC 随意改成不同尺寸。一个区域可以用于 Eden、Survivor、Old 或 Humongous，也可以是空闲区域；年轻代和老年代由相应区域集合组成，在地址上不必各自连续。回收后重新使用区域，或增减年轻代占用的 Region 数，并不是把一个 Region 本身放大或缩小。"
+        },
+        {
+          "type": "paragraph",
+          "text": "还要区分保留的虚拟地址范围、已提交给堆使用的内存、实际已用空间。堆扩容可以提交更多相同尺寸的 Region；归还适当空闲区域会降低已提交量。Xmx 不等于进程的实时 RSS，更不代表每一页都已经驻留物理内存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 OpenJDK 21 GA 为边界，自动 Region 大小按最大堆规模计算，目标大约是 2048 个 Region，并在 1～32 MiB 内按二的幂选择；手工指定 G1HeapRegionSize 的实现范围可到 1～512 MiB，也受对齐和合法性检查约束。“自动选择上限 32 MiB”与“手工支持上限 512 MiB”是两回事，不能拿某本旧书里的范围概括所有 JDK。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Region 较小，回收粒度更细，通常更容易把工作分成小批次；但区域更多、跨区关系和元数据成本可能增加。Region 较大，可能减少一些跨区记录并提高 Humongous 大小门槛，也可能使最小回收工作粒度变粗，降低找到整块空区的机会。不要仅为了让大数组不再被统计为 Humongous 就认定调大一定更好，普通年轻代复制和实际内存峰值也可能随之变化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的程序同时读取 Region 大小与已提交堆容量，在有界分配前后比较。它保留 96 个 128 KiB 数组，并用 reachabilityFence 保证观察结束前这批对象仍具有所需可达性。保存为 G1RegionEvidence.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "G1RegionEvidence.java",
+          "value": "import com.sun.management.HotSpotDiagnosticMXBean;\nimport java.lang.management.ManagementFactory;\nimport java.lang.ref.Reference;\nimport java.util.ArrayList;\nimport java.util.List;\n\n/** HotSpot 21: region size and committed heap are different measurements. */\npublic final class G1RegionEvidence {\n    public static void main(String[] args) {\n        if (args.length != 1) {\n            throw new IllegalArgumentException(\"Expected: region size in bytes\");\n        }\n        long expected = Long.parseLong(args[0]);\n        var bean = ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class);\n        if (!Boolean.parseBoolean(bean.getVMOption(\"UseG1GC\").getValue())) {\n            throw new IllegalStateException(\"Run this example with -XX:+UseG1GC\");\n        }\n        var before = bean.getVMOption(\"G1HeapRegionSize\");\n        long committedBefore = ManagementFactory.getMemoryMXBean()\n                .getHeapMemoryUsage().getCommitted();\n        List<byte[]> live = new ArrayList<>();\n        for (int i = 0; i < 96; i++) {\n            byte[] block = new byte[128 * 1024];\n            block[0] = (byte) i;\n            live.add(block);\n        }\n        var after = bean.getVMOption(\"G1HeapRegionSize\");\n        long committedAfter = ManagementFactory.getMemoryMXBean()\n                .getHeapMemoryUsage().getCommitted();\n        if (before.isWriteable() || after.isWriteable()\n                || !before.getValue().equals(after.getValue())\n                || Long.parseLong(after.getValue()) != expected) {\n            throw new AssertionError(\"Unexpected region size or management capability\");\n        }\n        if (live.size() != 96 || live.get(95)[0] != 95) {\n            throw new AssertionError(\"Allocation workload incomplete\");\n        }\n        System.out.println(\"VM=\" + System.getProperty(\"java.vm.name\") + \" \"\n                + System.getProperty(\"java.runtime.version\"));\n        System.out.println(\"ARGS=\" + ManagementFactory.getRuntimeMXBean().getInputArguments());\n        System.out.println(\"PASS: region=\" + after.getValue() + \" not writeable; committed before=\"\n                + committedBefore + \" after=\" + committedAfter);\n        Reference.reachabilityFence(live);\n    }\n}\n"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "jvm-code-08.sh",
+          "value": "javac G1RegionEvidence.java\njava -Xms16m -Xmx64m -XX:+UseG1GC -XX:G1HeapRegionSize=1m -Xlog:gc* G1RegionEvidence 1048576\njava -Xms16m -Xmx64m -XX:+UseG1GC -XX:G1HeapRegionSize=2m -Xlog:gc* G1RegionEvidence 2097152\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个进程分别验证 1 MiB 与 2 MiB 配置。断言检查 Region 值一致、符合预期且不可通过管理接口写入；已提交堆容量只是记录，没有断言它一定增长或增长多少。JVM 的具体扩容时机不是这个程序的契约，这也不是比较两种 Region 大小性能的基准。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从年轻代回收到一次并发标记周期"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以把 G1 的正常运行看成“年轻代阶段”和“空间回收阶段”交替。"
+        },
+        {
+          "type": "paragraph",
+          "text": "开始时多次 Young-only 回收处理年轻对象。需要获得新的老年代存活信息时，一次 Young 暂停承担 Concurrent Start，完成启动并发标记所需的工作。根区域扫描随后处理这次暂停形成的相关根区域，例如 Survivor 中指向老年代的引用；相关扫描必须与下一次可能移动这些区域的年轻代回收正确协调。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并发标记沿对象图追踪。应用继续修改引用时，SATB 屏障保留需要保留的旧引用信息，使收集器能够按开始时的快照安全判断对象存活。周期中才变成垃圾的对象可能保守保留到以后；新分配对象也有保证安全的处理约定。屏障记录、根区域扫描、对象遍历共同维持正确性，不能把“并发”理解为随时读一遍字段就足够了。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Remark 暂停完成标记收尾、引用处理及相关清理。之后还有并发准备工作，Cleanup 完成回收候选和是否进入下一阶段等决策。完全无须保留活对象的区域，可以在安全阶段直接归还；含活对象的普通老年代区域，则需要等待适当的疏散回收。阶段名相似不表示可以照搬 CMS 的四步流程，G1 的并发标记主要为后续区域化回收提供依据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要回收老年代时，经过相应过渡进入多次 Mixed：每次收集年轻代，再加入部分老年代候选。达到本轮回收目标、剩余收益不足或候选耗尽后，回到 Young-only 阶段。Humongous 对象还有专门的存活判断和可提前回收路径，不能把它们当作每轮必定搬走的普通老区。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "标记完一个 Region，怎样决定要不要回收"
+        },
+        {
+          "type": "paragraph",
+          "text": "标记回答“哪些对象必须保留”，选集回答“这一轮做哪些工作最划算”。有存活对象的 Region 不能因为垃圾比例很高，就把整区直接清零；必须先找到所有需要保留的对象及相关引用，搬到可用目标区域并更新引用，随后才能重用源空间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "G1 选 collection set 时，问的是“这次暂停能以多少工作换回多少空间”。它会一起估计存活字节数、复制时间、根与跨区引用扫描成本、可回收空间和暂停预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Young-only 要完成年轻代任务，不能随意跳过年轻代，只挑垃圾最多的老区。Mixed 才在年轻代之外加入老年代候选：既有必须推进的部分，也有预算允许的部分，还可能在剩余时间中追加可选部分。这就是为什么“垃圾最多”不足以单独决定先收谁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设 A、B 两个候选 Region 都为 4 MiB，A 只有 0.2 MiB 活数据，B 有 3.5 MiB。只看复制量，A 往往更划算；但如果大量其他区域指向 A，扫描成本会影响选择。判断依据更接近“回收收益相对于预测成本”，而不是一个静态垃圾百分比排行榜。"
+        },
+        {
+          "type": "paragraph",
+          "text": "G1MixedGCLiveThresholdPercent 影响哪些老区值得进入候选，G1MixedGCCountTarget 影响把候选工作分摊到多次 Mixed 的目标，G1HeapWastePercent 则参与判断剩余可回收空间是否值得继续处理。参数不是每次必须执行的硬承诺，具体选集还受暂停、回收进度和实际空间制约。只减少每次选入老区，可能让暂停更短，却使回收长期追不上晋升。"
+        },
+        {
+          "type": "paragraph",
+          "text": "局部收集还需要处理收集集外部的引用。G1 用写后屏障、卡表和记忆集维护近似的指入位置，再在暂停中合并、扫描相应信息；对象移动后必须修正相关引用。SATB 主要保证并发标记的快照正确性，记忆集主要帮助局部收集发现外部引用，这两个问题不能混为一谈。跨区引用很多，或脏卡处理来不及，暂停中的扫描成本就可能上升。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Humongous、疏散余量和超过暂停目标"
+        },
+        {
+          "type": "paragraph",
+          "text": "满足大对象条件时，G1 在一串连续的 Region 中分配一个 Humongous 对象，从首区起始位置放置。最后一个区域剩下的尾部空间，通常不能马上拿来分配另一个普通对象，可能形成明显浪费。总空闲 Region 足够，也不意味着存在满足要求的连续序列。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Humongous 不走普通对象的年龄晋升过程，通常也不参与常规年轻代或 Mixed 的普通搬迁。G1 可以在标记后的相应阶段回收不可达大对象，对符合条件的对象还存在年轻代暂停中的提前回收机会；极端兜底整理下的移动行为也不能概括成“永远不移动”。讨论精确阈值时要用完整对齐对象大小；讨论回收时机时要看存活、引用信息及具体路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通疏散也需要目标空间。假设这一轮要搬走一批存活对象，但可用 Region 不足，GC 不能为了完成目标而删除它们。疏散失败时，一部分已搬迁对象留在新位置，未搬迁对象需要在原位置得到安全处理，随后修复必要的状态和引用；额外工作可能增加暂停。进一步没有空间时才进入 Full 等兜底路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "-XX:MaxGCPauseMillis=200 表达的是期望目标，实际出现 300 ms 不代表违反保证。预测依赖过去的存活率、扫描成本和 CPU 供给；突发活集增长、跨区引用激增、CPU 配额不足、系统调度或缺页都可能改变实际耗时。目标也不能取消必须完成的根处理和正确性工作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果 Object Copy 主导，应看复制量、对象寿命和年轻代大小；如果根或记忆集扫描主导，应看引用结构和相关处理积压；如果 Real 时间显著高于实际 CPU 工作时间，应检查 CPU 是否拿不到或系统是否存在其他等待。降低目标可能让年轻代或可选老区集合变小，却提高回收频率、降低吞吐。先用阶段证据决定改什么，再看业务尾延迟、总 GC 成本和是否出现失败，不要把参数数字调小当作完成优化。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [],
+      "mustKnow": false
+    }
+  ]
+}

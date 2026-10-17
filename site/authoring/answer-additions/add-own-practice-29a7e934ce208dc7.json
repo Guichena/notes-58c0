@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-29a7e934ce208dc7",
+  "entryId": "ai-agent-6",
+  "expectedOriginalHash": "e5a4dd82306e7b6443bb4d92c78eadc8abe2cdd04d44fc1cdfdba8582a19242e",
+  "title": "跨册场景补充：LangGraph与LangChain怎样选择，快照、用户画像记忆更新和敏感词护栏怎样接起来",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LangGraph与LangChain怎样选择，快照、用户画像记忆更新和敏感词护栏怎样接起来"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangGraph 提供显式状态图、检查点与恢复控制，LangChain 提供高层集成；记忆更新和安全护栏仍需要应用自己定义版本、权限和验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下文按各框架公开接口说明设计；实际依赖版本要锁定，不能把Python接口名称直接当Java生态API。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问："
+    },
+    {
+      "type": "paragraph",
+      "text": "- Claude Code 记忆机制：深入剖析 Claude Code 的记忆系统，它区分短期记忆与长期记忆吗？具体如何实现检索？"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "框架定位和选型不能讲成简单替代关系"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangChain提供较高层模型/工具/检索集成和Agent接口，适合快速搭常见工作流；LangGraph提供更显式的有状态图/运行控制，State描述共享数据，Node执行步骤，Edge/条件边决定下一步，可表达循环、并行、暂停和持久恢复。当前LangChain的Agent构建在LangGraph之上，因此不能说LangChain没有状态或两者互不相关。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要细粒度自定义图、检查点、人工介入和恢复时直接用LangGraph更可控，代价是显式设计状态schema、reducer、节点幂等和版本迁移；简单单次调用或固定程序可手写，不为框架而加多Agent。Python框架接口与Java生态的类似功能不能当作同一API。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "状态快照的实质和恢复边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "配置checkpointer后以thread为标识保存图状态快照与执行元数据，在图的super-step边界形成checkpoint；包括状态values、待运行next和相关任务/配置，具体字段遵当前API。持久存储可用于恢复/检查历史/人工暂停，内存saver只在本进程存在，不自动变生产持久层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并发分支合并共享字段需reducer或单writer，checkpoint/状态更新与外部效果是不同事务。恢复可能重执行节点，interrupt前的副作用要幂等或拆成已持久活动；模型调用重新运行也可能不确定。graph/code/schema升级需兼容版本/迁移，不能把快照当任意CPU指令位置或自动exactly-once。"
+    },
+    {
+      "type": "paragraph",
+      "text": "阅读 checkpointer 时，先找恢复记录的身份：thread_id、checkpoint_ns 和 checkpoint_id 关联序列化状态、元数据与前驱引用，单步完成的 task writes 也可单独持久化。同一 super-step 中一个分支失败时，成功分支的 pending writes 可供恢复使用，避免重算；数据库键/索引、序列化兼容、写入原子性与保留策略都会影响可靠性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "然后再核对何时持久化。当前 durability 的 sync 等检查点写完再继续，async 允许后台持久化并留下崩溃窗口，exit 到退出点才保存，应按恢复承诺选择模式。练习时在这些时刻之间让进程退出，说明哪部分状态已有保存依据；不能只看到 checkpoint 这个词就认定所有中间结果都已落盘。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangGraph从指定checkpoint进行time-travel replay时，已在检查点之前的步骤可利用保存状态，而之后的节点会重新执行，LLM调用、API请求和interrupt也可能再次发生；它不同于RecordedHarness仅消费已记录事件、禁止再次产生外部效果的审计回放。恢复设计仍须对重新执行的副作用提供幂等、回执回查或人工确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "停止循环必须由宿主检查目标验收、最大步数、总时间/费用、重复状态与无进展条件；只有模型返回DONE不足以证明成功。短期与长期之间可以另设中期任务/情节摘要层，但每层仍有来源、版本和过期规则。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "用户画像怎样从消息变成可更正的长期事实"
+    },
+    {
+      "type": "paragraph",
+      "text": "短期thread保存当前消息、工具结果和执行状态，取近期+关键约束+摘要构建有限上下文；长期跨会话保存经过证据验证的事实/偏好，向量只作为检索索引。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先保存原消息与来源版本，再受控提取候选(subject,attribute,value,observedAt,validTime,explicit/inferred,evidence)。校验归属/必要性，明确更正优先于旧推断，冲突不按相似度直接覆盖；追加事实revision，事务CAS发布当前头，并通过可靠事件更新向量/全文索引。向量条目携factId/version/ACL，召回后复核当前头与删除/有效期，防旧异步任务复活过期画像。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "敏感词拦截和专门模型各负责什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "词典精确匹配/Trie或AC自动机适合已知词和低延迟规则；先在明确政策下做大小写/Unicode规范化，识别变体同时保留原文/命中位置对应。子串禁词可能误伤合法讨论，谐音、拼写变体和跨轮表达又会漏掉，不能把关键词过滤等同通用内容安全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "专门分类/审核模型可补语义，需固定版本、标注集、分层阈值和误报/漏报评测；把文本拆成流式片段审核也可能错过跨片词或语义。高风险输出必须在可见前校验/缓冲，不能靠异步审核补救已披露内容；工具/数据权限、最大轮数和费用仍由宿主强制控制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现可以词典+模型+确定性策略分层，不强迫二选一，也不宣称任何组合完全消除风险。"
+    },
+    {
+      "type": "paragraph",
+      "text": "具体词典实现可把版本化词条插入Trie，用BFS构建AC失败指针和输出集合；逐Unicode码点扫描，失败时沿failure回退，命中后交策略决定阻断、遮盖或人工复核。总词长P占O(P)状态，稀疏转移下通常扫描O(L+Z)，L为输入长度、Z为匹配数，转移查找成本依字典实现；密集转移表会增加字母表相关空间。流式扫描需保留匹配状态和未完成Unicode/规范化边界，不能每chunk清零使跨片词漏检。标记匹配位置时要维护规范化文本到原文的位置映射，不能拿归一化后的偏移直接裁原文。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Claude Code是否也有长短期、具体如何检索"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用“当前会话上下文”理解短期工作信息，与跨会话文件型指导/自动记忆区分；长对话会有上下文管理/压缩，但当前上下文不是永久事实库，压缩也非无损。公开契约没有证明它使用某个向量库/embedding排序器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "官方当前自动记忆入口MEMORY.md按前200行或25KB先到者加载，更多细节按需读取；具体检索/工具行为与版本有关，不把这条产品限制推广成所有Agent的原则。这些是版本敏感的产品契约，应按实际客户端版本核对。"
+    }
+  ],
+  "questionId": "0",
+  "related": [
+    {
+      "entryId": "ai-agent-7",
+      "label": "相同原文的规范入口",
+      "questionId": "4"
+    },
+    {
+      "entryId": "ai-agent-3",
+      "label": "相同原文的规范入口",
+      "questionId": "6"
+    }
+  ]
+}

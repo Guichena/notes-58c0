@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-94",
+  "entryId": "database-94",
+  "expectedOriginalHash": "96ffb8545776234ed6112900d43362858bf96da2f86f180333ddaa7b504fb04f",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态机规定合法边 CAS 保护迁移前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久任务可定义 NEW→RUNNING→SUCCEEDED/FAILED。终态重试究竟新建 attempt 还是回到 NEW，必须事先约定。条件 UPDATE 包含 tenant、id、expected state、expected version；只有一行改变才能取得迁移权。数据库 CAS 要经过网络、索引、锁与日志，不是 CPU 中低成本自旋，不能无限 while 查库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TaskCas 把一次 operation_id 的输入和结果持久化，成功时同事务写 task_outbox。冲突/缺失也记录该操作的稳定失败结果，因此依据新状态重试应使用新的 attempt/operation_id，并与上层业务身份关联。一个旧失败号不能悄悄改参数再变成功。outbox 失败会回滚状态和收据，没有外部副作用在事务内执行。tenant 必须来自服务端授权上下文，示例只验证边界值，不实现登录/鉴权系统。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/transactions/code/locking/TaskCas.java",
+      "value": "import java.sql.*;\nimport java.util.Set;\n\n/** Durable NEW -> RUNNING -> SUCCEEDED/FAILED; no dispatcher or external side effect. */\npublic final class TaskCas {\n    private static final Set<String> EDGES=Set.of(\"NEW:RUNNING\",\"RUNNING:SUCCEEDED\",\"RUNNING:FAILED\");\n    private final Db.Source source;\n    public TaskCas(Db.Source source){this.source=source;}\n    public static void validate(String state,long version,String target) {\n        if(!EDGES.contains(state+\":\"+target) || version<0 || version==Long.MAX_VALUE)\n            throw new IllegalArgumentException(\"illegal edge or version\");\n    }\n    private static String receipt(Connection c,long tenant,long id,String op,String state,long version,String target)\n            throws SQLException {\n        try(PreparedStatement p=Db.prepare(c,\n                \"SELECT task_id,expected_state,expected_version,target,result FROM task_receipt WHERE tenant=? AND operation_id=?\")) {\n            p.setLong(1,tenant);p.setString(2,op);\n            try(ResultSet r=p.executeQuery()) {\n                if(!r.next())return null;\n                if(r.getLong(1)!=id || !state.equals(r.getString(2)) || r.getLong(3)!=version || !target.equals(r.getString(4)))\n                    throw new IllegalArgumentException(\"operation ID reused\");\n                return r.getString(5);\n            }\n        }\n    }\n    public String transition(long tenant,long id,String op,String state,long version,String target,boolean failOutbox)\n            throws SQLException {\n        Db.key(op);validate(state,version,target);\n        if(tenant<=0 || id<=0)throw new IllegalArgumentException(\"tenant/task\");\n        return Db.transaction(source,c->{\n            String old=receipt(c,tenant,id,op,state,version,target);if(old!=null)return old;\n            try(PreparedStatement p=Db.prepare(c,\"INSERT INTO task_receipt VALUES(?,?,?,?,?,?,?)\")) {\n                p.setLong(1,tenant);p.setString(2,op);p.setLong(3,id);p.setString(4,state);\n                p.setLong(5,version);p.setString(6,target);p.setString(7,\"PENDING\");\n                try{p.executeUpdate();}catch(SQLException e){\n                    if(!Db.duplicate(e))throw e;\n                    if (!Db.rollback(c, e)) throw e;String replay=receipt(c,tenant,id,op,state,version,target);\n                    if(replay==null)throw e;return replay;\n                }\n            }\n            int changed;\n            try(PreparedStatement p=Db.prepare(c,\n                    \"UPDATE task SET state=?,version=version+1 WHERE tenant=? AND id=? AND state=? AND version=?\")) {\n                p.setString(1,target);p.setLong(2,tenant);p.setLong(3,id);p.setString(4,state);p.setLong(5,version);\n                changed=p.executeUpdate();if(changed>1)throw new SQLException(\"task not unique\");\n            }\n            String result=changed==1?\"APPLIED\":\"CONFLICT_OR_MISSING\";\n            if(changed==1){\n                if(failOutbox)throw new SQLException(\"injected outbox failure\");\n                try(PreparedStatement p=Db.prepare(c,\"INSERT INTO task_outbox VALUES(?,?,?,?,?)\")){\n                    p.setLong(1,tenant);p.setString(2,op);p.setLong(3,id);p.setString(4,target);p.setLong(5,version+1);p.executeUpdate();\n                }\n            }\n            try(PreparedStatement p=Db.prepare(c,\"UPDATE task_receipt SET result=? WHERE tenant=? AND operation_id=?\")) {\n                p.setString(1,result);p.setLong(2,tenant);p.setString(3,op);\n                if(p.executeUpdate()!=1)throw new SQLException(\"receipt missing\");\n            }\n            return result;\n        });\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "任务 Token、租约和版本不能混同。租约到期允许其他 worker 接管，不能阻止旧 worker 从暂停中恢复后继续发请求。generation/epoch 必须在最终写入或副作用接受端参与校验；仅在领取时 CAS 成功不意味着永远拥有执行权。远端不支持 fencing 或稳定幂等号时，必须明确残留重复风险。调度器、投递器、渠道协议属于完整应用和消息章节，本例没有隐藏的 dispatcher。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "任务与工单中的并发边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 NoteWeave 当前代码为例，MySQL 中的 task/outbox 表由 JDBC 访问、Flyway 迁移；投递者通过 claim、token 和租约领取任务，发布后推进完成状态。发布成功而完成记录失败时，后续仍可能重投，因此消费方需要幂等。代码中的并发协议可以用于机制推演，历史部署版本、规模与性能收益仍须分别确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "制造业维修工单中，审批版本 CAS 保护并发迁移，CMMS 建单通过稳定请求号查询结果并防重，两个机制分别作用于本地状态和外部效果。MySQL 5.7/RR、具体表结构、4h/72h、三次重试和部署拓扑在这里仅是独立教学设定。制造业的 RabbitMQ/pgvector 与 NoteWeave 的 Kafka/MySQL 属于不同项目链路。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

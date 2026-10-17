@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-es-bg-elasticsearch-5-1",
+  "entryId": "bg-elasticsearch-5",
+  "expectedOriginalHash": "387407d3242c5bfad674edd1165615ab15720a9b84a1a0d8989e1f10e91e85c6",
+  "title": "完整 sort、PIT 状态机与撤权边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6.1 from size 为什么越翻越贵"
+    },
+    {
+      "type": "paragraph",
+      "text": "from 是跳过数量，size 是最多返回数量。跨 S 个分片取偏移 F 后的 K 篇，各片通常需要维护前 F+K 个候选，协调节点再归并和丢弃前 F 篇。粗略候选通信/状态可随 S(F+K) 增长；最终只展示 K 篇，并不使被丢弃的工作消失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ES 8.15 默认 index.max_result_window=10000，限制 from+size 的常规窗口，不是索引最多只能保存或命中一万篇。直接把窗口调到百万并未改变算法，可能把成本转成堆压力和长尾。页数乘页大小还要在应用层防整数溢出，并限制单页大小、查询耗时和最大交互深度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "浅页、有限跳页可以使用 from/size；连续深翻或导出优先考虑 search_after 配合 PIT。关系库的 keyset 也利用排序边界减少偏移，但其索引、谓词和事务快照有独立语义，完整 SQL 实现见 MySQL 手册“深分页”章，不能把 SQL 游标当 ES 搜索上下文。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6.2 search_after 必须传完整 sort 数组"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确定一个全序，例如 created_at 降序、doc_id 升序。下一页传回上一页最后一条命中的整个 sort 数组，保持字段顺序、数值类型和日期格式一致；不能只传 doc_id，也不能把分数四舍五入再回传。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若排序为 [_score, created_at, doc_id, _shard_doc]，四个值都属于边界。跨索引日期类型不同，需统一 numeric_type/format 等契约；缺值、多值字段排序模式也应在整个遍历中固定。业务 ID 必须在查询范围内唯一，仅每个索引内唯一还不够。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不使用 PIT 时，refresh、新写、删除或排序字段更新可能把文档移动到游标前后，造成重复或遗漏。固定一个 created_at<=T 可以阻断部分新数据，但不能阻止旧记录被更新或回填，也不能独自构成完整快照。反过来，PIT 固定数据视图后仍要用一致全序，不能每页临时改变 boost 或随机排序种子。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6.3 PIT 的开启 续期与关闭"
+    },
+    {
+      "type": "paragraph",
+      "text": "PIT 引用一组搜索上下文，让后续请求沿用此前打开的索引视图。它不是把整个索引复制一份，更不是与 MySQL 同时开始的跨库事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以第10章完整教学索引为前提，可按以下顺序执行。PIT ID 必须取自真实响应，下面使用文字占位，不伪造一串可以直接使用的 ID。"
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "POST /interview_java_demo/_pit?keep_alive=1m\n\nPOST /_search?allow_partial_search_results=false\n{\n  \"size\":1,\n  \"track_total_hits\":false,\n  \"timeout\":\"5s\",\n  \"pit\":{\"id\":\"REPLACE_WITH_LATEST_PIT_ID\",\"keep_alive\":\"1m\"},\n  \"query\":{\"bool\":{\"filter\":[\n    {\"term\":{\"tenant_id\":\"demo\"}},\n    {\"term\":{\"acl\":\"reader\"}},\n    {\"term\":{\"generation\":\"r1\"}},\n    {\"term\":{\"deleted\":false}},\n    {\"range\":{\"created_at\":{\"lte\":\"2026-10-10T12:00:00Z\"}}}\n  ]}},\n  \"sort\":[{\"doc_id\":\"asc\"},{\"_shard_doc\":\"asc\"}]\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "后续仍发 POST /_search，query、sort、绝对时间条件完全不变；把最新 PIT ID 放回 pit.id，把上一页最后命中的完整 sort 数组放进 search_after。若真实响应最后值是 [\"a\",0]，增加的字段就是 \"search_after\":[\"a\",0]；零只是说明类型与顺序，不能代替实际响应值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "带 pit 的 search 不再指定 index、routing、preference，这些取自打开 PIT 的上下文。需要自定义 routing，应在开启 PIT 时正确限定，并在整个遍历中保持一致。8.15 的 PIT 搜索有 _shard_doc 作为稳定的内部 tie-break，它只在这个 PIT 生命周期内有意义；不能持久保存它并用于新 PIT 的续跑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "开启和后续搜索可能返回不同 ID，始终保留最新返回的 ID。keep_alive 只需覆盖下一请求间隔，可在每次请求延长；它不是必须一次预留整份导出耗时。结束、取消或异常时尽力关闭最新上下文："
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "DELETE /_pit\n{\"id\":\"REPLACE_WITH_LATEST_PIT_ID\"}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "第10章完整 Java 程序展示真实响应提取、完整 sort 值、空页结束、finally 关闭和失败处理，不需要自己拼造 PIT ID。它使用8.15.0客户端已有 API，不把较新版本开启 PIT 的额外参数搬进来。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6.4 一个可靠分页状态机"
+    },
+    {
+      "type": "paragraph",
+      "text": "服务端游标要把“谁在读、按什么规则读、从哪里继续”一起固定下来，至少绑定这些信息："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "用户/租户，以及授权版本或范围。",
+        "规范化查询摘要、排序协议、索引代和固定评估时间。",
+        "PIT ID、上一完整页的排序边界和到期时间。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "可以用有界服务器端会话 ID，也可以用经过认证签名的游标；仅 Base64 编码不能防篡改。签名密钥从正常密钥管理取得，不写入日志或示例源码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一页先验证身份和请求，计算固定时间 T，再打开 PIT。每一页先验证游标与当前授权，再执行同样的查询；检查 timed_out、失败分片和业务回查结果，只有按约定完整处理后才提交新的排序边界。HTTP 200 或拿到几条 hits 都不能代替完整性检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重试同一页时，网络丢响应可能让用户收到重复页面；如果服务允许这种重试，就要通过请求序号/页 ID 或应用去重实现交付幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PIT ID 的更新与分页边界的推进要分别处理。成功响应带了新 PIT ID，即使该页随后没通过业务校验，也要保留新 ID，供重试或关闭上下文使用；但失败页的 sort 边界不能前移。否则从部分结果的最后一条继续，就可能跳过尚未完整处理的数据，不能再声称没有遗漏。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PIT 过期、索引被删或上下文丢失后，应明确让调用方重启遍历，或从业务定义的导出水位重建。把旧 search_after 拼到新的 PIT 上只是一种新的查询，不能保持旧遍历的完整性承诺。若任务必须恢复并精确交付一次，可使用不可变索引代和输出检查点，仍需核对 ID/版本及重复写处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "动态 now 应在第一页转为固定绝对时间。否则即使 PIT 没变，\"过去24小时\"的边界每页都在移动，查询语义仍变化。涉及发布状态、模型代和策略权重时也一样：在游标里固定，或明确让查询作废重来。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6.5 数据快照不能保留已经失去的权限"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户打开 PIT 后，管理员可能撤销访问。旧 PIT 能保留旧文档视图，不代表旧权限继续有效。每页必须验证当前请求是否仍允许访问该范围，必要时整份游标作废；结果输出前对敏感详情做权威资格检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "严格一致导出和即时撤权有不同目标：一份历史快照的结果集合不能优先于当前安全边界。若撤权导致候选被移除，可返回短页或按有界预算继续扫描，但必须明示业务合同；不能为了补满页面扩大租户、忽略 deleted 或取另一个旧版本。最终授权检查还要考虑检查到发送之间的并发窗口，敏感系统需要明确由哪一层负责最终放行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "索引可见性不足也不能由 PIT 弥补。某条源库更新尚未进入 ES，打开 PIT 只会稳定保留“尚未到达”的旧视图。需要读己之写或达到某个发布水位，应在打开 PIT 前等待相应投影状态，并验证它不是仅某个分区的最大时间戳。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6.6 资源 随机跳页与导出"
+    },
+    {
+      "type": "paragraph",
+      "text": "PIT 会保留被旧视图使用的段和存活位信息，增加磁盘、文件句柄及删除更新频繁场景下的堆负担。限制同时打开数量、每页处理时长、keep_alive 和总任务寿命，监控 open contexts、段占用和清理失败。关闭失败后短 TTL 是兜底，不能把所有失败都交给无限过期时间处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "search_after 擅长“下一页”，不提供免费跳到第十万页。产品可限制页深、提供搜索条件缩小范围、保存书签或预建锚点；锚点与结果物化都要绑定视图及到期规则。需要长时间全量导出时，异步任务、限速、分块输出和可恢复检查点比让浏览器一直翻页更合适。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Scroll 仍用于某些既有批处理，但一般深分页优先 PIT+search_after；使用 Scroll 时也要清理上下文并处理失败。它不是实时 UI 无限滚动的默认答案。全量导出即使每页很快，总扫描、取回、网络和存储工作仍与导出体量相关。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    },
+    {
+      "entryId": "bg-elasticsearch-4",
+      "questionId": "q-own-es-java-client",
+      "label": "请求所用索引的完整 Java 夹具与字段定义"
+    }
+  ],
+  "questionId": "1"
+}

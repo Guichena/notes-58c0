@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-bg-elasticsearch-1-q-own-es-ad-boolean",
+  "entryId": "bg-elasticsearch-1",
+  "expectedOriginalHash": "0613e8a3701cd997d3a20222b6089a03400830457b3b804924a2374f43526b89",
+  "title": "算法练习补充：广告属性倒排召回 布尔集合运算与正确全集",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "广告属性倒排召回 布尔集合运算与正确全集"
+    },
+    {
+      "type": "paragraph",
+      "text": "这道题先用倒排索引把“查每个广告的属性”改成“对广告 ID 集合做运算”。词项映射到广告 ID 集合：IN(d,e) 是 P(d)∪P(e)，NOT IN(a,b,c) 是有效候选全集 U 减去 P(a)∪P(b)∪P(c)，再把这两部分求交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多字段条件先在各自字段内合并，再按选择性做交集，最后进入广告排序。这样每次查询就不必扫描全部广告的全部属性；NOT 的补集也必须相对于有效候选全集来算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "广告属性达到成百上千万量级，怎样快速召回符合 in(d,e) 与 not in(a,b,c) 的广告？",
+        "倒排索引如何构建、求并交差，并限制在有效且有权访问的全集？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "广告布尔检索先约定属性 schema、广告与字段值规模、更新频率和 NULL 语义。下面将 (field,value) 编码成词项，每条广告有稳定非负 docId；查询为若干 OR 组之间做 AND，再排除任一禁用词项。NOT 相对于当前有效且有权限的广告全集计算，缺字段表示未含该词项，不采用 SQL 三值逻辑。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "正排是docId→属性集合，适合读取某广告全部属性；倒排反过来按某属性值定位所有包含它的广告。构建时给每广告分配稳定ID，规范化字段和值，逐个词项追加docId，再排序/去重或置位；正文全文检索还可保存词频、位置和文档长度，广告等值过滤通常只需集合成员。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例有效且允许集合U={0,1,2,3}，P(d)={0,2}、P(e)={1,2}，候选IN为{0,1,2}；若禁用并集为{1,3}，最终{0,2}。NOT绝不能对BitSet无限补码后返回未存在/未授权ID，必须从U的副本开始andNot。代码先result=authorized∩live，任何后续运算都只能缩小，不会补出跨租户广告。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同字段的值要带字段名，例如region=US与category=US不是同词；IN的多个值是OR，一个广告命中任一值即可。多个字段组之间是AND。空OR组代表false，所以使结果为空；没有OR组才表示无正向约束。负向词不存在于索引时对结果无影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代码用Java BitSet演示精确集合运算，每次query克隆授权全集并建立临时union，不直接and/or修改共享postings，避免本次查询污染下次。索引构造复制成员关系，之后不更新；如果调用者并发修改输入authorized或建索引时的文档集合，仍需其外部所有权协议，不能因内部只读就宣称任意并发安全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选择数据结构取决于密度：稀疏倒排可排序整型列表、差分/变长编码与跳跃；密集集合用位图按机器字做AND/OR；混合分布可用Roaring按块自适应数组/位图/run容器。不要为千万种极稀疏属性各分配一张百万广告的完整位图，笛卡尔积内存会爆炸。本BitSet代码是可验证语义示例，不宣称它是所有大规模属性分布的最佳存储。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AND可优先处理最短/最稀疏posting，早空提前终止，OR要去重；排序列表交集可双指针O(p+q)，一边很短时可对另一边二分/galloping；dense位图按覆盖的机器字数计，不是按命中结果数O(1)。范围属性还可用有序索引/分桶或专用数值结构，而非为所有阈值预建词项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "规模大时按docId分片使每片执行同一布尔表达式再合并，或按词项分片承担跨分片集合运算，权衡数据局部性。属性更新要去除旧posting并加入新posting；删除/过期/撤权需更新有效全集、索引和缓存版本，用一致快照避免广告被旧属性误召回。排名/竞价/预算是召回后阶段，不能用topK排序代替硬布尔约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQL 的 NOT IN 遇 NULL 可能产生 UNKNOWN，不等于集合模型的“没有任何禁用标签”。要复制 SQL 语义，必须为 NULL、缺字段保存独立状态并按三值逻辑筛选，不能把 andNot 当作任意数据库谓词的通用替代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "随机生成广告属性、授权全集、OR 组与排除条件，用逐条广告计算布尔谓词作参考；覆盖空组、空库、未授权 ID 和重复查询不污染索引。正确性测试与千万级数据下的吞吐、p99 评估应分别设计。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "设词项T、广告D、总出现关联P，建索引至少O(P)，纯位图空间最坏O(TD)位；稀疏/压缩表示按真实posting与块结构计。令W=ceil(D/64)、G为OR组数、q为访问的词项槽位数，A为授权BitSet复制和裁剪涉及的机器字数。在通常哈希访问模型下，一次dense查询的安全上界为O(A+(q+G+1)·(W+1))；即使q=0，也仍需复制并限制授权全集。若授权位图的容量也限制在广告范围内，可简化为O((q+G+1)·(W+1))。最终枚举输出z条另至少需要Ω(z)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "“属性成百上千万”需拆清广告数量、字段数量、字段取值基数和更新频率，再决定压缩、分片与索引组织。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现与自测"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ],
+  "questionId": "q-own-es-ad-boolean",
+  "targetOrigin": "authored"
+}

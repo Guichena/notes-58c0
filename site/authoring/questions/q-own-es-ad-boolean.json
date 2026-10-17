@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-elasticsearch-1",
+  "id": "q-own-es-ad-boolean",
+  "order": 36,
+  "question": "千万广告的多属性 IN、NOT IN 怎样召回，并安全处理更新？",
+  "shortAnswer": "先把字段和值编码成词项，再在授权存活全集内做组内并、组间交和禁用差集；更新必须发布一致快照，投放额度仍由权威链路裁决。",
+  "commonPhrasings": [
+    "多属性广告怎样建立倒排？",
+    "Bitmap 和排序 posting 怎样选？",
+    "空条件、SQL NULL 和删除更新怎样处理？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1.5 成百上千万广告属性怎样满足 IN 与 NOT IN"
+    },
+    {
+      "type": "paragraph",
+      "text": "不用在查询时逐条检查千万广告的属性。先为每个“字段和值”保存匹配的广告 ID 集合，查询时把这些集合做并集、交集和差集；整个运算始终限制在当前有效且有访问资格的广告全集内。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先澄清四个规模：广告数量、字段数量、每字段不同值数量、总属性关联数；再问更新频率和权限范围。“属性成百上千万”没有唯一的内存模型。将地域=US 与类目=US 编成不同词项，稳定非负整数 ID 对应广告，不能只把字符串 US 放进同一个 posting。"
+    },
+    {
+      "type": "paragraph",
+      "text": "假定 IN(d,e) 表示 d 或 e，NOT IN(a,b,c) 表示不含 a、b、c 中任何一个词项，U 表示当前存活且有访问资格的广告集合。则："
+    },
+    {
+      "type": "paragraph",
+      "text": "R = U ∩ (P(d) ∪ P(e)) − (P(a) ∪ P(b) ∪ P(c))。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用一组小集合把这条式子走完：U={0,1,2,3}，P(d)={0,2}，P(e)={1,2}。先合并 d、e，得到 {0,1,2}；再排除禁用并集 {1,3}，结果是 {0,2}。"
+    },
+    {
+      "type": "paragraph",
+      "text": "现在只改一个条件：如果 d、e 属于两个都必须满足的字段，正向部分就要改成 P(d)∩P(e)。因此先写布尔表达式，再做集合运算；“有两个条件”本身不能决定用 AND 还是 OR。"
+    },
+    {
+      "type": "paragraph",
+      "text": "更一般的模型是“组内 OR，组间 AND，最后排除任意禁用项”。例如“地域在北京或上海”与“类目在运动或数码”应先各自并集，再相交。NOT 必须相对于 U 做差，不能对 bitmap 全部机器位直接取反，否则未分配 ID、未来 ID、已下架和越权广告都可能进入结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "空集合有三种不同意思："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "一个 OR 组没有任何词项，表示 false，该组没有可满足候选。",
+        "一个 AND 表达式没有任何正向组，表示没有正向限制，仍可从 U 开始排除禁用项。",
+        "某接口明确要求“至少命中 allowed 中一项”，allowed 为空就返回空，不能悄悄解释成不限制。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "缺字段、空值与 SQL NULL 也不同。本节集合模型把缺字段当作不包含该词项。SQL 中 x NOT IN (a,b,NULL) 涉及 UNKNOWN，WHERE 不保留 UNKNOWN；x 自身为 NULL 也不能直接按普通集合差处理。要复刻 SQL 三值逻辑，应单独表示 NULL、缺失和非空值的集合并编译完整谓词。查询词项为未知值时，正向 posting 为空，负向 posting 不影响结果；Java 的 null 则是非法 API 输入，会抛异常，不代表数据库 NULL。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1.6 Bitmap 和排序 posting 怎样选"
+    },
+    {
+      "type": "paragraph",
+      "text": "按命中密度和 ID 分布选容器，再按选择性规划运算，而不是为每个高基数取值固定分配完整位图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个覆盖一千万 ID 的裸 bitmap 需要约 1,250,000 字节，即约 1.25 MB，不含对象和索引管理开销。如果有一千万个极稀疏取值，每个都铺满这张位图，空间会不可接受。排序整型列表可差分压缩，交集用双指针；一边很短时可在长表中二分或 galloping，带跳跃块可跳过不相交区间。密集 bitmap 则能按机器字做 AND、OR、AND NOT，Roaring 按局部块的分布选择数组、位图或 run 容器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设 D 为广告数量、T 为词项数、P 为实际属性关联总数。构建至少处理 O(P) 个关联，完整稠密位图最坏空间 O(TD) 位；q 个稠密 posting 的组合粗略需要 O(q·ceil(D/64)) 个机器字工作，输出 z 个 ID 还至少需要 Ω(z)。结果只有一条不代表查询 O(1)。Java BitSet 会随最高置位增长，ID 极稀疏但数值很大也会浪费空间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AND 通常先处理最短或最有选择性的 posting，出现空候选可以提前停止；OR 要去重。纯 NOT 缺少选择性强的正向入口，需要有限 U、分页或候选预算。数值范围可用有序结构、BKD 或分桶后精确核验，不必为每个可能阈值都预建一个词项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 docID 分片能使同一布尔表达式在各片本地完成，再合并结果；按词项分片可能引入跨机器大集合传输。选型要测真实分布和更新，不能把小规模 BitSet 正确性测试外推成千万广告吞吐基准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1.7 属性修改与实时投放怎样保持边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "广告属性更新必须撤销旧成员关系并加入新成员关系，召回快照之外的投放约束仍要在最终决策处校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次属性修改要同时撤销旧 posting 的成员关系、加入新 posting。若分两步让查询看见，先删后加会短暂漏召回，先加后删会短暂多召回。不可变代、copy-on-write 或明确锁协议的作用，就是让 posting、live 集合和版本作为同一份一致快照发布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "删除、过期、撤权和缓存版本也要一起处理；更新乱序时，由实体版本裁决。预算快照只能帮助筛候选，最后扣预算仍需权威并发控制，所以搜索命中还不等于获得了投放额度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面两个 Java 实现故意保留不同 API 契约。AdRecall 消费已有 posting，空 allowed 返回空。AdInvertedIndex 从文档构建只读索引，空组列表代表无正向约束，但其中一个空组返回空。二者都只返回授权存活全集的子集，结果是新建对象，不修改输入 posting。构建时会复制成员关系；调用者仍须保证构建输入和每次查询参数在调用期间不被并发修改，不能因为内部不写就宣称任意共享 BitSet 都线程安全。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1.9 连续追问怎么答"
+    },
+    {
+      "type": "paragraph",
+      "text": "“为什么不全放 Redis Set？”先回答能实现集合语义，再比较编码空间、跨节点运算、更新频率、缓存定位与持久重建，而不是把产品名当算法证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“召回不到是不是倒排坏了？”先拿一条本应命中的广告，确认它是否在合法全集；再核对字段和值编码、分析结果与过滤表达式，最后检查版本和刷新状态。这样才能区分是业务资格排除了它、词项没有对上，还是查询看到的版本仍旧。索引健康、查询语法正确和业务资格正确是不同层次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“如何继续优化？”先定位候选量、posting 密度、查询/取回比例与资源瓶颈，再选择更稀疏的容器、交集顺序、字段建模、批量写入或分片方案，并保持相同召回和新鲜度要求做对比。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1.8 两个完整 Java 实现与验证程序"
+    },
+    {
+      "type": "paragraph",
+      "text": "将下面三段代码分别保存为 AdRecall.java、AdInvertedIndex.java、AdIndexChecks.java，放在同一目录，用 JDK 21 编译。不依赖第三方库、外部数据或网络服务。验证程序含固定边界，以及分别针对两种契约的 3000 组独立逐行谓词对照；它验证集合与输入不变性，不测集群性能和并发发布。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "AdRecall.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.BitSet;\nimport java.util.List;\nimport java.util.Objects;\n\npublic final class AdRecall {\n    private AdRecall() {}\n\n    // (OR allowed) AND NOT (OR denied) AND liveAndAuthorized.\n    // An empty allowed list means no positive match.\n    // All inputs must be stable for the duration of this call.\n    public static BitSet recall(BitSet liveAndAuthorized,\n                                List<BitSet> allowed,\n                                List<BitSet> denied) {\n        Objects.requireNonNull(liveAndAuthorized, \"universe\");\n        Objects.requireNonNull(allowed, \"allowed\");\n        Objects.requireNonNull(denied, \"denied\");\n        BitSet result = new BitSet();\n        for (BitSet posting : allowed) {\n            result.or(Objects.requireNonNull(posting, \"allowed posting\"));\n        }\n        for (BitSet posting : denied) {\n            result.andNot(Objects.requireNonNull(posting, \"denied posting\"));\n        }\n        result.and(liveAndAuthorized);\n        return result;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "AdInvertedIndex.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.BitSet;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.Set;\n\npublic final class AdInvertedIndex {\n    private final Map<String, BitSet> postings = new HashMap<>();\n    private final BitSet live = new BitSet();\n\n    public AdInvertedIndex(List<Set<String>> documents) {\n        Objects.requireNonNull(documents, \"documents\");\n        for (int id = 0; id < documents.size(); id++) {\n            live.set(id);\n            for (String token : Objects.requireNonNull(documents.get(id), \"document\")) {\n                postings.computeIfAbsent(Objects.requireNonNull(token, \"token\"),\n                        ignored -> new BitSet()).set(id);\n            }\n        }\n    }\n\n    // AND of OR groups, excluding ANY forbidden term, inside authorized live IDs.\n    // No groups: no positive restriction. One empty group: no matches.\n    public BitSet query(BitSet authorized, List<Set<String>> anyGroups,\n                        Set<String> excluded) {\n        Objects.requireNonNull(anyGroups, \"groups\");\n        Objects.requireNonNull(excluded, \"excluded\");\n        BitSet result = (BitSet) Objects.requireNonNull(authorized, \"authorized\").clone();\n        result.and(live);\n        for (Set<String> group : anyGroups) {\n            BitSet union = new BitSet();\n            for (String term : Objects.requireNonNull(group, \"group\")) {\n                BitSet posting = postings.get(Objects.requireNonNull(term, \"term\"));\n                if (posting != null) union.or(posting);\n            }\n            result.and(union);\n        }\n        for (String term : excluded) {\n            BitSet posting = postings.get(Objects.requireNonNull(term, \"term\"));\n            if (posting != null) result.andNot(posting);\n        }\n        return result;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "AdIndexChecks.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.ArrayList;\nimport java.util.BitSet;\nimport java.util.Collections;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Random;\nimport java.util.Set;\n\npublic final class AdIndexChecks {\n    private static BitSet bits(int... ids) {\n        BitSet result = new BitSet();\n        for (int id : ids) result.set(id);\n        return result;\n    }\n    private static void check(boolean ok, String message) {\n        if (!ok) throw new AssertionError(message);\n    }\n    private static void expectNull(Runnable action) {\n        try {\n            action.run();\n        } catch (NullPointerException expected) {\n            return;\n        }\n        throw new AssertionError(\"null must be rejected\");\n    }\n    private static List<BitSet> snapshots(List<BitSet> input) {\n        List<BitSet> copy = new ArrayList<>();\n        for (BitSet value : input) copy.add((BitSet) value.clone());\n        return copy;\n    }\n    private static boolean member(List<BitSet> lists, int id) {\n        for (BitSet list : lists) if (list.get(id)) return true;\n        return false;\n    }\n    private static void fixedCases() {\n        BitSet universe = bits(0, 1, 2, 3);\n        BitSet d = bits(0, 2), e = bits(1, 2, 99), forbidden = bits(1, 3);\n        check(AdRecall.recall(universe, List.of(d, e), List.of(forbidden))\n                .equals(bits(0, 2)), \"advertisement example\");\n        check(AdRecall.recall(universe, List.of(), List.of()).isEmpty(), \"empty allowed\");\n        check(AdRecall.recall(universe, List.of(d, d), List.of(d)).isEmpty(), \"all denied\");\n        check(AdRecall.recall(bits(), List.of(d), List.of()).isEmpty(), \"empty universe\");\n        List<Set<String>> docs = List.of(Set.of(\"region=US\", \"kind=d\"),\n                Set.of(\"category=US\", \"kind=e\"), Set.of());\n        AdInvertedIndex index = new AdInvertedIndex(docs);\n        check(index.query(bits(0, 1, 2, 99), List.of(), Set.of()).equals(bits(0, 1, 2)),\n                \"unconstrained inside live universe\");\n        check(index.query(universe, List.of(Set.of()), Set.of()).isEmpty(), \"empty OR group\");\n        check(index.query(universe, List.of(Set.of(\"region=US\")), Set.of()).equals(bits(0)),\n                \"field/value identity\");\n        check(index.query(universe, List.of(), Set.of(\"unknown\")).equals(bits(0, 1, 2)),\n                \"unknown negative term\");\n        check(index.query(bits(1), List.of(Set.of(\"region=US\")), Set.of()).isEmpty(),\n                \"unauthorized match\");\n        check(new AdInvertedIndex(List.of()).query(universe, List.of(), Set.of()).isEmpty(),\n                \"empty index\");\n        expectNull(() -> AdRecall.recall(null, List.of(), List.of()));\n        expectNull(() -> AdRecall.recall(universe, Collections.singletonList(null), List.of()));\n        expectNull(() -> new AdInvertedIndex(Collections.singletonList(null)));\n        expectNull(() -> index.query(universe, Collections.singletonList(null), Set.of()));\n        expectNull(() -> index.query(universe, List.of(), Collections.singleton(null)));\n    }\n    private static void randomIndex() {\n        Random random = new Random(163);\n        String[] terms = {\"a\", \"b\", \"c\", \"d\", \"e\"};\n        for (int trial = 0; trial < 3000; trial++) {\n            List<Set<String>> docs = new ArrayList<>();\n            int n = random.nextInt(60);\n            for (int id = 0; id < n; id++) {\n                Set<String> doc = new HashSet<>();\n                for (String term : terms) if (random.nextBoolean()) doc.add(term);\n                docs.add(doc);\n            }\n            AdInvertedIndex index = new AdInvertedIndex(docs);\n            BitSet authorized = new BitSet();\n            for (int id = 0; id < n + 5; id++) if (random.nextBoolean()) authorized.set(id);\n            List<Set<String>> groups = new ArrayList<>();\n            for (int i = 0, count = random.nextInt(4); i < count; i++) {\n                Set<String> group = new HashSet<>();\n                for (String term : terms) if (random.nextBoolean()) group.add(term);\n                groups.add(group);\n            }\n            Set<String> excluded = new HashSet<>();\n            for (String term : terms) if (random.nextInt(4) == 0) excluded.add(term);\n            BitSet expected = new BitSet();\n            for (int id = 0; id < n; id++) {\n                boolean ok = authorized.get(id) && Collections.disjoint(docs.get(id), excluded);\n                for (Set<String> group : groups) ok &= !Collections.disjoint(docs.get(id), group);\n                if (ok) expected.set(id);\n            }\n            BitSet before = (BitSet) authorized.clone();\n            BitSet actual = index.query(authorized, groups, excluded);\n            check(actual.equals(expected), \"index oracle \" + trial);\n            check(authorized.equals(before), \"authorized input mutated\");\n            actual.flip(0, n + 10);\n            check(index.query(authorized, groups, excluded).equals(expected), \"index state leaked\");\n        }\n    }\n    private static void randomRecall() {\n        Random random = new Random(171);\n        for (int trial = 0; trial < 3000; trial++) {\n            int n = random.nextInt(80);\n            BitSet universe = new BitSet();\n            for (int id = 0; id < n; id++) if (random.nextBoolean()) universe.set(id);\n            List<BitSet> allowed = new ArrayList<>(), denied = new ArrayList<>();\n            for (List<BitSet> list : List.of(allowed, denied)) {\n                for (int i = 0, count = random.nextInt(5); i < count; i++) {\n                    BitSet posting = new BitSet();\n                    for (int id = 0; id < n + 5; id++) if (random.nextBoolean()) posting.set(id);\n                    list.add(posting);\n                }\n            }\n            BitSet expected = new BitSet();\n            for (int id = 0; id < n; id++) {\n                if (universe.get(id) && member(allowed, id) && !member(denied, id)) expected.set(id);\n            }\n            BitSet before = (BitSet) universe.clone();\n            List<BitSet> beforeAllowed = snapshots(allowed), beforeDenied = snapshots(denied);\n            BitSet actual = AdRecall.recall(universe, allowed, denied);\n            check(actual.equals(expected), \"recall oracle \" + trial);\n            check(universe.equals(before) && allowed.equals(beforeAllowed)\n                    && denied.equals(beforeDenied), \"recall input mutated\");\n            actual.flip(0, n + 10);\n            check(AdRecall.recall(universe, allowed, denied).equals(expected), \"recall state leaked\");\n        }\n    }\n    public static void main(String[] args) {\n        fixedCases();\n        randomIndex();\n        randomRecall();\n        System.out.println(\"PASS fixed boundary cases; 3000 index + 3000 recall oracle cases\");\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "在上述三个文件所在目录执行："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "value": "mkdir -p classes\njava -Xmx128m -m jdk.compiler/com.sun.tools.javac.Main -source 21 -target 21 -d classes AdRecall.java AdInvertedIndex.java AdIndexChecks.java\njava -Xmx128m -cp classes AdIndexChecks\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "断言失败时程序抛出 AssertionError；完整通过时输出固定边界和两组随机对照的 PASS 摘要。测试刻意让 posting 和授权集合含越界位，并修改返回结果后重复查询，以验证不会泄漏未存活 ID 或污染内部状态。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    },
+    {
+      "entryId": "bg-elasticsearch-5",
+      "questionId": "0",
+      "label": "性能测量与容量边界"
+    }
+  ]
+}

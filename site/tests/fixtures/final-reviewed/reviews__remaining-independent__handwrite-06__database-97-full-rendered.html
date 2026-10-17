@@ -1,0 +1,87 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">结合你的 Hybrid RAG：如何设计文档、chunk、权限、Wiki 卡片相关数据库表，支持团队权限过滤、引用溯源和多路召回？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">RAG 项目不能只讲 ES 和向量库。面试官会问元数据在哪里存、权限如何过滤、引用如何回到原文、chunk 如何去重。MySQL 通常负责权威元数据和权限关系，ES/向量库负责召回。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>文档表：团队、空间、标题、状态、版本。</li><li>chunk 表：文档、位置、文本、hash、索引状态。</li><li>ACL 权限：用户/角色/团队与文档或空间关系。</li><li>Wiki 卡片：概念、别名、关系、证据。</li><li>引用溯源：chunk 必须能定位到页码、段落、offset。</li><li>同步一致性：MySQL 是源数据，ES/向量库是派生索引。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">文档表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE knowledge_document (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    team_id BIGINT NOT NULL,
+    space_id BIGINT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    source_type VARCHAR(32) NOT NULL,
+    source_id VARCHAR(128),
+    status VARCHAR(32) NOT NULL,
+    version INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    KEY idx_team_space (team_id, space_id, updated_at)
+);</pre></div></section>
+<p class="md-p">chunk 表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE knowledge_chunk (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    document_id BIGINT NOT NULL,
+    document_version INT NOT NULL,
+    chunk_no INT NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    content TEXT NOT NULL,
+    page_no INT,
+    start_offset INT,
+    end_offset INT,
+    es_doc_id VARCHAR(128),
+    embedding_id VARCHAR(128),
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_doc_chunk (document_id, document_version, chunk_no),
+    KEY idx_doc (document_id),
+    KEY idx_hash (content_hash)
+);</pre></div></section>
+<p class="md-p">权限表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE document_acl (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    document_id BIGINT NOT NULL,
+    subject_type VARCHAR(32) NOT NULL,
+    subject_id BIGINT NOT NULL,
+    permission VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    KEY idx_subject (subject_type, subject_id, permission),
+    KEY idx_document (document_id)
+);</pre></div></section>
+<p class="md-p">概念卡片：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE concept_card (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    team_id BIGINT NOT NULL,
+    normalized_name VARCHAR(255) NOT NULL,
+    summary TEXT,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_team_name (team_id, normalized_name)
+);
+
+CREATE TABLE concept_evidence (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    concept_id BIGINT NOT NULL,
+    chunk_id BIGINT NOT NULL,
+    evidence_text VARCHAR(2048) NOT NULL,
+    created_at DATETIME NOT NULL,
+    KEY idx_concept (concept_id),
+    KEY idx_chunk (chunk_id)
+);</pre></div></section>
+<p class="md-p">检索时流程：</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>根据用户查有权限的 <code class="tok-inline">team_id/space_id/document_id</code>。</li><li>在 ES/向量库召回时带上权限过滤字段，并在检索候选内容进入模型前用权威 ACL 校验。</li><li>返回结果带 <code class="tok-inline">chunk_id</code>，用 MySQL 查文档标题、页码、offset 做引用。</li></ol></div><p class="md-p">所有 document/chunk/concept/evidence 关系需在可信 team/tenant 范围验证；原DDL未编码全部复合外键，不能仅凭ID执行。索引投影只能缩小候选，旧索引删除异步期间仍须检查文档可见版本；概念摘要若混入其他权限文档也须过滤证据，不能只给原文做ACL。哈希不是权限也不是绝对无碰撞证明。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：权限过滤放 ES 还是 MySQL？</strong></p>
+<p class="md-p">问题分析：放 ES 性能好，放 MySQL 更权威。</p>
+<p class="md-p">知识点：冗余索引、最终一致、越权风险。</p>
+<p class="md-p">答案：ES 中冗余权限过滤字段用于召回阶段缩小候选；内容进入模型前必须用足够新鲜的权威授权校验，敏感输出展示前按契约再次校验；副本旧视图不构成撤权保证。权限变更要触发索引更新或使用版本号控制。</p>
+<p class="md-p"><strong>变体 2：chunk 内容修改后如何同步索引？</strong></p>
+<p class="md-p">问题分析：MySQL 与 ES/向量库可能不一致。</p>
+<p class="md-p">知识点：索引任务、版本号、幂等更新。</p>
+<p class="md-p">答案：文档版本递增，生成新的 chunk 版本，投递索引任务。ES doc id 包含 chunk id/version，旧版本标记删除或不可见。</p>
+<p class="md-p"><strong>变体 3：如何做 chunk 去重？</strong></p>
+<p class="md-p">问题分析：同一段内容可能重复出现。</p>
+<p class="md-p">知识点：hash、文档内去重、跨文档去重。</p>
+<p class="md-p">答案：用 <code class="tok-inline">content_hash</code> 识别重复 chunk。文档内相同文本在不同位置也可能是不同证据，不能直接跳过丢失出处；可共享内容对象但保留每个位置引用；跨文档重复可保留引用关系但减少向量写入，具体取决于引用溯源需求。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

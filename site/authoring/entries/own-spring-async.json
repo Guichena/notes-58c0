@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-spring-async",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Spring 与 Java 服务端",
+  "category": "响应式、异步与上下文",
+  "title": "响应式、异步与上下文",
+  "tags": [
+    "Spring",
+    "Java17教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-spring-webflux-model",
+      "order": 32,
+      "question": "WebFlux 的响应式边界？",
+      "shortAnswer": "WebFlux 擅长用非阻塞数据流协调大量等待 I/O 的请求。它改变的是并发处理方式，不会把阻塞 JDBC 变成非阻塞，也不会让 CPU 计算或下游服务自动更快。",
+      "commonPhrasings": [
+        "项目如何实现响应式编程？",
+        "Mono 与 Flux 是什么？",
+        "事件循环为什么怕阻塞？",
+        "MVC 与 WebFlux 怎么选？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "32 WebFlux 的响应式边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "WebFlux 擅长用非阻塞数据流协调大量等待 I/O 的请求。它改变的是并发处理方式，不会把阻塞 JDBC 变成非阻塞，也不会让 CPU 计算或下游服务自动更快。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Mono 表示零或一个值，Flux 表示零到多个值。Publisher 通常等订阅后才开始执行；Subscriber 发出 demand，上游按协议发数据、完成或错误，算子负责转换、组合和安排执行位置。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个容易验证的反例是 Flux.just(blockingCall())：Java 要先算出参数，blockingCall 已经执行完，才会构造流。把返回值装进 Flux 不会让调用异步。需要延迟调用时，用 fromCallable 等合适工厂，再结合实际调度和资源限制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "事件循环用少量线程照看许多连接。若一个任务在这个线程上等阻塞 I/O，同一线程负责的其他连接也会被拖慢。"
+        },
+        {
+          "type": "paragraph",
+          "text": "无法避免的阻塞调用，可以隔离到合适的有界工作执行器，比如 boundedElastic。这样保护了事件循环，却没减少阻塞调用本身占用的连接和时间，所以仍需连接上限、队列和超时。CPU 密集工作也要限制并发，增加线程切换不是免费增加计算能力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "publishOn 通常改变其后信号处理的执行位置，subscribeOn 影响订阅及上游源执行路径，具体链路需看算子；不要用无限多个切换掩盖线程模型不清。组合异步流优先用 flatMap 等，控制并发度并明确是否要求顺序；需要保持顺序时 concatMap 或适合的顺序组合会牺牲部分并行度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MVC 适合已有阻塞 JDBC 技术栈和清楚的请求模型，也可返回响应式类型或使用 WebClient。WebFlux 更适合端到端非阻塞调用链和流式组合，前提是团队能处理信号、取消与调试。引入两个 Web starter 时自动选择的应用类型要核对，不能根据某个依赖名字认定正在运行 Reactor Netty。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：Python 中跨 event loop 复用连接池的问题能直接套 Java 吗？两者都要尊重资源所属运行上下文，但具体错误来自各自库与事件循环契约。Java JDBC Connection 不应并发跨线程共享，Netty Channel 的操作也受对应 EventLoop 管理，不能把不同语言的对象归属机制混为一谈。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-reactive-contracts",
+      "order": 33,
+      "question": "背压 取消与响应式事务？",
+      "shortAnswer": "背压表示“下游现在要多少数据”，取消表示“这条订阅不再要结果”，响应式事务则沿 Reactor Context 找到资源。这些都是协作协议；能不能真正停下调用、释放连接或回滚，还要看资源适配。",
+      "commonPhrasings": [
+        "慢客户端怎样处理？",
+        "cancel 会不会回滚？",
+        "ThreadLocal 为什么在 Reactor 中失效？",
+        "返回 Mono 为什么事务没有覆盖实际 SQL？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "33 背压 取消与响应式事务"
+        },
+        {
+          "type": "paragraph",
+          "text": "背压表示“下游现在要多少数据”，取消表示“这条订阅不再要结果”，响应式事务则沿 Reactor Context 找到资源。这些都是协作协议；能不能真正停下调用、释放连接或回滚，还要看资源适配。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Reactive Streams 的 request(n) 限制上游向下游交付多少元素，但无法凭空控制一个完全不支持背压的外部生产者。桥接 callback、消息或模型 token 时，应选择有界缓冲、丢弃/合并可丢进度、限速或终止策略，明确丢弃对业务结果的影响。collectList 会把全部结果累积到内存，不能在无限流或超大流上滥用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "cancel 后要取消上游订阅并释放可取消资源，使用 doFinally 等按完成、异常、取消分支处理。timeout 通常取消被替换的上游并发出超时信号，但底层阻塞调用是否停止取决于适配器与客户端。对已经发出的支付或写库操作，取消依然不证明未发生。"
+        },
+        {
+          "type": "paragraph",
+          "text": "返回 Mono 并不保证方法里所有 SQL 都在响应式事务中。需要 ReactiveTransactionManager，例如对应的 R2DBC 管理器，并让资源使用留在同一个订阅链里；事务上下文通过 Reactor Context 传播。"
+        },
+        {
+          "type": "paragraph",
+          "text": "方法返回 Publisher 之前已经做完的同步动作，未必处在事务内。若内部手工 subscribe，又会开出另一条订阅，原调用方就难以统一管理它的事务、错误和取消，所以服务方法不应偷偷 fire-and-forget。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TransactionalOperator 可围绕响应式链管理事务。现代 Spring 对取消信号通常执行回滚，若下游 take、next 等早停导致取消，也要考虑事务是否真正完整消费。对流式查询持有事务过久会占用连接，不能为了给客户端慢慢输出而无限延长数据库事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：ThreadLocal 可以直接保存租户吗？线程切换和复用会破坏假设，应采用 Reactor Context 或明确的上下文桥接。Context 保存的是数据与元信息，不应把命令式 Connection 复制进去跨线程共用。后文 ReactiveLab 分别验证 demand、Context、取消、超时与错误，不宣称完成了 R2DBC 数据库集成。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "61 响应式信号与取消"
+        },
+        {
+          "type": "paragraph",
+          "text": "响应式正确性体现在 demand、Context、错误、超时和取消信号，而不只是一串算子。"
+        },
+        {
+          "type": "paragraph",
+          "text": "StepVerifier 控制请求数量和虚拟时间，避免靠真实 sleep 猜边界。取消断言只证明源接收到取消，不证明任意第三方 SDK 都会中止 I/O。"
+        },
+        {
+          "type": "paragraph",
+          "text": "源文件：code/framework/src/main/java/handbook/ReactiveLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "package handbook;\nimport java.time.Duration;\nimport java.util.concurrent.atomic.AtomicBoolean;\nimport reactor.core.publisher.*;\nimport reactor.test.StepVerifier;\n\npublic class ReactiveLab {\n    public static void main(String[] args){\n        StepVerifier.create(Flux.range(1,3),0).thenRequest(1).expectNext(1).thenRequest(2).expectNext(2,3).verifyComplete();\n        StepVerifier.create(Mono.deferContextual(c->Mono.just(\"tenant:\"+c.get(\"tenant\"))).contextWrite(c->c.put(\"tenant\",\"A\")))\n                .expectNext(\"tenant:A\").verifyComplete();\n        AtomicBoolean cancelled=new AtomicBoolean();\n        StepVerifier.create(Flux.<String>never().doOnCancel(()->cancelled.set(true))).thenCancel().verify();\n        if(!cancelled.get())throw new AssertionError();\n        StepVerifier.withVirtualTime(()->Mono.<String>never().timeout(Duration.ofSeconds(2)))\n                .thenAwait(Duration.ofSeconds(2)).expectError(java.util.concurrent.TimeoutException.class).verify();\n        StepVerifier.create(Mono.error(new IllegalArgumentException(\"bad input\")))\n                .expectError(IllegalArgumentException.class).verify();\n        System.out.println(\"PASS reactive demand, Context, cancellation, timeout and error signals\");\n    }\n}\n",
+          "label": "code/framework/src/main/java/handbook/ReactiveLab.java"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-async-context",
+      "order": 34,
+      "question": "Async 线程池与上下文传播？",
+      "shortAnswer": "@Async 经过代理时，会把工作交给执行器，原调用和后台执行从这里分开。事务、请求上下文不会自然一起过去，后台异常、执行器拒绝和取消也需要各自的处理出口。",
+      "commonPhrasings": [
+        "@EnableAsync 和 @Async 各做什么？",
+        "CompletableFuture 就一定异步吗？",
+        "多 Agent 或异步任务如何避免上下文污染？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "34 Async 线程池与上下文传播"
+        },
+        {
+          "type": "paragraph",
+          "text": "@Async 经过代理时，会把工作交给执行器，原调用和后台执行从这里分开。事务、请求上下文不会自然一起过去，后台异常、执行器拒绝和取消也需要各自的处理出口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "@EnableAsync 注册相应基础设施，@Async 描述哪些方法异步以及使用哪个执行器。代理自调用仍可能绕过。返回 Future/CompletableFuture 时，调用方应消费异常结果；void 异步方法的异常不能直接返给原调用方，需要 AsyncUncaughtExceptionHandler 等处理与观测。调用方等待 get/join 会阻塞自己，所以“用了 Future 就没有阻塞”不成立。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设慢模型调用把共用线程池占满，SSE 发送和租约续期也可能一起排不上。执行器应按工作类型隔离并有界，数据库、外部模型、SSE 和续租不宜轻易共用一个池。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再看 ThreadPoolExecutor 的通常顺序：先用核心线程，然后入队；队列满了才增长到最大线程，最后拒绝。无界队列会让 maximumPoolSize 难以发挥作用。CallerRunsPolicy 虽能让提交方亲自执行，却可能堵住 HTTP 线程或事件循环，也不是通用安全方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程池里的线程会被复用，传播上下文时要同时考虑“本任务需要什么”和“线程原来有什么”。提交时捕获最小必要快照，例如 request id、租户、trace、locale 或安全上下文；执行前保存旧值、设置新值；finally 再恢复旧值或清理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不清理会污染下一任务，只做 clear 又可能破坏嵌套执行时原有的上下文。MDC 是日志信息，不能当授权凭据；真正权限仍依赖可信主体和执行时的业务约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见集成包括 Spring TaskDecorator、Micrometer Context Propagation 的 ContextSnapshot/ThreadLocalAccessor，以及 Spring Security 的受控执行器包装。Framework 6.1 的 ContextPropagatingTaskDecorator 可借助 Micrometer 捕获与恢复注册的上下文；它不会猜到所有自定义 ThreadLocal，也有快照开销。Reactor Context 与命令式线程上下文桥接时要注册相应访问器并核对版本，而不是到处手动复制整个线程状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "InheritableThreadLocal 主要在创建子线程时继承，不等于线程池每次提交时传递最新请求。不要复制 TransactionSynchronizationManager 的连接资源到子线程。@Async 任务要写库，应在工作线程通过独立事务服务进入，或者编程式开启局部事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：orTimeout 是否会停止底层任务？它主要改变 CompletableFuture 的完成状态，不保证取消底层 I/O。应同时有任务状态、客户端取消句柄和 deadline 检查，迟到结果通过版本或终态校验拒绝。Java 21 虚拟线程可以减少阻塞线程成本，但不增加数据库连接和供应商配额，NoteWeave 的 Java 17 声明也不证明已经使用虚拟线程。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "54 线程池上下文隔离"
+        },
+        {
+          "type": "paragraph",
+          "text": "上下文应在提交时捕获、执行前安装，并在 finally 中恢复工作线程原值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实验故意让第二个任务抛异常，再用同一工作线程检查残留；还验证嵌套调用恢复外层值。这段 ThreadLocal 只表示教学租户标签，不构成可信鉴权实现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "源文件：code/jdk/ContextPropagationLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.*;\n\npublic class ContextPropagationLab {\n    static final ThreadLocal<String> TENANT=new ThreadLocal<>();\n    static Runnable capture(Runnable task){\n        String snapshot=TENANT.get();\n        return ()->{String previous=TENANT.get();try{set(snapshot);task.run();}finally{set(previous);}};\n    }\n    static void set(String value){if(value==null)TENANT.remove();else TENANT.set(value);}\n    static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args)throws Exception{\n        ExecutorService pool=Executors.newSingleThreadExecutor();\n        try{\n            TENANT.set(\"A\");Runnable first=capture(()->check(\"A\".equals(TENANT.get())));\n            TENANT.set(\"B\");Runnable second=capture(()->{check(\"B\".equals(TENANT.get()));throw new IllegalArgumentException(\"business\");});\n            TENANT.remove();\n            pool.submit(first).get();\n            try{pool.submit(second).get();throw new AssertionError();}\n            catch(ExecutionException e){check(e.getCause() instanceof IllegalArgumentException);}\n            check(pool.submit(()->TENANT.get()==null).get());\n            TENANT.set(\"inner\");Runnable nested=capture(()->check(\"inner\".equals(TENANT.get())));\n            TENANT.set(\"outer\");nested.run();check(\"outer\".equals(TENANT.get()));\n        }finally{TENANT.remove();pool.shutdownNow();check(pool.awaitTermination(5,TimeUnit.SECONDS));}\n        System.out.println(\"PASS capture-at-submit, task failure cleanup, thread reuse and nested restoration\");\n    }\n}\n",
+          "label": "code/jdk/ContextPropagationLab.java"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

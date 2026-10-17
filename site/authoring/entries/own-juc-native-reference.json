@@ -1,0 +1,250 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-native-reference",
+  "kind": "doc",
+  "module": "syntax",
+  "part": "JUC 完整示例与对照",
+  "category": "JUC 教学资料",
+  "title": "C++、Go 与 JavaScript 并发协议对照",
+  "tags": [
+    "JUC",
+    "完整示例"
+  ],
+  "sections": [
+    {
+      "id": "section-juc-4111",
+      "title": "原生语言的完整协议与代码对照",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "18 原生语言边界与 Java 对照"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "C++ 条件队列 分片 Map 和读写锁"
+        },
+        {
+          "type": "paragraph",
+          "text": "C++ 与 Java 可以使用相似的互斥和条件谓词，但对象生命周期、内存回收和数据竞争规则不同。C++ 非原子冲突访问没有适当同步会产生未定义行为；volatile 不是 Java volatile 的等价物，应使用 mutex 或符合协议的 std::atomic。"
+        },
+        {
+          "type": "paragraph",
+          "text": "条件队列使用 unique_lock 与条件变量，wait 在等待时释放锁，唤醒后重新持有锁并检查谓词。以下实现允许多个生产者和消费者，close 唤醒两侧等待者、拒绝新增并排空存量。std::thread 没有 Java interrupt 方法；取消必须通过关闭状态、stop_token 与适配的等待 API，或底层操作自己的取消能力建立。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这份泛型队列要求元素的移动构造和析构都不抛异常，并通过 static_assert 强制检查；否则从队头取走元素后，构造返回值仍可能失败，交接就会丢失。push 的容器分配失败不算接收成功，异常路径将空位通知传给其他生产者。队列必须活到所有使用者退出之后，close 本身不等于 join；测试入口假设所需线程成功创建，生产启动协议还需处理创建到一半失败时关闭队列并回收已启动线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "分片锁要把结构也分开：下面先按固定分片选择不同的 unordered_map，每片再配自己的 shared_mutex。若只有一张 unordered_map，给不同 key 各配一把锁仍不够；某个 key 触发 rehash 时会改动全表结构，已经越过“只保护这个 key”的范围。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读取后还要守住对象生命周期。get 返回值副本，不把迭代器或引用带出锁，避免解锁后访问已被删除的对象。需要全局快照时，按固定顺序拿齐所有片的读锁，再复制。单片 put/get 依然要考虑分配、复制、hash/equals 的异常和稳定性；本代码没有承诺任意异常都能跨多个片事务回滚。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果读写锁题只提供普通 lock/unlock，可以用一把互斥锁短暂保护 readers、writer、waitingWriters 状态，再在不能准入时解锁重试。不能让第一个读者持有具有线程所有权的 mutex、最后一个不同读者替它 unlock。下面给出的忙等版只用于这个受限题型，偏向等待写者且不保证读者无饥饿；真实 C++ 代码优先用 shared_mutex 或条件变量减少空转。"
+        },
+        {
+          "type": "paragraph",
+          "text": "C++11 起函数局部 static 的初始化具有线程安全保证，但对象后续可变字段仍需同步。shared_ptr 的控制块支持不同 shared_ptr 实例的并发引用计数，不代表同一个 shared_ptr 对象可任意并发改写，也不代表所指对象线程安全；C++20 atomic<shared_ptr<T>> 是一种接口选择，不能无条件声称底层无锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/native_cpp.cpp"
+        },
+        {
+          "type": "code",
+          "language": "c++",
+          "value": "#include <array>\n#include <atomic>\n#include <condition_variable>\n#include <exception>\n#include <iostream>\n#include <memory>\n#include <mutex>\n#include <optional>\n#include <queue>\n#include <shared_mutex>\n#include <stdexcept>\n#include <thread>\n#include <type_traits>\n#include <unordered_map>\n#include <vector>\n\nvoid check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }\n\ntemplate<class T> class BlockingQueue {\n    static_assert(std::is_nothrow_move_constructible_v<T> && std::is_nothrow_destructible_v<T>,\n                  \"queue elements must have nonthrowing move construction and destruction\");\n    std::mutex mutex_;\n    std::condition_variable not_empty_, not_full_;\n    std::queue<T> data_;\n    const std::size_t capacity_;\n    bool closed_ = false;\npublic:\n    explicit BlockingQueue(std::size_t capacity) : capacity_(capacity) {\n        if (!capacity) throw std::invalid_argument(\"positive capacity required\");\n    }\n    bool push(T item) {\n        std::unique_lock lock(mutex_);\n        not_full_.wait(lock, [&] { return closed_ || data_.size() < capacity_; });\n        if (closed_) return false;\n        try { data_.push(std::move(item)); }\n        catch (...) {\n            // A failed allocation did not consume the slot; let another producer try.\n            lock.unlock(); not_full_.notify_one(); throw;\n        }\n        lock.unlock(); not_empty_.notify_one(); return true;\n    }\n    std::optional<T> pop() {\n        std::unique_lock lock(mutex_);\n        not_empty_.wait(lock, [&] { return closed_ || !data_.empty(); });\n        if (data_.empty()) return std::nullopt;\n        T value = std::move(data_.front()); data_.pop();\n        lock.unlock(); not_full_.notify_one(); return value;\n    }\n    void close() {\n        { std::lock_guard lock(mutex_); closed_ = true; }\n        not_empty_.notify_all(); not_full_.notify_all();\n    }\n};\n\n/** Every shard owns an independent unordered_map, so each rehash stays under its shard lock. */\ntemplate<class K, class V, std::size_t N = 8> class ShardedMap {\n    static_assert(N > 0);\n    struct Shard { mutable std::shared_mutex mutex; std::unordered_map<K, V> data; };\n    std::array<Shard, N> shards_;\n    std::size_t index(const K& key) const { return std::hash<K>{}(key) % N; }\npublic:\n    void put(const K& key, const V& value) {\n        auto& shard = shards_[index(key)]; std::unique_lock lock(shard.mutex);\n        shard.data.insert_or_assign(key, value);\n    }\n    std::optional<V> get(const K& key) const {\n        const auto& shard = shards_[index(key)]; std::shared_lock lock(shard.mutex);\n        auto it = shard.data.find(key);\n        if (it == shard.data.end()) return std::nullopt;\n        return it->second; // A copy, not an iterator/reference whose lifetime escapes the lock.\n    }\n    bool erase(const K& key) {\n        auto& shard = shards_[index(key)]; std::unique_lock lock(shard.mutex);\n        return shard.data.erase(key) != 0;\n    }\n    std::unordered_map<K, V> snapshot() const {\n        std::vector<std::shared_lock<std::shared_mutex>> locks;\n        locks.reserve(N);\n        for (const auto& shard : shards_) locks.emplace_back(shard.mutex); // One global lock order.\n        std::unordered_map<K, V> copy;\n        for (const auto& shard : shards_) copy.insert(shard.data.begin(), shard.data.end());\n        return copy;\n    }\n};\n\n/** Only ordinary lock/unlock protect metadata. Busy waiting is for the constrained exercise. */\nclass MutexOnlyRwLock {\n    std::mutex state_;\n    unsigned readers_ = 0, waiting_writers_ = 0;\n    bool writer_ = false;\npublic:\n    void lock_shared() {\n        for (;;) {\n            state_.lock();\n            if (!writer_ && waiting_writers_ == 0) { ++readers_; state_.unlock(); return; }\n            state_.unlock(); std::this_thread::yield();\n        }\n    }\n    void unlock_shared() { state_.lock(); --readers_; state_.unlock(); }\n    void lock() {\n        state_.lock(); ++waiting_writers_; state_.unlock();\n        for (;;) {\n            state_.lock();\n            if (!writer_ && readers_ == 0) {\n                --waiting_writers_; writer_ = true; state_.unlock(); return;\n            }\n            state_.unlock(); std::this_thread::yield();\n        }\n    }\n    void unlock() { state_.lock(); writer_ = false; state_.unlock(); }\n};\n\nstruct Singleton {\n    int answer = 42;\n    static Singleton& instance() { static Singleton value; return value; }\nprivate:\n    Singleton() = default;\npublic:\n    Singleton(const Singleton&) = delete;\n    Singleton& operator=(const Singleton&) = delete;\n};\n\nint main() {\n    BlockingQueue<int> queue(8);\n    std::mutex seen_mutex, error_mutex;\n    std::vector<bool> seen(4000);\n    std::exception_ptr error;\n    auto protect = [&](auto body) {\n        try { body(); }\n        catch (...) {\n            { std::lock_guard lock(error_mutex); if (!error) error = std::current_exception(); }\n            queue.close();\n        }\n    };\n    std::vector<std::thread> producers, consumers;\n    for (int c = 0; c < 4; ++c) consumers.emplace_back([&] { protect([&] {\n        while (auto item = queue.pop()) {\n            std::lock_guard lock(seen_mutex);\n            check(*item >= 0 && *item < 4000 && !seen[*item], \"duplicate/range\"); seen[*item] = true;\n        }\n    }); });\n    for (int p = 0; p < 4; ++p) producers.emplace_back([&, p] { protect([&] {\n        for (int i = 0; i < 1000; ++i) check(queue.push(p * 1000 + i), \"unexpected close\");\n    }); });\n    for (auto& producer : producers) producer.join();\n    queue.close();\n    for (auto& consumer : consumers) consumer.join();\n    if (error) std::rethrow_exception(error);\n    for (bool value : seen) check(value, \"lost item\");\n    check(!queue.push(0) && !queue.pop().has_value(), \"closed behavior\");\n    BlockingQueue<int> full(1); check(full.push(0), \"zero accepted\");\n    std::atomic<bool> rejected{false};\n    std::thread blocked([&] { rejected = !full.push(1); }); full.close(); blocked.join();\n    check(rejected && full.pop() == 0 && !full.pop(), \"close releases producer and drains\");\n    ShardedMap<int, int> map;\n    std::vector<std::thread> writers;\n    for (int t = 0; t < 4; ++t) writers.emplace_back([&, t] {\n        for (int i = 0; i < 1000; ++i) map.put(t * 1000 + i, i);\n    });\n    for (auto& writer : writers) writer.join();\n    check(map.snapshot().size() == 4000 && map.get(3999) == 999, \"sharded map rehash/copy\");\n    check(map.erase(3999) && !map.get(3999), \"erase\");\n    MutexOnlyRwLock rw; int counter = 0;\n    writers.clear();\n    for (int t = 0; t < 4; ++t) writers.emplace_back([&] {\n        for (int i = 0; i < 1000; ++i) { std::lock_guard lock(rw); ++counter; }\n    });\n    for (auto& writer : writers) writer.join();\n    { std::shared_lock lock(rw); check(counter == 4000, \"mutex-only RW protocol\"); }\n    check(&Singleton::instance() == &Singleton::instance(), \"C++11 local-static singleton\");\n    // std::thread::join waits for the child to finish using the captured resource.\n    int resource = 0; std::mutex resource_mutex;\n    std::thread child([&] { std::lock_guard lock(resource_mutex); resource = 7; }); child.join();\n    check(resource == 7, \"child resource use completed\");\n    std::atomic<int> inventory{1}; int expected = 1;\n    check(inventory.compare_exchange_strong(expected, 0), \"atomic CAS\");\n    std::cout << \"native_cpp OK\\n\";\n}\n",
+          "label": "code/native_cpp.cpp"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Go 自己用条件变量实现队列 与 Channel 协调"
+        },
+        {
+          "type": "paragraph",
+          "text": "题目明确要求“自己用条件变量实现类似 channel 的线程安全队列”时，直接返回一个 channel 不满足约束。下面自己维护数组环和 sync.Cond，随后再用独立的 channel worker-pool 示例回答“用 Channel 协调任务”的另一类问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先看消费者等空队列的路径：持有 Locker 检查条件，不满足就调用 Cond.Wait。Wait 原子释放锁并等待，返回时已经重新持锁；此时仍要循环检查业务条件。若只取消 context，Cond 不会自动醒来，所以示例用 Go 1.21 的 context.AfterFunc，在取消时持锁广播，退出时停止不再需要的回调。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再区分两种结束。close 是队列的状态，拒绝新写入并允许读完存量；取消是这次调用的状态，示例让已取消的调用优先返回 context 错误。合法的 0 仍然是数据，靠返回值与 error 区分成功、关闭和取消，不能把它当成空队列标记。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Go Mutex 不绑定某个 goroutine，这与 Java ReentrantLock、C++ std::mutex 的拥有者契约有重要区别，但不应据此设计难以验证的任意跨协程解锁。GMP 中 G 是 goroutine，M 是执行它的 OS 线程，P 承载执行 Go 代码所需的调度资源；GOMAXPROCS 限制同时执行 Go 代码的 P 数，不是进程的总 OS 线程数。阻塞系统调用、网络轮询、工作窃取和抢占会改变 G/M/P 绑定，不能把协程定义成“另一种内核线程”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Channel 适合移交所有权和协调，Mutex 适合短暂保护共享状态，二者没有全场景高低之分。无缓冲发送需要与接收配对，有缓冲通道提供有限积压；发送到已关闭 channel 会 panic，接收者可获得零值与 ok=false。关闭职责应属于确定的生产端协调者，多个生产者不应各自随意 close。"
+        },
+        {
+          "type": "paragraph",
+          "text": "worker 中 panic 的 recover 必须在同一 goroutine 的延迟函数中处理，外层主 goroutine 的 recover 不能接住子 goroutine 崩溃。捕获后应记录任务失败和维护业务一致性，不能只吞掉错误继续声称成功。下面的池限制 worker 数与通道容量，取消允许返回部分结果；被调用函数若完全忽略 context，仍无法被强制终止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Go 的 sync/atomic 原子操作按其顺序一致性契约使用；CAS 仍需重试、ABA 和复合状态分析。atomic.Pointer 可发布完整不可变快照，发布后继续修改对象仍会制造数据竞争。不要在首次使用后复制包含 Mutex 或原子值的对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通 Go map 在没有并发写入时可由多个 goroutine 读取；读写或多写冲突必须同步，运行时的并发 map 报错不等于数据竞争检测器，更不能靠 recover 修复。简单方案用同一 Mutex 或 RWMutex 保护全部相关操作，也可由单个 goroutine 拥有 map，通过 channel 发送请求。sync.Map 适合其文档列出的写入一次后多次读取、或不同 goroutine 负责不同 key 集合等使用模式，不会把 Load 再 Store 自动变成原子读改写；多字段不变量仍需锁或专门协议。返回指针或切片后，所指内容也不能脱离保护随意修改。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问 Mutex 底层时，以具体 Go 版本为准：快速路径尝试原子改变状态，争用时可能短暂自旋，再通过运行时信号量停放 goroutine；实现维护锁定、唤醒、等待者等状态，正常模式与饥饿模式在吞吐和等待公平性间取舍。它不是每次调用都直接执行一个 OS 互斥系统调用，也不是任意场景都适合长时间自旋；Go Mutex 不可重入且首次使用后不能复制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "channel 的运行时结构包含缓冲环、发送与接收索引、等待发送和接收的队列以及保护状态的锁。无缓冲或有现成对端时可直接交接，否则进入缓冲或将当前 G 挂入等待队列并停放；对端推进后再使等待 G 就绪。这个内部实现不能被描述成“channel 天生无锁”。nil channel 的收发会一直阻塞，永久等不到的发送或接收、没有取消出口的 select 和不退出的后台循环都可能造成 goroutine 泄漏；用 context 分支、明确关闭方及等待退出协议处理，不能只看 goroutine 创建是否很便宜。"
+        },
+        {
+          "type": "paragraph",
+          "text": "P 的本地运行队列和调度资源减少只靠全局队列时的共享竞争，并保留一定局部性。运行普通 Go 代码的 M 需要持有 P；本地可运行 G、全局队列、网络轮询、定时器和从其他 P 窃取工作共同提供任务，调度器还会检查全局工作以避免它长期饥饿，不能背成永远先把本地队列完全用空。可运行的 M 少于 P 时会有空闲 P，阻塞系统调用时运行时可把 P 交给其他 M；具体交接和抢占路径依赖调用及版本。抢占使长运行 G 有机会让出执行资源，但不替业务建立截止时间或保证立即响应取消。"
+        },
+        {
+          "type": "paragraph",
+          "text": "g0 是 M 的系统栈上下文，供调度、栈管理等运行时工作使用，不是普通业务 goroutine；m0 是启动阶段的初始 M。用户 G 与系统栈的切换是运行时执行上下文切换，不能一律说成进入内核态，也不能把 g0 当作全局唯一业务主协程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同 key 的请求可以用 golang.org/x/sync/singleflight 合并。Do 的重复调用等待同一次执行的结果，因此一个慢任务也可能拖住所有等待者。若甲只肯等很短时间、乙愿意继续等，就用 DoChan 的结果通道与甲自己的 context.Done 做 select，让甲能够退出自己的等待。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里仍有两个生命周期：甲离开不代表共享函数停止，共享执行应有独立的总期限和所有者，不能绑定第一个调用者的短期限而取消其他人的工作。DoChan 的结果通道也不会被关闭供无限 range。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Forget 处理的又是后续请求：它让后来调用不再等待旧记录，却不会终止旧函数，所以可能出现新旧执行重叠。是否缓存结果、怎样保证幂等、怎样限流和取消，都要另外定义，不能从“请求合并”推导出来。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/go/go.mod"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "value": "module example.com/jucmanual\n\ngo 1.21\n",
+          "label": "code/go/go.mod"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/go/main.go"
+        },
+        {
+          "type": "code",
+          "language": "go",
+          "value": "package main\n\nimport (\n    \"context\"\n    \"errors\"\n    \"fmt\"\n    \"sync\"\n    \"sync/atomic\"\n    \"time\"\n)\n\nvar ErrClosed = errors.New(\"queue closed\")\n\n// CondQueue implements its own ring and conditions, not a channel wrapper.\ntype CondQueue[T any] struct {\n    mu sync.Mutex\n    notEmpty, notFull *sync.Cond\n    data []T\n    head, tail, count int\n    closed bool\n}\nfunc NewCondQueue[T any](capacity int) *CondQueue[T] {\n    if capacity <= 0 { panic(\"capacity must be positive\") }\n    q := &CondQueue[T]{data: make([]T, capacity)}\n    q.notEmpty, q.notFull = sync.NewCond(&q.mu), sync.NewCond(&q.mu)\n    return q\n}\nfunc (q *CondQueue[T]) Push(ctx context.Context, value T) error {\n    q.mu.Lock()\n    stop := context.AfterFunc(ctx, func() {\n        q.mu.Lock(); q.notFull.Broadcast(); q.mu.Unlock()\n    })\n    defer func() { q.mu.Unlock(); stop() }()\n    for q.count == len(q.data) && !q.closed && ctx.Err() == nil { q.notFull.Wait() }\n    if err := ctx.Err(); err != nil { return err }\n    if q.closed { return ErrClosed }\n    q.data[q.tail] = value; q.tail = (q.tail + 1) % len(q.data); q.count++\n    q.notEmpty.Signal()\n    return nil\n}\n// Pop returns (zero, ErrClosed) only after closed inventory has drained.\nfunc (q *CondQueue[T]) Pop(ctx context.Context) (T, error) {\n    q.mu.Lock()\n    stop := context.AfterFunc(ctx, func() {\n        q.mu.Lock(); q.notEmpty.Broadcast(); q.mu.Unlock()\n    })\n    defer func() { q.mu.Unlock(); stop() }()\n    var zero T\n    for q.count == 0 && !q.closed && ctx.Err() == nil { q.notEmpty.Wait() }\n    if err := ctx.Err(); err != nil { return zero, err }\n    if q.count == 0 { return zero, ErrClosed }\n    value := q.data[q.head]; q.data[q.head] = zero\n    q.head = (q.head + 1) % len(q.data); q.count--\n    q.notFull.Signal()\n    return value, nil\n}\nfunc (q *CondQueue[T]) Close() {\n    q.mu.Lock(); q.closed = true\n    q.notEmpty.Broadcast(); q.notFull.Broadcast(); q.mu.Unlock()\n}\n\ntype Result struct { ID, Value int; Err error }\nfunc safeCall(ctx context.Context, id int, fn func(context.Context, int) (int, error)) (r Result) {\n    r.ID = id\n    defer func() { if p := recover(); p != nil { r.Err = fmt.Errorf(\"task panic: %v\", p) } }()\n    r.Value, r.Err = fn(ctx, id)\n    return\n}\n// Separate exercise: channels coordinate bounded workers. Functions must cooperate with ctx.\nfunc RunChannelPool(ctx context.Context, workers, count int, fn func(context.Context, int) (int, error)) ([]Result, error) {\n    if workers <= 0 || count < 0 { return nil, errors.New(\"invalid size\") }\n    jobs := make(chan int, workers)\n    results := make(chan Result, workers)\n    var wg sync.WaitGroup\n    for w := 0; w < workers; w++ {\n        wg.Add(1)\n        go func() {\n            defer wg.Done()\n            for {\n                if ctx.Err() != nil { return }\n                select {\n                case <-ctx.Done(): return\n                case id, ok := <-jobs:\n                    if !ok || ctx.Err() != nil { return }\n                    result := safeCall(ctx, id, fn)\n                    select { case results <- result: case <-ctx.Done(): return }\n                }\n            }\n        }()\n    }\n    producerDone := make(chan struct{})\n    go func() {\n        defer close(producerDone); defer close(jobs)\n        for id := 0; id < count; id++ {\n            select { case jobs <- id: case <-ctx.Done(): return }\n        }\n    }()\n    go func() { wg.Wait(); close(results) }()\n    collected := make([]Result, 0, count)\n    for result := range results { collected = append(collected, result) }\n    <-producerDone\n    return collected, ctx.Err()\n}\n\ntype Snapshot struct { Version int; Limit int }\nfunc require(ok bool, message string) { if !ok { panic(message) } }\nfunc runChecks() {\n    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)\n    defer cancel()\n    q := NewCondQueue[int](8)\n    var producers, consumers sync.WaitGroup\n    seen := make(map[int]bool); var seenMu sync.Mutex\n    failures := make(chan error, 8)\n    for c := 0; c < 4; c++ {\n        consumers.Add(1)\n        go func() {\n            defer consumers.Done()\n            for {\n                value, err := q.Pop(ctx)\n                if errors.Is(err, ErrClosed) { return }\n                if err != nil { failures <- err; return }\n                seenMu.Lock()\n                if seen[value] { failures <- errors.New(\"duplicate\"); seenMu.Unlock(); return }\n                seen[value] = true; seenMu.Unlock()\n            }\n        }()\n    }\n    for p := 0; p < 4; p++ {\n        base := p*1000; producers.Add(1)\n        go func() {\n            defer producers.Done()\n            for i := 0; i < 1000; i++ { if err := q.Push(ctx, base+i); err != nil { failures <- err; return } }\n        }()\n    }\n    producers.Wait(); q.Close(); consumers.Wait(); close(failures)\n    for err := range failures { panic(err) }\n    require(len(seen) == 4000, \"MPMC loss\")\n    require(errors.Is(q.Push(ctx, 0), ErrClosed), \"close rejects push\")\n    small := NewCondQueue[int](1)\n    require(small.Push(ctx, 0) == nil, \"zero is valid\")\n    cancelled, stop := context.WithCancel(ctx); stop()\n    require(errors.Is(small.Push(cancelled, 1), context.Canceled), \"cancel full push\")\n    small.Close(); value, err := small.Pop(ctx)\n    require(err == nil && value == 0, \"drain zero\")\n    _, err = small.Pop(ctx); require(errors.Is(err, ErrClosed), \"closed end\")\n    empty := NewCondQueue[int](1)\n    waiting, release := context.WithCancel(ctx)\n    done := make(chan error, 1)\n    go func() { _, err := empty.Pop(waiting); done <- err }()\n    release()\n    select { case err := <-done: require(errors.Is(err, context.Canceled), \"cancel wait\")\n    case <-ctx.Done(): panic(\"cancel did not wake condition\") }\n    results, err := RunChannelPool(ctx, 5, 100, func(ctx context.Context, id int) (int, error) {\n        if id == 7 { panic(\"controlled\") }; return id*id, nil\n    })\n    require(err == nil && len(results) == 100, \"worker count/results\")\n    panicCount := 0\n    for _, r := range results { if r.Err != nil { panicCount++ } }\n    require(panicCount == 1, \"panic isolated inside worker goroutine\")\n    var stock atomic.Int64; stock.Store(1)\n    require(stock.CompareAndSwap(1, 0) && !stock.CompareAndSwap(1, 0), \"Go atomic CAS\")\n    var root atomic.Pointer[Snapshot]\n    root.Store(&Snapshot{Version: 1, Limit: 10})\n    old := root.Load(); root.Store(&Snapshot{Version: 2, Limit: 20})\n    require(old.Version == 1 && root.Load().Version == 2, \"immutable snapshot publication\")\n    fmt.Println(\"native_go OK\")\n}\nfunc main() { runChecks(); cacheAndTenantChecks() }\n",
+          "label": "code/go/main.go"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/go/main_test.go"
+        },
+        {
+          "type": "code",
+          "language": "go",
+          "value": "package main\n\nimport \"testing\"\n\nfunc TestControlledConcurrency(t *testing.T) { runChecks(); cacheAndTenantChecks() }\n",
+          "label": "code/go/main_test.go"
+        },
+        {
+          "type": "paragraph",
+          "text": "Go 的 TTL LRU 与 context 多租户限流还可这样实现：缓存读取不续期、写入续期，插入前扫描清理到期项，明确支付 O(n) 清理成本。租户身份由可信入口放入有类型的 context key，检查取消后再准入；这个进程内限流不代表多副本全局配额。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/go/ttl_lru.go"
+        },
+        {
+          "type": "code",
+          "language": "go",
+          "value": "package main\n\nimport (\n    \"container/list\"\n    \"context\"\n    \"errors\"\n    \"sync\"\n    \"time\"\n)\n\ntype ttlEntry[K comparable, V any] struct { key K; value V; expires time.Time }\ntype TTLLru[K comparable, V any] struct {\n    mu sync.Mutex\n    capacity int\n    ttl time.Duration\n    clock func() time.Time\n    entries map[K]*list.Element\n    recency *list.List\n}\nfunc NewTTLLru[K comparable, V any](capacity int, ttl time.Duration, clock func() time.Time) *TTLLru[K, V] {\n    if capacity < 0 || ttl <= 0 || clock == nil { panic(\"invalid TTL LRU configuration\") }\n    return &TTLLru[K,V]{capacity: capacity, ttl: ttl, clock: clock, entries: make(map[K]*list.Element), recency: list.New()}\n}\nfunc (c *TTLLru[K,V]) remove(element *list.Element) {\n    delete(c.entries, element.Value.(*ttlEntry[K,V]).key); c.recency.Remove(element)\n}\nfunc (c *TTLLru[K,V]) Get(key K) (V, bool) {\n    c.mu.Lock(); defer c.mu.Unlock()\n    var zero V\n    element := c.entries[key]\n    if element == nil { return zero, false }\n    item := element.Value.(*ttlEntry[K,V])\n    if !c.clock().Before(item.expires) { c.remove(element); return zero, false }\n    c.recency.MoveToFront(element); return item.value, true\n}\nfunc (c *TTLLru[K,V]) Put(key K, value V) {\n    c.mu.Lock(); defer c.mu.Unlock()\n    now := c.clock()\n    // This simple native version explicitly pays O(n) for expiry-first cleanup.\n    for element := c.recency.Back(); element != nil; {\n        previous := element.Prev()\n        if !now.Before(element.Value.(*ttlEntry[K,V]).expires) { c.remove(element) }\n        element = previous\n    }\n    if element := c.entries[key]; element != nil {\n        item := element.Value.(*ttlEntry[K,V]); item.value = value; item.expires = now.Add(c.ttl)\n        c.recency.MoveToFront(element); return\n    }\n    if c.capacity == 0 { return }\n    if len(c.entries) == c.capacity { c.remove(c.recency.Back()) }\n    c.entries[key] = c.recency.PushFront(&ttlEntry[K,V]{key, value, now.Add(c.ttl)})\n}\n\ntype tenantKey struct{}\nfunc WithTenant(ctx context.Context, verifiedTenant string) context.Context {\n    return context.WithValue(ctx, tenantKey{}, verifiedTenant)\n}\ntype TenantLimiter struct {\n    mu sync.Mutex\n    users map[string][]time.Time\n    limit, maxTenants int\n    window time.Duration\n    clock func() time.Time\n}\nfunc NewTenantLimiter(limit, maxTenants int, window time.Duration, clock func() time.Time) *TenantLimiter {\n    if limit <= 0 || maxTenants <= 0 || window <= 0 || clock == nil { panic(\"invalid limiter configuration\") }\n    return &TenantLimiter{users: make(map[string][]time.Time), limit: limit, maxTenants: maxTenants, window: window, clock: clock}\n}\nfunc (l *TenantLimiter) Allow(ctx context.Context) (bool, error) {\n    if err := ctx.Err(); err != nil { return false, err }\n    tenant, ok := ctx.Value(tenantKey{}).(string)\n    if !ok || tenant == \"\" { return false, errors.New(\"verified tenant missing\") }\n    l.mu.Lock(); defer l.mu.Unlock()\n    if err := ctx.Err(); err != nil { return false, err }\n    now := l.clock()\n    for key, times := range l.users {\n        first := 0\n        for first < len(times) && !times[first].Add(l.window).After(now) { first++ }\n        if first == len(times) { delete(l.users, key) } else if first > 0 {\n            copy(times, times[first:]); l.users[key] = times[:len(times)-first]\n        }\n    }\n    times, exists := l.users[tenant]\n    if !exists && len(l.users) >= l.maxTenants { return false, nil }\n    if len(times) >= l.limit { return false, nil }\n    l.users[tenant] = append(times, now); return true, nil\n}\nfunc cacheAndTenantChecks() {\n    now := time.Unix(0, 0)\n    cache := NewTTLLru[string,int](2, 10*time.Second, func() time.Time { return now })\n    cache.Put(\"a\", 1); now = now.Add(5*time.Second); cache.Put(\"b\", 2)\n    now = now.Add(4*time.Second); _, hit := cache.Get(\"a\"); require(hit, \"touch a\")\n    now = now.Add(time.Second); cache.Put(\"c\", 3)\n    _, a := cache.Get(\"a\"); _, b := cache.Get(\"b\"); require(!a && b, \"expiry independent of recency\")\n    limiter := NewTenantLimiter(2, 2, time.Minute, func() time.Time { return now })\n    ctx := WithTenant(context.Background(), \"authenticated-tenant\")\n    first, err := limiter.Allow(ctx); require(first && err == nil, \"tenant admission\")\n    second, _ := limiter.Allow(ctx); third, _ := limiter.Allow(ctx); require(second && !third, \"tenant limit\")\n    cancelled, cancel := context.WithCancel(ctx); cancel()\n    _, err = limiter.Allow(cancelled); require(errors.Is(err, context.Canceled), \"tenant cancellation\")\n}\n",
+          "label": "code/go/ttl_lru.go"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "JavaScript 并发池 依赖批次与 ES6 Map LRU"
+        },
+        {
+          "type": "paragraph",
+          "text": "Promise 并发池限制的是未完成异步操作数，不会让同一个事件循环中的 JavaScript CPU 代码自动并行。CPU 重任务需要 Web Worker 或 Node worker_threads 等隔离执行者；消息传递、可转移对象和共享内存各有成本与同步条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "浏览器里要先分清任务和微任务。计时器、消息等排成任务，Promise 回调等进入微任务队列。一段同步代码结束后继续处理微任务，并不保证已经给渲染留出机会；只反复 await 已兑现 Promise，仍可能连续制造微任务，饿住其他工作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果把长计算切成片段，再 await 一个由 setTimeout(resolve, 0) 完成的 Promise，下一片会推迟到后续任务，宿主才有机会处理其他任务。这里的 0 不是“立刻执行”或精确零毫秒，嵌套计时器等还可能受最小延迟限制。这种分片是在让出执行机会，并没有让 CPU 计算自动并行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Worker 连续接收新请求时给每次请求分配 taskId 或 generation，计算在分片边界检查当前代次，返回消息也携带代次；接收端仅接受当前最新代次，取消只是减少旧计算，输出检查才阻止迟到旧结果覆盖新结果。Node 同样不能在主事件循环里长时间阻塞；它结合 OS 异步 I/O、libuv 事件循环及部分操作使用的线程池支持大量等待。Node 有 timers、poll、check 等阶段和 process.nextTick 等额外机制，不能把浏览器的任务模型机械当成 Node 全部实现，也不能脱离调用位置和版本保证 setTimeout(0) 与 setImmediate 的唯一先后。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面用 100 个教学任务、并发上限 5 演示调度；这组数值只属于相应并发池练习，不应套给所有“手写调度器”题。每个 worker 同步领取下一个索引，再 await 实际任务，结果按输入索引存储。遇到失败停止接收新项并发出 AbortSignal，等待已启动合作任务退出；任意任务忽略 signal 时，函数仍可能等它，不能把 abort 等同于强杀。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有依赖的任务先验证 ID、缺失依赖及重复边，再通过入度计算并行批次，剩余节点无法消除则存在环。此教学接口把任务 ID 和依赖 ID 明确限定为非空字符串，避免结果作为对象属性传递时将数字 1 与字符串 \"1\" 合并；这是示例接口约定，题目未给定时应先确认。按批次全部完成再推进最容易解释，但可能让下一层已就绪任务等待同批慢任务；动态就绪队列可以更早启动，仍需统一并发上限、失败传播和结果归属。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ES6 Map 按插入顺序迭代，访问时 delete 再 set 可以把 key 移到末尾，最前方作为最久未使用项。已存在 key 直接 set 不会把它变成新插入位置。存储 undefined 时要用 has 区分命中与未命中。规范要求平均访问成本为次线性，并不强制某种哈希结构或严格 O(1)；面试要求手写 HashMap + 双向链表时，应回到前面的结构方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/native_js.mjs"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "value": "import assert from 'node:assert/strict';\n\n/** Limits active async calls; it does not create CPU-parallel JavaScript threads. */\nexport async function mapLimit(items, limit, run, externalSignal) {\n  if (!Number.isInteger(limit) || limit <= 0) throw new RangeError('positive integer limit');\n  const aborter = new AbortController();\n  const propagate = () => aborter.abort(externalSignal.reason);\n  if (externalSignal?.aborted) propagate();\n  else externalSignal?.addEventListener('abort', propagate, { once: true });\n  let next = 0;\n  const results = new Array(items.length);\n  let primary;\n  let failed = false;\n  async function worker() {\n    while (!aborter.signal.aborted) {\n      const index = next++; // No await between reserving the index and checking its bound.\n      if (index >= items.length) return;\n      try { results[index] = await run(items[index], index, aborter.signal); }\n      catch (error) {\n        if (!failed) { failed = true; primary = error; }\n        aborter.abort(error);\n        return;\n      }\n    }\n  }\n  try {\n    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));\n    if (failed) throw primary;\n    aborter.signal.throwIfAborted();\n    return results;\n  } finally { externalSignal?.removeEventListener('abort', propagate); }\n}\n\n/** Returns topological parallel batches; the chosen barrier may delay newly ready tasks. */\nexport function dependencyBatches(nodes) {\n  const byId = new Map();\n  for (const node of nodes) {\n    if (typeof node.id !== 'string' || node.id.length === 0)\n      throw new TypeError('task id must be a nonempty string');\n    if (!Array.isArray(node.dependencies) || node.dependencies.some(dep => typeof dep !== 'string' || dep.length === 0))\n      throw new TypeError('dependencies must be an array of nonempty strings');\n    if (byId.has(node.id)) throw new Error('duplicate task id');\n    byId.set(node.id, node);\n  }\n  const indegree = new Map(), outgoing = new Map(nodes.map(n => [n.id, []]));\n  for (const node of nodes) {\n    const deps = new Set(node.dependencies);\n    if (deps.size !== node.dependencies.length) throw new Error('duplicate dependency');\n    indegree.set(node.id, deps.size);\n    for (const dep of deps) {\n      if (!byId.has(dep)) throw new Error('missing dependency');\n      outgoing.get(dep).push(node.id);\n    }\n  }\n  let ready = nodes.filter(n => indegree.get(n.id) === 0).map(n => n.id);\n  const batches = [];\n  let visited = 0;\n  while (ready.length) {\n    const batch = ready;\n    ready = [];\n    batches.push(batch); visited += batch.length;\n    for (const id of batch) for (const child of outgoing.get(id)) {\n      indegree.set(child, indegree.get(child) - 1);\n      if (indegree.get(child) === 0) ready.push(child);\n    }\n  }\n  if (visited !== nodes.length) throw new Error('dependency cycle');\n  return batches;\n}\n\n/** Execute each validated batch with the same explicit concurrency bound. */\nexport async function runDag(nodes, limit, signal) {\n  const batches = dependencyBatches(nodes);\n  const byId = new Map(nodes.map(node => [node.id, node]));\n  const results = new Map();\n  for (const batch of batches) {\n    const values = await mapLimit(batch, limit, async (id, index, branchSignal) => {\n      const node = byId.get(id);\n      const inputs = Object.freeze(Object.fromEntries(node.dependencies.map(dep => [dep, results.get(dep)])));\n      return node.run(inputs, branchSignal);\n    }, signal);\n    batch.forEach((id, index) => results.set(id, values[index]));\n  }\n  return results;\n}\n\nexport class MapLru {\n  #map = new Map();\n  constructor(capacity) {\n    if (!Number.isInteger(capacity) || capacity < 0) throw new RangeError('nonnegative integer capacity');\n    this.capacity = capacity;\n  }\n  get(key) {\n    if (!this.#map.has(key)) return { found: false };\n    const value = this.#map.get(key);\n    this.#map.delete(key); this.#map.set(key, value);\n    return { found: true, value }; // Stored undefined is distinguishable from a miss.\n  }\n  put(key, value) {\n    if (!this.capacity) return;\n    this.#map.delete(key); this.#map.set(key, value);\n    if (this.#map.size > this.capacity) this.#map.delete(this.#map.keys().next().value);\n  }\n}\n\nlet active = 0, peak = 0;\nconst values = await mapLimit(Array.from({ length: 100 }, (_, i) => i), 5,\n  async (value, index, signal) => {\n    signal.throwIfAborted(); active++; peak = Math.max(peak, active);\n    try { await new Promise(resolve => setImmediate(resolve)); return value * 2; }\n    finally { active--; }\n  });\nassert.equal(peak, 5); assert.equal(active, 0);\nassert.deepEqual(values, Array.from({ length: 100 }, (_, i) => i * 2));\nconst failure = new Error('controlled');\nawait assert.rejects(mapLimit([1, 2, 3], 2, async value => {\n  if (value === 1) throw failure;\n  await new Promise(resolve => setImmediate(resolve));\n  return value;\n}), error => error === failure);\nconst cancelled = new AbortController(); cancelled.abort(new Error('cancelled'));\nlet calls = 0;\nawait assert.rejects(mapLimit([1], 1, async () => { calls++; }, cancelled.signal), /cancelled/);\nassert.equal(calls, 0);\nassert.deepEqual(dependencyBatches([\n  { id: 'a', dependencies: [] }, { id: 'b', dependencies: [] },\n  { id: 'c', dependencies: ['a', 'b'] }, { id: 'd', dependencies: ['c'] }\n]), [['a', 'b'], ['c'], ['d']]);\nassert.throws(() => dependencyBatches([{ id: 'a', dependencies: ['a'] }]), /cycle/);\nassert.throws(() => dependencyBatches([{ id: 'a', dependencies: ['missing'] }]), /missing/);\nassert.throws(() => dependencyBatches([{ id: 1, dependencies: [] }, { id: '1', dependencies: [] }]), /nonempty string/);\nassert.throws(() => dependencyBatches([{ id: '', dependencies: [] }]), /nonempty string/);\nassert.throws(() => dependencyBatches([{ id: 'a', dependencies: [1] }]), /nonempty strings/);\nassert.throws(() => dependencyBatches([{ id: 'a', dependencies: 'b' }]), /array/);\nconst lru = new MapLru(2);\nlru.put('a', undefined); lru.put('b', 0);\nassert.deepEqual(lru.get('a'), { found: true, value: undefined });\nlru.put('c', false);\nassert.deepEqual(lru.get('b'), { found: false });\nassert.deepEqual(lru.get('c'), { found: true, value: false });\n\nconst dag = await runDag([\n  { id: 'a', dependencies: [], run: async () => 2 },\n  { id: 'b', dependencies: [], run: async () => 3 },\n  { id: 'c', dependencies: ['a', 'b'], run: async inputs => inputs.a + inputs.b }\n], 2);\nassert.equal(dag.get('c'), 5);\nconsole.log('native_js OK');\n",
+          "label": "code/native_js.mjs"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Java Go 及事件循环 如何做技术选择"
+        },
+        {
+          "type": "paragraph",
+          "text": "语言选择应由已有系统、团队熟悉程度、库生态、部署约束和工作负载决定，不能仅凭“协程轻量”就承诺性能更好。Java 有成熟 JVM 诊断与丰富中间件生态，Go 有原生 goroutine/channel 和较直接的部署体验；Go 泛型自 1.18 起提供，隐式接口与组合并不等于 Java 的继承模型。涉及 cgo 时也不能把构建与依赖成本一概说成单个静态文件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 虚拟线程、Go goroutine 与 asyncio 协程都能组织大量等待，但调度和取消模型不同。传统开启 GIL 的 CPython 中，同一解释器通常不能用多线程并行执行 Python 字节码；I/O 等待和释放 GIL 的扩展另论。3.13 提供可选实验性 free-threaded 构建，因此“所有 Python 永远有 GIL”也不准确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "async/await 并不自动把阻塞调用变成非阻塞；在事件循环中直接做慢同步 I/O 或长 CPU 计算，会阻挡其他任务。线程本地变量隔离线程，不能隔离同线程交错的异步任务；需要任务上下文时使用对应运行时的 ContextVar、Reactor Context 或显式不可变参数，并确认传播和重置边界。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-java-modern",
+      "questionId": "q-own-java-cross-language-contracts",
+      "label": "Java 基础：跨语言契约"
+    },
+    {
+      "entryId": "own-juc-reference",
+      "label": "运行支持与工具链"
+    }
+  ]
+}

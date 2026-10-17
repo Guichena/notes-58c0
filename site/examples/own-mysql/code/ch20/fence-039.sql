@@ -1,0 +1,5 @@
+-- B1：必须在 A2 之前完成读取。
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION;
+SELECT available INTO @b_seen FROM s2_stock WHERE sku=1; -- 10
+SET @b_next=@b_seen-1; -- 9

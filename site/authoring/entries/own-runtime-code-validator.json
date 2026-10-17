@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-code-validator",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "push / MR 前的代码校验器怎样形成明确退出码与失败边界？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-code-validator",
+      "order": 4385,
+      "question": "push / MR 前的代码校验器怎样形成明确退出码与失败边界？",
+      "shortAnswer": "固定输入、工具和检查合同，收集真实诊断并明确退出状态；教学脚本不代表已经安装 Hook 或修改 CI。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "实现一个 push / MR 前的代码校验器"
+        },
+        {
+          "type": "paragraph",
+          "text": "本节独立示例放在下载包的 validator-example/ 目录；进入该目录执行 sh test.sh，运行本节完整列出的 fixture 测试。实际引擎扫描使用另列的可信安装与部署验收步骤。"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 我会把校验器拆成“固定源码快照、模块契约、受限执行器、报告与门禁”四层。代码风格和安全扫描都是必选模块，各自返回 PASS、FAIL 或 ERROR。发现违规是 FAIL；工具缺失、解析失败、超时或被取消是 ERROR，不能把“没有完成扫描”当成“没有问题”。两个模块都通过才返回退出码 0，违规返回 1，任何错误返回 2。Java 负责可靠编排，成熟分析引擎负责解析源码和执行规则。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先确定输入、范围和信任边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面固定一个可实现的教学契约：Java 17 语言级别；输入是可信适配层从指定 commit 或 merge-result 导出的、不再修改的源码目录；扫描其中全部 .java 文件。代码不读取 diff，不运行项目的 Maven、Gradle、测试、注解处理器或仓库自带脚本。Git 导出、源码与提交 SHA 的绑定由外层负责。报告里的 SHA-256 是“相对路径与 Java 文件字节”的内容摘要，不能单独证明 Git 提交身份。"
+        },
+        {
+          "type": "paragraph",
+          "text": "选择 PMD 7.28.0 作为一个具体的真实集成：style 模块启用控制语句大括号和命名规则；security 模块启用硬编码密钥和固定 IV 检查。两个模块共享同一引擎的不同规则集，仍然独立执行、独立报告。它们不是两个独立来源的安全证明。命令行入口使用 net.sourceforge.pmd.cli.PmdCli，应与发行包一起锁定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PASS 仅表示这个快照通过了这四条规则。两条密码学误用规则是有限的源码安全检查，不覆盖所有注入、鉴权、业务逻辑漏洞、依赖 CVE 或泄露凭据。企业场景还需要按威胁模型接入更完整的 SAST、SCA 和凭据扫描模块，并对每个工具声明支持的语言、依赖、规则集、覆盖缺口和错误语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可信边界必须放在仓库外：JDK、校验器 class、PMD 完整发行包和两份规则由管理员审查、校验摘要并放入只读镜像。示例主程序使用固定的 /opt/runtime-validator，命令行只能提供源码目录，不能指定可执行文件、Java classpath 或规则文件。PMD 的 classpath 只包含该发行包的 lib/*，不加载待检查项目的 class 或自定义规则插件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "输入上限是 256 个 Java 文件、单文件 1 MiB、合计 16 MiB、4096 个目录项、40 层目录；只接受 UTF-8，拒绝符号链接、特殊文件和不符合示例路径约定的 Java 文件名。复制后的快照在每个模块前后校验摘要。原始输入必须已经冻结；复制操作本身不能把一个正在被并发编辑的目录变成“某个 Git 提交”。生产可进一步将快照以只读挂载交给扫描器。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "模块、报告和失败策略"
+        },
+        {
+          "type": "paragraph",
+          "text": "Module 提供模块标识与检查方法；Runner 提供进程执行接口，测试时能注入受控返回值。注册模块全部必选，不设置“安全工具挂了就跳过”。新增模块需实现明确的结果解析和执行上限，不能把不受控插件放进主 JVM。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PMD 的退出码不能直接当成校验器退出码：正常为 0、违规为 4、可恢复分析错误为 5，其他错误也阻断。本例还解析 XML，检查引擎版本、错误节点、文件范围和退出码的一致性；空报告、未知结构、DTD/外部实体和越界路径都拒绝。显式要求输出被抑制的违规，示例策略仍将它们计为失败，仓库内的 NOPMD 或 @SuppressWarnings 不能自行获得豁免。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每个扫描器最长 15 秒；stdout 与 stderr 合计最多 256 KiB；关闭 stdin，清空继承环境，使用参数列表而不是拼接 shell。PMD JVM 的堆限制为 256 MiB、Metaspace 为 128 MiB，规则扫描使用一个工作线程。报告按模块和违规位置排序，包含源码摘要、规则摘要和引擎版本，不包含当前时间、随机临时目录或原始源码/密钥片段。失败优先级是 ERROR > FAIL > PASS；取消在模块返回之后也重新检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进程句柄清理有两秒预算，并检查已观察到的子进程与输出线程是否退出；清理不完整也是错误。ProcessHandle 不是操作系统级沙箱，不能承诺捕获所有快速脱离父进程的后代，也不能用 -Xmx 限制 JVM 的全部原生内存。真实 CI 仍应使用无网络、无凭据、只读工具与源码挂载的独立容器，对总内存、CPU、PID 和临时盘设置硬限额，并在 job 超时/取消时清理整个容器。示例建议总内存 768 MiB、1 CPU、64 PID、64 MiB 临时盘和 60 秒 job deadline；这些是部署预算，不是 Java 代码已经实施的 OS 隔离。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整源码：Validator.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整源码：Validator.java",
+          "value": "import java.io.*;\nimport java.nio.ByteBuffer;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.nio.file.attribute.BasicFileAttributes;\nimport java.security.MessageDigest;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.*;\nimport javax.xml.stream.*;\n\n/** Java 17 language level; no repository code, shell command or build plugin is run. */\npublic final class Validator {\n    static final String PMD_VERSION = \"7.28.0\";\n    static final String NS = \"http://pmd.sourceforge.net/report/2.0.0\";\n    static final int FILE_LIMIT = 1_048_576, TOTAL_LIMIT = 16_777_216;\n    enum State { PASS, FAIL, ERROR }\n    record Result(String id, State state, String reason, List<String> findings) {\n        Result {\n            Objects.requireNonNull(state); Objects.requireNonNull(findings);\n            if (id == null || !id.matches(\"[a-z][a-z0-9-]{0,31}\") || reason == null\n                    || !reason.matches(\"[A-Za-z0-9_;=.-]{1,256}\") || findings.size() > 4096)\n                throw new IllegalArgumentException(\"invalid module result\");\n            for (String f : findings) {\n                if (f == null || f.length() > 4096 || f.chars().anyMatch(c -> c < 32 || c == 127))\n                    throw new IllegalArgumentException(\"invalid finding\");\n            }\n            findings = findings.stream().sorted().toList();\n        }\n        static Result error(String id, String reason) {\n            return new Result(id, State.ERROR, reason, List.of());\n        }\n    }\n    record Report(String snapshot, List<Result> modules) {\n        Report { modules = modules.stream().sorted(Comparator.comparing(Result::id)).toList(); }\n        int exitCode() {\n            if (modules.stream().anyMatch(x -> x.state == State.ERROR)) return 2;\n            return modules.stream().anyMatch(x -> x.state == State.FAIL) ? 1 : 0;\n        }\n        String text() {\n            StringBuilder b = new StringBuilder(\"snapshot=\" + snapshot + \"\\n\");\n            for (Result r : modules) {\n                b.append(r.id).append('\\t').append(r.state).append('\\t')\n                    .append(r.reason).append('\\n');\n                for (String f : r.findings) b.append(\"  \").append(f).append('\\n');\n            }\n            return b.append(\"exit=\").append(exitCode()).append('\\n').toString();\n        }\n    }\n    interface Module {\n        String id();\n        Result check(Snapshot snapshot, AtomicBoolean cancel) throws Exception;\n    }\n    static Report validate(Snapshot snapshot, List<Module> modules, AtomicBoolean cancel) {\n        // All registered modules are required. An empty/duplicate registry cannot pass.\n        if (modules == null || modules.isEmpty() || modules.size() > 8\n                || modules.stream().anyMatch(m -> m == null || m.id() == null || !m.id().matches(\"[a-z][a-z0-9-]{0,31}\"))\n                || modules.stream().map(Module::id).distinct().count() != modules.size()) {\n            return new Report(snapshot.digest, List.of(Result.error(\"gate\", \"BAD_REGISTRY\")));\n        }\n        List<Result> out = new ArrayList<>();\n        for (Module m : modules.stream().sorted(Comparator.comparing(Module::id)).toList()) {\n            try {\n                if (!m.id().matches(\"[a-z][a-z0-9-]{0,31}\")) throw new IOException();\n                if (cancel.get() || Thread.currentThread().isInterrupted()) {\n                    out.add(Result.error(m.id(), \"CANCELLED\"));\n                } else if (!snapshot.unchanged()) {\n                    out.add(Result.error(m.id(), \"SNAPSHOT_CHANGED\"));\n                } else {\n                    Result r = m.check(snapshot, cancel);\n                    if (r == null || !r.id.equals(m.id())) throw new IOException();\n                    if (cancel.get() || Thread.currentThread().isInterrupted()) out.add(Result.error(m.id(), \"CANCELLED\"));\n                    else out.add(snapshot.unchanged() ? r : Result.error(m.id(), \"SNAPSHOT_CHANGED\"));\n                }\n            } catch (Exception e) {\n                out.add(Result.error(m.id(), \"MODULE_ERROR\"));\n            }\n        }\n        if (cancel.get() || Thread.currentThread().isInterrupted()) out.add(Result.error(\"gate\", \"CANCELLED\"));\n        return new Report(snapshot.digest, out);\n    }\n    static byte[] boundedRead(Path p, int max) throws IOException {\n        try (InputStream in = Files.newInputStream(p, LinkOption.NOFOLLOW_LINKS)) {\n            byte[] bytes = in.readNBytes(max + 1);\n            if (bytes.length > max) throw new IOException(\"size limit\");\n            return bytes;\n        }\n    }\n    static String hash(Map<String, byte[]> files) throws Exception {\n        MessageDigest md = MessageDigest.getInstance(\"SHA-256\");\n        for (var e : new TreeMap<>(files).entrySet()) {\n            byte[] name = e.getKey().getBytes(StandardCharsets.UTF_8);\n            md.update(ByteBuffer.allocate(4).putInt(name.length).array()); md.update(name);\n            md.update(ByteBuffer.allocate(4).putInt(e.getValue().length).array()); md.update(e.getValue());\n        }\n        return HexFormat.of().formatHex(md.digest());\n    }\n    static SortedMap<String, byte[]> readSources(Path root) throws IOException {\n        SortedMap<String, byte[]> data = new TreeMap<>();\n        int[] entries = {0}, total = {0};\n        Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 40,\n                new SimpleFileVisitor<Path>() {\n            void count(Path p) throws IOException {\n                if (++entries[0] > 4096 || Files.isSymbolicLink(p)) throw new IOException(\"path limit\");\n            }\n            public FileVisitResult preVisitDirectory(Path p, BasicFileAttributes a) throws IOException {\n                count(p); return FileVisitResult.CONTINUE;\n            }\n            public FileVisitResult visitFile(Path p, BasicFileAttributes a) throws IOException {\n                count(p);\n                if (!a.isRegularFile()) throw new IOException(\"non-regular input\");\n                if (p.toString().endsWith(\".java\")) {\n                    String rel = root.relativize(p).toString().replace(File.separatorChar, '/');\n                    // A deliberately narrow portable path contract; reject rather than silently skip.\n                    if (!rel.matches(\"[A-Za-z0-9_./ -]+\\\\.java\") || rel.contains(\"..\"))\n                        throw new IOException(\"unsupported path\");\n                    byte[] bytes = boundedRead(p, FILE_LIMIT);\n                    StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes));\n                    total[0] += bytes.length;\n                    if (data.size() >= 256 || total[0] > TOTAL_LIMIT) throw new IOException(\"input limit\");\n                    data.put(rel, bytes);\n                }\n                return FileVisitResult.CONTINUE;\n            }\n        });\n        if (data.isEmpty()) throw new IOException(\"no Java sources\");\n        return data;\n    }\n    static final class Snapshot implements AutoCloseable {\n        final Path home, source;\n        final String digest;\n        final Set<String> names;\n        Snapshot(Path input, Path tempParent) throws Exception {\n            Path normalized = input.toAbsolutePath().normalize();\n            if (Files.isSymbolicLink(normalized) || !Files.isDirectory(normalized))\n                throw new IOException(\"invalid root\");\n            // The caller provides an immutable exported commit, not a concurrently writable checkout.\n            SortedMap<String, byte[]> data = readSources(normalized.toRealPath());\n            digest = hash(data); names = Set.copyOf(data.keySet());\n            home = Files.createTempDirectory(tempParent, \"validator-\").toAbsolutePath();\n            source = home.resolve(\"source\");\n            try {\n                Files.createDirectory(source);\n                for (var e : data.entrySet()) {\n                    Path dest = source.resolve(e.getKey());\n                    Files.createDirectories(dest.getParent()); Files.write(dest, e.getValue());\n                }\n            } catch (Exception e) { deleteTree(home); throw e; }\n        }\n        boolean unchanged() throws Exception { return digest.equals(hash(readSources(source))); }\n        public void close() throws IOException { deleteTree(home); }\n    }\n    static void deleteTree(Path p) throws IOException {\n        if (!Files.exists(p, LinkOption.NOFOLLOW_LINKS)) return;\n        Files.walkFileTree(p, new SimpleFileVisitor<Path>() {\n            public FileVisitResult visitFile(Path f, BasicFileAttributes a) throws IOException {\n                Files.delete(f); return FileVisitResult.CONTINUE;\n            }\n            public FileVisitResult postVisitDirectory(Path d, IOException e) throws IOException {\n                if (e != null) throw e;\n                Files.delete(d); return FileVisitResult.CONTINUE;\n            }\n        });\n    }\n    record Exec(int code, byte[] stdout, String error) {}\n    interface Runner {\n        Exec run(List<String> argv, Path cwd, Duration limit, int outputLimit, AtomicBoolean cancel);\n    }\n    /** Bounds wall time and captured bytes. OS-level total memory/PID isolation is still required. */\n    static final class ProcessRunner implements Runner {\n        public Exec run(List<String> argv, Path cwd, Duration limit, int cap, AtomicBoolean cancel) {\n            if (cancel.get() || Thread.currentThread().isInterrupted()) return new Exec(-1, new byte[0], \"CANCELLED\");\n            if (limit.isNegative() || limit.isZero() || limit.compareTo(Duration.ofMinutes(2)) > 0\n                    || cap < 1 || cap > 1_048_576) return new Exec(-1, new byte[0], \"BAD_LIMIT\");\n            Process p = null;\n            List<Thread> pumps = new ArrayList<>();\n            Set<ProcessHandle> children = new HashSet<>();\n            ByteArrayOutputStream stdout = new ByteArrayOutputStream();\n            AtomicInteger budget = new AtomicInteger(cap);\n            AtomicBoolean overflow = new AtomicBoolean(), ioError = new AtomicBoolean();\n            String error = null;\n            int code = -1;\n            boolean interrupted = false;\n            long end = System.nanoTime() + limit.toNanos();\n            try {\n                ProcessBuilder pb = new ProcessBuilder(argv).directory(cwd.toFile());\n                pb.environment().clear();\n                pb.environment().put(\"LANG\", \"C.UTF-8\");\n                pb.environment().put(\"HOME\", cwd.toString());\n                pb.environment().put(\"TMPDIR\", cwd.toString());\n                p = pb.start(); p.getOutputStream().close();\n                InputStream[] streams = {p.getInputStream(), p.getErrorStream()};\n                for (int i = 0; i < streams.length; i++) {\n                    InputStream stream = streams[i]; boolean keep = i == 0;\n                    Thread t = new Thread(() -> {\n                        try (stream) {\n                            byte[] b = new byte[4096]; int n;\n                            while ((n = stream.read(b)) != -1) {\n                                int previous = budget.getAndAdd(-n);\n                                int allowed = Math.max(0, Math.min(n, previous));\n                                if (keep && allowed > 0) stdout.write(b, 0, allowed);\n                                if (n > previous) { overflow.set(true); break; }\n                            }\n                        } catch (IOException e) { ioError.set(true); }\n                    }, \"validator-pump-\" + i);\n                    t.setDaemon(true); pumps.add(t); t.start();\n                }\n                while (true) {\n                    try (var descendants = p.descendants()) { descendants.limit(65).forEach(children::add); }\n                    if (children.size() > 64) { error = \"PROCESS_LIMIT\"; break; }\n                    if (cancel.get() || Thread.currentThread().isInterrupted()) { error = \"CANCELLED\"; break; }\n                    if (overflow.get()) { error = \"OUTPUT_LIMIT\"; break; }\n                    if (ioError.get()) { error = \"OUTPUT_IO\"; break; }\n                    if (!p.isAlive() && pumps.stream().noneMatch(Thread::isAlive)) {\n                        code = p.exitValue();\n                        if (children.stream().anyMatch(ProcessHandle::isAlive)) error = \"CHILD_LEAK\";\n                        break;\n                    }\n                    if (System.nanoTime() >= end) { error = \"TIMEOUT\"; break; }\n                    Thread.sleep(10);\n                }\n            } catch (InterruptedException e) { interrupted = true; error = \"CANCELLED\";\n            } catch (IOException | RuntimeException e) { error = \"START_OR_IO_ERROR\";\n            } finally {\n                // Clear interrupt only while doing bounded cleanup, then restore it.\n                interrupted |= Thread.interrupted();\n                if (p != null) {\n                    try (var descendants = p.descendants()) { descendants.limit(65).forEach(children::add); }\n                    children.forEach(ProcessHandle::destroyForcibly);\n                    if (p.isAlive()) p.destroyForcibly();\n                    long cleanupEnd = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);\n                    try {\n                        p.waitFor(1000, TimeUnit.MILLISECONDS);\n                        for (Thread t : pumps) {\n                            long ms = TimeUnit.NANOSECONDS.toMillis(cleanupEnd - System.nanoTime());\n                            if (ms > 0) t.join(ms);\n                        }\n                    } catch (InterruptedException e) { interrupted = true; }\n                    if (p.isAlive() || pumps.stream().anyMatch(Thread::isAlive)\n                            || children.stream().anyMatch(ProcessHandle::isAlive)) error = \"CLEANUP_ERROR\";\n                }\n                if (interrupted) Thread.currentThread().interrupt();\n            }\n            return new Exec(code, error == null ? stdout.toByteArray() : new byte[0], error);\n        }\n    }\n    static final class PmdModule implements Module {\n        final String id;\n        final List<String> launcher;\n        final Path rules;\n        final Runner runner;\n        PmdModule(String id, List<String> trustedLauncher, Path trustedRules, Runner runner) {\n            this.id = id; launcher = List.copyOf(trustedLauncher); rules = trustedRules; this.runner = runner;\n        }\n        public String id() { return id; }\n        public Result check(Snapshot s, AtomicBoolean cancel) throws Exception {\n            // Policy is copied from the trusted bundle, never read from the scanned tree.\n            if (!Files.isRegularFile(rules, LinkOption.NOFOLLOW_LINKS)\n                    || rules.toRealPath().startsWith(s.home)) return Result.error(id, \"MISSING_POLICY\");\n            byte[] policy = boundedRead(rules, 65_536);\n            Path work = Files.createDirectory(s.home.resolve(id));\n            Path config = work.resolve(\"rules.xml\"); Files.write(config, policy);\n            List<String> cmd = new ArrayList<>(launcher);\n            cmd.add(1, \"-Djava.io.tmpdir=\" + work);\n            cmd.addAll(List.of(\"check\", \"--dir\", s.source.toString(), \"--rulesets\", config.toString(),\n                \"--format\", \"xml\", \"--encoding\", \"UTF-8\", \"--use-version\", \"java-17\",\n                \"--threads\", \"1\", \"--no-cache\", \"--no-progress\", \"--show-suppressed\",\n                \"--fail-on-violation\", \"--fail-on-error\"));\n            Exec exec = runner.run(cmd, work, Duration.ofSeconds(15), 262_144, cancel);\n            Result r = exec.error != null ? Result.error(id, exec.error) : parsePmd(id, exec, s);\n            return new Result(id, r.state, r.reason + \";engine=PMD-\" + PMD_VERSION\n                + \";policy=\" + hash(Map.of(\"rules.xml\", policy)), r.findings);\n        }\n    }\n    static Result parsePmd(String id, Exec exec, Snapshot s) {\n        if (exec.code != 0 && exec.code != 4) return Result.error(id, \"ENGINE_EXIT_\" + exec.code);\n        try {\n            if (exec.stdout == null || exec.stdout.length > 262_144) throw new IOException(\"report limit\");\n            XMLInputFactory factory = XMLInputFactory.newFactory();\n            factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);\n            factory.setProperty(\"javax.xml.stream.isSupportingExternalEntities\", false);\n            factory.setXMLResolver((a, b, c, d) -> { throw new XMLStreamException(\"external entity\"); });\n            XMLStreamReader xml = factory.createXMLStreamReader(new ByteArrayInputStream(exec.stdout));\n            List<String> findings = new ArrayList<>();\n            Deque<String> stack = new ArrayDeque<>();\n            String file = null; boolean seenRoot = false, engineError = false; int suppressed = 0;\n            try {\n                while (xml.hasNext()) {\n                    int event = xml.next();\n                    if (event == XMLStreamConstants.DTD || event == XMLStreamConstants.ENTITY_REFERENCE)\n                        throw new XMLStreamException(\"DTD/entity\");\n                    if (event == XMLStreamConstants.START_ELEMENT) {\n                        String name = xml.getLocalName(), parent = stack.peek();\n                        if (!NS.equals(xml.getNamespaceURI())) throw new XMLStreamException(\"namespace\");\n                        if (parent == null) {\n                            if (seenRoot || !name.equals(\"pmd\") || !PMD_VERSION.equals(xml.getAttributeValue(null, \"version\")))\n                                throw new XMLStreamException(\"version/root\");\n                            seenRoot = true;\n                        } else if (parent.equals(\"pmd\")) {\n                            switch (name) {\n                                case \"file\" -> file = reportPath(xml.getAttributeValue(null, \"name\"), s);\n                                case \"error\", \"configerror\" -> engineError = true;\n                                case \"suppressedviolation\" -> {\n                                    reportPath(xml.getAttributeValue(null, \"filename\"), s); suppressed++;\n                                }\n                                default -> throw new XMLStreamException(\"unknown element\");\n                            }\n                        } else if (parent.equals(\"file\") && name.equals(\"violation\")) {\n                            int line = Integer.parseInt(xml.getAttributeValue(null, \"beginline\"));\n                            String rule = xml.getAttributeValue(null, \"rule\");\n                            if (line < 1 || rule == null || !rule.matches(\"[A-Za-z0-9_]{1,100}\"))\n                                throw new XMLStreamException(\"bad violation\");\n                            findings.add(file + \":\" + line + \":\" + rule);\n                        } else throw new XMLStreamException(\"unexpected nesting\");\n                        stack.push(name);\n                    } else if (event == XMLStreamConstants.END_ELEMENT) { stack.pop();\n                    } else if (event == XMLStreamConstants.CHARACTERS && !xml.isWhiteSpace()\n                            && (stack.isEmpty() || stack.peek().equals(\"pmd\") || stack.peek().equals(\"file\"))) {\n                        throw new XMLStreamException(\"unexpected text\");\n                    }\n                }\n            } finally { xml.close(); }\n            if (!seenRoot || !stack.isEmpty()) throw new XMLStreamException(\"incomplete\");\n            if (engineError) return Result.error(id, \"ENGINE_REPORT_ERROR\");\n            if ((exec.code == 4) != !findings.isEmpty()) return Result.error(id, \"EXIT_REPORT_MISMATCH\");\n            if (suppressed > 0) findings.add(\"suppressed-findings=\" + suppressed);\n            return new Result(id, findings.isEmpty() ? State.PASS : State.FAIL,\n                findings.isEmpty() ? \"CLEAN\" : \"RULE_VIOLATION\", findings);\n        } catch (Exception e) { return Result.error(id, \"INVALID_REPORT\"); }\n    }\n    static String reportPath(String value, Snapshot s) throws IOException {\n        if (value == null) throw new IOException(\"missing path\");\n        Path p = Path.of(value);\n        p = (p.isAbsolute() ? p : s.source.resolve(p)).normalize();\n        if (!p.startsWith(s.source)) throw new IOException(\"outside snapshot\");\n        String rel = s.source.relativize(p).toString().replace(File.separatorChar, '/');\n        if (!s.names.contains(rel)) throw new IOException(\"unknown file\");\n        return rel;\n    }\n    public static void main(String[] args) {\n        int exit = 2;\n        try {\n            if (args.length != 1) throw new IOException(\"expected immutable source directory\");\n            // Administrator-owned read-only image paths, never CLI/environment-selected commands.\n            Path trusted = Path.of(\"/opt/runtime-validator\");\n            Path lib = trusted.resolve(\"pmd-bin-\" + PMD_VERSION).resolve(\"lib\");\n            if (!Files.isDirectory(lib)) throw new IOException(\"missing PMD installation\");\n            String java = Path.of(System.getProperty(\"java.home\"), \"bin\", \"java\").toString();\n            List<String> launcher = List.of(java, \"-Xmx256m\", \"-XX:MaxMetaspaceSize=128m\",\n                \"-XX:ActiveProcessorCount=1\", \"-cp\", lib + \"/*\", \"net.sourceforge.pmd.cli.PmdCli\");\n            AtomicBoolean cancel = new AtomicBoolean();\n            Report report;\n            try (Snapshot s = new Snapshot(Path.of(args[0]), Path.of(System.getProperty(\"java.io.tmpdir\")))) {\n                Runner runner = new ProcessRunner();\n                report = validate(s, List.of(\n                    new PmdModule(\"style\", launcher, trusted.resolve(\"rules/style.xml\"), runner),\n                    new PmdModule(\"security\", launcher, trusted.resolve(\"rules/security.xml\"), runner)), cancel);\n            }\n            System.out.print(report.text()); exit = report.exitCode();\n        } catch (Exception e) {\n            exit = 2;\n            System.out.print(\"gate\\tERROR\\tSETUP_OR_CLEANUP_ERROR\\nexit=2\\n\");\n        }\n        System.exit(exit);\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整测试：ValidatorTest.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整测试：ValidatorTest.java",
+          "value": "import java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.atomic.*;\n\n/** No scanner installation, network access, repository script or hook is needed. */\npublic final class ValidatorTest {\n    static int checks;\n    static void check(boolean ok, String name) {\n        if (!ok) throw new AssertionError(name);\n        checks++;\n    }\n    static String xml(String body) {\n        return \"<pmd xmlns=\\\"\" + Validator.NS + \"\\\" version=\\\"7.28.0\\\">\" + body + \"</pmd>\";\n    }\n    static Validator.Exec exec(int code, String body) {\n        return new Validator.Exec(code, xml(body).getBytes(StandardCharsets.UTF_8), null);\n    }\n    static String violation(String file, String rule) {\n        return \"<file name=\\\"\" + file + \"\\\"><violation beginline=\\\"2\\\" rule=\\\"\" + rule\n            + \"\\\">message intentionally omitted from public report</violation></file>\";\n    }\n    static Validator.Module module(String id, Validator.State state) {\n        return new Validator.Module() {\n            public String id() { return id; }\n            public Validator.Result check(Validator.Snapshot s, AtomicBoolean c) {\n                return new Validator.Result(id, state, \"FIXTURE\", List.of());\n            }\n        };\n    }\n    static List<String> fixture(String mode, String extra) {\n        String java = Path.of(System.getProperty(\"java.home\"), \"bin\", \"java\").toString();\n        String cp = Path.of(\"build\").toAbsolutePath().toString();\n        return List.of(java, \"-Xmx64m\", \"-cp\", cp, \"ValidatorTest$Fixture\", mode, extra);\n    }\n    static void expectBadInput(Path input, Path temp, String name) throws Exception {\n        boolean rejected = false;\n        try (var ignored = new Validator.Snapshot(input, temp)) { /* should throw */ }\n        catch (Exception expected) { rejected = true; }\n        check(rejected, name);\n    }\n    public static void main(String[] args) throws Exception {\n        Path temp = Files.createTempDirectory(\"validator-tests-\");\n        try {\n            Path input = Files.createDirectory(temp.resolve(\"input\"));\n            Files.writeString(input.resolve(\"Good.java\"), \"class Good {}\\n\");\n            Path home;\n            try (var s = new Validator.Snapshot(input, temp)) {\n                home = s.home;\n                var noCancel = new AtomicBoolean();\n                var pass = List.of(module(\"style\", Validator.State.PASS), module(\"security\", Validator.State.PASS));\n                var report = Validator.validate(s, pass, noCancel);\n                check(report.exitCode() == 0, \"all required pass\");\n                check(report.text().equals(Validator.validate(s, List.of(pass.get(1), pass.get(0)), noCancel).text()), \"deterministic module order\");\n                check(Validator.validate(s, List.of(module(\"style\", Validator.State.FAIL), pass.get(1)), noCancel).exitCode() == 1, \"style fail\");\n                check(Validator.validate(s, List.of(pass.get(0), module(\"security\", Validator.State.FAIL)), noCancel).exitCode() == 1, \"security fail\");\n                check(Validator.validate(s, List.of(module(\"style\", Validator.State.FAIL), module(\"security\", Validator.State.ERROR)), noCancel).exitCode() == 2, \"error dominates findings\");\n                check(Validator.validate(s, List.of(), noCancel).exitCode() == 2, \"empty registry\");\n                check(Validator.validate(s, List.of(pass.get(0), pass.get(0)), noCancel).exitCode() == 2, \"duplicate registry\");\n                check(Validator.validate(s, pass, new AtomicBoolean(true)).exitCode() == 2, \"coordinator cancel\");\n                Validator.Module throwsError = new Validator.Module() {\n                    public String id() { return \"security\"; }\n                    public Validator.Result check(Validator.Snapshot ignored, AtomicBoolean c) { throw new IllegalStateException(); }\n                };\n                check(Validator.validate(s, List.of(throwsError), noCancel).exitCode() == 2, \"module exception\");\n                Validator.Module malformed = new Validator.Module() {\n                    public String id() { return \"bad\"; }\n                    public Validator.Result check(Validator.Snapshot ignored, AtomicBoolean c) {\n                        return new Validator.Result(id(), null, \"BAD\", List.of());\n                    }\n                };\n                check(Validator.validate(s, List.of(malformed), noCancel).exitCode() == 2, \"null result state\");\n                Validator.Module lastCancel = new Validator.Module() {\n                    public String id() { return \"cancel\"; }\n                    public Validator.Result check(Validator.Snapshot ignored, AtomicBoolean c) {\n                        c.set(true); return new Validator.Result(id(), Validator.State.PASS, \"LATE\", List.of());\n                    }\n                };\n                check(Validator.validate(s, List.of(lastCancel), new AtomicBoolean()).exitCode() == 2, \"late cancellation cannot pass\");\n                for (int badField = 0; badField < 4; badField++) {\n                    boolean rejected = false;\n                    try {\n                        new Validator.Result(\"test\", Validator.State.PASS, badField == 0 ? null : \"OK\",\n                            badField == 1 ? null : badField == 2 ? Arrays.asList((String) null)\n                            : badField == 3 ? List.of(\"injected\\nline\") : List.of());\n                    } catch (RuntimeException expected) { rejected = true; }\n                    check(rejected, \"malformed result contract\");\n                }\n                check(Validator.parsePmd(\"style\", exec(0, \"\"), s).state() == Validator.State.PASS, \"valid clean PMD report\");\n                String finding = violation(\"Good.java\", \"ControlStatementBraces\");\n                check(Validator.parsePmd(\"style\", exec(4, finding), s).state() == Validator.State.FAIL, \"PMD exit4 finding\");\n                check(Validator.parsePmd(\"security\", exec(5, \"\"), s).state() == Validator.State.ERROR, \"PMD recoverable error\");\n                check(Validator.parsePmd(\"style\", exec(4, \"\"), s).reason().equals(\"EXIT_REPORT_MISMATCH\"), \"empty exit4\");\n                check(Validator.parsePmd(\"style\", exec(0, finding), s).state() == Validator.State.ERROR, \"finding exit0 mismatch\");\n                check(Validator.parsePmd(\"style\", exec(0, \"<configerror/>\"), s).state() == Validator.State.ERROR, \"configuration error\");\n                check(Validator.parsePmd(\"style\", exec(0, \"<error/>\"), s).state() == Validator.State.ERROR, \"parser error\");\n                check(Validator.parsePmd(\"style\", exec(0, \"<suppressedviolation filename=\\\"Good.java\\\"/>\"), s).state() == Validator.State.FAIL, \"suppression cannot bypass\");\n                for (String broken : List.of(\"\", \"<pmd>\", xml(\"\").replace(\"7.28.0\", \"7.29.0\"),\n                        xml(\"<unknown/>\"), xml(finding).replace(Validator.NS, \"https://invalid.example\"),\n                        \"<!DOCTYPE pmd [<!ENTITY x SYSTEM 'file:///not-read'>]>\" + xml(\"&x;\"))) {\n                    check(Validator.parsePmd(\"style\", new Validator.Exec(0, broken.getBytes(StandardCharsets.UTF_8), null), s).state()\n                        == Validator.State.ERROR, \"invalid/foreign/entity/version report\");\n                }\n                for (String path : List.of(\"../outside.java\", \"/outside.java\", \"Missing.java\")) {\n                    check(Validator.parsePmd(\"style\", exec(4, violation(path, \"Rule\")), s).state() == Validator.State.ERROR, \"report path isolation\");\n                }\n                Files.writeString(input.resolve(\"Good.java\"), \"class Changed {}\\n\");\n                check(s.unchanged(), \"input edits cannot alter copied snapshot\");\n                // Exercise the complete module adapter with a trusted child process producing fixture XML.\n                Path rules = temp.resolve(\"trusted.xml\"); Files.writeString(rules, \"<ruleset/>\\n\");\n                String payload = Base64.getEncoder().encodeToString(xml(finding).getBytes(StandardCharsets.UTF_8));\n                var realRunner = new Validator.ProcessRunner();\n                Validator.Module adapter = new Validator.PmdModule(\"style\", fixture(\"xml4\", payload), rules, realRunner);\n                var adapterResult = Validator.validate(s, List.of(adapter), noCancel);\n                check(adapterResult.exitCode() == 1 && adapterResult.text().contains(\"policy=\"), \"process to adapter to coordinator\");\n                Path missing = temp.resolve(\"missing.xml\");\n                var missingModule = new Validator.PmdModule(\"security\", fixture(\"ok\", \"\"), missing, realRunner);\n                check(Validator.validate(s, List.of(missingModule), noCancel).exitCode() == 2, \"missing required policy\");\n                Files.writeString(s.source.resolve(\"Good.java\"), \"class Tampered {}\\n\");\n                check(Validator.validate(s, pass, noCancel).modules().stream().allMatch(r -> r.reason().equals(\"SNAPSHOT_CHANGED\")), \"snapshot tampering\");\n            }\n            check(!Files.exists(home), \"snapshot cleaned\");\n            Path empty = Files.createDirectory(temp.resolve(\"empty\")); expectBadInput(empty, temp, \"empty source set\");\n            Path bad = Files.createDirectory(temp.resolve(\"bad\")); Path badFile = bad.resolve(\"Bad.java\");\n            Files.write(badFile, new byte[]{(byte) 0xFF}); expectBadInput(bad, temp, \"invalid UTF8\");\n            Files.write(badFile, new byte[Validator.FILE_LIMIT + 1]); expectBadInput(bad, temp, \"large source\");\n            Files.delete(badFile); Files.createSymbolicLink(badFile, input.resolve(\"Good.java\"));\n            expectBadInput(bad, temp, \"symlink file\"); Files.delete(badFile);\n            Files.createSymbolicLink(bad.resolve(\"linked\"), input); expectBadInput(bad, temp, \"symlink directory\");\n            Files.delete(bad.resolve(\"linked\"));\n            for (int i = 0; i < 257; i++) Files.writeString(bad.resolve(\"F\" + i + \".java\"), \"class F\" + i + \" {}\\n\");\n            expectBadInput(bad, temp, \"too many Java files\");\n            var runner = new Validator.ProcessRunner();\n            check(runner.run(fixture(\"ok\", \"\"), temp, Duration.ofSeconds(3), 4096, new AtomicBoolean()).code() == 0, \"clean process exit\");\n            check(runner.run(List.of(temp.resolve(\"absent-program\").toString()), temp, Duration.ofSeconds(1), 4096, new AtomicBoolean()).error()\n                .equals(\"START_OR_IO_ERROR\"), \"missing required scanner\");\n            check(runner.run(fixture(\"sleep\", \"\"), temp, Duration.ofMillis(200), 4096, new AtomicBoolean()).error().equals(\"TIMEOUT\"), \"timeout\");\n            for (String mode : List.of(\"flood\", \"stderr\")) {\n                check(runner.run(fixture(mode, \"\"), temp, Duration.ofSeconds(3), 4096, new AtomicBoolean()).error().equals(\"OUTPUT_LIMIT\"), \"bounded output \" + mode);\n            }\n            for (boolean interrupt : List.of(false, true)) {\n                Path marker = temp.resolve(\"pid-\" + interrupt);\n                AtomicBoolean cancel = new AtomicBoolean(), restored = new AtomicBoolean();\n                AtomicReference<Validator.Exec> result = new AtomicReference<>();\n                Thread worker = new Thread(() -> {\n                    result.set(runner.run(fixture(\"ready\", marker.toString()), temp, Duration.ofSeconds(10), 4096, cancel));\n                    restored.set(Thread.currentThread().isInterrupted());\n                });\n                worker.start();\n                long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();\n                while (!Files.exists(marker) && System.nanoTime() < deadline) Thread.sleep(10);\n                check(Files.exists(marker), \"fixture started\");\n                // Marker is created with a single short write; wait until its PID is readable.\n                String pidText = \"\";\n                while (pidText.isEmpty() && System.nanoTime() < deadline) { pidText = Files.readString(marker); Thread.sleep(5); }\n                long pid = Long.parseLong(pidText);\n                if (interrupt) worker.interrupt(); else cancel.set(true);\n                worker.join(5000);\n                check(!worker.isAlive() && result.get().error().equals(\"CANCELLED\"), \"cancellation result\");\n                check(!ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false), \"cancelled child reaped\");\n                check(restored.get() == interrupt, \"interrupt flag restored\");\n            }\n            check(Thread.getAllStackTraces().keySet().stream().noneMatch(t -> t.isAlive() && t.getName().startsWith(\"validator-pump-\")), \"no pump thread leak\");\n            System.out.println(\"PASS \" + checks + \" checks; fixtures only, PMD not executed\");\n        } finally { Validator.deleteTree(temp); }\n    }\n    /** Complete trusted process fixture; not a style/security engine. */\n    public static final class Fixture {\n        public static void main(String[] args) throws Exception {\n            switch (args[0]) {\n                case \"ok\" -> System.out.print(\"ok\");\n                case \"xml4\" -> { System.out.write(Base64.getDecoder().decode(args[1])); System.exit(4); }\n                case \"sleep\" -> Thread.sleep(30_000);\n                case \"ready\" -> {\n                    Files.writeString(Path.of(args[1]), Long.toString(ProcessHandle.current().pid()));\n                    Thread.sleep(30_000);\n                }\n                case \"flood\", \"stderr\" -> {\n                    var out = args[0].equals(\"stderr\") ? System.err : System.out;\n                    byte[] bytes = new byte[8192]; Arrays.fill(bytes, (byte) 'x');\n                    for (int i = 0; i < 1024; i++) out.write(bytes);\n                }\n                default -> throw new IllegalArgumentException();\n            }\n        }\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "代码风格配置：rules/style.xml"
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "label": "代码风格配置：rules/style.xml",
+          "value": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ruleset name=\"Interview Java Style\"\n         xmlns=\"http://pmd.sourceforge.net/ruleset/2.0.0\">\n  <description>Bounded Java style gate: braces and dollar-sign naming.</description>\n  <rule ref=\"category/java/codestyle.xml/ControlStatementBraces\"/>\n  <rule ref=\"category/java/codestyle.xml/AvoidDollarSigns\"/>\n</ruleset>\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "安全配置：rules/security.xml"
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "label": "安全配置：rules/security.xml",
+          "value": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ruleset name=\"Interview Java Crypto Security\"\n         xmlns=\"http://pmd.sourceforge.net/ruleset/2.0.0\">\n  <description>Limited crypto misuse checks, not comprehensive SAST or SCA.</description>\n  <rule ref=\"category/java/security.xml/HardCodedCryptoKey\"/>\n  <rule ref=\"category/java/security.xml/InsecureCryptoIv\"/>\n</ruleset>\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "编译与 fixture 测试：test.sh"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "编译与 fixture 测试：test.sh",
+          "value": "#!/bin/sh\nset -eu\ncd \"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"\nmkdir -p build\n# This uses the installed JDK compiler module; javac need not be on PATH.\njava -m jdk.compiler/com.sun.tools.javac.Main -encoding UTF-8 -source 17 -target 17 -d build Validator.java ValidatorTest.java\njava -Xmx256m -cp build ValidatorTest\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "可信入口脚本：run-gate.sh"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "可信入口脚本：run-gate.sh",
+          "value": "#!/bin/sh\nset -eu\n# Run this administrator-owned script on an already exported immutable commit tree.\n# It is not an installed Git hook and does not export, push, modify or execute repository code.\nif [ \"$#\" -ne 1 ]; then\n    printf 'Usage: run-gate.sh IMMUTABLE_SOURCE_TREE\\n' >&2\n    exit 2\nfi\n# env -i also removes JAVA_TOOL_OPTIONS/JDK_JAVA_OPTIONS before the coordinator starts.\nexec /usr/bin/env -i LANG=C.UTF-8 HOME=/tmp PATH=/usr/bin:/bin \\\n    /opt/runtime-validator/jdk/bin/java -Xmx256m \\\n    -cp /opt/runtime-validator/classes Validator \"$1\"\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "真实引擎干净样例：real-fixtures/clean/Good.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "真实引擎干净样例：real-fixtures/clean/Good.java",
+          "value": "public final class Good {\n    public int absolute(int value) {\n        if (value < 0) {\n            return -value;\n        }\n        return value;\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "真实引擎风格反例：real-fixtures/style-fail/BadStyle.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "真实引擎风格反例：real-fixtures/style-fail/BadStyle.java",
+          "value": "public final class BadStyle {\n    public int value(boolean condition) {\n        if (condition) return 1;\n        return 0;\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "真实引擎安全反例：real-fixtures/security-fail/BadCrypto.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "真实引擎安全反例：real-fixtures/security-fail/BadCrypto.java",
+          "value": "import javax.crypto.spec.SecretKeySpec;\n\npublic final class BadCrypto {\n    public SecretKeySpec key() {\n        // Deliberately public test data, not a real credential.\n        return new SecretKeySpec(\"0123456789abcdef\".getBytes(java.nio.charset.StandardCharsets.UTF_8), \"AES\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "真实引擎 smoke 脚本：real-smoke.sh"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "真实引擎 smoke 脚本：real-smoke.sh",
+          "value": "#!/bin/sh\nset -eu\ncd \"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"\n# Administrator-provisioned, read-only validator and PMD installation required.\n# This script only scans the three included fixture directories. It installs nothing.\nJAVA=/opt/runtime-validator/jdk/bin/java\nCLASSES=/opt/runtime-validator/classes\nexpect() {\n    expected=$1\n    module=$2\n    input=$3\n    status=0\n    output=$(/usr/bin/env -i LANG=C.UTF-8 HOME=/tmp PATH=/usr/bin:/bin \\\n        \"$JAVA\" -Xmx256m -cp \"$CLASSES\" Validator \"$PWD/$input\") || status=$?\n    printf '%s\\n' \"$output\"\n    if [ \"$status\" -ne \"$expected\" ]; then\n        printf 'Unexpected exit: %s, wanted %s for %s\\n' \"$status\" \"$expected\" \"$input\" >&2\n        exit 2\n    fi\n    if [ \"$module\" != clean ]; then\n        tab=$(printf '\\t')\n        printf '%s\\n' \"$output\" | grep -F \"${module}${tab}FAIL${tab}\" >/dev/null || exit 2\n    fi\n}\nexpect 0 clean real-fixtures/clean\nexpect 1 style real-fixtures/style-fail\nexpect 1 security real-fixtures/security-fail\nprintf 'Real PMD smoke tests passed\\n'\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从本地校验接到 pre-push 与 MR"
+        },
+        {
+          "type": "paragraph",
+          "text": "test.sh 在本示例目录中编译并运行测试，只执行书中完整列出的受控子进程 fixture。run-gate.sh 面向已经部署的可信工具目录；其布局为 classes/、jdk/bin/java、pmd-bin-7.28.0/lib/、rules/style.xml 和 rules/security.xml。不要从待检查 MR 的内容构建门禁工具，也不要让 MR 修改生效中的规则或必需检查配置。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本地 pre-push 适配层应逐条读取 Git 提供的 ref 更新，验证每个将推送的 local OID，对非删除更新导出对应快照并调用 run-gate.sh，任何非零结果都拒绝推送。不能扫描当前工作目录后就声称“即将推送的提交已检查”，多分支推送也不能只检查一个 HEAD。Git 的 pre-push 合同规定了 ref 输入和非零退出阻断的语义。本地 hook 可以被用户绕过，最终门禁应在受保护的服务端 CI 执行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MR job 使用平台确认的 commit 或合并结果 SHA，保存 SHA、源码快照摘要、工具镜像摘要、规则摘要和报告之间的绑定。检查完成后若提交发生变化，旧结果不能沿用；只有对应精确版本的 required check 成功才允许合并。适配层负责不可变导出与 SHA 绑定，本节的脚本不安装 hook、不修改分支保护，也不执行 push、发起 MR 或发送告警。"
+        },
+        {
+          "type": "paragraph",
+          "text": "初次接入固定引擎或升级版本时，运行 real-smoke.sh：干净样例应返回 0，风格和密码学反例分别应返回 1；还需人工核对具体模块和规则命中。另用语法错误、错误规则配置与不可用扫描器验证退出 2，不能只测正向样例。只有这些实际引擎测试通过，才能确认 CLI 选项、XML 形态与该发行包兼容。它与 fixture 测试的职责不同。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Python 与 Java 怎样选"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果主要工作是拼接多个 CLI、处理 JSON/SARIF 和快速演进规则配置，Python 开发周期短，标准库的 subprocess 很方便；但仍要显式解决超时、环境隔离、并发、输出上限和依赖锁定。Java 更适合已有 JVM 团队、需要嵌入后端服务、复用类型化接口和统一部署的情况，代价是分发 JDK、编译与更多进程管理代码。本题使用 Java 是教学选择，不表示必须用 Java 才能分析 Java，也不表示 Python 更不安全。"
+        },
+        {
+          "type": "paragraph",
+          "text": "无论编排语言是什么，都不应重新用几条正则“实现安全扫描器”。本例只有路径/字段校验用正则，Java 源码 AST 由 PMD 构造，规则由 PMD 执行。它们不是校验器自己实现的 AST。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "AST、规则解析和追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "源码经过词法和语法解析形成树，类、方法、分支、变量等节点及其属性成为规则输入。规则配置描述启用哪些规则与参数；引擎校验配置后执行 Java visitor 或 XPath 等规则。比如“大括号是否缺失”应匹配控制语句与语句体节点关系，字符串或注释中的 if 不应被当成真实语句；命名规则可在已经识别出的变量节点名称上使用正则，而不是对整份源码做粗糙搜索。PMD 的 Code Style 规则定义包含 visitor 与 XPath 两种机制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "AST 只解决语法结构，不自动解决类型绑定、跨过程数据流或运行时行为。调用是否属于危险 API，可能需要符号解析和可信依赖 classpath；污点分析还需要 source、sink、sanitizer 与传播模型。示例只用固定规则和 JDK 类型，不宣称完成跨服务数据流分析；接入需要项目依赖的规则时，应从受控依赖解析阶段获得 classpath，并验证缺依赖是否导致覆盖降级，不能在扫描中执行任意仓库构建脚本。规则节点与配置语义应按所用版本核对。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么不只扫 diff？ 全快照最容易定义完整性，小项目可以先做全量。增量扫描要处理重命名、删除、依赖传播、规则升级和基线变更；“只检查修改行”可能漏掉跨行、跨文件问题。若只阻断新增违规，需要固定基线 SHA 与规则版本，并显式处理基线不可用；不能让扫描错误产生一个空基线。"
+        },
+        {
+          "type": "paragraph",
+          "text": "误报怎么处理？ 记录规则、位置、最小复现、负责人和到期时间，由独立审批管理豁免。示例故意没有豁免入口；生产若增加 allowlist，要把它放在可信策略中、纳入摘要和审计，不能接受提交者任意抑制安全问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行与验收边界： 目标为 Java 17 语言级别和固定 PMD 7.28.0 发行包。test.sh 的 -source 17 -target 17 检查语法与 class 文件目标版本，不校验 Java 17 可用 API；若要承诺 Java 17 兼容，应在具备相应平台定义的完整 JDK 中使用 --release 17，并在真实 Java 17 运行时回归。fixture 测试只验证协调器、协议与资源清理，不能确认真实扫描器兼容。部署验收须在已锁定的 JDK/PMD 镜像上运行真实正反例、解析失败与缺工具场景，并核对规则命中和退出码。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

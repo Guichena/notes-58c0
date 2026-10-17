@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-dbqa-4-2",
+  "entryId": "dbqa-4",
+  "expectedOriginalHash": "4381692da36ed66a7e7f30f679122acd064fd5c30e886dace1df719050c3638a",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "共享锁升级的完整时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个会话都 START TRANSACTION。A 对同一已有主键执行 FOR SHARE，确认成功；B 对同一主键 FOR SHARE，确认也成功。A 发 UPDATE，需要 X，因此等 B 的 S；在 A 尚未结束时，B 发 UPDATE，又等 A 的 S。等待环成立，检测器会中止一个事务，不能预先指定受害者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整 SQL 可使用一个独立的 upgrade_probe。A 先建表并填入数据，A、B 各自确认没有旧事务且实例 innodb_deadlock_detect 开启，锁等待超时足够覆盖手工关卡："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch21/fence-078.sql",
+      "value": "-- 初始化一次，自动提交状态\nCREATE TABLE upgrade_probe(id INT PRIMARY KEY,n INT NOT NULL) ENGINE=InnoDB;\nINSERT INTO upgrade_probe VALUES(1,0);\n-- A1\nSTART TRANSACTION;\nSELECT * FROM upgrade_probe WHERE id=1 FOR SHARE;\n-- B1，在独立连接 B 执行并确认返回：\n-- START TRANSACTION;\n-- SELECT * FROM upgrade_probe WHERE id=1 FOR SHARE;\n-- A2，仅在 B1 返回后提交：\nUPDATE upgrade_probe SET n=n+1 WHERE id=1;\n-- A2 等待时，由 B 查询 data_lock_waits 确认 A 等 B，再执行 B2：\n-- UPDATE upgrade_probe SET n=n+1 WHERE id=1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "B 观察等待边的方法使用下一章给出的 data_lock_waits/data_locks 查询，并将 OBJECT_NAME 筛为 upgrade_probe。死锁错误侧 ROLLBACK，成功侧 COMMIT；确认两边结束后用新事务读 n，预期为 1。若检测关闭、超时先发生或等待证据不匹配，双方回滚并将这轮视为中止；不预先指定 A 或 B 谁成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "明确的“锁后还要写”场景可一开始 FOR UPDATE，或直接条件 UPDATE，避免共同拿 S 再升级。但只有展示需求的查询应保留一致性读，否则会人为放大竞争。范式控制冗余异常，串行化理论控制并发历史，恢复理论控制故障后的状态；这是回答“范式之外还了解什么数据库理论”时可展开的三条不同主线。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第23章 死锁检测 等待与完整事务重试"
+    },
+    {
+      "type": "paragraph",
+      "text": "死锁是事务等待依赖成环，正确恢复的单位是重新读取并校验的完整业务事务；一次锁等待或超时本身并不能证明死锁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从等待图解释出现条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "A 持有账户 1，等账户 2；B 持有账户 2，等账户 1，形成 A→B→A。一般并发中的互斥、持有并等待、不可任意剥夺和循环等待可构成死锁条件。线程相互 join、同一线程池中工作线程全部等待投给本池的子任务，也可能卡住，但要区分资源环、线程池饥饿与单纯慢任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "InnoDB 中反序更新两行/两表、S→X 升级、唯一索引检查、外键检查、不同二级索引访问顺序，以及 gap 与插入意向组合都可能参与等待。事务只改两行不代表安全，空结果范围读也可能持锁。默认开启的死锁检测会打破等待环，并倾向选择较小事务回滚，不能保证固定牺牲先来、后来、A 或 B。某些跨锁层依赖也不一定被 InnoDB 检测器完整看见。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "还有一种不同的 唯一键插入死锁"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要把所有重复 INSERT 都讲成无风险地等待后返回重复键。在一个空 dup_probe(id INT PRIMARY KEY) 中，A 开事务插入 id=1 不提交；B、C 分别开事务插入 id=1，观察都因 A 等待；A 回滚。对于普通 INSERT 的重复键检查路径，两个等待者可能先取得共享保护，再各自申请插入需要的排他保护，从而产生升级等待环。最后一个受害事务回滚，另一个才可能成功。B/C 都必须显式结束事务，重新测试前确保表为空。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个例子有三个连接和特定回滚交错，不能改写成“任何两个重复请求都会死锁”。INSERT ... ON DUPLICATE KEY UPDATE 的冲突锁行为又不同。数据库唯一约束保证身份不变量，但应用仍必须处理等待、死锁和同号不同载荷。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎么定位而不是猜原因"
+    },
+    {
+      "type": "paragraph",
+      "text": "先记录错误码、SQLSTATE、发生时间、业务幂等键与当前事务 SQL 顺序。1205 是锁等待超时，1213/40001 是常见的 MySQL 死锁受害错误；不要将所有 SQLException 都归入同一重试分支。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实时等待时查 data_lock_waits 和 data_locks，关联事务 ID、连接、索引、LOCK_DATA、事务年龄。死锁已快速解除时，查看 SHOW ENGINE INNODB STATUS 中最近记录；需要持续观测时由获授权运维评估死锁日志设置、采样成本与敏感 SQL 脱敏。MDL 等待查 metadata_locks，内部 mutex 查相应等待事件。生产处理先评估长事务及业务影响，不应见到阻塞就自动 KILL。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "批量更新的取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "先规范化并去重 ID，按全局约定的表/资源/主键顺序锁定，保持短事务，用索引减少扫描；锁内不做用户交互、模型推理、HTTP 或长计算。按批提交可以降低持锁时间，但会改变全批原子性：原本要求 1000 行全成全败的业务，不能为性能悄悄改成部分提交。热点可按 key 有界排队，本地 synchronized 只能协调本进程，存储约束仍须兜底。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "2"
+}

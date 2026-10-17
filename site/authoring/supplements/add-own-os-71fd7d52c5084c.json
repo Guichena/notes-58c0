@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-71fd7d52c5084c",
+  "entryId": "handwrite-59",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "0f00400ba36ec2c46f6dd9b75c4d4105b67cb1922c9d51c56dabe1ccc922281a",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "时间轮 怎样执行定时任务 槽精度与阻塞五秒怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "时间轮用槽位和轮数组织到期任务，计时线程只推进到期判断，耗时任务应进入受控执行器。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "讲讲时间轮定时器，如何执行的，一个槽精度多少？",
+        "如果处理器阻塞了5秒，会不会影响定时器的执行效果？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "槽号只是存储位置 到期时间还要保留"
+    },
+    {
+      "type": "paragraph",
+      "text": "设tick宽度Δ、槽数W，用单调时间计算截止时刻，并向上取整到dueTick；槽号为dueTick mod W。只看槽号不能区分当前圈与未来圈，可额外保存剩余圈数或绝对dueTick；多层时间轮将远期任务分层，接近到期再下放。取消需要句柄和删除策略，重复取消以及任务已提交执行时的竞态必须定义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "槽号相同，不代表是同一圈。假设 Δ=10 毫秒、W=4，一个 41 毫秒到期的任务向上放到 tick5，槽号是 1，绝不能在 tick1 就执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "零延迟是立即排队还是下一 tick，需要由契约明确，本示例统一下一 tick。正常量化误差通常小于一个 tick，但实际还会叠加调度、扫描、排队和回调耗时，所以 Δ 不是任何情况下都成立的硬实时误差上限。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从推进时间到执行回调是两层"
+    },
+    {
+      "type": "paragraph",
+      "text": "定时驱动线程按单调时钟醒来，扫描到期项，再直接执行短回调或投递有界执行器。直接执行慢回调会拖住整个轮；投递执行器避免轮线程被业务长期占住，却引入执行队列延迟、拒绝/背压和关闭协议。周期任务还要决定按计划时刻固定频率，还是按完成时刻固定间隔，防落后时无限补跑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以Netty4.1 API为例，HashedWheelTimer定位于近似IO超时，文档默认tick100毫秒、512槽，实例启动涉及工作线程，并有可指定执行器的构造方式。这只是具体库/版本，实际项目应按其配置核对，也不能一连接创建一个轮而不计线程开销。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "处理线程卡住五秒之后要追赶真实时间"
+    },
+    {
+      "type": "paragraph",
+      "text": "计时线程卡住五秒，期间就不可能准时触发任务。恢复以后，要按当前单调时间算出经过了多少 tick，找到全部逾期项，而不是只移动一次指针，让逻辑时钟一直落后。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现可以逐 tick 补扫、批量扫相关槽，或按层跳跃。还要避免追赶大量空 tick 本身又造成一次长停顿。"
+    },
+    {
+      "type": "paragraph",
+      "text": "逾期任务如何处理由业务决定：执行一次、合并、跳过过期任务或按预算分批。幂等、取消竞态、队列容量和优先级需要完整定义。若只是业务执行器卡住而轮线程仍工作，则到期判定可以及时，但实际执行仍晚；若GC或进程暂停影响所有线程，单进程时间轮无法保障暂停期间触发。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "除了时间轮 还可怎样组织截止时间"
+    },
+    {
+      "type": "paragraph",
+      "text": "无序链表可快速追加，但找出到期任务通常要扫描O(n)项；按截止时间排序的链表可从表头发现最早任务，但找到插入位置通常要O(n)。任务少时这种简单结构可能已经够用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最小堆常用数组表示完全二叉树，父节点的截止时间不晚于子节点；根是当前最早任务。新任务放到末尾后向上调整，取出根后用末尾元素补位再向下调整，两种堆序调整都是O(log n)，查看最早截止时间O(1)；动态数组扩容还可能发生复制，须另计分配或摊销成本。相同截止时间可加递增序号确定顺序。普通堆按ID查找任意任务可能要O(n)扫描；若要求高效取消，可额外维护ID到堆位置索引，并在交换时同步更新，定位后的删除与堆序修复是O(log n)，索引查找成本另计。也可标记取消后延迟清理，但要控制失效条目占用，不能把取消和回收都直接声称为O(1)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可用按截止时间和唯一ID排序的平衡搜索树，插入和删除O(log n)，按序找到到期区间；若要更快取得最早节点，可维护相应最小节点信息。堆和有序树适合按精确截止顺序取任务，时间轮则以槽粒度和分层管理换取不同的处理成本，不能只按一个复杂度选择。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些结构决定怎样组织和发现到期项，不保证回调准时执行。仍需单调时钟、并发访问与取消协议；插入更早截止任务时要及时唤醒等待者。定时驱动线程停顿或业务执行器积压时，仍按前文的逾期、合并、背压与关闭策略处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java逻辑轮与独立测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "TickWheel.java是单所有者、有容量上限、一次性任务的逻辑轮，schedule返回ID，cancel删除，advanceTo显式推进逻辑时间并返回到期ID与dueTick。绝对dueTick区分多圈，若跳过至少W个tick便最多访问每槽一次；未来同槽任务保持挂起。输出不承诺截止时间排序，也不运行用户回调。"
+    },
+    {
+      "type": "paragraph",
+      "text": "检查负数、时间倒退、ID/截止时间与向上取整乘法溢出，避免long边界的不可到达任务。可用随机操作对照独立Map扫描oracle，并覆盖容量、取消、圈边界、向前跳5000时间单位与Long边界；这是逻辑时间模拟，不是实际让墙钟卡住五秒的延迟基准。推进成本包含扫过桶中尚未到期的项，不能把所有advance操作称O(1)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "TickWheel.java 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "TickWheel.java",
+      "value": "import java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.Iterator;\nimport java.util.LinkedHashMap;\nimport java.util.List;\nimport java.util.Map;\n\n// Single-owner logical-time model: no timer thread, real clock, or callbacks.\n// All times are nonnegative relative units; advanceTo is monotonic.\npublic final class TickWheel {\n    public record Fired(long id, long dueTick) {}\n    private final long quantum;\n    private final List<LinkedHashMap<Long, Fired>> buckets;\n    private final Map<Long, Integer> locations = new HashMap<>();\n    private long now, tick, lastId;\n    private final int maxPending;\n    public TickWheel(long quantum, int slots, int maxPending) {\n        if (quantum <= 0 || slots <= 0 || slots > 100_000 || maxPending < 0) {\n            throw new IllegalArgumentException(\"bounds\");\n        }\n        this.quantum = quantum;\n        this.maxPending = maxPending;\n        buckets = new ArrayList<>(slots);\n        for (int i = 0; i < slots; i++) buckets.add(new LinkedHashMap<>());\n    }\n    // Delay zero deliberately means no earlier than the next tick.\n    public long schedule(long delay) {\n        if (delay < 0) throw new IllegalArgumentException(\"negative delay\");\n        if (locations.size() >= maxPending) throw new IllegalStateException(\"full\");\n        long deadline = Math.addExact(now, delay);\n        long due = deadline / quantum;\n        if (deadline % quantum != 0) due = Math.addExact(due, 1);\n        if (due <= tick) due = Math.addExact(tick, 1);\n        Math.multiplyExact(due, quantum); // Deadline must be representable by advanceTo.\n        long id = Math.addExact(lastId, 1);\n        int slot = (int) (due % buckets.size());\n        Fired entry = new Fired(id, due);\n        buckets.get(slot).put(id, entry);\n        locations.put(id, slot);\n        lastId = id;\n        return id;\n    }\n    public boolean cancel(long id) {\n        Integer slot = locations.remove(id);\n        if (slot == null) return false;\n        return buckets.get(slot).remove(id) != null;\n    }\n    public List<Fired> advanceTo(long time) {\n        if (time < now) throw new IllegalArgumentException(\"backward time\");\n        long target = time / quantum;\n        long steps = Math.min(target - tick, buckets.size());\n        List<Fired> fired = new ArrayList<>();\n        for (long i = 1; i <= steps; i++) {\n            int slot = (int) ((tick % buckets.size() + i) % buckets.size());\n            Iterator<Fired> it = buckets.get(slot).values().iterator();\n            while (it.hasNext()) {\n                Fired entry = it.next();\n                if (entry.dueTick() <= target) {\n                    fired.add(entry);\n                    locations.remove(entry.id());\n                    it.remove();\n                }\n            }\n        }\n        now = time;\n        tick = target;\n        return fired; // No ordering among different buckets is promised.\n    }\n    public int pending() { return locations.size(); }\n}\n\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ]
+}

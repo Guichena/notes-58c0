@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-own-tools-governance-q-own-tools-approval-idempotency",
+  "entryId": "own-tools-governance",
+  "questionId": "q-own-tools-approval-idempotency",
+  "expectedOriginalHash": "5cc25b1943c3c8f1eeb3219e898b5e4ba8ddc1f6ffdef4c1bf1acb290de58b91",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10 人工审批如何暂停并在隔天安全恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 人工审批是一种持久等待状态，不是让线程一直阻塞。保存待审批动作、资源版本、参数摘要、风险、审批人范围、期限和恢复位置；用户答复经过身份验证后成为审批事件。恢复时重查权限、版本、期限和取消状态，只有同一动作仍有效才继续。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "审批契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "审批项至少包含 approval_id、run_id、主体与租户、工具和目标资源、规范化参数摘要、预期版本、数据接收方、风险与有效期。批准只能绑定展示给用户的动作。若用户只同意“修改限额为 20”，不能顺便批准新增资源、改成 30 或发给另一个服务。模型输出 approved=true 不应影响权威审批状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一审批请求通过多个页面重复提交时，使用唯一事件 ID 与 CAS 消费一次；后来的重复答复返回既有结果。如果批准和取消并发，数据库中的序列和状态守卫决定哪一个先发生，不能让两个事件各自看到旧状态后同时执行。过期或取消的审批不能因迟到通知恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "隔天恢复的步骤"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 身份服务确认答复者确实具有审批权，读取当前 Run 和待批记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "2. 核对动作摘要、资源版本、权限版本、截止时间和操作状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "3. 若资源从 v7 变为 v8，展示重新计算的差异，必要时重新审批。"
+    },
+    {
+      "type": "paragraph",
+      "text": "4. 审批事件与任务 READY 状态在一个事务中提交，再触发调度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "5. 执行器重新领取租约，在实际发送动作前再检查当前授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "6. 提交后仍要验证结果；审批通过不是操作成功。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "缺信息与审批不同"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户补日期、对象或参数属于 WAITING_INPUT；请求有明确高风险动作但尚未获准属于 WAITING_APPROVAL。固定必填信息能用表单一次收齐，减少来回；开放任务用最少必要问题。低置信度可以触发人工审核，但模型置信度不可校准时，应该根据事实缺口、风险和验证失败触发，不盲信一个浮点数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "指令文件中的 STOP_CONDITION 可帮助模型理解流程，但强制停止必须在代码和策略层实施。等待超过时限可以过期，不能把沉默当作同意。审批期间释放线程和并发租约，保留数据库状态与可恢复产物。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用户要离开，怎样减少反复确认"
+    },
+    {
+      "type": "paragraph",
+      "text": "先区分缺信息的澄清、普通计划选择与真正的权限审批。低风险、可撤销范围可以由用户预先给出明确规则和限额，运行时在这个边界内自动执行；敏感动作、扩大范围、目标变化或授权失效仍需停下。把“不要再问我”解释成任意权限，是设计错误。减少人工的正确方向是提供更好的预览、可验证工具和政策自动判定，无法安全继续时持久等待并告知缺口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "旅行助手若采用前端填表，不必强行假设一定是多轮对话。缺日期、预算或人数可以返回字段级错误和待补字段表单；补齐后以版本绑定的输入恢复。表单提交和聊天文字都需要身份验证、幂等与重新校验。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 人机协同节点：你这个工作流/Agent 里哪些地方设计了必须由人工干预（Human-in-the-loop）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果线上场景要求 Agent 全流程自动化、不依赖人工审核，如何设计机制保证系统稳定性和结果可靠？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果线上场景要求 Agent 全流程自动化，不依赖人工审核，如何设计机制保证系统稳定性和结果可靠？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 是人工触发任务吗？整体工作流程是否固定？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Code Agent 失败应对：日常写代码使用 Code Agent 吗？有没有遇到模型反复修改依然改不对的情况，如何干预？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有做过查询改写？多维度改写是什么？需用户补信息时，交互和技术怎么实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目定位澄清：你这个 Agent 是用于做什么的？是属于研究性的，还是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果用户的问题很模糊或存在歧义，Agent 如何与用户进行澄清性对话？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在什么情况下需要澄清？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有涉及写工具？执行前怎么做 Confirmation？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Q2：你遇到过需要人工强制中断 Agent 执行的情况吗？如何处理 Human-in-the-Loop？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 期间 Claude Code 使用了 superpowers 插件后一直给我选项确认，面试官问假设你现在要走人了，如何让它直接自己做，不让你确认？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Function calling 实现预约到店的具体方式"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ],
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,2 @@
+CREATE TABLE mdl_probe(id INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO mdl_probe VALUES(1);

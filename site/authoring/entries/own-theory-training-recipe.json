@@ -1,0 +1,313 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-training-recipe",
+  "kind": "doc",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "实现参考与验证边界",
+  "title": "完整 LLaMA-Factory：LoRA 训练、冻结与独立评测",
+  "tags": [
+    "完整教学代码",
+    "未执行源代码"
+  ],
+  "sections": [
+    {
+      "id": "s-training-770",
+      "title": "用 LLaMA Factory 完成 Qwen2点5 3B 的 LoRA 微调和独立评测",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 用 LLaMA-Factory 微调 Qwen2.5-3B，你具体怎样配置数据、训练和评测？最终测试的是哪个 checkpoint？"
+        },
+        {
+          "type": "paragraph",
+          "text": "我会先固定模型、模板和数据划分，再用 SFT 加 LoRA 学习目标任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "训练只接触训练集，验证集用于选 checkpoint 和调整方案；选定 adapter、提示词与解码参数后，才对封存测试集分别算 loss 和生成任务指标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "能够报出数据注册名、训练 YAML、最佳 checkpoint 路径及 adapter 的校验值，才算交代清楚“怎么做”。介绍个人项目时，按真实训练记录说明这些选择；没有做过的部分按实验方案解释。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-780",
+      "title": "先固定实验对象",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "这份配方使用 LLaMA-Factory v0.9.3，配套参数按 Transformers 4.51.3 编写。模型明确选择 Qwen/Qwen2.5-3B 的基础模型，模板为 qwen；model_revision 固定为同一模型提交，训练、验证和测试都保持一致。模型名相近的 Instruct 版本是另一个实验对象，不能在训练后悄悄替换。"
+        },
+        {
+          "type": "paragraph",
+          "text": "采用未量化的 LoRA，目标模块固定为 q_proj、k_proj、v_proj、o_proj、gate_proj、up_proj、down_proj，rank 为 8，alpha 为 16，dropout 为 0.05。主干权重冻结，学习低秩增量；未配置 quantization_bit，所以这不是 QLoRA。rank、学习率和轮数是起始实验设置，不是所有数据的最优值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行环境需事先具备匹配的 PyTorch/CUDA、支持 BF16 的 GPU，以及该框架的生成评测依赖 nltk、jieba、rouge-chinese。下面的 shell 还使用 jq 和 sha256sum。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所有命令都从这组配方文件所在目录运行，目录内放置 data、各 YAML 和 shell 文件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实际实验另行保存完整依赖版本、GPU 信息和运行日志；仅锁定这两个包不等于锁定全部依赖。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-792",
+      "title": "数据注册和三份互斥数据",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "示例任务是售后意图分类，输出必须且只能是 QUERY_LOGISTICS、CANCEL_ORDER、REFUND 三者之一。"
+        },
+        {
+          "type": "paragraph",
+          "text": "采用 Alpaca 单轮格式：instruction 放任务说明，input 放用户问题，output 放标准答案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "注册中的 prompt、query、response 是框架字段，右侧才是 JSON 中的真实列名。框架把 instruction 和 input 合成用户消息，再用 qwen 模板包装；id 和 group_id 仅用于数据审计，不注册为输入，不能把答案字段拼进提示词。"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 data/dataset_info.json："
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "label": "training/recipe/data/dataset_info.json",
+          "value": "{\n  \"intent_train\": {\n    \"file_name\": \"intent_train.json\",\n    \"formatting\": \"alpaca\",\n    \"columns\": {\n      \"prompt\": \"instruction\",\n      \"query\": \"input\",\n      \"response\": \"output\"\n    }\n  },\n  \"intent_valid\": {\n    \"file_name\": \"intent_valid.json\",\n    \"formatting\": \"alpaca\",\n    \"columns\": {\n      \"prompt\": \"instruction\",\n      \"query\": \"input\",\n      \"response\": \"output\"\n    }\n  },\n  \"intent_test\": {\n    \"file_name\": \"intent_test.json\",\n    \"formatting\": \"alpaca\",\n    \"columns\": {\n      \"prompt\": \"instruction\",\n      \"query\": \"input\",\n      \"response\": \"output\"\n    }\n  }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面三份完整的微型数据只用于说明文件接线，每份三条，远不足以评估模型能力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "真实项目应先去重，再按订单、用户、会话或文档等泄漏单位分组划分；同组及其改写不能跨集合，必要时再按时间切分，并检查近重复和标注冲突。比例可按数据量决定，但不能把同一批样本改名后同时注册为验证集和测试集。"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 data/intent_train.json："
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "label": "training/recipe/data/intent_train.json",
+          "value": "[\n  {\n    \"id\": \"tr-001\",\n    \"group_id\": \"order-a\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"这件商品发到哪了，帮我看看快递进度。\",\n    \"output\": \"QUERY_LOGISTICS\"\n  },\n  {\n    \"id\": \"tr-002\",\n    \"group_id\": \"order-b\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"还没发货，请取消这次下单。\",\n    \"output\": \"CANCEL_ORDER\"\n  },\n  {\n    \"id\": \"tr-003\",\n    \"group_id\": \"order-c\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"货已经收到但破损了，我想申请退款。\",\n    \"output\": \"REFUND\"\n  }\n]\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 data/intent_valid.json："
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "label": "training/recipe/data/intent_valid.json",
+          "value": "[\n  {\n    \"id\": \"va-001\",\n    \"group_id\": \"order-d\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"包裹两天没更新了，现在到哪个站点？\",\n    \"output\": \"QUERY_LOGISTICS\"\n  },\n  {\n    \"id\": \"va-002\",\n    \"group_id\": \"order-e\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"刚买错型号，仓库尚未发货，请撤销订单。\",\n    \"output\": \"CANCEL_ORDER\"\n  },\n  {\n    \"id\": \"va-003\",\n    \"group_id\": \"order-f\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"收到的杯子裂了，想退回并拿回货款。\",\n    \"output\": \"REFUND\"\n  }\n]\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 data/intent_test.json："
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "label": "training/recipe/data/intent_test.json",
+          "value": "[\n  {\n    \"id\": \"te-001\",\n    \"group_id\": \"order-g\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"物流显示运输中，我想知道预计何时送达。\",\n    \"output\": \"QUERY_LOGISTICS\"\n  },\n  {\n    \"id\": \"te-002\",\n    \"group_id\": \"order-h\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"订单尚未出库，我不需要了，直接取消吧。\",\n    \"output\": \"CANCEL_ORDER\"\n  },\n  {\n    \"id\": \"te-003\",\n    \"group_id\": \"order-i\",\n    \"instruction\": \"判断用户的售后意图，只输出一个标签：QUERY_LOGISTICS、CANCEL_ORDER、REFUND。不要输出解释。\",\n    \"input\": \"鞋已签收但尺寸不符，请办理退货退款。\",\n    \"output\": \"REFUND\"\n  }\n]\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "训练配置只使用 dataset: intent_train 和 eval_dataset: intent_valid。已经显式指定验证集，就把 val_size 保持为 0，不能再要求框架从训练集随机切一份验证集。"
+        },
+        {
+          "type": "paragraph",
+          "text": "test 文件在数据准备时封存；不能根据最终测试分数反复换 checkpoint、调提示词或筛掉难题。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-926",
+      "title": "用验证集 loss 选择 checkpoint",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "保存为 train.yaml："
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "label": "training/recipe/train.yaml",
+          "value": "model_name_or_path: Qwen/Qwen2.5-3B\nmodel_revision: 3aab1f1954e9cc14eb9509a215f9e5ca08227a9b\ntrust_remote_code: false\nstage: sft\nfinetuning_type: lora\ntemplate: qwen\ndataset_dir: data\ncutoff_len: 1024\ntrain_on_prompt: false\npacking: false\npreprocessing_num_workers: 1\noverwrite_cache: true\nbf16: true\nper_device_eval_batch_size: 2\nseed: 42\nreport_to: none\ndo_train: true\ndo_eval: true\ndo_predict: false\ndataset: intent_train\neval_dataset: intent_valid\nval_size: 0.0\nlora_target: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj\nlora_rank: 8\nlora_alpha: 16\nlora_dropout: 0.05\nper_device_train_batch_size: 2\ngradient_accumulation_steps: 4\nlearning_rate: 0.0001\nnum_train_epochs: 3.0\nlr_scheduler_type: cosine\nwarmup_ratio: 0.1\nlogging_steps: 1\neval_strategy: epoch\nsave_strategy: epoch\nsave_total_limit: 2\nsave_safetensors: true\nload_best_model_at_end: true\nmetric_for_best_model: eval_loss\ngreater_is_better: false\npredict_with_generate: false\noutput_dir: saves/qwen25-3b/intent_lora/run01\noverwrite_output_dir: false\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "这几个设置需要能解释原因："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "stage: sft 表示监督微调，finetuning_type: lora 表示参数高效微调方式，两者不能混为一谈。",
+            "train_on_prompt: false 使提示词位置不参与监督，目标是 assistant 回复；padding 标签也不计 loss。packing: false 让这个小例子的样本边界容易检查。cutoff_len 是模板化后的 token 上限，不是原始字符数；上线实验前应抽查是否截掉回答、监督 token 是否为空。",
+            "单卡常规完整累积窗口的有效 batch 是 2 × 4 = 8 条；多卡还要乘数据并行卡数。尾窗口可能不足这个数，不能把它当每一步恒定的 token 数。",
+            "eval_strategy 和 save_strategy 都为 epoch，每轮评估并保存；load_best_model_at_end 配合 eval_loss 与 greater_is_better: false，选择验证 loss 最低的保存点。它不保证业务准确率最高，因此还要在验证集上检查生成结果。",
+            "输出目录必须是新目录。保留 overwrite_output_dir: false，并在启动前检查目录不存在，避免一次新实验悄悄续训旧 checkpoint。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "这里仍使用 train 子命令启动 SFT 工作流；是否执行优化器更新由 do_train 决定。后面的评测也使用这个入口，但 do_train 明确为 false。不要把框架另一个面向基准任务的 eval 子命令直接套到这些 SFT YAML 上。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-990",
+      "title": "冻结实际选中的 adapter",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "训练结束后，run01/trainer_state.json 中的 best_model_checkpoint 才是这次运行实际选中的路径。不能事先杜撰 checkpoint-100，也不能自动把编号最大的 checkpoint 当作最优点。保存为 freeze_selected_adapter.sh："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "training/recipe/freeze_selected_adapter.sh",
+          "value": "#!/usr/bin/env bash\nset -euo pipefail\nrun=saves/qwen25-3b/intent_lora/run01\nselected=saves/qwen25-3b/intent_lora/selected-adapter\ncommand -v jq >/dev/null\nbest=$(jq -er '.best_model_checkpoint | select(type == \"string\" and length > 0)' \"$run/trainer_state.json\")\nmetric=$(jq -er '.best_metric | select(type == \"number\")' \"$run/trainer_state.json\")\ncase \"$best\" in\n  \"$run\"/checkpoint-*) ;;\n  *) printf 'Unexpected checkpoint path: %s\\n' \"$best\" >&2; exit 1 ;;\nesac\ntest -f \"$best/adapter_config.json\"\ntest -f \"$best/adapter_model.safetensors\"\ntest ! -e \"$selected\"\nmkdir \"$selected\"\ncp \"$best/adapter_config.json\" \"$best/adapter_model.safetensors\" \"$selected/\"\njq -n --arg checkpoint \"$best\" --argjson validation_loss \"$metric\" \\\n  --arg model 'Qwen/Qwen2.5-3B' \\\n  --arg model_revision '3aab1f1954e9cc14eb9509a215f9e5ca08227a9b' \\\n  '{checkpoint: $checkpoint, selection_metric: \"eval_loss\", validation_loss: $validation_loss, base_model: $model, base_revision: $model_revision, template: \"qwen\", selection_dataset: \"intent_valid\"}' \\\n  > \"$selected/selection.json\"\n(cd \"$selected\" && sha256sum adapter_config.json adapter_model.safetensors selection.json > SHA256SUMS)\nprintf 'Frozen adapter from %s\\n' \"$best\"\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "selected-adapter 是固定的评测输入目录，内部保存从实际最佳 checkpoint 复制的 LoRA 权重与配置、选择依据和 SHA256。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它不是完整的 3B 模型；评测时仍要先加载同一基础模型，再加载这个 adapter。模型提交、qwen 模板和 adapter 文件三者一起确定评测对象；只报一个目录名无法证明测试的是同一份权重。"
+        },
+        {
+          "type": "paragraph",
+          "text": "生成验证配置保存为 eval_valid_generate.yaml："
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "label": "training/recipe/eval_valid_generate.yaml",
+          "value": "model_name_or_path: Qwen/Qwen2.5-3B\nmodel_revision: 3aab1f1954e9cc14eb9509a215f9e5ca08227a9b\ntrust_remote_code: false\nstage: sft\nfinetuning_type: lora\ntemplate: qwen\ndataset_dir: data\ncutoff_len: 1024\ntrain_on_prompt: false\npacking: false\npreprocessing_num_workers: 1\noverwrite_cache: true\nbf16: true\nper_device_eval_batch_size: 2\nseed: 42\nreport_to: none\nadapter_name_or_path: saves/qwen25-3b/intent_lora/selected-adapter\ndo_train: false\ndo_eval: false\ndo_predict: true\neval_dataset: intent_valid\nval_size: 0.0\npredict_with_generate: true\ndo_sample: false\nnum_beams: 1\nmax_new_tokens: 32\nskip_special_tokens: true\noutput_dir: saves/qwen25-3b/intent_lora/valid-generate\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "准备完成后，先运行以下训练和验证命令；不要把最终测试接在每轮调参后自动执行："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "training/recipe/train_validate.sh",
+          "value": "#!/usr/bin/env bash\nset -euo pipefail\n# Run from this recipe's code directory in the prepared training environment.\ncommand -v llamafactory-cli >/dev/null\ncommand -v jq >/dev/null\ntest ! -e saves/qwen25-3b/intent_lora/run01\ntest ! -e saves/qwen25-3b/intent_lora/selected-adapter\nllamafactory-cli version\nCUDA_VISIBLE_DEVICES=0 llamafactory-cli train train.yaml\nbash freeze_selected_adapter.sh\n(cd saves/qwen25-3b/intent_lora/selected-adapter && sha256sum -c SHA256SUMS)\nCUDA_VISIBLE_DEVICES=0 llamafactory-cli train eval_valid_generate.yaml\n# Review validation task metrics and freeze the plan before running final_test.sh.\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "根据验证集生成结果检查标签格式、各类别错误和拒答。如果要继续调数据或超参数，应建立新的实验目录；确认选择策略和验收指标后再冻结最终候选。测试集只能用于报告这份候选的泛化表现，不能回流成调参依据。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-1077",
+      "title": "对封存测试集分别评估 loss 和生成任务",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "第一份只做 teacher-forcing loss，保存为 eval_test_loss.yaml："
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "label": "training/recipe/eval_test_loss.yaml",
+          "value": "model_name_or_path: Qwen/Qwen2.5-3B\nmodel_revision: 3aab1f1954e9cc14eb9509a215f9e5ca08227a9b\ntrust_remote_code: false\nstage: sft\nfinetuning_type: lora\ntemplate: qwen\ndataset_dir: data\ncutoff_len: 1024\ntrain_on_prompt: false\npacking: false\npreprocessing_num_workers: 1\noverwrite_cache: true\nbf16: true\nper_device_eval_batch_size: 2\nseed: 42\nreport_to: none\nadapter_name_or_path: saves/qwen25-3b/intent_lora/selected-adapter\ndo_train: false\ndo_eval: true\ndo_predict: false\neval_dataset: intent_test\nval_size: 0.0\npredict_with_generate: false\noutput_dir: saves/qwen25-3b/intent_lora/test-loss\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "第二份只生成并保存预测，保存为 eval_test_generate.yaml："
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "label": "training/recipe/eval_test_generate.yaml",
+          "value": "model_name_or_path: Qwen/Qwen2.5-3B\nmodel_revision: 3aab1f1954e9cc14eb9509a215f9e5ca08227a9b\ntrust_remote_code: false\nstage: sft\nfinetuning_type: lora\ntemplate: qwen\ndataset_dir: data\ncutoff_len: 1024\ntrain_on_prompt: false\npacking: false\npreprocessing_num_workers: 1\noverwrite_cache: true\nbf16: true\nper_device_eval_batch_size: 2\nseed: 42\nreport_to: none\nadapter_name_or_path: saves/qwen25-3b/intent_lora/selected-adapter\ndo_train: false\ndo_eval: false\ndo_predict: true\neval_dataset: intent_test\nval_size: 0.0\npredict_with_generate: true\ndo_sample: false\nnum_beams: 1\nmax_new_tokens: 32\nskip_special_tokens: true\noutput_dir: saves/qwen25-3b/intent_lora/test-generate\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "选型和解码规则冻结后，最终测试命令为："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "training/recipe/final_test.sh",
+          "value": "#!/usr/bin/env bash\nset -euo pipefail\n# Run only after model choice, thresholds and decoding settings are frozen.\nselected=saves/qwen25-3b/intent_lora/selected-adapter\n(cd \"$selected\" && sha256sum -c SHA256SUMS)\ntest ! -e saves/qwen25-3b/intent_lora/test-loss\ntest ! -e saves/qwen25-3b/intent_lora/test-generate\nCUDA_VISIBLE_DEVICES=0 llamafactory-cli train eval_test_loss.yaml\nCUDA_VISIBLE_DEVICES=0 llamafactory-cli train eval_test_generate.yaml\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "loss 工作流在正确前文和标准答案监督下计算交叉熵，产出 eval_results.json；生成工作流按输入自回归输出，产出 predict_results.json 和 generated_predictions.jsonl。"
+        },
+        {
+          "type": "paragraph",
+          "text": "后者每行包含 prompt、predict、label。"
+        },
+        {
+          "type": "paragraph",
+          "text": "该版本生成预测路径会把 labels 从送给模型的输入中取出，因此不要假设一次 predict_with_generate 就同时得到了可比较的 teacher-forcing loss。两次运行分别计算，两份结果明确区分。"
+        },
+        {
+          "type": "paragraph",
+          "text": "生成时固定 do_sample: false、num_beams: 1 和 max_new_tokens: 32。这约束了解码方案，但不意味着跨硬件、内核和依赖版本绝对逐位复现。训练和评测所用模板、截断策略、数据版本与精度都应记录；不能通过缩短测试样本或换模板制造更好的分数。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-1163",
+      "title": "指标怎样解释才不夸大效果",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先看任务指标，再解释 loss。 对这个分类任务，可预先约定去掉预测与标签首尾空白后进行严格匹配，不提取解释中的某个标签，也不把多标签答案算对。"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "意图准确率 = 完全匹配的条数 / 测试总条数。空输出、多标签、额外解释和非法标签都按错计。",
+            "非法输出率 = 不属于三个允许标签的输出条数 / 测试总条数；补充混淆矩阵、每类 precision/recall 与 macro-F1，防止大类别掩盖小类别退化。",
+            "核对生成条数、有效监督样本数与原始测试条数；发现被过滤、截断或漏算的样本应先修复评测，不能偷偷减小分母。严重截断样本需要单独统计。",
+            "在同一封存测试集上，用相同提示词、模板、解码参数和评测规则比较未微调基线与最终 adapter；同时报告样本量、各类分布和误差分析。基线评测也不参与反复调参。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "该版本内置的生成指标是 ROUGE-1、ROUGE-2、ROUGE-L 和 BLEU-4，它们衡量字词重合，不等于售后分类正确率、事实正确率或业务成功率。"
+        },
+        {
+          "type": "paragraph",
+          "text": "token accuracy 也不是按样本计算的意图准确率。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验证 loss 下降但真实生成结果变差，可能来自过拟合、格式偏移、数据分布差异或 teacher forcing 与实际解码的差距；不能只挑下降的那一列宣布提升。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问时的收束： “我用训练集更新 LoRA，用验证集确定候选，把实际 checkpoint 对应的 adapter 固定后再测封存测试集。loss 证明模型对标准答案的拟合程度；是否把业务做好，要用同一规则下的生成任务指标与基线对照回答。”"
+        },
+        {
+          "type": "paragraph",
+          "text": "这九条合成样本只演示数据与配置如何衔接，不能作为模型效果证据。真正训练前还需检查分词后的样本与监督 token；完成训练和独立生成评测后，才能报告 checkpoint 与任务指标。"
+        }
+      ]
+    }
+  ]
+}

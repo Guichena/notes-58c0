@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-memory-ai-context-7-6",
+  "entryId": "ai-上下文工程-7",
+  "questionId": "6",
+  "expectedOriginalHash": "3085cbd1290a34d7f8851a578296392cc464a68f18d20390837bef17389123b8",
+  "title": "Memory：具体机制与边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "18 索引滞后与并发更新"
+    },
+    {
+      "type": "paragraph",
+      "text": "真源提交、索引可搜索、缓存可见是不同时间点。 读取核验当前 revision，写入用 CAS 或事务防止旧候选覆盖新事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能问法：记忆更新后向量库还返回旧内容怎么办？两个后台任务同时修改同一条怎么办？删掉后旧消费消息能让它复活吗？MySQL 与 Redis 怎么保持一致？"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次更新可在数据库事务中创建新 revision、更新逻辑 head 并写 Outbox。索引消费者根据 memory_id + revision 生成全文与向量投影，按版本拒绝旧事件；缓存通过版本键或主动失效更新。数据库提交成功不代表 Elasticsearch 已能搜到；刷新控制的是搜索可见性，不能替代跨系统事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对于新数据暂未进入索引，可以在有界窗口内补查主库的近期变更，或向调用方明确“索引处理中”。对于已撤销的旧数据，不能等待索引自然刷新：先回源验证 head 状态和版本，旧候选直接丢弃。相关性高但版本不符仍不可使用。缓存失效消息也可能丢失，因此版本校验、主动失效与后台对账互补。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用并发城市更新推演：A、B 都读到 revision 7；A 按用户更正写成 revision 8；B 再带 expected_revision=7 提交旧摘要，结果应是 CONFLICT。接着说明 B 为什么要重读并重新判断：提取有成本，语义前提也可能已变。不能用无限 CAS 自旋替代判断，重试须有总预算与明确停止条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "条件更新可以是 UPDATE memory_head SET revision = revision + 1, ... WHERE tenant_id = ? AND memory_id = ? AND revision = ?，只有影响行数为 1 才提交其依赖动作。新版本与 head、事件应处于同一数据库事务；跨 Elasticsearch、Redis、对象存储仍需要幂等投影与恢复。单 JVM synchronized 或 ReentrantLock 不能保护多实例。"
+    },
+    {
+      "type": "paragraph",
+      "text": "删除后保留单调版本或 epoch。若 tombstone 为 revision 10，迟到的 revision 8 upsert 必须拒绝；不要删除所有版本元数据后，让旧消息以“记录不存在”重新创建内容。重建全量索引要从一致快照起步，再追增量到确定水位，最后切换别名；“清空后重新写”在并发更新时容易漏数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读取与撤权还有竞态：查权限后立即撤权，进程内已经持有的正文不能魔法消失。应定义授权检查的线性化时点、敏感阶段的再验证与撤销 SLO；不能宣称一个 epoch 字段让全系统立即、无窗口撤销。后文教学模型把授权、head 检查和结果选择放在同一锁内，只证明该进程中的原子边界。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-memory/diagram-3.png",
+      "alt": "异步索引可以落后，使用前回源核验 head、权限与有效期。"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步索引与当前真源的边界。可容忍短期漏召回，使用前仍需核验版本和权限。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-memory-guide",
+      "label": "接口、运行条件与验收边界"
+    }
+  ]
+}

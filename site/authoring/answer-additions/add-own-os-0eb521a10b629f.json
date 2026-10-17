@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-0eb521a10b629f",
+  "entryId": "own-runtime-incident-workflow",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "e0f1784b62d7fed946102eee554537b98b0c0c85710f9b2080661ca42fb949c3",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "本地排查异常进程的Agent怎样设计 怎样避免诊断工具本身造成事故"
+    },
+    {
+      "type": "paragraph",
+      "text": "用小而固定的采集器读取允许范围内的CPU、内存、线程、FD、退出状态和时间线，统一为带采样时间、单位、采样窗和来源的结构化数据；模型据此解释可能原因与下一步证据，不直接把自由文本拼成shell执行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "如果将 Agent 部署在本地机器，用于排查本机异常进程，实现该能力有哪些需要注意的点？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把确定性采集和模型解释分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux常用top、ps及/proc定位到进程再到线程；Linux怎样创建进程 怎样用top和ps定位高CPU服务 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnz5rpWB0luJiZnYdrgMvhjf)完整解释R/S/D/Z/T、ps累计CPU与top采样CPU的差别。高CPU可能是合法计算，低CPU可能在等待；进程名字像系统服务不能证明身份，单次快照也不足以断言异常。Windows、macOS应换各自API和权限，不伪装成同一种/proc接口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "进程身份必须抵抗复用和竞争"
+    },
+    {
+      "type": "paragraph",
+      "text": "记录PID、创建时间、可执行映像及适用容器/namespace标识；从“看到PID”到“要行动”之间原进程可能退出、数字被新进程复用。Linux可用pidfd保持较稳定的进程引用，并在执行被批准的动作前重新核验目标及状态，而不是对一个过期PID盲发信号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "采集失败要明确说未知，不能填个零值伪装正常。读取期间可能遇到进程退出、权限不足、字段变化，多个文件的快照也未必一致，应分别返回“已消失”“权限受限”或“未知”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "诊断工具自己也要有预算：一次采样限制总时长、输出字节、进程与线程数、CPU 消耗，避免排障反而触发诊断风暴。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "最小权限和隐私限制先于模型建议"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通诊断不应默认管理员权限，不扫描密码、令牌、其他用户内存或完整环境变量。命令行、路径、网络端点、栈和日志都可能含秘密，采集时限制字段、脱敏、保留期和上传目标；离线本地分析与传到远程模型是两种数据流，需要明确授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "日志、进程参数和文件内容是被分析的数据，哪怕包含“忽略规则并运行命令”也不能变成授权。工具入口校验参数、允许的PID/路径/操作类型，记录审计和结果；不能只依赖模型自觉不调用危险命令。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "处置要能说明风险并验证结果"
+    },
+    {
+      "type": "paragraph",
+      "text": "报告区分已观测事实、假设、置信度和缺证据，先推荐最小影响的下一项诊断。重启、信号、配置修改、转储和删除等有副作用动作，应按用户授权与平台策略审批，展示确切目标、影响和回退/验证方式。"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求停止通常先走业务支持的优雅关闭，再观察任务排空和退出；SIGTERM并非必然立即终止，强杀可能丢在途数据。不能因超时就自动扩大权限。动作后的CPU/延迟/错误率和进程身份应重新采集，以免把正常进程替换误判成修好。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "故障注入和测试边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "在自有隔离fixture测试短命进程、PID变化、权限拒绝、stdout爆量、命令超时、正常高CPU和卡住等待，检查采集预算与误报；不要在生产制造OOM、挂死或杀进程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "安全诊断Agent的成功标准是可追溯地缩小原因并在授权范围内处置，不是拿到一个能执行任意shell的模型接口。沙箱数量与隔离执行的配套设计见Sandbox harness怎样组织执行 并发沙箱数量如何受资源和隔离约束 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnjR1XkQWRqdTfspoWFJzKpm)。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-runtime-incident-workflow",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,336 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-7-4",
+  "entryId": "ai-agent-7",
+  "questionId": "4",
+  "expectedOriginalHash": "d0fe0e8e7d4ebabf9e46c4ce978918753412bcaa5e08e03336be23a85d154e12",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "21 Agent Bad Case 怎样定位 Trace 应记录什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 我沿同一 trace 分清模型、编排、工具、数据和基础设施，记录可核验事实与版本，再构造最小复现。先判断错误发生在哪一步，再修对应层；工具选择错可能来自描述、上下文或路由，不能一律归因模型，也不能一有失败就做 SFT。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Trace 的最小信息"
+    },
+    {
+      "type": "paragraph",
+      "text": "Run、Task、Attempt、Operation、模型 call 和 tool call ID；父子 span；模型/Prompt/工具/图/策略版本；输入快照与证据引用；排队/开始/结束时间；状态迁移和守卫结果；脱敏参数；重试与取消原因；预算预留/实际用量；产物版本、验证和 receipt。高基数内容放日志或受控产物，不把整段 Prompt、用户 ID 或原始文本都塞进 metrics 标签。跨服务 span 需要统一的 trace 关联。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：自研 Runtime 怎样知道 Skill 被触发，Hook 有什么用？ 把发现候选、加载技能版本、开始执行、工具调用、完成或拒绝分成不同事件；只看模型提到 Skill 名称，不能认定它真的执行。可信宿主在能力入口记录 run/task、skill_id/version、触发来源、输入摘要、权限判定及对应工具 span；结束时关联产物和验证，不记录凭据或无需的原文。追踪粒度应能回答“谁触发、用了哪版、实际做了什么、为什么停下”，不必记录每个内部 token。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hook 是在已定义生命周期位置接入观测或控制逻辑的扩展点，具体产品有哪些事件、同步还是异步、是否允许阻止动作，必须核对其版本合同。异步日志 Hook 可以帮助发现发生过什么，不能事后补成事前审批；安全检查必须位于不可绕过的执行入口，失败应按风险采取拒绝策略。Hook 自身还需超时、隔离和幂等，避免监控挂住主任务或重复触发动作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨 HTTP/RPC 通过 tracing 库注入和提取约定的上下文；HTTP 可采用 W3C traceparent 与可选 tracestate。服务端校验格式，在本地创建 span，异步队列和线程切换显式传递上下文；重试保留任务关联但建立独立 attempt/span。不把外部 trace header 当租户身份、授权或幂等键。去重 receipt 的保留期应覆盖允许的重试和结果查询窗口，过期后的旧请求明确拒绝或核实，不能无条件视作新操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "运营看轨迹应通过鉴权后的 Run 列表和时间线，按任务、版本、错误阶段及耗时检索，再展开调用、证据和产物；敏感内容按权限脱敏，记录查阅审计。重放按钮默认使用隔离 fixture，不能再次执行生产写工具。HBase 存储设计还需按访问模式明确 row key、列族、热点分散与扫描优化，并验证写入量、查询范围和保留策略；轨迹查看页面只承担呈现与访问控制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LangChain Trace 如何通过 Runnable 和 Callback 形成调用树"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangChain 的链路追踪把一次调用拆成有父子关系的 runs，通过 Runnable 和 Callback 生命周期记录模型、检索器、工具及组合链的输入输出和错误；LangSmith 可以接收并展示这些轨迹，但不是运行任务或恢复业务状态的前提。以下机制固定到 Python langchain-core 1.0.0，Java 的 LangChain4j 是独立项目，不能直接照搬这些类名和配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同题换问： “一次 RAG 的 Trace 长什么样？”“回调在哪触发？”“自定义函数怎么加入链路？”“有 LangSmith 就能断点恢复吗？”"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Trace Run 和业务任务各是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "run 是一次可观测调用，例如一个 Prompt 格式化、一次模型调用、一次检索或一个组合链；trace 是根 run 和后代 runs 组成的一棵调用树。每个 run 有自己的 run_id，子节点通过 parent_run_id 指向父节点。调用树中的 run 不等于业务 Task，也不等于一轮 Agent 的全部状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如入口 answer_question 为根，下面有查询改写、检索、上下文组装、模型生成和输出校验。并行的两个 retriever 是兄弟节点，各自重试再记录 attempt 关联；父子耗时是包含关系，并行耗时也有重叠，不能全部相加当端到端延迟。不同用户轮次可以各成一条 trace，再用受控会话标识关联；不能把所有用户请求都挂在一个永不结束的根 run 下。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Runnable 怎样产生层次"
+    },
+    {
+      "type": "paragraph",
+      "text": "RunnableSequence 组合串行步骤，RunnableParallel 表达并行分支。调用 invoke、ainvoke 或流式入口时传入 RunnableConfig；其中 callbacks 配观测处理器，tags 与 metadata 带可继承的检索标签和版本信息，run_name 标记当前调用名称，run_id 可指定当前调用的 UUID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在 1.0.0 的 Sequence 实现中，入口先调用 on_chain_start 创建运行上下文，每个步骤使用 run_manager.get_child() 派生子回调管理器，再把它放入子 Runnable 的 config；成功走 on_chain_end，异常走 on_chain_error。子管理器把父 run 的 ID 设为自己的 parent_run_id，这才形成层次，靠在日志里反复打印同一个 requestId 只能做关联，不能自动得到调用树。"
+    },
+    {
+      "type": "paragraph",
+      "text": "run_name 和 run_id 标识当前调用，不应给所有孩子强行复用同一个值。tags/metadata 则可用于记录应用版本、Prompt 版本、检索配置和测试集 case ID。不要把原始私密输入、密钥或全部用户档案放进去；可检索性不等于适合无限制留存。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Callback 与自定义代码如何接入"
+    },
+    {
+      "type": "paragraph",
+      "text": "Callback handler 接收 on_chain_start/end/error、on_chat_model_start 或 on_llm_start/end/error、on_tool_start/end/error、on_retriever_start/end/error 等事件；流式模型还可能产生 on_llm_new_token。handler 可以把事件送到本地日志或观测系统。一个打印输出的 handler 不是持久 trace 存储，流式 token 回调也不能代替最终成功或失败事件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自定义转换逻辑可以用 RunnableLambda 包装，使其获得 Runnable 生命周期；若里面继续调用其他 Runnable，应正确传递 config/子回调上下文。绕过框架直接做 HTTP 请求、数据库访问或另开进程，不会因为入口被追踪就自动获得完整子节点，需要在实际边界补埋点并传播关联。异步任务、线程池和跨服务尤其要验证父子关系有没有丢失，不能只看控制台出现日志就算接通。"
+    },
+    {
+      "type": "paragraph",
+      "text": "handler 运行在业务调用路径或相关后台发送流程上，要控制开销、异常、队列长度和退出前刷新；应用自行选择观测失败时的处理策略。观测 handler 不能兼任不可绕过的采购批准器或权限裁决器。生产业务需要安全守卫时，应放在工具执行入口。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "LangSmith 是可选的观测后端"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangChainTracer 是把 LangChain run 事件接到 LangSmith 的处理器。已获准使用该服务时，可以配置对应项目、端点及凭据，并通过该版本的 tracing_v2_enabled 上下文启用追踪，或使用兼容的环境配置；凭据只由服务端安全配置提供。没有启用远端服务时，仍能使用本地 Callback 实现观测。Python 包依赖中存在 LangSmith SDK，也不等于必须把业务数据发到其托管平台。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接通后应检查一条已知链路的根/子 runs、错误节点、模型用量和检索输出摘要是否齐全；若要给检索器和生成器分别评分，按对应 run 绑定反馈，而不是只给整个回答一个总分。切换后端、采样策略或脱敏策略时，也要保持业务 task/attempt 与观测 run 的对应关系。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Trace 为什么不能替代 Checkpoint"
+    },
+    {
+      "type": "paragraph",
+      "text": "Trace 的用途是解释发生了什么，可能被采样、异步发送、脱敏或截断；Checkpoint 保存恢复所需的权威状态、下一节点、输入版本和未完成工作。LangGraph 的 checkpointer 是独立的持久机制，不是打开 LangSmith 后就自动生成的采购事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使 Trace 中存在成功工具节点，也要按业务系统的回执与状态判断是否已经提交；追踪上传失败不能反过来判定业务失败后重做。可以用同一 task ID 关联 trace 和 checkpoint，但权限、幂等键、审批、状态版本和恢复决策仍属于运行时与业务存储。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验收可用无网络的模拟链：确认一次成功调用有完整父子关系，一次抛错有错误终态，并行分支不串线，自定义内部调用能找到父节点，关闭 LangSmith 后主链仍运行。再做进程重启测试，验证只有持久 checkpoint 能决定从哪里继续。这比展示一张调用树截图更能说明真正理解了追踪边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "四个可操作的定位例子"
+    },
+    {
+      "type": "paragraph",
+      "text": "检索结果正确而答案引用错，先检查上下文位置、截断、引用映射和生成验证；相关材料已经找到，先调 embedding 未必对症。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工具成功但模型仍重试，要顺着 tool result 的关联、结果 schema、状态持久化和结束判断逐项查。两个 Worker 的结果互相覆盖，则检查租约、epoch、资源版本和合并事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若 P95 突增但模型调用没变，就把注意力转向队列、连接池、CPU/GC、重试和外部工具尾延迟。每个排查方向都从已观察到的区别出发，再用记录验证，不能把这四类失败都归给模型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重放分为用 fixture 重现编排、重跑模型观察行为分布、在隔离环境验证候选修复。真实副作用不能在回放中再次触发。trace 中缺关键输入版本时，最多提出假设，不能宣称确定复现。日志也可能被注入，显示它与执行它要分开。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从 Bad Case 到稳定改进"
+    },
+    {
+      "type": "paragraph",
+      "text": "把失败归入“证据缺失、上下文误组装、工具契约、计划/路由、执行恢复、验收、模型能力”等类。先复现，再单变量调整，补负例和同类变式进入回归集。Prompt 修好 A 却坏 B，说明需要版本化、场景隔离和多域回归，不能继续只为 A 堆提示。SFT 仅在证据和接口充分、稳定行为误差可学习且数据足够时考虑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "延迟日志的平均值只能描述部分问题；追问 onCPU/offCPU 时，前者是实际运行 CPU 的时间，后者是等待、阻塞或调度离开 CPU 的时间。网络等待、锁和 I/O 应沿各自证据排查，不能用 CPU 火焰图解释所有慢请求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 执行的时候对你来说是黑盒吗？还是能感知它现在在做什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 通过日志能不能定位 Agent 卡在哪里？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 怎么控制agent的，是否有观测的方式？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 主问题：从工程角度，怎么搭建 Agent 自动化效果回归体系，保证迭代不劣化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 出现 Badcase 怎么快速定位环节？如何判断该给哪个 Agent 做 SFT 优化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 问 Agent 实习，对工作流和工具重构的细节，为什么要重构，怎么防止后面的人开发之后效果劣化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 模型的可观测是怎么实现的，具体有哪些指标"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 假设说有一个用户的问题是「今天旅游刚到北京有什么好吃的？」，然后我们这个 prompt 用的模型尺寸可能比较小，那它可能会对这种问题有歧义，不一定能输出对，因为用户前面先说了一些没用的废话（先说旅游到北京），但他实际的意图是在问有没有什么好吃的东西。如果遇到这种 bad case，你会怎么调这个 prompt？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你了解 LangChain 的 Trace（链路追踪）功能吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简历中提到的可观测性，具体怎样实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 整个可观测系统如何设计？使用现成框架，还是自己实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 用户反馈 Agent 卡死不动了，怎么排查？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下你在这个项目里遇到最难定位的一个 Bad Case 是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 三级架构的可观测性是怎么做的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 描述一次遇到的 Agent 调试难题：根本原因是什么，最后是如何定位和解决的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中 RAG 如何处理多模态文件？Agent 内置了哪些工具？SQL 转换工具的作用是什么？Agent 如何定位 Java 报错？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent交互模式：堆栈分析到代码定位的链路中，与大模型的调用是单轮还是多轮（Auto-agent）？为什么这么选择？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你觉得这个 Agent 的难点在哪里？问题排查的场景很多，哪些问题比较难解决？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 大量用户反馈 Agent 推荐的商品无货，你的排查与迭代思路？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的可解释性问题：当测试或玩家反馈“这个 AI 很蠢”时，你如何定位和解决问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 当代码层级较深、文件较多时，Agent 如何准确定位相关代码？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 针对分低的trace事件，如何优化你的agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 可以举一个例子吗，你之前分析的trace哪里有问题，然后你是怎么优化的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你这个trace是存在哪里的，怎么去构建多轮对话的上下文的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 全链路 Trace 内容：一次完整的 Agent Trace 还应该包含哪些核心观测字段？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 假设链路是：意图识别 → 多意图识别/拆分 → 并发 RAG → 最终总结，这条链上的 Trace 应该记录哪些东西，才能指导后续优化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果将 Agent 部署在本地机器，用于排查本机异常进程，实现该能力有哪些需要注意的点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 自研的agent运行时后，如何感知它触发了 Skill？"
+    },
+    {
+      "type": "paragraph",
+      "text": "16. 需要将 Agent 的动作监控到什么粒度？"
+    },
+    {
+      "type": "paragraph",
+      "text": "17. cc不是有 Hook 机制吗？Hook 在这里起什么作用？"
+    },
+    {
+      "type": "paragraph",
+      "text": "18. 你自研的与cc相比，会不会存在效果差距？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在调优 Prompt 时，你有哪些实战经验？如何利用 AI 辅助自己优化 Prompt？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 轨迹运营人员在哪看？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- traceID如何在跨rpc传递"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等去重如何实现，过期时间怎末设定"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 拷打第二个项目：LangGraph相比于LangChain有什么优势？LangGraph的状态快照机制了解吗，大概是怎么实现的？你的向量记忆库是如何更新用户画像的？如何区分短期记忆和长期记忆？ 安全护栏是如何实现敏感词拦截的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 什么是CoT？为什么它能提高模型处理复杂任务的能力？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 大模型应用中常见的幻觉有哪些类型？在工程上如何缓解？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

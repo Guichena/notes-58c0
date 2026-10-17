@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-rabbitmq-4-1",
+  "entryId": "bg-rabbitmq-4",
+  "expectedOriginalHash": "967ef06826c820d8690c7876eb81535a1be63c3bcd169c381dc31aa3874c74c1",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q25 Prefetch 如何形成背压"
+    },
+    {
+      "type": "paragraph",
+      "text": "Prefetch 限制未确认交付数，避免消费者一次拿走无限工作，但必须与工作线程、连接池和消息大小一起设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "小 prefetch 降低在途内存和慢消费者占用，过小可能使网络往返主导吞吐。大 prefetch 有助于填满工作流水线，但放大内存、重投数量和不公平分配。RabbitMQ 对普通 consumer 的 QoS 有自己的 per-consumer 解释，应按版本和 global 标记核对，不能套成任何情况下都只按 channel 一份额度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个 consumer 只有一个串行数据库执行路径时，prefetch=1000 不会得到 1000 倍吞吐。若并行度 C、平均处理时间 S、消息体 M，在途数至少影响约 prefetch×M 的负载，还叠加反序列化对象与线程池队列。按耗时分布和下游最大并发选择，不只看平均耗时。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Broker 的内存/磁盘告警可能阻塞发布连接，这是保护系统而非应用可以忽略的偶发错误。生产者也应有有界缓冲、超时、接入限流和 Outbox 积压告警。不能把所有压力从 RabbitMQ 搬进 JVM 队列，也不能通过提前 ACK 释放 prefetch 来伪装消费能力。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "连接 blocked 与消费者慢有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "broker 流控限制的是生产进入速度，消费者慢影响的是已有责任完成速度，两者可同时出现但要分开诊断。"
+    },
+    {
+      "type": "paragraph",
+      "text": "当内存或磁盘告警阻止继续接收，发送耗时和 confirm 延迟可能升高。应观察连接 flow/blocked、内存水位、磁盘空闲量和服务时间、队列 leader、副本及网络，再决定限流或恢复。生产连接和消费连接分开，有利于避免同一连接承载发布压力与消费确认互相影响。只增加本地发送缓存会延后背压并放大内存风险。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在途容量满时应拒绝本次内存接纳，让持久 Outbox 保留后续责任；不能先标“已发送”再排进无界队列。发送堵住也要有总运行预算，发生超时就关闭旧传输，释放 map 和许可。真实服务的 HTTP、SQL 和 socket 同样需要自己的 deadline；Future.get 超时只限制等待者，不能证明工作线程或远端已经停止。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "prefetch 是并发数吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "prefetch 限制尚未确认的交付数量，不等于线程并发数，也不等于每秒消费能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "basicQos(count,false) 常用于设置每个消费者的未确认窗口。理解这个参数时，逐项排除四个误会："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "它不是线程数。一个线程串行处理时，prefetch=20 只是允许至多一批未确认消息，不会自动出现 20 个工作线程。",
+        "作用域要看队列类型。classic 可以同时设置 channel 与消费者范围的限制，交付须同时满足两者；本实验的 quorum 不支持 global QoS，从启用该限制的 channel 消费会造成 channel 错误，因此只用 per-consumer prefetch。",
+        "0 表示没有所请求的限制，不是“不取消息”，应避免随手设成无限。",
+        "basic.get 拉取模式不受这个 QoS 窗口约束。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "粗略预算可从并发工作数、单条处理时间、往返延迟和消息驻留大小估算。假设串行处理约 300ms、网络往返几毫秒，prefetch 2–3 这样的少量预取已可能隐藏网络等待；10–20 可以作为待压测起点，不是通用最佳值。设过大会让少数消费者囤积 unacked，新扩实例拿不到任务；扩容前 ready 很低，也不代表端到端延迟低。内存预算还要乘上解码膨胀、应用排队与重试临时对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个待验证的分级设计例子可以给 P0 独立并发 4–8、prefetch 10，P1 独立并发 4–8、prefetch 20，普通任务并发 2–16、prefetch 20；只做持久落库的分析接入可用并发 2、prefetch 50 作为另一个压测起点。它们不是本实验的运行参数，更不是实际项目配置；本实验串行处理、prefetch 固定为 4。"
+    },
+    {
+      "type": "paragraph",
+      "text": "必须同时限制 broker prefetch、工作线程、应用等待队列、依赖连接池和单请求超时。扩消费者前看真正瓶颈是 CPU、数据库锁、供应商限额还是队列 leader。使用本地无界线程池接住有限 prefetch 后过早 ACK，只是把可靠积压搬成不可恢复的内存堆积。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "1"
+}

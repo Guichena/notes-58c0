@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-handwrite-56",
+  "entryId": "handwrite-56",
+  "expectedOriginalHash": "452d3d4107639b3dff425bc0d9aaf96faaaaae4474c4447902d156fce61e8413",
+  "title": "算法练习补充：基础数据结构追加并发约束后，怎样守住同一个不变量？",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "基础数据结构追加并发约束后，怎样守住同一个不变量？"
+    },
+    {
+      "type": "paragraph",
+      "text": "把一次逻辑操作涉及的所有索引、链接和计数放进同一个原子边界，再定义等待、关闭和异常；分别让几个容器线程安全，并不能自动保证它们之间一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程安全集合与同步原语可结合Java 集合与并发手册 (https://my.feishu.cn/wiki/LfZnwIeVXiamrIkAE2scnhqZnlb)继续复习。下面集中给出队列与缓存所需的完整类型、同步操作和调用入口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "两个栈实现线程安全队列"
+    },
+    {
+      "type": "paragraph",
+      "text": "入栈接收新元素，仅当出栈为空时整体搬运，出栈顶始终是最老元素；检查、搬运、取值由同一个监视器保护。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个元素至多从入栈搬到出栈一次，单次操作可能 O(n)，总成本摊还 O(1)，状态 O(n)。空队列 poll、peek 返回 null，所以禁止存 null。这不是阻塞队列；需要等待或关闭时应选择下面的条件变量模型。删除中间元素仍见 TwoStacks 的独立 O(n) 分支，不能把并发包装当作中间删除的复杂度优化。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\npublic final class TwoStackQueue<E> {\n    private final Deque<E> in = new ArrayDeque<>(), out = new ArrayDeque<>();\n    public synchronized void offer(E value) { in.push(Objects.requireNonNull(value)); }\n    private void transfer() { if(out.isEmpty()) while(!in.isEmpty()) out.push(in.pop()); }\n    public synchronized E poll() { transfer(); return out.poll(); }\n    public synchronized E peek() { transfer(); return out.peek(); }\n    public synchronized int size() { return Math.addExact(in.size(),out.size()); }\n    private static void check(boolean v) { if(!v) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        TwoStackQueue<Integer> q=new TwoStackQueue<>(); check(q.poll()==null);\n        try { q.offer(null); throw new AssertionError(); } catch(NullPointerException expected) { }\n        q.offer(1);q.offer(2);check(q.peek()==1);check(q.poll()==1);q.offer(3);\n        check(q.poll()==2 && q.poll()==3 && q.size()==0);\n        ExecutorService pool=Executors.newFixedThreadPool(4);\n        try {\n            List<Future<?>> producers=new ArrayList<>();\n            for(int p=0;p<4;p++){final int id=p;producers.add(pool.submit(()->{\n                for(int i=0;i<5000;i++)q.offer(id*5000+i);\n            }));}\n            int[] next=new int[4]; int consumed=0; long start=System.nanoTime();\n            while(consumed<20000){\n                Integer v=q.poll(); if(v==null){\n                    if(System.nanoTime()-start>TimeUnit.SECONDS.toNanos(10))throw new AssertionError(\"deadline\");\n                    Thread.yield();continue;\n                }\n                int p=v/5000;check(v%5000==next[p]++);consumed++;\n            }\n            for(Future<?> f:producers)f.get(10,TimeUnit.SECONDS);check(q.size()==0);\n            for(int i=0;i<20000;i++)q.offer(i);\n            Set<Integer> seen=ConcurrentHashMap.newKeySet();List<Future<?>> consumers=new ArrayList<>();\n            for(int i=0;i<4;i++)consumers.add(pool.submit(()->{Integer v;while((v=q.poll())!=null)check(seen.add(v));}));\n            for(Future<?> f:consumers)f.get(10,TimeUnit.SECONDS);check(seen.size()==20000&&q.size()==0);\n        } finally {pool.shutdownNow();check(pool.awaitTermination(10,TimeUnit.SECONDS));}\n        System.out.println(\"PASS FIFO/empty/null/interleaved transfer; 20000 concurrent producer and consumer items\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "固定数组、O(1)、关闭、超时与成功失败计数"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定数组保存元素，head、tail、count 定位下一次出入位置；锁内的队列状态修改 O(1)，等待时间与获取锁时间不属于这个 CPU 成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CloseableRing 的接口先区分“没放进去”和“没取到”的原因。push 遇到满或关闭返回 false，并增加失败计数；null 属于非法参数，不算合法 push 请求。成功插入前先检查计数溢出，再更新数组，long 计数到上限就明确失败，不静默回绕。"
+    },
+    {
+      "type": "paragraph",
+      "text": "pop 返回 ITEM、TIMEOUT 或 CLOSED，所以 0、false 仍能是普通数据。它的超时预算同时包含获取锁和条件等待，中断交给调用方处理。close 幂等并唤醒等待者：从这一刻起不再接收新元素，但已接收的元素仍可取走，只有排空后才返回 CLOSED。"
+    },
+    {
+      "type": "paragraph",
+      "text": "空间 O(C)，C 为构造容量。它使用互斥锁，所以“满时不等待容量”不等于 lock-free；线程仍可能等待短锁。测试中的有限 yield 重试只是驱动例子，业务应选择背压、拒绝或有期限的重试策略。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.concurrent.locks.*;\n\n/** Fixed storage, O(1) queue mutation. Null is invalid; zero/false are ordinary values. */\npublic final class CloseableRing<E> {\n    public enum Status { ITEM, TIMEOUT, CLOSED }\n    public record Pop<E>(Status status, E value) {}\n    public record Stats(int size, long successfulPushes, long failedPushes, boolean closed) {}\n    private final Object[] data;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notEmpty = lock.newCondition();\n    private int head, tail, count;\n    private long successes, failures;\n    private boolean closed;\n    public CloseableRing(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"capacity > 0\");\n        data = new Object[capacity];\n    }\n    /** Nonblocking with respect to capacity. Acquiring the short mutex can still wait. */\n    public boolean push(E value) {\n        Objects.requireNonNull(value);\n        lock.lock();\n        try {\n            if (closed || count == data.length) { failures = Math.incrementExact(failures); return false; }\n            long next = Math.incrementExact(successes); // Validate before changing the queue.\n            data[tail] = value; tail = (tail + 1) % data.length; count++; successes = next;\n            notEmpty.signal(); return true;\n        } finally { lock.unlock(); }\n    }\n    /** Timeout covers lock acquisition plus condition waiting, measured with nanoTime. */\n    public Pop<E> pop(long timeout, TimeUnit unit) throws InterruptedException {\n        if (timeout < 0) throw new IllegalArgumentException(\"timeout >= 0\");\n        long budget = unit.toNanos(timeout), start = System.nanoTime();\n        if (!lock.tryLock(budget, TimeUnit.NANOSECONDS)) return new Pop<>(Status.TIMEOUT, null);\n        try {\n            long remaining = budget - (System.nanoTime() - start);\n            while (count == 0 && !closed) {\n                if (remaining <= 0) return new Pop<>(Status.TIMEOUT, null);\n                notEmpty.awaitNanos(remaining);\n                remaining = budget - (System.nanoTime() - start);\n            }\n            if (count == 0) return new Pop<>(Status.CLOSED, null);\n            @SuppressWarnings(\"unchecked\") E value = (E) data[head];\n            data[head] = null; head = (head + 1) % data.length; count--;\n            return new Pop<>(Status.ITEM, value);\n        } finally { lock.unlock(); }\n    }\n    /** Reject future pushes, wake consumers, and allow already accepted items to drain. */\n    public void close() {\n        lock.lock();\n        try { closed = true; notEmpty.signalAll(); }\n        finally { lock.unlock(); }\n    }\n    public Stats stats() {\n        lock.lock();\n        try { return new Stats(count, successes, failures, closed); }\n        finally { lock.unlock(); }\n    }\n    public static void main(String[] args) throws Exception {\n        CloseableRing<Integer> small = new CloseableRing<>(1);\n        Checks.that(small.push(0) && !small.push(1), \"zero accepted, full rejected\");\n        small.close(); small.close();\n        Checks.that(!small.push(2), \"closed rejects push\");\n        Checks.that(small.pop(0, TimeUnit.NANOSECONDS).value() == 0, \"drain after close\");\n        Checks.that(small.pop(0, TimeUnit.NANOSECONDS).status() == Status.CLOSED, \"closed distinct from value\");\n        Checks.that(small.stats().successfulPushes() == 1 && small.stats().failedPushes() == 2, \"atomic counters\");\n        try { small.push(null); throw new AssertionError(\"null accepted\"); } catch (NullPointerException expected) { }\n        CloseableRing<Integer> queue = new CloseableRing<>(8);\n        Set<Integer> seen = ConcurrentHashMap.newKeySet(); ExecutorService pool = Executors.newFixedThreadPool(8);\n        try {\n            List<Future<?>> consumers = new ArrayList<>(), producers = new ArrayList<>();\n            for (int i = 0; i < 4; i++) consumers.add(pool.submit(() -> {\n                try {\n                    for (;;) {\n                        Pop<Integer> item = queue.pop(5, TimeUnit.SECONDS);\n                        if (item.status() == Status.CLOSED) return;\n                        Checks.that(item.status() == Status.ITEM && seen.add(item.value()), \"no loss/duplicate\");\n                    }\n                } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }\n            }));\n            for (int i = 0; i < 4; i++) {\n                int base = i * 1000;\n                producers.add(pool.submit(() -> {\n                    long start = System.nanoTime();\n                    for (int n = base; n < base + 1000; n++) while (!queue.push(n)) {\n                        if (Thread.currentThread().isInterrupted() || System.nanoTime() - start > TimeUnit.SECONDS.toNanos(5))\n                            throw new AssertionError(\"producer deadline\");\n                        Thread.yield(); // Only this finite test retries push; production should choose backpressure.\n                    }\n                }));\n            }\n            for (Future<?> producer : producers) Checks.get(producer);\n            queue.close(); for (Future<?> consumer : consumers) Checks.get(consumer);\n            Checks.that(seen.size() == 4000 && queue.stats().successfulPushes() == 4000 && queue.stats().size() == 0, \"MPMC drain\");\n            CloseableRing<Integer> empty = new CloseableRing<>(1);\n            Checks.that(empty.pop(0, TimeUnit.NANOSECONDS).status() == Status.TIMEOUT, \"zero-time poll\");\n            CountDownLatch entered = new CountDownLatch(1), stopped = new CountDownLatch(1);\n            Future<?> waiting = pool.submit(() -> {\n                entered.countDown();\n                try { empty.pop(1, TimeUnit.DAYS); throw new AssertionError(\"expected interrupt\"); }\n                catch (InterruptedException expected) { }\n                finally { stopped.countDown(); }\n            });\n            Checks.await(entered); waiting.cancel(true); Checks.await(stopped);\n            Future<Pop<Integer>> closing = pool.submit(() -> empty.pop(1, TimeUnit.DAYS));\n            empty.close(); Checks.that(Checks.get(closing).status() == Status.CLOSED, \"close wakes waiting consumers\");\n        } finally { queue.close(); Checks.stop(pool); }\n        System.out.println(\"CloseableRing OK\");\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果生产者也必须阻塞等待空位，就增加 notFull；等待条件一定放在 while 里，唤醒后重新检查关闭和容量。ConditionQueue 的 take 用 null 表示关闭且排空，所以同样禁止存 null；put 在关闭后抛异常，阻塞线程可以中断。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.locks.*;\n\n/** Bounded MPMC ring; close rejects puts and drains already accepted values. */\npublic final class ConditionQueue<E> {\n    private final Object[] items;\n    private int head, tail, size;\n    private boolean closed;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notEmpty = lock.newCondition(), notFull = lock.newCondition();\n    public ConditionQueue(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(); items = new Object[capacity];\n    }\n    public void put(E value) throws InterruptedException {\n        Objects.requireNonNull(value); lock.lockInterruptibly();\n        try {\n            while (!closed && size == items.length) notFull.await();\n            if (closed) throw new IllegalStateException(\"closed\");\n            items[tail] = value; tail = (tail + 1) % items.length; size++; notEmpty.signal();\n        } finally { lock.unlock(); }\n    }\n    public E take() throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while (!closed && size == 0) notEmpty.await();\n            if (size == 0) return null;\n            @SuppressWarnings(\"unchecked\") E value = (E) items[head];\n            items[head] = null; head = (head + 1) % items.length; size--; notFull.signal(); return value;\n        } finally { lock.unlock(); }\n    }\n    public void close() {\n        lock.lock();\n        try { closed = true; notEmpty.signalAll(); notFull.signalAll(); }\n        finally { lock.unlock(); }\n    }\n    public static void main(String[] args) throws Exception {\n        ConditionQueue<Integer> queue = new ConditionQueue<>(1); ExecutorService pool = Executors.newFixedThreadPool(2);\n        try {\n            queue.put(0); CountDownLatch started = new CountDownLatch(1);\n            Future<?> full = pool.submit(() -> {\n                started.countDown();\n                try { queue.put(1); throw new AssertionError(\"closed put succeeded\"); }\n                catch (IllegalStateException expected) { }\n                return null;\n            });\n            Checks.await(started); queue.close(); Checks.get(full);\n            Checks.that(queue.take() == 0 && queue.take() == null, \"drain closed ring\");\n            ConditionQueue<Integer> interruptedQueue = new ConditionQueue<>(1);\n            CountDownLatch entered = new CountDownLatch(1), done = new CountDownLatch(1);\n            Future<?> wait = pool.submit(() -> {\n                entered.countDown();\n                try { interruptedQueue.take(); throw new AssertionError(\"expected interrupt\"); }\n                catch (InterruptedException expected) { }\n                finally { done.countDown(); }\n            });\n            Checks.await(entered); wait.cancel(true); Checks.await(done);\n            ConditionQueue<Integer> wake = new ConditionQueue<>(1);\n            Future<Integer> waiting = pool.submit(wake::take); wake.close();\n            Checks.that(Checks.get(waiting) == null, \"close wakes empty side\");\n        } finally { queue.close(); Checks.stop(pool); }\n        System.out.println(\"ConditionQueue OK\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "原生 C++：有界生产者消费者与分片 Map"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++ 队列用 mutex 和两个 condition_variable，等待谓词同时检查关闭及容量，关闭后排空已有元素；线程生命周期由调用方 join 完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面 BlockingQueue 允许多个生产者和消费者，单生产者多消费者是其特例。元素要求移动构造和析构不抛异常；分配失败时空位没有被占用，需要通知另一个生产者继续尝试。析构队列前必须保证没有线程仍访问它，close 本身不会替代 join。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ShardedMap 让每个分片各自拥有 unordered_map 与锁，使 rehash 也受同一分片锁保护；按固定分片顺序锁住全部分片才能形成一致快照。get 返回值副本，不把锁外可失效的迭代器泄露出去。同文件的仅 mutex 读写锁用于受限练习，会忙等且没有有界公平保证；实际应用通常优先使用标准共享互斥量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Go 原生条件队列与 channel worker pool"
+    },
+    {
+      "type": "paragraph",
+      "text": "自行实现队列时用环形数组、Mutex 和两个 Cond；如果要求使用 channel 协调任务，则由有界 jobs、results 通道和 WaitGroup 管理 worker 的结束，这两道题不应互换实现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面 Go 1.21 模块的 CondQueue 没有把 channel 包装成队列；取消回调唤醒条件等待者，醒来后仍检查 ctx。关闭后排空，但已取消的调用优先返回取消。RunChannelPool 的任务函数必须配合 ctx，结果可能按完成顺序返回，使用 ID 关联输入；任务 panic 被转换为该任务错误。Go 的 TTL 示例为保证先清理所有过期项，写入显式付出 O(n) 扫描成本，与 Java 独立到期索引的复杂度不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "将三份 .go 文件与 go.mod 放在独立目录，可使用 Go 1.21 或兼容工具链运行 go test -race ./...。竞态检测是辅助检查，还应分别验证关闭、排空、阻塞唤醒、过期和容量合同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模块文件内容为："
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "label": "原文代码（本次未执行）",
+      "value": "module example.com/jucmanual\n\ngo 1.21\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "并发示例的测试辅助类"
+    },
+    {
+      "type": "paragraph",
+      "text": "有界等待让失败能结束，Future.get 传播 worker 异常，关闭线程池后等待真实终止；辅助类中的线程构建方法使用 Java 21 API。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicReference;\n\n/** Small bounded test utilities; no assertion depends on -ea. */\npublic final class Checks {\n    private Checks() {}\n    public static void that(boolean value, String message) {\n        if (!value) throw new AssertionError(message);\n    }\n    public static void await(CountDownLatch latch) throws InterruptedException {\n        if (!latch.await(5, TimeUnit.SECONDS)) throw new AssertionError(\"latch timeout\");\n    }\n    public static <T> T get(Future<T> f) throws Exception {\n        return f.get(5, TimeUnit.SECONDS);\n    }\n    public static void join(Thread t) throws InterruptedException {\n        t.join(5000);\n        if (t.isAlive()) { t.interrupt(); throw new AssertionError(\"thread did not stop: \" + t.getName()); }\n    }\n    public static void stop(ExecutorService executor) throws InterruptedException {\n        for (Runnable queued : executor.shutdownNow())\n            if (queued instanceof Future<?> f) f.cancel(false);\n        if (!executor.awaitTermination(5, TimeUnit.SECONDS))\n            throw new AssertionError(\"executor did not terminate\");\n    }\n    public static Thread thread(String name, AtomicReference<Throwable> failure, Runnable body) {\n        return Thread.ofPlatform().daemon().name(name).unstarted(() -> {\n            try { body.run(); }\n            catch (Throwable error) { failure.compareAndSet(null, error); }\n        });\n    }\n    public static void rethrow(AtomicReference<Throwable> failure) {\n        if (failure.get() != null) throw new AssertionError(\"worker failed\", failure.get());\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

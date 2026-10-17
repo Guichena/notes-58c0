@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-1-3",
+  "entryId": "bg-mysql-1",
+  "expectedOriginalHash": "7c79638c2d7d82c33535706f978f4a380e274be124a53c3a06d83e5525170468",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "练习二：相同谓词的结果集"
+    },
+    {
+      "type": "paragraph",
+      "text": "两边回滚后，由 A 重置："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-026.sql",
+      "value": "DELETE FROM s2_open;\nINSERT INTO s2_open VALUES (1,'OPEN'),(2,'OPEN');\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 A1→B1→A2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-027.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;\nSTART TRANSACTION;\nSELECT id FROM s2_open WHERE status='OPEN' ORDER BY id; -- 1,2\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-028.sql",
+      "value": "-- B1\nSTART TRANSACTION;\nINSERT INTO s2_open VALUES (3,'OPEN');\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-029.sql",
+      "value": "-- A2\nSELECT id FROM s2_open WHERE status='OPEN' ORDER BY id; -- RC 预期 1,2,3\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "重新清理到只有 ID 1、2，并将 A 改成 RR 后重复，A2 预期还是 1、2。B 插入能正常完成，说明普通 RR 快照读并没有靠锁住所有间隙来阻止插入；它只是不把新行纳入旧视图。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RR 里“突然多一行”的两个精确条件"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "条件一：从普通读换成当前加锁读"
+    },
+    {
+      "type": "paragraph",
+      "text": "两会话回滚，A 重置："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-068.sql",
+      "value": "DELETE FROM p;\nINSERT INTO p VALUES (1,10,'old');\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 A1→B1→A2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-069.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT id,score,note FROM p WHERE score=15; -- 空，建立视图\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-070.sql",
+      "value": "-- B1\nSTART TRANSACTION;\nINSERT INTO p VALUES (2,15,'new');\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-071.sql",
+      "value": "-- A2\nSELECT id,score,note FROM p WHERE score=15; -- 仍空\nSELECT id,score,note FROM p WHERE score=15 FOR UPDATE; -- (2,15,'new')\nSELECT id,score,note FROM p WHERE score=15; -- 仍空\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是两种读契约的差异，不是同一个 Read View 被 B 随意改写。A 最初没有锁住相应间隙，B 才能先完成插入。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "条件二：自己修改了旧视图看不到的新行"
+    },
+    {
+      "type": "paragraph",
+      "text": "重新把 p 清理到只有 (1,10,'old')，A、B 重复上面 A1、B1；这次 A2 改为："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-072.sql",
+      "value": "-- A2：当前 UPDATE 能面对 B 刚提交的行。\nUPDATE p SET note='changed' WHERE score=15;\nSELECT ROW_COUNT(); -- 预期 1\nSELECT id,score,note FROM p WHERE score=15; -- (2,15,'changed')\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "自己修改可见，因此普通 SELECT 可以出现行 2；不能把该结果描述为“RR 不使用 MVCC”。自己的写与其他行旧版本混合，还可能产生从未整体存在过的组合。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "范围锁为什么是另一条路"
+    },
+    {
+      "type": "paragraph",
+      "text": "再独立重置 p，A 一开始就加锁："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-073.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT id FROM p FORCE INDEX(ix_score) WHERE score=15 FOR UPDATE; -- 空结果\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-074.sql",
+      "value": "-- B1：在相关间隙保护下等待，先只执行 INSERT。\nSTART TRANSACTION;\nINSERT INTO p VALUES (2,15,'new');\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "A 用等待观察 SQL 确认 p 上的等待边，再 ROLLBACK。B 的 INSERT 返回后也 ROLLBACK，避免给下一轮留下行。空结果仍能保护索引间隙；锁范围依访问路径而定，不能由“返回 0 行”推出“没有锁”。本例强制 ix_score 使观察路径明确，这不是生产优化器建议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一键完整等值命中已有记录、缺失键、联合唯一键仅匹配部分列、非唯一范围查询的锁范围不同。所谓“临键锁”通常指 next-key lock，即记录及其前方间隙的组合；不能把 S/X 兼容模式、IS/IX 意向锁、元数据锁和内部 mutex 都列成一个平行分类。内部 mutex/latch 保护引擎短临界区，事务锁则服务较长的业务并发协议。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "3"
+}

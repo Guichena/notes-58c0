@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-rocketmq-3-2",
+  "entryId": "bg-rocketmq-3",
+  "expectedOriginalHash": "ec7c68baf0448205423b5181e8bcf6cda2bf46ccb99c0778c8f1aebf10186f50",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RocketMQ事务消息的完整时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ 事务消息可按三步复述："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "先发半消息，broker 接受后暂不投递给消费者。",
+        "再执行本地事务，留下可供后续核对的结果。",
+        "确定本地提交就提交半消息；确定本地失败且已回滚就返回 ROLLBACK，使它不成为可消费的业务事件。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "如果数据库 COMMIT 响应丢失、事务仍在执行或查询不可用，结果就是 UNKNOWN，不能凭一次异常猜测已经回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在4.9.8传统Java API中，这个未知枚举实际拼写为LocalTransactionState.UNKNOW；它是未知状态，不是失败。sendMessageInTransaction仅在SEND_OK分支执行本地事务回调，刷盘/从节点等待异常分支选择回滚半消息；不能把这段客户端流程套到“业务早已在外面提交”的另一种调用顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二次确认丢失时，broker回查具备处理能力的生产者。回查依据应是同一业务事务内持久保存的事务标识、结果与消息指纹，不能依赖原JVM的一张Map。查询到确认提交则COMMIT，确认回滚则ROLLBACK；暂时没查到不一定失败，可能事务未结束、查询走落后副本或原请求尚未完成。回查必须幂等，不能为了回答问题再执行一次扣款。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例子：半消息H成功→本地订单与事务证据提交→进程退出，没发第二次确认→另一生产者读取持久证据→提交H。若先提交数据库、之后才准备发送半消息，进程退出仍会出现有业务无消息，不能声称“用了事务消息就覆盖”。无法改顺序时需要Outbox等持久发布责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "5.0事务语义仍是消息生产与本地事务的最终一致，消息未投递前上下游可以处于不同状态；消费者业务失败需要自己的重试与幂等。回查时长、次数和最终处理存在配置/版本边界，不是无限保留直到世界恢复。长期UNKNOWN应监控、对账、人工处置，不能把超时后的broker决策当成本地数据库绝对真相。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "2"
+}

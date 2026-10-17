@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-scenario-distributed-rate-limit",
+  "entryId": "scenario-distributed-rate-limit",
+  "expectedOriginalHash": "aea3fa2255dd8614a009716d0b0d3fad96b38e05ebcdf594b9c064181344261a",
+  "title": "ZSet 滑动日志、原子裁决与全局额度",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读边界：下面按算法与失败条件推演，不将示例阈值作为已测业务指标。分布式副本回退和故障策略会影响全局额度承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "ZSet 怎样做滑动窗口限流，常见限流算法怎么选"
+    },
+    {
+      "type": "paragraph",
+      "text": "严格要求“任意连续 W 时间内最多 L 次”时，可以用 ZSet 保存通过请求的时间，并在一次 Lua 执行里完成清理、计数和放行；允许短时突发时，令牌桶通常更合适，选择前要先讲清限流承诺。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“ZSet 滑动窗口怎么实现”“常见限流算法有哪些”可以沿着同一组流量要求比较；“ZSet 还能做什么、范围查询多贵、内部 hash 有什么用”要补充数据结构；“多个实例、多个额度一起限制怎么办”则进入分布式协调和故障处理。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一、先把限流目标和 ZSet 的作用说清楚"
+    },
+    {
+      "type": "paragraph",
+      "text": "先约定窗口是 (t−W, t]，恰好位于 t−W 的事件已经离开窗口。这个目标不同于“每自然分钟 L 次”，也不同于同时运行的请求数、一天的付费额度或模型 token 预算。还要约定拒绝请求是否计数、重试是否算新尝试，以及按用户、租户、API 还是渠道建立额度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZSet 的 member 唯一，score 用来排序。因此它既适合排行榜，也适合按到期时间取候选任务、按请求时间维护滑动日志。到期候选只是把该处理的任务找出来；可靠领取、失败重试和业务完成仍需要另外的状态协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 Redis 7.2 为例，小 ZSet 可以使用 listpack 紧凑编码，超过相应元素数或元素长度阈值后转换。普通编码使用字典加跳表：字典按 member 定位并查分数，跳表按 score 排序，便于按范围、排名和顺序遍历。两者维护的是同一组成员，hash 不负责把分数排好序。字典查询通常按平均 O(1) 理解，碰撞、成员长度和扩缩容都会影响实际成本；该版本字典采用渐进式 rehash，摊开迁移工作，并不意味着每次访问都没有额外成本。Redis 6.2 及更早版本的小 ZSet 常见的是 ziplist，不能把所有版本都讲成同一种编码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZRANGE 返回 M 个成员，常见复杂度写作 O(log N + M)，需要包含结果输出成本；按分数查询时使用很大的 LIMIT offset，还可能为了跳过前面的成员增加到 O(N) 的遍历成本。按分数删除 M 条记录是 O(log N + M)，新增一条通常是 O(log N)，ZCARD 是 O(1)。实际延迟还受编码、成员长度、返回量和网络传输影响。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二、精确滑动日志怎样原子裁决"
+    },
+    {
+      "type": "paragraph",
+      "text": "按已认证的 tenant、principal 和 API 构造 key，score 使用受信的毫秒时间，member 使用本次尝试的唯一 ID。每次在一个脚本里依次完成：删除 score ≤ t−W 的记录；读取 ZCARD；数量已经达到 L 就拒绝；否则 ZADD 新记录，再把 key 的 TTL 设为覆盖最后一条有效记录的窗口。只保留通过的请求时，拒绝不追加日志。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些步骤不能拆成多个客户端无锁调用，否则两个请求可能都看到“还剩一个名额”而一起通过。Lua 在相应 Redis 执行范围内让这组操作不被其他客户端命令穿插；Cluster 涉及多个键时还必须按同槽协议设计。它保证的是这次 Redis 状态裁决，不能自动保证请求随后只执行业务一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能直接拿时间戳当 member。同一毫秒可能有多次请求，重复 member 会覆盖原成员的分数，导致少算。如果 request_id 表示同一次逻辑请求，要明确重试的收费或消耗规则，绑定调用者与参数指纹，并保存可重放的裁决；不能只看到重复 ID 就无条件让业务再次执行，否则客户端能反复复用 ID 绕过限制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有实例必须使用共同可信的时间和状态。客户端自报未来时间会提前清掉历史记录；服务端 TIME 能消除任意客户端报时，却仍是墙钟，可能跳变。可以采用受控时间源、检测回退后拒绝，或保守夹紧并告警；严格按真实时间限额时，还要交代向前跳变和时钟误差的影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在阈值固定、只记录已接受请求的前提下，一个身份保留的日志数量受 L 约束。每次清掉 M 条旧记录后再加入一条，成本为 O(log N + M)。但超大的 L、大量身份、恶意新建身份和长时间空闲后的集中清理，仍会增加内存或脚本耗时；要限制身份总量、key 生命周期、单脚本工作量和总容量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 W=1000 毫秒、L=3，在 t=0 同时到达三次请求，三次都应分别计入；第四次拒绝。t=999 时旧记录仍在窗口内，t=1000 时 score=0 的记录全部离开，才重新有额度。边界的开闭必须和清理条件一致。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三、不同算法分别承诺什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定窗口按 floor(t/W) 计数，增加计数和设置过期要处于同一原子执行，避免计数器成功但 TTL 没设上。它的状态和计算成本很低，适合明确按自然时间段计费或配额的场景；不过前一个窗口末尾通过 L 次、下一个窗口开头再通过 L 次，短时间内可能接近 2L，不能满足任意滚动 W 内最多 L 次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "精确滑动日志保存每次通过的时间，边界精确，每个身份需要 O(L) 空间。滑动计数器可以用多个小时间桶求和，或者按“上一窗口计数 × 重叠比例 + 当前窗口计数”估算；它更省空间，但有分桶误差或窗口内均匀分布假设。要求精确时不能把近似计数说成日志的等价替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "令牌桶以速率 r 补充令牌，最多积累到容量 B，请求按 cost 消耗。空闲后可以立即突发 B，随后长期受 r 限制；不足时拒绝，或者进入有上限、有超时的等待。它适合允许短时突发的 API，也能按不同请求成本扣 token。补充、封顶、检查和扣减要原子化，同时控制时间差、乘法溢出、浮点误差及数值范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "漏桶如果作为排队整形器，会按固定速率发送，能让下游更平滑，但会引入排队延迟。队列必须有限，满了拒绝，任务超时、取消和过期要清理。另一类漏桶计量器只维护虚拟水位，给出接收或拒绝结果，它不会自动启动工作者把请求匀速发送。选择时要区分计量与整形：令牌桶允许积累后的突发，严格漏桶整形限制瞬时输出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以我会先问：要保护峰值，还是保证某段时间的精确配额？能否排队，最长能等多久？是否允许突发，是否按不同成本计费？严格滚动次数选精确滑动日志；接受误差时考虑滑动计数；允许突发但限制长期速率时考虑令牌桶；必须平滑发往下游时考虑有限队列整形。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四、分布式额度、验证和实际项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "按分钟和按小时同时限额时，要两个预算都允许才一起扣减。先扣分钟，再发现小时超额，不能直接把请求拒绝掉而不解释已占额度的去向。同槽时可先全部检查再扣减；跨槽的用户额度与共享总额度，则需要单一协调者、额度预分配，或明确接受近似并设计预留与补偿。把全站 key 都塞进同一个 hash tag，会形成热点，也牺牲分片扩展。"
+    },
+    {
+      "type": "paragraph",
+      "text": "共同状态也意味着要考虑 Redis 不可达、主从回退、脚本超时和响应丢失。鉴权或付费预算通常需要保守拒绝；低风险场景可以用有限本地额度降级，但多实例总量会放大，必须算清上限。网络超时可能已经扣过额度，不能盲目再次执行；需要按业务请求身份查询或重放裁决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "限流之后仍然需要并发上限、超时、负载隔离、背压和熔断。每秒请求不多，但每个请求都运行很久，系统同样可能被占满。每个 JVM 自己限制三次，也不等于全局只允许三次，实例越多总额度越大。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面用一个身份、一个 JVM 的完整滑动窗口实现说明边界。调用方提供非负、单调不回退的 elapsed 毫秒；同一毫秒的不同调用分别计数，拒绝不入队，时间回退抛异常。方法共用对象监视器，成功入队是通过请求的裁决点；每条记录最多入队和出队一次，均摊 O(1)，一次清理最坏 O(L)，空间 O(L)。这个实现不能代替 Redis 分布式状态、持久化和故障恢复。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.ArrayDeque;\n\n/** One principal in one JVM. Caller supplies nonnegative monotonic elapsed milliseconds. */\npublic final class SlidingWindow {\n    private final long window;\n    private final int limit;\n    private final ArrayDeque<Long> accepted = new ArrayDeque<>();\n    private long last = -1;\n    public SlidingWindow(int limit, long windowMillis) {\n        if (limit < 1 || limit > 1_000_000 || windowMillis < 1)\n            throw new IllegalArgumentException(\"invalid window or limit\");\n        this.limit = limit; this.window = windowMillis;\n    }\n    public synchronized boolean allow(long now) {\n        if (now < 0 || now < last) throw new IllegalArgumentException(\"clock moved backwards\");\n        last = now;\n        while (!accepted.isEmpty() && now - accepted.peekFirst() >= window)\n            accepted.removeFirst();\n        if (accepted.size() >= limit) return false;\n        accepted.addLast(now);\n        return true;\n    }\n    public synchronized int retained() { return accepted.size(); }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证要覆盖窗口两端、同毫秒多请求、时钟回退、重复 ID、长空闲、多实例竞争、多维额度冲突、脚本超时及响应丢失。单 JVM 的并发测试只能检查这段本地实现；Redis 的脚本执行、ACL、Cluster 路由、切主和吞吐，需要在相应部署上分别验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "我在制造业生产事件可靠触达与智能维修平台的实习里，先按告警轮次与状态持久化去重、做摘要合并，再在渠道出口用 Redis Lua 令牌桶控速；同时为 P0 预留配额，按积压做滞回降级。这样既减少重复通知带来的无效流量，也给高优先级事件留出处理空间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果继续设计这类渠道治理，我会根据渠道承载能力确定桶的粒度、容量和补充速率，再核对 P0 保留额度与共享额度的扣减顺序。滞回可以用不同的进入和恢复阈值减少频繁切换；还要检查低优先级是否长期饥饿、积压任务是否超过时限，以及 Redis 不可用时允许的最大放大量。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

@@ -1,0 +1,241 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-3-3",
+  "entryId": "bg-redis-3",
+  "expectedOriginalHash": "91295345eacae388b36e1945805ae2180d1ca43c4b623dfeee1d00fc9dbae9bf",
+  "title": "有界到期索引、续期取消与时间轮",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读边界：逻辑到期后不能继续当作有效业务状态，与物理释放是否及时是两件事。延迟任务要比较身份或版本，避免删除已经续期或重新创建的状态。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "有界到期索引与时间轮"
+    },
+    {
+      "type": "paragraph",
+      "text": "要让 key 到期后尽快清理，可以用最早截止索引或时间轮安排有预算的到期工作，同时在读取时核验 deadline，避免把调度延迟变成数据继续有效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定义“立即”的含义，再选择结构，接着处理续期和取消竞态，最后说明故障恢复与容量上限。下面的定时器方案都是设计练习，不代表已经在个人项目或 Redis 内核里实现过。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "常见问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Redis 怎样处理已经过期的数据？是否等内存满才清理？",
+        "如果要求到期立即删除，能设计什么方案？必须扫描所有 key 吗？",
+        "多久扫描一次，最小堆和时间轮怎样平衡开销与延迟？",
+        "同一个 key 反复续期，旧任务会不会误删新值，定时队列会不会无限增长？",
+        "取消和到期执行同时发生怎么办？一个小时内同用户同文本去重能否直接用本地定时缓存？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "把到期目标拆成四层"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务到点不可读、从键空间移除、对象内存释放、执行超时业务动作，是四个不同目标。Redis 的访问检查和主动过期不需要等内存满，内存淘汰另有触发条件。过期通知跟实际删除有关，还可能因 Pub/Sub 断线丢失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求权限在截止之后失效，执行时核验权威 deadline 并拒绝，不能只等清理线程。若要求及时释放内存，就要给调度和清理定义允许延迟，监测积压；线程停顿、GC、系统调度和网络都会产生额外延迟。毫秒 TTL 不是零延迟物理删除的硬实时保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求任务到期后执行动作，要保存可恢复的任务状态，并规定重试、幂等和最终失败处理。比如假设的订单超时关闭，真正修改订单时要核验支付状态和截止，由权威事务争取合法终态；同一个任务重放不能重复产生副作用。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "最小堆或有序索引怎样避免全量扫描"
+    },
+    {
+      "type": "paragraph",
+      "text": "写入时登记 key、generation 和 deadline。worker 只查看最早截止的任务，等待到最近期限；如果后来插入更早的任务，写入方必须唤醒 worker，让它重新计算等待时间。调度条件和等待要遵循同一同步协议，并循环检查谓词，避免丢唤醒和伪唤醒。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最小堆取堆顶是 O(1)，插入和弹出是 O(log n)；支持按 key 定位位置的索引堆，才能 O(log n) 删除任意旧节点。普通 PriorityQueue.remove(Object) 要线性查找，不能只说“用了堆，所以取消也 O(log n)”。平衡树可以按 (deadline, serial) 排序，配合 key 表保存具体索引键，插入、替换和删除都是 O(log n)。处理 k 个到期任务通常是 O(k log n)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次只处理有限条数和有限时间，到预算后继续下一批。只限制删除数不一定限制扫描数，尤其是在要跳过失效节点的堆中；扫描工作也要计入预算。记录到期任务数、最老逾期时间 oldest_due_age 和处理吞吐，才能知道系统是否持续追不上。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 的进程内间隔计时可基于 System.nanoTime 的差值；它的任意原点不能当 Unix 时间保存。本节代码要求调用者传入非负、单调的相对毫秒值，例如把启动时刻作为基准，不能直接假设 nanoTime 原值必为正。跨重启恢复期限要另用可持久化的绝对截止并重新计算调度间隔。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "续期与取消必须同时保证正确性和空间有界"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设某 key 原计划第 10 秒失效，第 5 秒续期到第 30 秒。旧的第 10 秒任务不能直接删除现值。可以在续期时移除旧索引并插入新索引，也可以给每一代数据分配 generation，让执行者在删除前原子比较当前 generation 和 deadline。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果数据在 Redis 中，相关 key 位于同一 Cluster slot 时，可以用短 Lua 脚本原子完成检查和删除或状态迁移。客户端先 GET 校验、再 DEL 仍会被中间的续期或重建穿插。只比较 key 名称不够，删除后重新创建的同名 key 也必须能区分代际。"
+    },
+    {
+      "type": "paragraph",
+      "text": "generation 能防止旧任务误删新值，却不会自动回收旧堆节点。若每次续期只追加一个节点，且旧节点的 deadline 很远，同一个活跃 key 就能留下大量废节点，空间取决于更新次数而非存活 key 数。需要可定位删除，或设置明确的总节点上限、受预算约束的压缩和准入背压；只有“等到堆顶再丢弃”无法证明内存有界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消也有状态竞争。若任务还在等待，取消可以原子地把 WAITING 改为 CANCELLED；若执行者已经抢到 RUNNING，取消可能来不及阻止回调，应通过返回值说明结果。需要更强撤销语义时，业务提交前再次检查 generation、取消状态或版本，并让不可重复副作用有自己的幂等协议。回调移到锁外有利于吞吐，但不能省去这道提交检查；锁内做外部 I/O 则会拖住整个调度器。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "时间轮的 tick 槽位和轮数"
+    },
+    {
+      "type": "paragraph",
+      "text": "先固定推进约定：tick 长度为 Δ，单层轮有 W 个槽，当前整数 tick 是 c，而且槽 c 已经处理完。把 deadline 向上量化为不早于截止的目标 tick d；当前槽不能再处理一次，所以下一次可检查的位置至少是 c+1。"
+    },
+    {
+      "type": "paragraph",
+      "text": "于是要向前走的步数是 s=max(1,d-c)，目标槽是 (c+s) mod W。每次未来走到这个槽，若剩余轮数大于 0，先减一并保留；否则才核验截止并执行。配合这套处理顺序，剩余完整轮数应为 floor((s-1)/W)。公式里的“减一”，正是由这个先判轮数的约定决定的。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 W=8 为例，s=8 的任务放入与当前槽相同的位置，轮数为 0，下一圈到该槽就处理；s=9 放入下一槽，轮数为 1，第 1 步到它时只减轮数，第 9 步才处理。若把 floor(s/W) 直接放进这一套处理顺序，整圈边界就会晚一圈。不同实现可能先减后判或用不同 tick 原点，公式必须与推进顺序一起说明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使落在正确槽，也应校验实际 deadline，不能提前删除仍有效的对象。正常运行的向上量化误差小于一个 tick，还要再加线程排队、GC、扫描和回调耗时。停顿后按真实经过时间处理跨过的 tick；若为了赶进度直接跳槽，就会漏任务。追赶本身也需预算和积压管理，不能无限霸占工作线程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "带可定位双向节点的插入和取消，在相应实现下可以达到常数或摊销常数成本；当前桶有 m 个任务，扫描就有 O(m) 工作。单层轮中的远期任务每绕一圈仍可能被查看，跨度很大时可以用分层时间轮减少反复扫描，但级联迁移也有成本。大量同刻到期会集中在同一桶，不会因为叫时间轮就变成每 tick 恒定 O(1)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Δ 应从可接受调度误差和任务量倒推。几十毫秒的要求不适合秒级 tick；更小 tick 又会增加空转和唤醒。要给桶扫描、队列长度、回调线程池和处理时间都设限，用背压或拒绝策略处理超载，不能靠提前执行换取“准时”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "上述公式采用“当前槽已处理完”的约定；使用其他时间轮时，要按其推进顺序重新推导轮数，不能机械照搬。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "需要跨进程恢复时怎样组织到期任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以用 Redis ZSet 保存候选，score 是 deadline，member 是稳定任务 ID；按截止范围有界获取，原子认领到带租约的 processing 状态，再在完成后确认。不要先从 ZSet 删除，再把任务放到进程内线程池，中间宕机会丢掉唯一待办。processing 超时后可以恢复认领，重复执行依靠业务幂等和版本检查收敛。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZSet 是否足够可靠还取决于 Redis 的持久化、复制和故障切换容忍度，不能因为数据放进 Redis 就宣称绝不丢失。高可靠动作可以以业务数据库的持久任务表为事实源，用 Outbox 传递通知、定期对账补漏；任务 ID、业务版本和领取代次各自要有明确作用。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一小时文本去重还缺哪些业务契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一用户一小时内不能发布相同文本，首先要明确从“受理成功”还是“发布成功”开始计时，以及失败后是否允许重试。按自然小时分桶，会让整点两侧的重复请求通过；它不等价于从首次成功准入开始的一小时窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果规则是准入后的一小时内拒绝重复，可以把用户身份与文本身份组成 key，用 SET key ownerToken NX PX 3600000 原子占位。NX 失败就拒绝重复，不能通过再次写入刷新窗口。文本身份先约定 UTF-8、空白、大小写和 Unicode 规范化规则；不同字段用长度前缀等无歧义编码，再取足够长的摘要。若业务要求严格识别摘要碰撞，应保留原文或可核验指纹并设计碰撞处理，不能把任何摘要说成绝不碰撞。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这条命令只把 Redis 内的检查、占位和期限设置做成原子操作。占位后发布失败，若规则允许释放，只能由同一 owner/version 原子删除自己的占位，不能无条件 DEL；发布结果未知时先查询业务结果或用稳定请求号对账，不能直接删占位重试。占位成功但进程退出，也需要持久请求状态与恢复机制，才能继续回答“用户这次发布到底成功没有”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果必须从发布成功开始计时，可以在权威发布记录中原子核验用户、内容身份与最近成功时间，和发布状态一起提交；并发请求必须由同一事务条件、唯一约束配合状态机或等价串行化协议仲裁。Redis 可以先挡住明显重复请求，但提前占位的 TTL 不等于成功时间的一小时截止。发布耗时超过占位租期时，旧发布者也必须在提交前核验领取代次，否则新请求已经通过、旧请求又迟到提交，会出现重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重记录在有效窗口内必须可靠保留。缓存淘汰、重启丢数据、主从切换丢失刚写入的占位，都会放松去重保证；严格发布规则应由持久业务记录兜底，并明确故障时拒绝、等待还是进入待确认状态。需要提前清理到期记录时，也要先检查 deadline 和 generation。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本节的 DeadlineCache 只有覆盖写 put，没有原子 putIfAbsent；两条单独的 get 和 put 即使各自 synchronized，也不能组成原子准入。它可以说明期限索引怎样保持有界，不能直接承担上述跨请求、跨进程的发布承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Java 本地有界索引的接口与证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "DeadlineCache 用 HashMap 保存值，用 TreeMap 保存 (deadline, serial) → key。每个驻留条目恰好对应一个索引节点，替换时先移除旧节点，所以同一个 key 续期一万次也只占一个定时索引节点。相同 deadline 用 serial 区分，比较使用 Long.compare，避免相减溢出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有表操作在同一监视器内完成。get 在 now >= deadline 时删除并返回缺失；drainExpired(budget) 只处理到期前缀，限制每次移除条数；nextDeadline 给外部调度器计算下一次唤醒。代码没有后台线程、外部回调或 Redis 连接。时钟供应者必须快速、无阻塞，不能在锁内发起外部 I/O。"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量为正且按驻留条目计数，过期但还没清掉的条目也占容量。满容量时新 key 被拒绝，即使里面可能有未排出的过期条目；调用者应先有界 drain，再重试或按准入规则处理。已有 key 可以替换，不会偷偷逐出别的有效条目。residentSize 表示驻留数量，不是当前有效数量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 必须为正，时间必须非负且单调；TTL 加法和序号递增在替换旧条目前检查 long 溢出，失败不破坏旧值和索引。正常有效 get 是平均 O(1) 哈希查找，写入和删除包含 O(log n) 树操作，空间为 O(n) 加上 key/value 字节。nextDeadline 和 drain 是基础接口；可靠等待、唤醒、回调取消、跨重启恢复和按时间预算让出执行机会都要由外层协议补齐。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "完整 Java 21 实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.Optional;\nimport java.util.OptionalLong;\nimport java.util.TreeMap;\nimport java.util.concurrent.RejectedExecutionException;\nimport java.util.function.LongSupplier;\n\n/** Local bounded expiration index. No scheduler, Redis connection, or durability is implied. */\npublic final class DeadlineCache {\n    private record Deadline(long at, long serial) implements Comparable<Deadline> {\n        @Override public int compareTo(Deadline other) {\n            int c = Long.compare(at, other.at);\n            return c != 0 ? c : Long.compare(serial, other.serial);\n        }\n    }\n    private record Entry(String value, Deadline deadline) { }\n    private final Map<String, Entry> values = new HashMap<>();\n    private final TreeMap<Deadline, String> deadlines = new TreeMap<>();\n    private final LongSupplier clock;\n    private final int capacity;\n    private long lastTime, serial;\n\n    public DeadlineCache(int capacity, LongSupplier monotonicMillis) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"positive capacity required\");\n        this.capacity = capacity;\n        clock = Objects.requireNonNull(monotonicMillis);\n    }\n    public synchronized void put(String key, String value, long ttlMillis) {\n        Objects.requireNonNull(key); Objects.requireNonNull(value);\n        if (ttlMillis <= 0) throw new IllegalArgumentException(\"positive TTL required\");\n        long at = Math.addExact(now(), ttlMillis);\n        long nextSerial = Math.incrementExact(serial);\n        if (!values.containsKey(key) && values.size() >= capacity)\n            throw new RejectedExecutionException(\"drain expired entries or apply an admission policy\");\n        remove(key);\n        Deadline d = new Deadline(at, nextSerial);\n        serial = nextSerial; values.put(key, new Entry(value, d)); deadlines.put(d, key);\n    }\n    public synchronized Optional<String> get(String key) {\n        Objects.requireNonNull(key); long n = now(); Entry e = values.get(key);\n        if (e == null) return Optional.empty();\n        if (e.deadline().at() <= n) { remove(key); return Optional.empty(); }\n        return Optional.of(e.value());\n    }\n    public synchronized boolean remove(String key) {\n        Entry old = values.remove(Objects.requireNonNull(key));\n        if (old == null) return false;\n        deadlines.remove(old.deadline()); return true;\n    }\n    /** Bound the number of removals per call; caller repeats under a work/time budget. */\n    public synchronized int drainExpired(int budget) {\n        if (budget < 0) throw new IllegalArgumentException(\"negative budget\");\n        long n = now(); int removed = 0;\n        while (removed < budget && !deadlines.isEmpty() && deadlines.firstKey().at() <= n) {\n            Map.Entry<Deadline, String> first = deadlines.pollFirstEntry();\n            Entry current = values.get(first.getValue());\n            if (current == null || !current.deadline().equals(first.getKey()))\n                throw new IllegalStateException(\"index invariant broken\");\n            values.remove(first.getValue()); removed++;\n        }\n        return removed;\n    }\n    public synchronized OptionalLong nextDeadline() {\n        return deadlines.isEmpty() ? OptionalLong.empty() : OptionalLong.of(deadlines.firstKey().at());\n    }\n    public synchronized int residentSize() { return values.size(); }\n    public synchronized int timerSize() { return deadlines.size(); }\n    private long now() {\n        long n = clock.getAsLong();\n        if (n < 0 || n < lastTime) throw new IllegalStateException(\"nonnegative monotonic time required\");\n        lastTime = n; return n;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "验证边界和竞态"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试应覆盖精确截止前后、续期后旧期限不删除新值、同刻到期的数量预算、容量拒绝、零/负 TTL、加法和序号溢出、时间倒退，并用独立模型逐步对照随机操作。反复续期后，索引节点数应始终等于驻留条目数；并发执行后要检查两表一致，以及删除后重建的新一代条目不会被旧 deadline 清掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时间轮可用小型算术模型核验整圈、跨圈和不同起始 tick 的目标槽与轮数；取消和执行竞争要通过状态机说明线性化点。算术与状态机验证不能证明真实调度器的最坏延迟。生产环境还需压测停顿追赶、集中到期、积压上限和外部副作用故障。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "与项目问题衔接时怎样讲"
+    },
+    {
+      "type": "paragraph",
+      "text": "制造业通知链路可以从已做的 Redis Lua 令牌桶、RabbitMQ 与 Outbox、按告警轮次和状态防重讲起；NoteWeave 的异步资料处理对应 Kafka。若被追问“桶状态多久过期”或“任务租约到期怎么回收”，先交代自己实际使用的参数和状态规则，再展开设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果把这些题作为扩展练习，可以说：“我会先确认过期的是缓存、限流状态还是任务租约，再分别决定读时校验、清理预算和可靠重试。限流桶若太早删除，重建成满桶可能额外放行；任务租约到期也不等于原执行者已经停止，所以提交结果还需核验代次。”这是一条可推演的设计思路，不必把手写 LFU 或时间轮讲成个人生产经历。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "3"
+}

@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-theory-inference-fa4888f090",
+  "entryId": "ai-模型与评测-3",
+  "questionId": "1",
+  "expectedOriginalHash": "227d11fccf735aeebf447b9ff767192ee21ff80bd8920988708bf397c3f9a1c1",
+  "title": "推理部署与性能优化面试手册：机制与条件",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2 KV Cache 为什么只存 K 和 V"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法： KV Cache 为什么只缓存 K/V？7B 模型需要多少显存？MQA、GQA、MLA 分别省在哪里？"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心回答：每个新 query 需要历史位置的 K/V，不再需要历史位置的 Q。 旧 token 的 K/V 在 causal decoder 固定前缀下可复用；缓存避免每生成一个 token 都重新前向整段历史。"
+    },
+    {
+      "type": "paragraph",
+      "text": "说“命中缓存”前，先说明复用的对象。单请求 KV 保存本次自回归状态，下一 token 接着用；prefix cache 跨请求复用相同前缀的计算；答案缓存直接返回旧输出；Agent Memory 保存业务事实和偏好。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，KV 能省去重复计算，却不是用户长期记忆或事实数据库。讨论多轮对话时，要把计算状态复用与业务事实保存分开。"
+    },
+    {
+      "type": "paragraph",
+      "text": "标准 KV 原始字节近似：2×L×B×S×Hkv×Dh×b。L 层数，B batch，S 已缓存长度，Hkv 为 KV 头数，Dh 每头宽度，b 元素字节；2 对应 K 与 V。MHA 的 Hkv=Hq，MQA 为 1，GQA 介于两者。不要拿 query 头数算 GQA 的缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先用明示参数算一遍：32 层、32 KV 头、head_dim=128、4096 token、FP16、B=1，KV 恰好 2GiB。7B FP16 权重约 14GB 十进制，这只是权重；部署还要加上 KV、激活、workspace 和分配器余量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再换一组参数：80 层、8 KV 头、128 维、4096 token、2 字节，KV 为 1.25GiB。两例用于练习公式和字节单位，不能当成所有 LLaMA-7B 或 Qwen72B 的实测配置。可只改变 S 或 Hkv 再重算，解释上下文长度与 KV 头数分别影响哪一项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TP 切分、KV 复制、页对齐、量化 scale、共享前缀都会修正物理占用。MLA 的压缩潜变量缓存不是普通 K/V 排布，须按真实缓存张量计算。MoE 稀疏的是专家计算，不会自动减少普通 attention 的 KV。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3 Prefix Cache 的命中与失效"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法： 多轮对话 a 没命中缓存，b、c 还能命中吗？怎样提高 prefix 命中率？缓存是否一定降低成本？"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心回答：可复用的是精确前缀的计算状态，文本大意相同不够。 Key/有效性应包含模型权重、adapter、tokenizer、精确 token 序列、位置/计算配置以及必要的多模态输入身份。跨租户还要遵循隔离和授权策略，防止数据与时序侧信道泄露。"
+    },
+    {
+      "type": "paragraph",
+      "text": "稳定系统说明和工具定义放在前面，用户变量、时间戳放后面，有利于保留长公共前缀；模板序列化与工具排序稳定也有帮助。不要为了命中塞进无关冗长内容。记录可复用 token 比例比只记请求命中率更有价值，短前缀命中未必节省多少时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多轮 a 没命中，后面的 b、c 能命中吗？ 先确认 a 是内容变了，还是物理缓存块不在了。若前缀内容或位置改变，b、c 的隐藏状态依赖新的 a，即使字面相同，也不能沿用旧 KV。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若只是 a 对应的物理块被淘汰，而整个逻辑 token 前缀与计算配置仍完全相同，就要查引擎的连续前缀要求、块 hash 和重算策略，才能判断后续块能否保留或命中。常见服务按最长可用连续前缀命中；“内容不匹配”与“物理缺块”不能套用同一答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存失效要分两层看。模型/adapter 升级或位置配置变化，会使相应计算状态失效；权限或知识版本变化，还会影响应用答案缓存。即使 KV 命中，也不能据此认定资料仍然正确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证收益时，把缓存内存、淘汰/传输开销，与 TTFT、总时延和费用一起记录。若维护或搬运代价过大，缓存本身也可能成为负担，不能只用命中率证明优化成功。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-theory-inference-guide",
+      "label": "使用与验证边界"
+    }
+  ]
+}

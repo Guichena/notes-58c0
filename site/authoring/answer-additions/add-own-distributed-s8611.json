@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s8611",
+  "entryId": "ai-agent-5",
+  "expectedOriginalHash": "891d86dc13b4f6e4977a7d81e37983c4072446c4c50d5d1d665b6e3e58a28cb8",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.5 Graph多Agent编排管理哪些状态，如何持久化"
+    },
+    {
+      "type": "paragraph",
+      "text": "图编排要持久保存计划版本、节点状态和输入输出，恢复时按依赖重建就绪集合，而不是只重放聊天文本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Graph编排保存哪些状态；checkpoint怎样恢复；并行节点怎样合并状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Graph只说明图式编排；采用LangGraph等具体产品时，必须区分其checkpoint、状态合并与外部副作用契约。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "选择图的理由来自依赖和恢复要求"
+    },
+    {
+      "type": "paragraph",
+      "text": "图将处理节点、条件边、循环与合并显式表达，适合流程分支、并行汇总和人工等待有清楚状态的任务。相比散落的回调或无限自由循环，更便于看出下一步、失败位置和终止预算；代价是图版本/状态schema管理、复杂循环和调试成本。步骤很简单时普通函数/状态机足够，不必强加多Agent。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选型比较应看输入输出契约、checkpoint持久性、暂停恢复、超时取消、并发合并、资源隔离与运维。项目选型经历应说明当时实际比较过的方案及依据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态不只是聊天消息"
+    },
+    {
+      "type": "paragraph",
+      "text": "图编排保存的是业务运行状态，聊天消息只是其中一部分。身份和版本包括tenant/thread/task、输入版本和计划版本；执行进度包括节点输出、待执行节点与依赖、attempt、错误和重试时刻；外部责任包括operationId、产物引用和人工待批点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并行节点若更新同一字段，必须约定reducer/合并规则，或由单写者提交。否则最后一个写入者可能把其他节点的结果全部覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangGraph当前文档区分thread范围checkpointer快照与跨thread store；内存Saver只在进程存活期间保留，生产恢复要选可靠持久后端。实际保存哪些运行元数据取决于框架和版本，必须检查序列化内容，不能以“自动管理”推断自定义外部状态全被保存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "检查点发布与外部效果"
+    },
+    {
+      "type": "paragraph",
+      "text": "先将不可变产物可靠保存，再事务记录结果引用/版本并推进节点；恢复从已提交快照选择待处理节点。代码升级时携带graphVersion/schemaVersion并做迁移或固定旧版本跑完，不能任意用新节点解释旧快照。大内容存对象引用，避免每个checkpoint复制整库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "checkpoint前已调用外部扣款，崩溃后节点重跑可能再次扣款。持久执行不等于外部效果恰好一次；沿用稳定操作ID、查询未知结果、目的端幂等或补偿。第12.1节及第11.2节详细说明租约、epoch和真实本地事务检查点；同样的状态保护可用于此场景。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证和成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "测并行结果冲突、节点成功快照失败、人工等待期间重启、旧图版本恢复、取消后迟到响应和权限撤销。按历史大小、快照频率、序列化时间、存储IO和恢复耗时评估；修剪历史需保留恢复/审计所需事实，不能把仍可能重放的幂等证据删除。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.13 执行引擎中B节点失败后，C节点应该是什么状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "若C严格依赖B成功，则B重试期间C保持等待，B终态失败后C跳过或阻塞；独立或补偿节点按各自规则执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：B节点失败C是什么状态；all success与all done有何区别；补偿节点何时启动。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "C的状态由依赖边和触发规则决定，B失败是否仍可重试也必须明确。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先查边和触发规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "若存在B→C，且C要求所有依赖成功，就分两种情况："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "B暂态失败、进入RETRY_WAIT：C保持WAITING_DEPENDENCY，暂时不能执行，但不必永久失败。",
+        "B耗尽重试、终态FAILED：C进入UPSTREAM_FAILED/BLOCKED，或框架规定的SKIPPED，说明它因上游失败而未执行。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "状态名可以不同，语义必须明确。不能把“C没有运行”记成“C运行时自身抛错”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果B与C是独立兄弟节点，B失败不必阻止C完成，父汇总按all-of/any-of/k-of-n决定是否成功。若C是finally清理、异常处理或失败补偿节点，其触发条件就是B结束/失败，应执行。any-of若另一个依赖已合格成功，也可能释放C；不能把所有边都默认成success-only。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "失败传播和重试不是同一步"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制器先持久B的attempt结果及错误分类，再按计划版本重新计算受影响节点的就绪性；重复失败事件只能推进一次。只因调用超时、失去心跳还不能证明B失败无效果，可能需UNKNOWN并查询外部operationId。旧attempt恢复时不得覆盖新attempt或已取消计划。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取消、补偿与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "all-of父任务决定失败可以请求取消其他纯计算分支，但取消请求不保证运行已经停止；已有外部效果要单独核对或幂等补偿。补偿是显式工作节点，不是回滚任意远程程序内存。第12.7节给汇总和隔离机制，第11.2节给实际H2代际检查点示例。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试无B→C边、成功依赖、失败处理边、B重试中、B永久失败、any-of另路成功、两个失败事件、旧attempt迟到和恢复后重新计算。拓扑传播遍历相关边，最坏O(V+E)，不能用给所有节点设FAILED替代依赖分析。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.21 LangGraph三个子图怎样传状态，为什么不直接用一条Pipeline"
+    },
+    {
+      "type": "paragraph",
+      "text": "子图通过明确的输入输出状态、reducer和检查点边界组合，只有分支复用和独立恢复确有收益时才优于一条Pipeline。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：LangGraph子图怎样传状态；三个子图为何不用Pipeline；状态合并冲突怎么处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "三个子图的实际职责由应用确定，7步线性Pipeline与子图划分是不同组织方式。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "子图接口决定传什么，不是共享所有聊天记录"
+    },
+    {
+      "type": "paragraph",
+      "text": "子图是父图中的一个节点，内部还能封装多个节点。传状态有两条路径：父子共享state key时，可直接把编译后的子图作为节点；schema不同时，用父节点wrapper把父状态映射为子图输入，再把输出转换成父状态更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "传入内容以task/输入版本、必要证据引用和限定目标为主。私有草稿和聊天历史，不应自动广播给所有子图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "教学三段可为解析、候选处理、验证：父图保存共同输入引用、版本及各段结果，解析输出结构化问题交给下一段，验证产物满足条件才发布。返回含producer、inputVersion、artifactHash、status和错误，旧版本/跨任务结果拒绝。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "合并与持久化的具体坑"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个分支更新同一父字段时定义reducer，或分别写branchId命名空间后由单一节点校验归并；普通列表追加若重复执行可能重复记录，需要稳定itemId和明确去重。子图内部状态与外部持久产物分开，checkpointer不是对象存储或任意工具的事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangGraph Python子图API要区分三种状态生命周期：每次调用隔离、同thread跨调用累积，以及无checkpoint。要获得相应持久恢复，父图必须配置可靠checkpointer。"
+    },
+    {
+      "type": "paragraph",
+      "text": "per-thread子图并行写同一namespace会冲突。独立任务优先按调用隔离，或明确串行执行；框架版本和配置也要固定，不能因为“用了LangGraph”就认定上下文自动互不污染。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为何拆三块，要用变化边界证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果三段各有独立条件循环、失败重试、局部状态、复用或负责团队，子图使接口、测试与恢复边界清楚；例如验证失败只回到候选处理，不必重新解析不变输入。不同能力权限也可由运行时分隔，但图节点本身不构成安全沙箱。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果始终固定线性七步、共享同一状态、没有独立复用/重试，普通Pipeline可能更简单，三个子图不自动提高准确率或吞吐。子图内部仍可线性，父图也可按顺序调用，因此“子图和Pipeline”并非互斥类别。为何划分为三块，应以实际职责、性能和维护证据说明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "恢复和验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "父/子图都记录graph/schema/input版本；节点成功但checkpoint失败可能再执行，工具写操作使用稳定operationId并查询未知回执。框架暂停恢复/interrupt也要核对业务权限和当前输入，不能把恢复旧计划当作仍获授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试两个子图写同字段、跨任务共享threadId、重复回包、per-thread并发冲突、子图异常、checkpoint前后退出和修改图后恢复。衡量成功率、测试可维护性、检查点IO与完整任务成本，而非只算节点数。Java状态模型不能替代LangGraph SDK集成验证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "12"
+}

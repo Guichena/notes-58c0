@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-network-own-spring-mvc-q-own-spring-authentication",
+  "entryId": "own-spring-mvc",
+  "expectedOriginalHash": "4bd32bde854e2a52dbb9d8088f716063eaa877c20f583c90e8eafc4960a083d6",
+  "title": "网络手册：协议机制、适用条件与设计边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A08　Cookie、Session 与集群登录态"
+    },
+    {
+      "type": "paragraph",
+      "text": "Cookie 是浏览器按规则携带的状态，Session 是服务端组织会话数据的一种方式；二者常配合使用，但不是同一个东西。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见换问：HTTP 无状态为什么还能登录？Cookie 放在哪、何时发送？Session ID 怎么生成和保存？Tomcat 重启 Session 会不会丢？多台服务如何共享登录态？禁用 Cookie 后还能用 Session 吗？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一次正常登录的过程"
+    },
+    {
+      "type": "paragraph",
+      "text": "浏览器提交凭据，服务端验证后建立或更新会话，生成不可预测的会话标识，通过 Set-Cookie 返回。后续浏览器在符合范围与策略的请求中带上 Cookie，服务端用标识找到会话，再完成权限判断。HTTP 协议仍然是无状态的请求响应语义，状态由应用和客户端机制维护。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Session ID 本身不是用户资料，也不能因为客户端提交了一个看似合法的 ID 就认为已登录。登录或权限提升后应更换会话标识，防止会话固定；退出时失效服务端会话，并正确清除客户端 Cookie。任何受保护接口仍要做资源级授权，不能把“有 Session”当成“能访问任何订单”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Cookie 属性逐个说清楚"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "不写 Domain 时是 host-only Cookie，只面向设置它的主机。Domain 可按规则覆盖相应子域，不能随意设置给无关站点或公共后缀。Cookie 不按端口隔离。",
+        "Path 控制发送范围，不是强安全隔离。清除 Cookie 时要匹配名称、Domain、Path 等标识范围，单发一个不同路径的过期 Cookie 可能删错对象。",
+        "Max-Age 与 Expires 都涉及持久期，同时存在时 Max-Age 优先。没有持久期不代表浏览器关闭后一定不可恢复，浏览器的会话恢复行为也要考虑。",
+        "Secure 限制安全传输场景；HttpOnly 阻止脚本直接读取该 Cookie，但不能阻止脚本以当前身份发请求，更不能单独防 CSRF。",
+        "SameSite 按“站点”判断，不等于按“源”判断。源含协议、主机、端口；站点还涉及可注册域以及 schemeful same-site 等规则。Lax 有顶层导航等例外，不能理解成完全禁止跨站；None 通常要求 Secure。",
+        "__Host- 前缀在支持它的客户端上要求 Secure、Path=/ 且不含 Domain，有助于收紧覆盖范围。属性和前缀不是服务端授权的替代品。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "服务器可能发送多条 Set-Cookie，不能像普通列表头那样随意用逗号合并。客户端请求的 Cookie 主要是名称和值，不会把 HttpOnly 等属性再发回来。单个大小、总数和淘汰规则都有实现限制，工程上应保持 Cookie 小且数量受控，不把“固定 4 KB”当作跨浏览器的完整保证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java Servlet / Tomcat 怎么落地"
+    },
+    {
+      "type": "paragraph",
+      "text": "request.getSession(false) 只获取现有会话，getSession() 或 getSession(true) 在必要时创建。登录检查若只想判断有无现有会话，通常不应顺手创建大量匿名 Session。setAttribute、getAttribute 保存与获取属性，invalidate() 使会话失效，登录后可使用容器提供的会话 ID 更换能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Session 由容器管理，不代表放进去的对象就自动线程安全。同一个会话可能同时处理多个请求；购物车先读、再改、再写这样的复合操作，仍可能丢更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话也不是无限仓库。不要放 Socket、线程、大文件或数据库连接，也不要把整个业务对象图无限保存在里面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Tomcat 重启是否保留会话取决于版本、Manager、持久化/集群配置、关闭方式，以及属性能否被正确恢复。不能笼统回答“默认都写某个文件，所以永不丢失”。恢复的登录态还须符合安全策略，部署升级的类兼容性也可能影响反序列化。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "集群的三种取舍"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "本地会话加粘性路由：简单，但节点故障、扩缩容与重新路由会影响状态，粘性本身不提供高可用。",
+        "共享会话存储：多实例访问统一状态，便于失效与治理；新增网络开销、序列化成本和存储依赖，应设置 TTL、容量、故障策略。",
+        "短期自包含访问令牌：资源服务可以本地验签，但撤销、刷新和风险控制仍常需要服务端状态，下一章展开。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "URL 重写理论上能传递会话 ID，但容易进入历史、日志、Referer 和分享链接，通常不作为现代登录方案的首选。跨子域登录也不能只扩大 Cookie Domain：需要同时分析信任边界、子域接管风险、CSRF 和统一身份体系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：Session 失效时间怎么算？先区分空闲超时、绝对存活期、凭据或权限变更后的强制失效，再说明“有后台轮询就一直活着”是否符合产品安全要求。单纯靠前端倒计时不决定服务端有效性。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A09　密码、Token、JWT 与刷新令牌"
+    },
+    {
+      "type": "paragraph",
+      "text": "密码要用带独立随机盐的慢速密码派生函数保存，访问令牌要按明确的信任配置验证；把字符串做一次哈希或者解析出 JWT，都不等于安全认证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见换问：MD5 是加密吗？加盐为什么有效？盐在哪里存？JWT 的三段是什么？服务端无状态怎么退出登录？Token 泄露怎么办？刷新令牌轮换为什么仍要存数据库？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Token 是概念，JWT 是一种格式"
+    },
+    {
+      "type": "paragraph",
+      "text": "Opaque Token 是不可预测的随机标识，服务端查状态；JWT 可以承载声明，常见 JWS 紧凑形式有 header、payload、signature 三段 Base64url 编码。Base64url 是编码，payload 默认可读。需要保密不能靠“看起来乱码”，JWE 是另一套加密封装，紧凑形式通常五段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JWT 验证至少包括："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "从受信任的发行方配置选择算法与密钥，限制算法集合，拒绝不被当前用途允许的算法。不能盲目信任 token 自报的 alg。",
+        "使用可信密钥验证签名；kid 只能在受约束的可信密钥集合中选键，不据任意 jku、x5u 去访问攻击者地址。",
+        "校验 issuer、audience、token 用途、时间声明和当前资源需要的权限。exp/nbf 是 NumericDate 秒值，注意 Java 毫秒时间戳换算及有限时钟偏差。",
+        "根据业务检查会话版本、撤销、租户、账户状态和资源权限。iat 是签发时间，不自动构成过期限制；jti 只是标识，不自动防重放。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "验证签名成功，能访问别人的订单吗？不能。签名确认声明来自受信任发行方且未被改写，仍须验证它适用于本 API，并检查订单是否属于这个用户或其授权范围。AuthDecision.java 与 RbacPolicy.java 将验证结果和权限决策分层，避免把“解析成功”混成“允许访问”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "访问令牌和刷新令牌各负什么责任"
+    },
+    {
+      "type": "paragraph",
+      "text": "访问令牌寿命较短，用于资源访问；刷新令牌用于换取新访问令牌，通常权限更敏感，不能到处转发。存储选择也有权衡：HttpOnly Cookie 减少脚本直接窃取，但需要处理自动携带带来的 CSRF；可被脚本访问的持久存储暴露于 XSS。单靠“放 localStorage”或“放 Cookie”都不是完整安全方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个设备/会话一条记录，常比用户表只放一个 token 更容易支持多端并存、逐设备退出、审计和失效。记录可以保存令牌摘要而不是明文，并绑定用户、会话家族、状态、到期时间和必要风险信息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "刷新令牌轮换要保证“旧令牌只成功消费一次”，本质上是原子状态转换。消费成功后生成下一枚，并保留令牌之间的家族关系；已经消费过的旧令牌再次出现时，可以触发复用告警并撤销该家族。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它检测的是复用，不是窃取动作本身。一份被偷但尚未使用的副本，不会因此瞬间被发现；出现复用，也不能单凭这一点判断哪一方才是攻击者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "合法多标签页并发刷新或成功响应丢失，也可能触发复用。客户端要做 single-flight 和适当的跨标签页协调；服务端若提供很短的重试宽限或结果重放，需要明确请求绑定、时限和被盗令牌可利用的窗口，不能为了容错无限复活旧令牌。RefreshFamily.java 演示单次消费与家族撤销的状态机，生产环境要把原子性落实到事务或等价的并发控制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "退出与泄露处置的时间边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "撤销刷新令牌能阻止继续续期，却不会自动让已经签发、仅本地验签的访问 JWT 消失。要立即失效，需要在线会话检查、撤销表、版本校验或其他风险控制；只用短期 JWT，则接受最多剩余有效期的窗口。签名密钥轮换和单用户退出也不是同一件事。"
+    },
+    {
+      "type": "paragraph",
+      "text": "发送者约束方案如 mTLS、DPoP 可降低某些令牌被复制后的滥用风险，但设备 ID 字符串本身不是密码学绑定，也不能防住已经控制客户端执行环境的攻击者。面试回答应把威胁模型、有效期、撤销成本和客户端能力一起交代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Spring 拦截器怎样接入登录校验"
+    },
+    {
+      "type": "paragraph",
+      "text": "若题目指定 HandlerInterceptor，可在 preHandle 中读取凭据，交给可信验证器完成验签或会话查询，再把已验证主体关联到当前请求；无有效凭据时写出适用的 401 响应并返回 false，有身份但资源权限不足时拒绝为 403，允许才返回 true。通过 WebMvcConfigurer.addInterceptors 注册并明确路径与公开端点，不把“解析出 userId”直接当认证成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要等 postHandle 才做准入决定，响应可能已经提交。主体优先随请求上下文传递；若使用 ThreadLocal，异常和线程复用时必须清理，异步请求还要显式处理上下文传播及清理，不能只依赖同步 afterCompletion。生产安全链更适合 Spring Security 或尽早介入的 Servlet 过滤器；MVC 拦截器与控制器路径匹配存在边界，不宜作为唯一安全层。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "CORS 的检查发生在哪里"
+    },
+    {
+      "type": "paragraph",
+      "text": "浏览器报跨域，不能直接推出“请求没发到服务器”。同源按协议、主机、端口判断；某些请求会先发 OPTIONS 预检，带上 Origin、Access-Control-Request-Method，以及需要时的 Access-Control-Request-Headers。"
+    },
+    {
+      "type": "paragraph",
+      "text": "服务端回答允许的源、方法和请求头后，浏览器再决定是否发实际请求。但符合简单请求条件的跨源请求可能已经发出，只是响应不允许脚本读取。因此排障要区分预检、实际请求和响应读取三个环节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通预检通常不携带跨源用户凭据，不能要求它先拿到登录 Cookie 才允许回答跨域策略；实际业务请求仍要认证和授权。不要为了让 OPTIONS 通过而把所有方法都从鉴权链中放行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若问题写成“postion 预请求”，这个字面并不是可直接确定的标准 HTTP 方法；只有确认意指 OPTIONS 时，才按本节预检机制回答。真实事故仍需 Origin、方法/头、OPTIONS 与实际请求的状态及配置证据，不能把这个不明确词语编成已经发生并解决的项目故障。"
+    },
+    {
+      "type": "paragraph",
+      "text": "带凭据时，客户端要采用正确的凭据模式，服务端返回具体允许的 Origin 与 Access-Control-Allow-Credentials: true，不能用 Access-Control-Allow-Origin: * 代替。动态回显 Origin 之前必须精确匹配可信列表，不能任意回显，也不能用易被绕过的字符串后缀匹配。null Origin 代表一些特殊上下文，不应默认信任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Allow-Headers 决定客户端可发送哪些非简单请求头，Expose-Headers 决定脚本可以读取哪些额外响应头，二者方向不同。动态策略经过缓存时，Vary 要包含真正影响响应的 Origin 等请求维度；预检的专用缓存与普通 HTTP 缓存也不要混淆。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 项目中，Spring MVC 局部 @CrossOrigin、全局映射、Spring Security 过滤器和网关策略可能叠加。应让 CORS 在合适的认证检查之前得到处理，并明确唯一的策略归属，避免网关与应用各写一次产生重复或冲突头。伴读 cors-server.mjs 用原生 Node HTTP 展示协议分支；它说明 HTTP 契约，不代表所有框架的默认配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JSONP 是历史上的脚本加载方式，限制多且把响应当可执行代码，不是现代通用跨域方案。跨窗口通信可用 postMessage，但发送和接收都要校验目标源、消息来源与结构，不能把 * 加任意对象当作可信通道。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "版本与本批未执行声明"
+    },
+    {
+      "entryId": "own-network-transport-code",
+      "label": "网络传输：完整 Java 与跨语言教学程序"
+    },
+    {
+      "entryId": "own-network-application-code",
+      "label": "网络应用：完整 Java、浏览器与安全教学程序"
+    }
+  ],
+  "questionId": "q-own-spring-authentication",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-model-code",
+  "kind": "doc",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "实现参考与验证边界",
+  "title": "完整 NumPy 与 PyTorch：注意力和反向传播",
+  "tags": [
+    "完整教学代码",
+    "未执行源代码"
+  ],
+  "sections": [
+    {
+      "id": "s-model-principles-599",
+      "title": "12 可运行的数学参照",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 不用自动求导，如何验证手写反向传播正确？矩形长宽成固定比例会发生什么？全遮挡注意力怎么处理？"
+        },
+        {
+          "type": "paragraph",
+          "text": "先检验矩形系数是否逼近 2、2，再用中心差分逐个核对两层网络参数梯度。还要测试极大 logits、sigmoid 极值、交叉长度注意力、全 mask 行与 AdamW 首步。数学参照用于定位公式与形状错误，性能评估应另用真实模型负载。"
+        },
+        {
+          "type": "paragraph",
+          "text": "阅读下面断言时，逐个对应它要推翻的错误：极值暴露数值不稳，中心差分核对局部导数，交叉长度检查维度假设，全遮挡检查非法分母。随后从原题选一个条件变化，先写预期再看代码；没有实际运行的变体，只能称为推演。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "model-principles/math_reference.py",
+          "value": "\"\"\"Interview reference implementation.\"\"\"\nimport numpy as np\n\n\ndef softmax(x, axis=-1):\n    x = np.asarray(x, dtype=np.float64)\n    if x.size == 0 or not np.isfinite(x).all():\n        raise ValueError(\"finite, nonempty logits required\")\n    z = np.exp(x - x.max(axis=axis, keepdims=True))\n    return z / z.sum(axis=axis, keepdims=True)\n\n\ndef sigmoid(x):\n    x = np.asarray(x, dtype=np.float64)\n    out = np.empty_like(x)\n    positive = x >= 0\n    out[positive] = 1 / (1 + np.exp(-x[positive]))\n    z = np.exp(x[~positive])\n    out[~positive] = z / (1 + z)\n    return out\n\n\ndef rectangle_fit(steps=5000, lr=0.01):\n    # Columns are not proportional: both coefficients are identifiable.\n    x = np.array([[1., 1.], [1., 3.], [2., 1.], [3., 4.]])\n    y = 2 * x.sum(axis=1)\n    w = np.zeros(2)\n    for _ in range(steps):\n        error = x @ w - y\n        grad = 2 * x.T @ error / len(x)\n        w -= lr * grad\n    return w, np.mean((x @ w-y)**2)\n\n\ndef mlp_loss_grad(x, y, w1, b1, w2, b2):\n    # MSE includes the sample mean; activation is tanh for gradient checking.\n    h = np.tanh(x @ w1 + b1)\n    pred = h @ w2 + b2\n    error = pred-y\n    loss = np.mean(error**2)\n    dz2 = 2 * error / error.size\n    dw2, db2 = h.T @ dz2, dz2.sum(axis=0)\n    dz1 = (dz2 @ w2.T) * (1-h*h)\n    return loss, (x.T @ dz1, dz1.sum(axis=0), dw2, db2)\n\n\ndef adamw_step(p, g, m, v, step, lr=.001, beta1=.9, beta2=.999,\n               eps=1e-8, decay=.01):\n    if step < 1:\n        raise ValueError(\"step starts at 1\")\n    m = beta1*m+(1-beta1)*g\n    v = beta2*v+(1-beta2)*g*g\n    mh, vh = m/(1-beta1**step), v/(1-beta2**step)\n    return p*(1-lr*decay)-lr*mh/(np.sqrt(vh)+eps), m, v\n\n\ndef attention(q, k, v, allowed=None):\n    # q: B,H,Tq,D; k/v: B,H,Tk,D/Dv. Boolean True means visible.\n    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:\n        raise ValueError(\"four-dimensional Q/K/V required\")\n    if q.shape[:2] != k.shape[:2] or k.shape[:3] != v.shape[:3]:\n        raise ValueError(\"batch/head/key length mismatch\")\n    if q.shape[-1] != k.shape[-1] or not k.shape[-2]:\n        raise ValueError(\"head width/key length mismatch\")\n    scores = q @ k.swapaxes(-1,-2) / np.sqrt(q.shape[-1])\n    if allowed is None:\n        allowed = np.ones(scores.shape, dtype=bool)\n    allowed = np.broadcast_to(allowed, scores.shape)\n    # All-masked rows have zero output instead of NaN.\n    row_ok = allowed.any(axis=-1, keepdims=True)\n    masked = np.where(allowed, scores, -np.inf)\n    row_max = np.where(row_ok, masked.max(axis=-1, keepdims=True), 0)\n    p = np.exp(np.where(allowed, scores-row_max, -np.inf))\n    denom = p.sum(axis=-1, keepdims=True)\n    p = p / np.where(denom > 0, denom, 1)\n    return p @ v\n\n\ndef main():\n    np.testing.assert_allclose(softmax([10000,10001]),softmax([0,1]))\n    np.testing.assert_allclose(sigmoid([-1000,0,1000]),[0,.5,1])\n    w, loss = rectangle_fit()\n    np.testing.assert_allclose(w,[2,2],atol=1e-8)\n    assert loss < 1e-15\n    rng = np.random.default_rng(5)\n    x,y=rng.normal(size=(4,2)),rng.normal(size=(4,1))\n    params=[rng.normal(size=s) for s in [(2,3),(3,),(3,1),(1,)]]\n    _, grads=mlp_loss_grad(x,y,*params)\n    eps=1e-6\n    for p,g in zip(params,grads):\n        for index in np.ndindex(p.shape):\n            old=p[index];p[index]=old+eps;plus=mlp_loss_grad(x,y,*params)[0]\n            p[index]=old-eps;minus=mlp_loss_grad(x,y,*params)[0]\n            p[index]=old\n            np.testing.assert_allclose(g[index],(plus-minus)/(2*eps),rtol=1e-5,atol=1e-7)\n    q,k,v=[rng.normal(size=(2,3,t,4)) for t in (2,5,5)]\n    mask=np.ones((2,1,2,5),bool);mask[0,:,0,:]=False\n    out=attention(q,k,v,mask)\n    assert out.shape == (2,3,2,4) and np.isfinite(out).all()\n    assert np.all(out[0,:,0] == 0)\n    p,m,vv=adamw_step(np.array([1.]),np.array([2.]),np.zeros(1),np.zeros(1),1)\n    np.testing.assert_allclose(p,1-.001*.01-.001*2/(2+1e-8))\n    print(\"PASS stable softmax/sigmoid; rectangle coefficients; all MLP scalar gradients; rectangular attention/all-masked rows; AdamW first step\")\n\nif __name__ == '__main__':\n    main()\n"
+        }
+      ]
+    },
+    {
+      "id": "s-model-principles-716",
+      "title": "13 原生 PyTorch 手写",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 用 PyTorch 实现支持 Cross-Attention 的 MHA；causal/padding mask 怎么对齐？不同 query/key 长度与全 mask 行如何验证？"
+        },
+        {
+          "type": "paragraph",
+          "text": "这份实现使用 batch-first 输入，支持自注意力、不同上下文宽度的 Cross-Attention、causal mask、全遮挡行、RMSNorm、SwiGLU、RoPE 和最小分类网络。"
+        },
+        {
+          "type": "paragraph",
+          "text": "allowed_mask 必须是可广播到 (B,H,Tq,Tk) 的四维布尔张量，True 表示可见；常用 (B,1,Tq,Tk) 或 (B,1,1,Tk)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若 padding mask 原为 (B,Tk)，调用前显式写成 padding_mask[:,None,None,:]，避免 B 与 Tq 相等时误判维度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "query_offset 表示 query 的绝对位置偏移；KV 缓存的追加与淘汰另行实现。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "model-principles/torch_reference.py",
+          "value": "\"\"\"Interview reference implementation.\"\"\"\nimport math\nimport torch\nfrom torch import nn\nfrom torch.nn import functional as F\n\nclass RMSNorm(nn.Module):\n    def __init__(self, width, eps=1e-6):\n        super().__init__()\n        self.weight = nn.Parameter(torch.ones(width))\n        self.eps = eps\n    def forward(self, x):\n        f = x.float()\n        out = f * torch.rsqrt(f.square().mean(-1, keepdim=True)+self.eps)\n        return out.to(x.dtype) * self.weight\n\nclass SwiGLU(nn.Module):\n    def __init__(self, width, hidden):\n        super().__init__()\n        self.gate = nn.Linear(width, hidden, bias=False)\n        self.up = nn.Linear(width, hidden, bias=False)\n        self.down = nn.Linear(hidden, width, bias=False)\n    def forward(self, x):\n        return self.down(F.silu(self.gate(x))*self.up(x))\n\nclass MultiHeadAttention(nn.Module):\n    \"\"\"Batch first. Self or cross attention. True in allowed_mask means visible.\"\"\"\n    def __init__(self, width, heads, context_width=None, dropout=0.):\n        super().__init__()\n        if width <= 0 or heads <= 0 or width % heads:\n            raise ValueError(\"width must be positive and divisible by heads\")\n        self.heads, self.dh = heads, width//heads\n        context_width = width if context_width is None else context_width\n        self.q = nn.Linear(width,width,bias=False)\n        self.k = nn.Linear(context_width,width,bias=False)\n        self.v = nn.Linear(context_width,width,bias=False)\n        self.out = nn.Linear(width,width,bias=False)\n        self.dropout = nn.Dropout(dropout)\n    def forward(self, x, context=None, allowed_mask=None, causal=False,\n                query_offset=0):\n        context = x if context is None else context\n        if x.ndim != 3 or context.ndim != 3 or x.size(0) != context.size(0):\n            raise ValueError(\"expected B,T,C and same batch\")\n        b,tq,_ = x.shape\n        tk = context.size(1)\n        if not tq or not tk or query_offset < 0:\n            raise ValueError(\"positive lengths and nonnegative offset required\")\n        def split(z):\n            return z.reshape(b,-1,self.heads,self.dh).transpose(1,2)\n        q,k,v=split(self.q(x)),split(self.k(context)),split(self.v(context))\n        scores=(q.float() @ k.float().transpose(-1,-2))/math.sqrt(self.dh)\n        visible=torch.ones((b,1,tq,tk),dtype=torch.bool,device=x.device)\n        if causal:\n            qi=torch.arange(tq,device=x.device)+query_offset\n            ki=torch.arange(tk,device=x.device)\n            visible=visible & (ki[None,:] <= qi[:,None])[None,None,:,:]\n        if allowed_mask is not None:\n            if allowed_mask.dtype != torch.bool:\n                raise ValueError(\"allowed_mask must be boolean\")\n            visible=visible & allowed_mask\n        row_ok=visible.any(dim=-1,keepdim=True)\n        scores=scores.masked_fill(~visible,float('-inf'))\n        scores=torch.where(row_ok,scores,torch.zeros_like(scores))\n        probs=F.softmax(scores,dim=-1).masked_fill(~visible,0.)\n        y=self.dropout(probs).to(v.dtype) @ v\n        y=y.transpose(1,2).contiguous().reshape(b,tq,-1)\n        return self.out(y)\n\ndef rope(x, positions, base=10000.):\n    # x: B,H,T,D; adjacent-pair convention; cache must use same convention.\n    if x.size(-1) % 2:\n        raise ValueError(\"RoPE requires even width\")\n    inv=base ** (-torch.arange(0,x.size(-1),2,device=x.device).float()/x.size(-1))\n    angle=positions.float()[:,None]*inv[None,:]\n    cos,sin=angle.cos()[None,None,:,:],angle.sin()[None,None,:,:]\n    a,b=x.float()[...,0::2],x.float()[...,1::2]\n    return torch.stack((a*cos-b*sin,a*sin+b*cos),dim=-1).flatten(-2).to(x.dtype)\n\nclass TinyClassifier(nn.Module):\n    def __init__(self, input_width, hidden, classes):\n        super().__init__()\n        self.net=nn.Sequential(nn.Linear(input_width,hidden),nn.ReLU(),nn.Linear(hidden,classes))\n    def forward(self,x):\n        return self.net(x)\n\ndef train_one_step(model,x,y,optimizer):\n    model.train()\n    optimizer.zero_grad(set_to_none=True)\n    logits=model(x)\n    loss=F.cross_entropy(logits,y)\n    loss.backward()\n    torch.nn.utils.clip_grad_norm_(model.parameters(),1.)\n    optimizer.step()\n    return float(loss.detach())\n\ndef tests():\n    torch.manual_seed(9)\n    m=MultiHeadAttention(12,3)\n    x=torch.randn(2,4,12,requires_grad=True)\n    y=m(x,causal=True)\n    changed=x.detach().clone();changed[:,2:]+=100\n    torch.testing.assert_close(y[:,:2],m(changed,causal=True)[:,:2])\n    c=MultiHeadAttention(12,3,context_width=7)\n    assert c(x,torch.randn(2,6,7)).shape == (2,4,12)\n    zero=m(x,allowed_mask=torch.zeros(2,1,4,4,dtype=torch.bool))\n    assert torch.count_nonzero(zero)==0\n    y.square().sum().backward()\n    assert x.grad is not None and torch.isfinite(x.grad).all()\n    q=torch.randn(2,3,4,6)\n    torch.testing.assert_close(rope(q,torch.arange(4)).square().sum(-1),q.square().sum(-1),rtol=1e-5,atol=1e-5)\n    clf=TinyClassifier(3,5,2)\n    assert math.isfinite(train_one_step(clf,torch.randn(4,3),torch.tensor([0,1,1,0]),torch.optim.AdamW(clf.parameters())))\n    print(\"PASS PyTorch attention, cross attention, masks, backward, RoPE and network step\")\n\nif __name__ == '__main__':\n    tests()\n"
+        }
+      ]
+    }
+  ]
+}

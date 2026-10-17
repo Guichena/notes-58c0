@@ -1,0 +1,469 @@
+{
+  "entries": [
+    {
+      "id": "pattern-transaction-ha",
+      "number": "事务高可用",
+      "title": "事务、锁、日志与高可用：MVCC、三日志、分库分表",
+      "kind": "pattern",
+      "kindLabel": "数据库模板",
+      "group": "题型模板",
+      "category": "事务与高可用",
+      "flat": false,
+      "subtitle": "覆盖 10 道题 · 事务 + 复制 + 分库分表",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别事务边界",
+            "questions": [
+              "这个操作涉及几张表 / 几个库？",
+              "允许脏读 / 不可重复读 / 幻读吗？",
+              "需要分布式事务吗？"
+            ],
+            "example": "扣库存 + 创建订单：要么都成功要么都失败 → 单库本地事务；跨库（订单库 + 库存库）→ TCC 或 Saga。"
+          },
+          {
+            "stage": "识别并发冲突",
+            "questions": [
+              "会有并发更新同一行吗？",
+              "是读多写少还是写多读少？",
+              "能接受悲观锁还是必须乐观锁？"
+            ],
+            "example": "库存扣减：高并发写同一行 → 悲观锁（SELECT ... FOR UPDATE）或乐观锁（version 字段）。"
+          },
+          {
+            "stage": "识别可用性等级",
+            "questions": [
+              "DB 主库挂了能容忍多久不可用？",
+              "数据能丢吗？（RPO / RTO）",
+              "需要跨机房容灾吗？"
+            ],
+            "example": "金融系统：RPO=0（不丢数据）+ RTO<1分钟 → MySQL 半同步 + MHA 自动切换。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 性能估算",
+        "formulas": [
+          {
+            "name": "行锁竞争",
+            "formula": "TPS × avg_lock_hold_time",
+            "example": "1000 TPS × 10ms = 平均 10 个并发持有锁"
+          },
+          {
+            "name": "Undo Log 大小",
+            "formula": "TPS × avg_tx_size × longest_trx_duration",
+            "example": "1000 TPS × 1KB × 60s = 60MB Undo"
+          },
+          {
+            "name": "Binlog 增长",
+            "formula": "TPS × avg_tx_size × retention_days",
+            "example": "1000 TPS × 1KB × 7 天 ≈ 600 GB"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "MySQL 行锁竞争",
+            "write": "~1000 TPS/行",
+            "read": "N/A",
+            "note": "同一行的写入上限"
+          },
+          {
+            "resource": "MySQL 半同步复制延迟",
+            "write": "~1-10ms",
+            "read": "N/A",
+            "note": "比异步多一个 ACK 等待"
+          },
+          {
+            "resource": "MySQL 主从切换",
+            "write": "N/A",
+            "read": "RTO ~30s",
+            "note": "MHA / Orchestrator"
+          }
+        ],
+        "pitfalls": [
+          "不考虑行锁竞争 → 单行走不下去",
+          "不估算 Undo Log → 长事务撑爆磁盘"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 高可用架构演进",
+        "stages": [
+          {
+            "stage": "单机",
+            "architecture": "单 MySQL 实例",
+            "pros": [
+              "简单"
+            ],
+            "cons": [
+              "单点故障"
+            ],
+            "when": "内部系统",
+            "tradeoff": ""
+          },
+          {
+            "stage": "主从复制",
+            "architecture": "MySQL 主 + 从（异步复制）",
+            "pros": [
+              "读写分离"
+            ],
+            "cons": [
+              "主从延迟",
+              "切换丢数据"
+            ],
+            "when": "读多写少",
+            "tradeoff": "用数据丢失风险换可用性"
+          },
+          {
+            "stage": "半同步复制",
+            "architecture": "MySQL 主 + 从（半同步）",
+            "pros": [
+              "不丢数据（RPO=0）"
+            ],
+            "cons": [
+              "写入延迟增加"
+            ],
+            "when": "金融级可靠性",
+            "tradeoff": "用延迟换数据安全"
+          },
+          {
+            "stage": "MHA / Orchestrator",
+            "architecture": "自动故障检测 + 切换",
+            "pros": [
+              "RTO 30s"
+            ],
+            "cons": [
+              "复杂"
+            ],
+            "when": "生产环境必备",
+            "tradeoff": "用复杂度换可用性"
+          },
+          {
+            "stage": "分库分表",
+            "architecture": "Sharding Sphere / MyCat",
+            "pros": [
+              "水平扩展"
+            ],
+            "cons": [
+              "跨分片查询难",
+              "分布式事务难"
+            ],
+            "when": "单机存不下 / 写瓶颈",
+            "tradeoff": "用复杂度换扩展性"
+          },
+          {
+            "stage": "Paxos / Raft（NewSQL）",
+            "architecture": "TiDB / OceanBase",
+            "pros": [
+              "强一致 + 高可用"
+            ],
+            "cons": [
+              "成本高"
+            ],
+            "when": "金融级核心系统",
+            "tradeoff": "用成本换强一致"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 事务与高可用 Trade-off",
+        "decisions": [
+          {
+            "question": "Read Uncommitted vs Read Committed vs Repeatable Read vs Serializable？",
+            "chooseCache": "RR（MySQL 默认）：性能 + 一致性平衡",
+            "chooseDB": "RC：减少锁竞争；Serializable：最强一致性但性能差",
+            "cost": "RR 有幻读（MySQL 用 next-key lock 解决）；RC 有不可重复读"
+          },
+          {
+            "question": "悲观锁 vs 乐观锁？",
+            "chooseCache": "悲观锁（FOR UPDATE）：冲突激烈时",
+            "chooseDB": "乐观锁（version）：冲突少时",
+            "cost": "悲观锁性能差；乐观锁冲突时重试成本高"
+          },
+          {
+            "question": "同步复制 vs 异步复制 vs 半同步？",
+            "chooseCache": "半同步：不丢数据 + 性能可接受",
+            "chooseDB": "异步：性能最好但可能丢数据",
+            "cost": "半同步增加写入延迟 ~1-10ms"
+          },
+          {
+            "question": "垂直拆分 vs 水平拆分？",
+            "chooseCache": "水平拆分（sharding）：数据量大的表",
+            "chooseDB": "垂直拆分：按业务拆库",
+            "cost": "水平拆分引入跨分片查询问题；垂直拆分不能解决单表过大"
+          },
+          {
+            "question": "Sharding 中间件 vs 客户端分片？",
+            "chooseCache": "中间件（ShardingSphere Proxy）：对应用透明",
+            "chooseDB": "客户端（ShardingSphere JDBC）：性能好",
+            "cost": "中间件多一跳；客户端耦合业务代码"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "库存扣减（防超卖）",
+            "code": "-- 方案 1：悲观锁（高并发时性能差）\nBEGIN;\nSELECT stock FROM products WHERE id = 1 FOR UPDATE;  -- 行锁\n-- 检查 stock > 0\nUPDATE products SET stock = stock - 1 WHERE id = 1;\nCOMMIT;\n\n-- 方案 2：乐观锁（推荐）\nUPDATE products\nSET stock = stock - 1, version = version + 1\nWHERE id = 1 AND stock > 0 AND version = 123;\n-- 返回 affected_rows = 0 → 扣减失败（库存不足或版本冲突）\n\n-- 方案 3：Redis 原子扣减（性能最好）\n-- DECR 是原子操作\n-- 库存预热到 Redis，DB 异步持久化",
+            "explanation": "悲观锁：简单但行锁竞争大；乐观锁：无锁但需要重试；Redis：性能最好但要处理缓存一致性。"
+          },
+          {
+            "name": "分布式事务（TCC）",
+            "code": "// Try 阶段：预留资源\npublic boolean tryDeductStock(String orderId, int count) {\n    // 冻结库存（不实际扣减）\n    int rows = jdbc.update(\n        \"UPDATE products SET frozen = frozen + ? WHERE id = 1 AND stock - frozen >= ?\",\n        count, count);\n    return rows > 0;\n}\n\n// Confirm 阶段：真正扣减\npublic boolean confirmDeductStock(String orderId, int count) {\n    int rows = jdbc.update(\n        \"UPDATE products SET stock = stock - ?, frozen = frozen - ? WHERE id = 1\",\n        count, count);\n    return rows > 0;\n}\n\n// Cancel 阶段：释放冻结\npublic boolean cancelDeductStock(String orderId, int count) {\n    int rows = jdbc.update(\n        \"UPDATE products SET frozen = frozen - ? WHERE id = 1\", count);\n    return rows > 0;\n}",
+            "explanation": "TCC 三阶段：Try 预留 / Confirm 确认 / Cancel 取消。优点：性能好（无全局锁）；缺点：业务侵入大（每个操作要写 3 个方法）。适用：短事务 + 高性能要求。长事务用 Saga（编排式）。"
+          },
+          {
+            "name": "分库分表路由",
+            "code": "// 按 user_id 分 16 个库，每库 16 张表（共 256 张表）\npublic class ShardingRouter {\n    private static final int DB_COUNT = 16;\n    private static final int TABLE_COUNT_PER_DB = 16;\n\n    public String routeDb(long userId) {\n        int dbIndex = (int) (userId % DB_COUNT);\n        return \"db_\" + dbIndex;\n    }\n\n    public String routeTable(long userId) {\n        int tableIndex = (int) ((userId / DB_COUNT) % TABLE_COUNT_PER_DB);\n        return \"orders_\" + tableIndex;\n    }\n}\n\n// 查询：单分片查询\npublic Order getOrder(long userId, long orderId) {\n    String db = router.routeDb(userId);\n    String table = router.routeTable(userId);\n    return jdbc.query(\"SELECT * FROM \" + table + \" WHERE user_id=? AND order_id=?\",\n        userId, orderId);\n}\n\n// 跨分片查询：广播 + 归并\npublic List<Order> getOrdersByTime(LocalDate date) {\n    List<Order> results = new ArrayList<>();\n    for (int db = 0; db < DB_COUNT; db++) {\n        for (int table = 0; table < TABLE_COUNT_PER_DB; table++) {\n            results.addAll(queryShard(db, table, date));\n        }\n    }\n    return results;\n}",
+            "explanation": "分片键选择：user_id 是常见选择（保证同一用户的订单在同一分片）。跨分片查询：尽量避免（设计时按查询维度分片）；必须时用广播 + 归并。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 事务与高可用故障",
+        "scenarios": [
+          {
+            "failure": "死锁",
+            "symptom": "MySQL 检测到死锁并回滚",
+            "mitigation": "按固定顺序加锁 + 减小事务粒度 + 超时重试",
+            "detection": "InnoDB 死锁日志"
+          },
+          {
+            "failure": "长事务",
+            "symptom": "Undo Log 膨胀 + 锁等待",
+            "mitigation": "限制事务时长 + 拆大事务",
+            "detection": "information_schema.innodb_trx"
+          },
+          {
+            "failure": "主从延迟",
+            "symptom": "写完立刻读不到",
+            "mitigation": "读己之写（强制读主）/ GTID 等待",
+            "detection": "Seconds_Behind_Master 监控"
+          },
+          {
+            "failure": "脑裂（双主）",
+            "symptom": "两个主库同时写入",
+            "mitigation": "MHA / Raft 选主 + fencing",
+            "detection": "数据不一致告警"
+          },
+          {
+            "failure": "分片热点",
+            "symptom": "某个分片特别大",
+            "mitigation": "重新分片 + 一致性哈希",
+            "detection": "分片大小监控"
+          },
+          {
+            "failure": "分布式事务悬挂",
+            "symptom": "Try 成功但 Confirm/Cancel 失败",
+            "mitigation": "事务日志 + 定时对账 + 重试",
+            "detection": "悬挂事务表"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "事务提交/回滚率",
+          "锁等待时间",
+          "死锁次数"
+        ],
+        "use": [
+          "主从延迟（Seconds_Behind_Master）",
+          "InnoDB Buffer Pool 命中率",
+          "Redo Log 写入速率"
+        ],
+        "business": [
+          "库存超卖数量（应为 0）",
+          "订单状态一致性对账",
+          "跨分片查询比例（应 < 1%）"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "事务隔离级别",
+          "ids": [
+            "database-88"
+          ],
+          "note": "MVCC + 四种隔离级别 + 幻读"
+        },
+        {
+          "range": "三大日志",
+          "ids": [
+            "database-89"
+          ],
+          "note": "Redo / Undo / Binlog 的作用和写入顺序"
+        },
+        {
+          "range": "库存超卖",
+          "ids": [
+            "database-87"
+          ],
+          "note": "悲观锁 / 乐观锁 / Redis 三种方案"
+        },
+        {
+          "range": "唯一索引与幂等",
+          "ids": [
+            "database-90"
+          ],
+          "note": "防重复的 DB 层方案"
+        },
+        {
+          "range": "主从复制",
+          "ids": [
+            "database-91"
+          ],
+          "note": "读写分离 + 主从延迟处理"
+        },
+        {
+          "range": "分库分表",
+          "ids": [
+            "database-92"
+          ],
+          "note": "分片策略 + 跨分片查询"
+        },
+        {
+          "range": "Outbox 模式",
+          "ids": [
+            "database-93"
+          ],
+          "note": "可靠消息 + 幂等消费"
+        },
+        {
+          "range": "中间态补偿",
+          "ids": [
+            "database-94"
+          ],
+          "note": "补偿扫描 + 状态机"
+        },
+        {
+          "range": "项目定制",
+          "ids": [
+            "database-95",
+            "database-96",
+            "database-97",
+            "database-98"
+          ],
+          "note": "分片上传 / 会话消息 / RAG / AI 工作台的表设计"
+        }
+      ],
+      "interviewPitch": "事务与高可用我会按\"隔离级别 → 锁策略 → 日志保证 → 复制拓扑 → 分片方案\"五步走。RR 是 MySQL 默认，用 MVCC + next-key lock 解决幻读。库存扣减优先考虑乐观锁（version）或 Redis DECR。跨库事务用 TCC（短事务）或 Saga（长事务）。分库分表的关键是选好分片键（user_id / tenant_id），避免跨分片查询。核心原则：单机事务最简单，分布式事务是不得已的选择。",
+      "pitfalls": [
+        "不知道 RR 和 RC 的区别 → MySQL 默认是 RR 不是 RC",
+        "悲观锁性能差还硬用 → 高并发场景应该用乐观锁或 Redis",
+        "分布式事务只会说 2PC → 2PC 性能差，实际用 TCC / Saga",
+        "分库分表后跨分片查询 → 设计时应该按查询维度选分片键"
+      ],
+      "relatedIds": [
+        "database-87",
+        "database-88",
+        "database-89",
+        "database-90",
+        "database-91",
+        "database-92",
+        "database-93",
+        "database-94"
+      ],
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志"
+    },
+    {
+      "id": "database-87",
+      "number": 16,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第三章：事务、锁与日志",
+      "flat": false,
+      "title": "库存扣减与超卖",
+      "questionHtml": "<p class=\"md-p\">秒杀场景中，商品库存为 100。高并发下如何扣减库存，避免超卖？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是事务和锁的高频题。错误做法是先查库存，再在应用内判断，然后更新。并发下多个线程都可能看到库存充足，导致超卖。</p>\n<p class=\"md-p\">正确思路是把“库存大于 0”和“扣减”放到同一条原子 SQL 中，或者使用行锁保护读改写过程。</p>",
+      "knowledge": [
+        "原子条件更新：<code class=\"tok-inline\">UPDATE ... SET stock = stock - 1 WHERE stock &gt; 0</code>。",
+        "悲观锁：<code class=\"tok-inline\">SELECT ... FOR UPDATE</code>。",
+        "乐观锁：版本号或条件更新。",
+        "事务隔离：扣库存和创建订单要在事务中保持一致。",
+        "幂等：同一用户不能重复下单。"
+      ],
+      "answerHtml": "<p class=\"md-p\">最常用扣减 SQL：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE sku_stock\nSET stock = stock - 1\nWHERE sku_id = ?\n  AND stock &gt; 0;</pre></div></section>\n<p class=\"md-p\">应用层判断影响行数：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">int affected = stockMapper.decrease(skuId);\nif (affected == 0) {\n    throw new SoldOutException();\n}</pre></div></section>\n<p class=\"md-p\">订单幂等约束：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE seckill_order (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    user_id BIGINT NOT NULL,\n    sku_id BIGINT NOT NULL,\n    order_no VARCHAR(64) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_user_sku (user_id, sku_id),\n    UNIQUE KEY uk_order_no (order_no)\n);</pre></div></section>\n<p class=\"md-p\">事务流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>插入订单，依赖 <code class=\"tok-inline\">uk_user_sku</code> 防重复下单。</li><li>执行库存条件扣减。</li><li>如果扣减成功，提交事务；如果失败，回滚订单。</li></ol></div>\n<p class=\"md-p\">也可以先扣库存再插订单，但要处理订单插入失败后的库存补偿。实际工程会结合 Redis 预扣、MQ 异步下单、库存流水和补偿任务。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：用 <code class=\"tok-inline\">SELECT stock</code> 再 <code class=\"tok-inline\">UPDATE</code> 为什么不安全？</strong></p>\n<p class=\"md-p\">问题分析：读和写之间存在并发窗口。</p>\n<p class=\"md-p\">知识点：竞态条件、原子更新。</p>\n<p class=\"md-p\">答案：多个事务都读到 stock=1 后各自扣减，会超卖。应使用条件更新，或在事务中 <code class=\"tok-inline\">SELECT ... FOR UPDATE</code> 加行锁。</p>\n<p class=\"md-p\"><strong>变体 2：悲观锁怎么写？</strong></p>\n<p class=\"md-p\">问题分析：需要锁住库存行直到事务结束。</p>\n<p class=\"md-p\">知识点：行锁、事务范围。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">START TRANSACTION;\n\nSELECT stock\nFROM sku_stock\nWHERE sku_id = ?\nFOR UPDATE;\n\nUPDATE sku_stock\nSET stock = stock - 1\nWHERE sku_id = ?;\n\nCOMMIT;</pre></div></section>\n<p class=\"md-p\">但高并发秒杀下悲观锁阻塞严重，条件更新通常更简洁。</p>\n<p class=\"md-p\"><strong>变体 3：如何防止接口重复提交？</strong></p>\n<p class=\"md-p\">问题分析：用户连点、网络重试、MQ 重投都会重复。</p>\n<p class=\"md-p\">知识点：唯一索引、幂等 token、状态机。</p>\n<p class=\"md-p\">答案：用业务唯一键，例如 <code class=\"tok-inline\">(user_id, sku_id)</code> 或 <code class=\"tok-inline\">request_id</code> 唯一索引。重复插入时返回已有结果。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志"
+    },
+    {
+      "id": "database-88",
+      "number": 17,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第三章：事务、锁与日志",
+      "flat": false,
+      "title": "事务隔离级别、MVCC 与幻读",
+      "questionHtml": "<p class=\"md-p\">解释 MySQL InnoDB 的事务隔离级别。什么是脏读、不可重复读、幻读？InnoDB 默认的可重复读如何解决幻读？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察 MySQL 底层。不要只背四个隔离级别，要能结合 MVCC、快照读、当前读、Next-Key Lock 说明。</p>\n<p class=\"md-p\">InnoDB 默认隔离级别是 Repeatable Read。普通 <code class=\"tok-inline\">SELECT</code> 是快照读，通过 Read View 保证同一事务内多次读取一致；<code class=\"tok-inline\">SELECT ... FOR UPDATE</code>、<code class=\"tok-inline\">UPDATE</code>、<code class=\"tok-inline\">DELETE</code> 是当前读，需要加锁。</p>",
+      "knowledge": [
+        "Read Uncommitted：可能脏读。",
+        "Read Committed：避免脏读，但可能不可重复读。",
+        "Repeatable Read：同一事务快照读结果一致。",
+        "Serializable：串行化，性能最低。",
+        "MVCC：通过 undo log 和 Read View 实现多版本读。",
+        "Next-Key Lock：记录锁 + 间隙锁，防止当前读场景下的幻读。"
+      ],
+      "answerHtml": "<p class=\"md-p\">现象解释：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>脏读：读到其他事务尚未提交的数据。</li><li>不可重复读：同一事务内两次读同一行，结果不同，通常因为别的事务提交了更新。</li><li>幻读：同一事务内按范围查询，两次读出现新增或消失的行。</li></ul></div>\n<p class=\"md-p\">InnoDB 在 Repeatable Read 下：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>普通 <code class=\"tok-inline\">SELECT</code> 使用 MVCC 快照读，同一事务内 Read View 一致，因此不会看到后续提交的新行。</li><li>当前读如 <code class=\"tok-inline\">SELECT ... FOR UPDATE</code> 会加 Next-Key Lock，锁住记录和间隙，阻止其他事务在范围内插入，从而避免当前读幻读。</li></ul></div>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">START TRANSACTION;\n\nSELECT *\nFROM orders\nWHERE user_id = 1\n  AND amount &gt; 100\nFOR UPDATE;\n\n-- 其他事务不能在该锁范围内插入满足条件的数据\n\nCOMMIT;</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：RC 和 RR 最大区别是什么？</strong></p>\n<p class=\"md-p\">问题分析：都是 MVCC，但 Read View 创建时机不同。</p>\n<p class=\"md-p\">知识点：Read View。</p>\n<p class=\"md-p\">答案：RC 每条语句创建新的 Read View，所以能看到其他事务已提交的新数据；RR 通常事务第一次快照读创建 Read View，后续复用，所以可重复读。</p>\n<p class=\"md-p\"><strong>变体 2：快照读和当前读区别？</strong></p>\n<p class=\"md-p\">问题分析：很多锁问题都卡在这里。</p>\n<p class=\"md-p\">知识点：普通 SELECT、FOR UPDATE、UPDATE。</p>\n<p class=\"md-p\">答案：普通 <code class=\"tok-inline\">SELECT</code> 是快照读，不加锁；<code class=\"tok-inline\">SELECT ... FOR UPDATE</code>、<code class=\"tok-inline\">UPDATE</code>、<code class=\"tok-inline\">DELETE</code> 是当前读，读取最新已提交版本并加锁。</p>\n<p class=\"md-p\"><strong>变体 3：没有索引时加锁会怎样？</strong></p>\n<p class=\"md-p\">问题分析：锁依赖索引定位，没索引会扫描更多行。</p>\n<p class=\"md-p\">知识点：行锁、索引、锁范围扩大。</p>\n<p class=\"md-p\">答案：条件列没有索引时，InnoDB 可能扫描大量记录并加锁，导致锁范围扩大，并发性能急剧下降。事务更新条件必须有合适索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志"
+    },
+    {
+      "id": "database-89",
+      "number": 18,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第三章：事务、锁与日志",
+      "flat": false,
+      "title": "Redo Log、Undo Log、Binlog",
+      "questionHtml": "<p class=\"md-p\">MySQL 中 redo log、undo log、binlog 分别做什么？为什么需要两阶段提交？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是 MySQL 事务和主从高频。面试官想看你是否理解崩溃恢复、事务回滚、主从复制之间的区别。</p>\n<p class=\"md-p\">简单记忆：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>redo log 保证已提交事务崩溃后不丢。</li><li>undo log 支持回滚和 MVCC。</li><li>binlog 用于复制和 point-in-time recovery。</li></ul></div>",
+      "knowledge": [
+        "redo log：InnoDB 存储引擎层，物理日志，崩溃恢复。",
+        "undo log：记录旧版本，支持回滚和快照读。",
+        "binlog：MySQL Server 层，逻辑日志，主从复制和恢复。",
+        "WAL：先写日志，再写数据页。",
+        "两阶段提交：保证 redo log 和 binlog 一致。"
+      ],
+      "answerHtml": "<p class=\"md-p\">三类日志：</p>\n<div class=\"md-table-wrap\"><table class=\"md-table\"><thead><tr><th>日志</th><th>层级</th><th>作用</th></tr></thead><tbody><tr><td>redo log</td><td>InnoDB</td><td>崩溃恢复，保证持久性</td></tr><tr><td>undo log</td><td>InnoDB</td><td>事务回滚，MVCC 旧版本</td></tr><tr><td>binlog</td><td>Server</td><td>主从复制，数据恢复</td></tr></tbody></table></div>\n<p class=\"md-p\">一次事务提交大致流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>InnoDB 写 redo log prepare。</li><li>Server 写 binlog。</li><li>InnoDB 写 redo log commit。</li></ol></div>\n<p class=\"md-p\">为什么要两阶段提交？</p>\n<p class=\"md-p\">如果 redo 和 binlog 不一致，会导致主库崩溃恢复后的数据和从库通过 binlog 重放的数据不一致。两阶段提交让二者保持原子一致：恢复时可以根据 redo prepare 和 binlog 是否存在判断事务应该提交还是回滚。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么有 redo log 还要 binlog？</strong></p>\n<p class=\"md-p\">问题分析：两者层级和用途不同。</p>\n<p class=\"md-p\">知识点：存储引擎层 vs Server 层。</p>\n<p class=\"md-p\">答案：redo 是 InnoDB 崩溃恢复用的物理日志；binlog 是 Server 层逻辑日志，用于复制和恢复到某个时间点。</p>\n<p class=\"md-p\"><strong>变体 2：undo log 什么时候清理？</strong></p>\n<p class=\"md-p\">问题分析：长事务会阻止旧版本清理。</p>\n<p class=\"md-p\">知识点：MVCC、purge。</p>\n<p class=\"md-p\">答案：当没有 Read View 需要旧版本后，purge 线程可清理 undo。长事务会导致 undo 堆积。</p>\n<p class=\"md-p\"><strong>变体 3：binlog 有哪些格式？</strong></p>\n<p class=\"md-p\">问题分析：复制正确性和日志大小权衡。</p>\n<p class=\"md-p\">知识点：statement、row、mixed。</p>\n<p class=\"md-p\">答案：statement 记录 SQL，日志小但某些函数不安全；row 记录行变更，可靠但日志大；mixed 自动选择。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志"
+    },
+    {
+      "id": "database-90",
+      "number": 19,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第三章：事务、锁与日志",
+      "flat": false,
+      "title": "唯一索引与幂等设计",
+      "questionHtml": "<p class=\"md-p\">如何用数据库唯一索引实现接口幂等？例如支付回调、订单创建、消息消费重复到达。</p>",
+      "analysisHtml": "<p class=\"md-p\">幂等是大厂后端高频，尤其和 MQ、支付、订单、异步任务结合。数据库唯一索引是最硬的一层防线，比单纯 Redis 去重更可靠，因为它和业务数据在同一个事务里。</p>",
+      "knowledge": [
+        "幂等键：业务唯一标识，如 <code class=\"tok-inline\">request_id</code>、<code class=\"tok-inline\">order_no</code>、<code class=\"tok-inline\">event_id</code>。",
+        "唯一索引：数据库层防重复。",
+        "状态机：重复请求返回已有状态。",
+        "插入冲突处理：捕获 Duplicate Key。",
+        "Redis 去重：可做前置优化，但不能替代 DB 约束。"
+      ],
+      "answerHtml": "<p class=\"md-p\">订单创建：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE orders (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    order_no VARCHAR(64) NOT NULL,\n    user_id BIGINT NOT NULL,\n    request_id VARCHAR(64) NOT NULL,\n    amount DECIMAL(18, 2) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_request (user_id, request_id),\n    UNIQUE KEY uk_order_no (order_no)\n);</pre></div></section>\n<p class=\"md-p\">处理逻辑：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>客户端或服务端生成 <code class=\"tok-inline\">request_id</code>。</li><li>插入订单。</li><li>如果插入成功，正常返回。</li><li>如果唯一键冲突，查询已有订单并返回相同结果。</li></ol></div>\n<p class=\"md-p\">消息消费：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE consume_log (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    event_id VARCHAR(64) NOT NULL,\n    consumer_group VARCHAR(64) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_event_group (event_id, consumer_group)\n);</pre></div></section>\n<p class=\"md-p\">消费者先插入 <code class=\"tok-inline\">consume_log</code>，插入成功才执行业务。重复消息插入失败，直接返回已有处理结果或 ACK。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：幂等键由谁生成？</strong></p>\n<p class=\"md-p\">问题分析：不同场景来源不同。</p>\n<p class=\"md-p\">知识点：业务唯一性。</p>\n<p class=\"md-p\">答案：支付回调用支付平台流水号；下单用用户维度 request_id；MQ 用 event_id；不能用随机 UUID 每次重试新生成，否则无法幂等。</p>\n<p class=\"md-p\"><strong>变体 2：先查再插能保证幂等吗？</strong></p>\n<p class=\"md-p\">问题分析：并发下先查都不存在。</p>\n<p class=\"md-p\">知识点：竞态条件、唯一约束。</p>\n<p class=\"md-p\">答案：不能。必须依赖唯一索引或锁。推荐直接插入，冲突后查询已有记录。</p>\n<p class=\"md-p\"><strong>变体 3：Redis SETNX 幂等够不够？</strong></p>\n<p class=\"md-p\">问题分析：Redis 和 DB 不在同一事务。</p>\n<p class=\"md-p\">知识点：最终一致、双写风险。</p>\n<p class=\"md-p\">答案：Redis 可做前置防重和削峰，但最终仍应有数据库唯一约束兜底。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志"
+    }
+  ]
+}

@@ -1,0 +1,196 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">设计一张用户流水表，并查询某用户过去 30 天流水。要求说明索引如何建。</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这是后端常见索引题。查询条件是“等值用户 + 时间范围”，典型联合索引场景。索引顺序应先放等值过滤字段，再放范围字段。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>联合索引最左前缀。</li><li>等值字段在前，范围字段在后。</li><li>覆盖索引可减少回表。</li><li>时间范围查询要避免对列使用函数。</li><li>大表按时间归档或分区要结合业务。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">表设计：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE user_transactions (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    direction TINYINT NOT NULL,
+    txn_time DATETIME(6) NOT NULL,
+    biz_no VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_biz_no (biz_no),
+    KEY idx_user_time_id (user_id, txn_time DESC, id DESC)
+);</pre></div></section>
+<p class="md-p">查询：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT id, user_id, amount, direction, txn_time, biz_no
+FROM user_transactions
+WHERE user_id = ?
+  AND txn_time &gt;= ?
+  AND txn_time &lt; ?
+ORDER BY txn_time DESC, id DESC
+LIMIT 100;</pre></div></section>
+<p class="md-p">索引解释：<code class="tok-inline">user_id</code> 是等值条件，放第一位；<code class="tok-inline">txn_time</code> 是范围和排序字段，放第二位；<code class="tok-inline">id</code> 用于稳定排序和游标分页。</p>
+<p class="md-p">传入首次请求冻结的 UTC 起止时间，后续页复用；NOW() 在单语句内是固定值，改绑定参数的重点是跨页一致边界：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">WHERE user_id = ?
+  AND txn_time &gt;= ?
+  AND txn_time &lt; ?</pre></div></section><p class="md-p">主表的 direction 表示方向、amount 表示绝对金额，须约束方向枚举与金额范围；补充完整示例采用有符号 amount 和 currency，是另一独立表模型，不可把两份同名 CREATE TABLE 连续执行。主答案参数依次绑定可信 user_id、end−30天、end；仅返回前 100 条，后续完整 JDBC 分页见本页补充。DATETIME 不携带时区，写读统一 UTC。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：如果查询所有用户过去 30 天流水汇总，索引怎么变？</strong></p>
+<p class="md-p">问题分析：查询不再按单个用户过滤，而是按时间范围扫。</p>
+<p class="md-p">知识点：索引顺序取决于查询条件。</p>
+<p class="md-p">答案：增加 <code class="tok-inline">idx_time_user(txn_time, user_id)</code>，用于按时间范围统计。不能指望 <code class="tok-inline">(user_id, txn_time)</code> 高效支持没有 <code class="tok-inline">user_id</code> 条件的查询。</p>
+<p class="md-p"><strong>变体 2：流水表能不能更新？</strong></p>
+<p class="md-p">问题分析：流水通常是账务事实，更新会破坏审计。</p>
+<p class="md-p">知识点：不可变日志、冲正、审计。</p>
+<p class="md-p">答案：流水尽量只追加不修改。错误流水用反向冲正记录修复，保留完整审计链路。</p>
+<p class="md-p"><strong>变体 3：数据量过亿怎么办？</strong></p>
+<p class="md-p">问题分析：单表过大影响索引高度、备份、DDL 和查询。</p>
+<p class="md-p">知识点：冷热分离、归档、分库分表、分区。</p>
+<p class="md-p">答案：按用户维度查询为主可按 <code class="tok-inline">user_id</code> 分库分表；按时间归档为主可冷热分离；分区表能优化时间范围管理，但不能替代合理索引。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-mysql-database-85">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">最近三十天流水</h3><p class="md-p">这里把过去三十天定义为 UTC 时间上的 [window_end−30 days,window_end)，开始包含、结束不包含。第一次请求冻结 window_end，后续页复用，不要每翻一页都重新 NOW()；若业务要“最近三十个自然日”，应按业务时区另算边界。</p><p class="md-p">金额采用 DECIMAL，币种单独存储，不把 CNY 与 USD 直接相加。时间用 DATETIME(6) 并约定其中存 UTC，游标完整保留微秒及 id。数据包括恰好起点、恰好终点、前一微秒、另一用户、未来、负金额和同一时间两币种：第一页应为 8、7，下一页为 4、1。</p><p class="md-p">应用绑定用户、固定起止、复合游标和有界页大小，不能字符串拼接。连接、事务和时间转换由应用边界统一管理；本章只负责 SQL 与分页机制，JDBC 的完整资源和参数绑定实现应与应用章节配合。</p><p class="md-p">固定窗口只是稳定筛选边界，不是跨请求的数据库快照。之后回填一条窗口内旧时间流水，仍可能出现在某个后续请求里；如需审计导出完全一致，应使用明确的一致性快照、导出任务或已物化结果，并管理持有快照的资源成本。</p><h3 class="md-h md-h3">三十天流水的完整边界数据</h3><p class="md-p">保存为 transactions_page.sql。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">components/query/code/transactions_page.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE user_transactions (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  amount DECIMAL(18,2) NOT NULL,
+  currency CHAR(3) NOT NULL,
+  txn_time DATETIME(6) NOT NULL,
+  description VARCHAR(255) NOT NULL DEFAULT &#39;&#39;,
+  INDEX idx_user_time_id (user_id, txn_time DESC, id DESC)
+) ENGINE=InnoDB;
+
+INSERT INTO user_transactions(id,user_id,amount,currency,txn_time,description) VALUES
+ (1,12345,10.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;inclusive start&#39;),
+ (2,12345,20.00,&#39;CNY&#39;,&#39;2026-10-09 00:00:00.000000&#39;,&#39;exclusive end&#39;),
+ (3,99999,30.00,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.000000&#39;,&#39;another user&#39;),
+ (4,12345,40.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;same-time tie&#39;),
+ (5,12345,50.00,&#39;CNY&#39;,&#39;2026-10-10 00:00:00.000000&#39;,&#39;future&#39;),
+ (6,12345,60.00,&#39;CNY&#39;,&#39;2026-09-08 23:59:59.999999&#39;,&#39;too old&#39;),
+ (7,12345,-0.10,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;outgoing&#39;),
+ (8,12345,0.20,&#39;USD&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;other currency&#39;);
+SET @uid=12345;
+SET @window_end=CAST(&#39;2026-10-09 00:00:00.000000&#39; AS DATETIME(6));
+SET @window_start=DATE_SUB(@window_end,INTERVAL 30 DAY);
+-- First page: expected IDs 8,7. Literal LIMIT makes this directly runnable.
+SELECT id,amount,currency,txn_time,description
+FROM user_transactions
+WHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end
+ORDER BY txn_time DESC,id DESC LIMIT 2;
+-- Copy the complete last row cursor; never recompute the window per page.
+SET @last_time=CAST(&#39;2026-10-08 12:00:00.123456&#39; AS DATETIME(6));
+SET @last_id=7;
+-- Next page: expected IDs 4,1.
+SELECT id,amount,currency,txn_time,description
+FROM user_transactions
+WHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end
+  AND (txn_time&lt;@last_time OR (txn_time=@last_time AND id&lt;@last_id))
+ORDER BY txn_time DESC,id DESC LIMIT 2;
+</pre></div></div><h3 class="md-h md-h3">5. 完整示例：用户过去三十天流水</h3><p class="md-p">“过去三十天”在这个示例中严格指固定 end 之前的 30×24 小时，窗口是 [end−30天,end)，分页复用同一 end 和完整的时间/id 游标。</p><p class="md-p">DATETIME(6) 没有时区。这里约定写入端、查询端把 UTC 墙上时间保存到 DATETIME(6)，Java 使用 UTC Calendar 绑定和读取，end 先截断到微秒。若产品指本地自然日，需要重新定义边界，夏令时日不保证 24 小时。Connector/J 的 connectionTimeZone 不一定改变服务端会话时区，必须配合明确的会话约定；示例连接配置采用 connectionTimeZone=UTC、forceConnectionTimeZoneToSession=true、preserveInstants=true，并要求所有写入端同样遵守。跨 JVM 默认时区、连接时区与会话时区的集成测试仍不可省。</p><p class="md-p">金额为 DECIMAL(18,2)，Java 读取 BigDecimal；收入支出用正负号表达，不同币种不能直接相加。查询身份来自认证结果，pageSize 为 1–1000。固定 end 只防窗口每页滑动，不会阻止晚到的历史补写、删除或更正；严格历史导出还需要固定快照或版本化数据。LIMIT 100 只是第一页，不等于导出了全部流水。</p><p class="md-p">将下面内容保存为 transaction_fixture.sql。它给出全部表和八行边界数据；若用户自行在独立测试 schema 执行，首屏预期 id 为 8、7，后续页为 4、1，这是结果推演，不是运行测量。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">components/application/code/transaction_fixture.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- MySQL 8.4.0/InnoDB teaching fixture. Use an empty local test schema.
+CREATE TABLE user_transactions (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  amount DECIMAL(18,2) NOT NULL,
+  currency CHAR(3) NOT NULL,
+  txn_time DATETIME(6) NOT NULL,
+  description VARCHAR(255) NOT NULL DEFAULT &#39;&#39;,
+  INDEX idx_user_time_id (user_id, txn_time DESC, id DESC)
+) ENGINE=InnoDB;
+
+
+INSERT INTO user_transactions(id,user_id,amount,currency,txn_time,description) VALUES
+ (1,12345,10.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;inclusive start&#39;),
+ (2,12345,20.00,&#39;CNY&#39;,&#39;2026-10-09 00:00:00.000000&#39;,&#39;exclusive end&#39;),
+ (3,99999,30.00,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.000000&#39;,&#39;another user&#39;),
+ (4,12345,40.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;same-time tie&#39;),
+ (5,12345,50.00,&#39;CNY&#39;,&#39;2026-10-10 00:00:00.000000&#39;,&#39;future&#39;),
+ (6,12345,60.00,&#39;CNY&#39;,&#39;2026-09-08 23:59:59.999999&#39;,&#39;too old&#39;),
+ (7,12345,-0.10,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;outgoing&#39;),
+ (8,12345,0.20,&#39;USD&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;other currency&#39;);
+SET @uid=12345;
+SET @window_end=CAST(&#39;2026-10-09 00:00:00.000000&#39; AS DATETIME(6));
+SET @window_start=DATE_SUB(@window_end,INTERVAL 30 DAY);
+-- First page: expected IDs 8,7. Literal LIMIT makes this directly runnable.
+SELECT id,amount,currency,txn_time,description
+FROM user_transactions
+WHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end
+ORDER BY txn_time DESC,id DESC LIMIT 2;
+-- Copy the complete last row cursor; never recompute the window per page.
+SET @last_time=CAST(&#39;2026-10-08 12:00:00.123456&#39; AS DATETIME(6));
+SET @last_id=7;
+-- Next page: expected IDs 4,1.
+SELECT id,amount,currency,txn_time,description
+FROM user_transactions
+WHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end
+  AND (txn_time&lt;@last_time OR (txn_time=@last_time AND id&lt;@last_id))
+ORDER BY txn_time DESC,id DESC LIMIT 2;
+</pre></div></div><p class="md-p">将下面完整类保存为 TransactionQueries.java。firstPage 与 nextPage 共用窗口规则，返回页面而不一次性加载全部数据；调用方循环取最后一行形成下一页游标，空页结束。当前连接由调用方管理，方法只关语句和结果集。main 仅检查时间、金额和输入边界，不连接数据库。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">components/application/code/TransactionQueries.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.math.BigDecimal;
+import java.sql.*;
+import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+public final class TransactionQueries {
+    private TransactionQueries() {}
+    public record Transaction(long id, BigDecimal amount, String currency,
+                              Instant time, String description) {}
+    public record Cursor(Instant time, long id) {
+        public Cursor {
+            Objects.requireNonNull(time, &quot;time&quot;);
+            if (id &lt;= 0 || !time.equals(time.truncatedTo(ChronoUnit.MICROS)))
+                throw new IllegalArgumentException(&quot;positive id and exact microsecond cursor required&quot;);
+        }
+    }
+    public static Instant startOfWindow(Instant end) {
+        return Objects.requireNonNull(end, &quot;end&quot;).truncatedTo(ChronoUnit.MICROS)
+                      .minus(30, ChronoUnit.DAYS);
+    }
+    public static List&lt;Transaction&gt; firstPage(Connection c, long trustedUser,
+            Instant end, int pageSize) throws SQLException {
+        return page(c, trustedUser, end, pageSize, null);
+    }
+    public static List&lt;Transaction&gt; nextPage(Connection c, long trustedUser,
+            Instant end, int pageSize, Cursor cursor) throws SQLException {
+        return page(c, trustedUser, end, pageSize, Objects.requireNonNull(cursor));
+    }
+    private static List&lt;Transaction&gt; page(Connection c, long user, Instant end,
+            int size, Cursor cursor) throws SQLException {
+        Objects.requireNonNull(c, &quot;connection&quot;);
+        if (user &lt;= 0 || size &lt; 1 || size &gt; 1000)
+            throw new IllegalArgumentException(&quot;user &gt; 0, pageSize 1..1000&quot;);
+        end = Objects.requireNonNull(end, &quot;end&quot;).truncatedTo(ChronoUnit.MICROS);
+        Instant start = startOfWindow(end);
+        if (cursor != null &amp;&amp; (cursor.time().isBefore(start) || !cursor.time().isBefore(end)))
+            throw new IllegalArgumentException(&quot;cursor must belong to the fixed window&quot;);
+        String sql = &quot;SELECT id,amount,currency,txn_time,description FROM user_transactions &quot;
+                   + &quot;WHERE user_id=? AND txn_time&gt;=? AND txn_time&lt;? &quot;
+                   + (cursor == null ? &quot;&quot; : &quot;AND (txn_time&lt;? OR (txn_time=? AND id&lt;?)) &quot;)
+                   + &quot;ORDER BY txn_time DESC,id DESC LIMIT ?&quot;;
+        Calendar utc = Calendar.getInstance(TimeZone.getTimeZone(&quot;UTC&quot;));
+        try (PreparedStatement p = c.prepareStatement(sql)) {
+            int i = 1;
+            p.setLong(i++, user);
+            p.setTimestamp(i++, Timestamp.from(start), utc);
+            p.setTimestamp(i++, Timestamp.from(end), utc);
+            if (cursor != null) {
+                p.setTimestamp(i++, Timestamp.from(cursor.time()), utc);
+                p.setTimestamp(i++, Timestamp.from(cursor.time()), utc);
+                p.setLong(i++, cursor.id());
+            }
+            p.setInt(i, size); p.setQueryTimeout(10);
+            try (ResultSet r = p.executeQuery()) {
+                List&lt;Transaction&gt; result = new ArrayList&lt;&gt;();
+                while (r.next()) result.add(new Transaction(r.getLong(&quot;id&quot;),
+                    r.getBigDecimal(&quot;amount&quot;), r.getString(&quot;currency&quot;),
+                    r.getTimestamp(&quot;txn_time&quot;, utc).toInstant(), r.getString(&quot;description&quot;)));
+                return List.copyOf(result);
+            }
+        }
+    }
+    public static void main(String[] args) {
+        Instant end = Instant.parse(&quot;2026-10-09T00:00:00.000000999Z&quot;);
+        if (!startOfWindow(end).equals(Instant.parse(&quot;2026-09-09T00:00:00Z&quot;)))
+            throw new AssertionError(&quot;time window&quot;);
+        if (new BigDecimal(&quot;0.10&quot;).add(new BigDecimal(&quot;0.20&quot;))
+                .compareTo(new BigDecimal(&quot;0.30&quot;)) != 0) throw new AssertionError(&quot;money&quot;);
+        try {
+            new Cursor(end, 1);
+            throw new AssertionError(&quot;nanosecond cursor accepted&quot;);
+        } catch (IllegalArgumentException expected) { }
+        System.out.println(&quot;PASS pure Java time/money/cursor checks; no database connection&quot;);
+    }
+}
+</pre></div></div><p class="md-p">有 JDK 21 时，在 TransactionQueries.java 所在目录运行：javac --release 21 TransactionQueries.java，然后 java TransactionQueries。纯 Java 自检无需 Connector/J。数据库集成才需要 com.mysql:mysql-connector-j:8.4.0 和获准的本地测试连接；本章不提供会自动连库或读取生产凭据的启动器。可在你已有项目中用 DataSource 借连接后调用这些方法，驱动加载、连接参数与访问凭据由该项目安全配置负责。</p><p class="md-p">继续追问时应能回答：start 包含而 end 不包含；同一微秒以 id 消除并列；下一页保留完整微秒；负金额不是非法；汇总按 currency；SQL NULL 与零不同；无数据与查询失败不同；何时需要一致快照；连接谁拥有，事务谁结束。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

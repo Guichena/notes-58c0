@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-98",
+  "entryId": "database-98",
+  "expectedOriginalHash": "80a97ca177184c2ebc5447d84e7bb7da9ec232160f0964c80fa9be31f584ef10",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第09章 会话 工单 任务和资产的持久化模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "可恢复系统要把稳定身份、不可变输入版本、状态迁移和副作用意图持久化；缓存、流式显示、数据库提交和最终业务成功各自有不同边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：会话与消息怎么建表？流式回复什么时候合并？任务的包含关系、显示顺序和依赖怎样保存？工单文档如何结构化？上传状态与检查点为什么要分开？"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先画一条状态链：请求有逻辑命令 ID，任务绑定输入版本，运行拥有独立 run ID，外部调用使用稳定请求号，生成产物通过不可变引用发布。重试复用同一逻辑命令的 ID，重新发起的业务操作才创建新 ID。唯一键只防止同一键多行；同号不同载荷、迟到结果和超时未知结果仍须由协议处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果把制造业通知与工单场景扩展为 MySQL 方案，可设计受理、Outbox、消费账本、渠道发送意图、审批版本和案例投影。这是有条件的技术推演，不能由此推定实际业务库、隔离级别或复制拓扑。RabbitMQ 的发布确认、渠道受理和人已收到通知也不是同一个成功状态。NoteWeave 当前代码可用于解释 MySQL/JDBC/Flyway 承载关系状态以及检查点恢复的分层；代码存在与默认启用、历史职责、生产运行效果仍是不同命题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "项目数据库的表与索引怎样设计，聚合索引的歧义和带过期时间查询怎样处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "表设计从身份、关系和状态不变量开始，索引从真实谓词与排序推导，业务过期必须在读写路径主动判断。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：项目数据库的表与索引怎样设计，聚合索引的歧义和带过期时间查询怎样处理？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先定义对象、关系与业务不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "先列业务实体/生命周期、主键与候选唯一键、1:N/N:N关系、状态转换和事务边界，再按真实读写SQL决定索引。金额用精确数值，时间明确UTC/时区，未知与必填分别用NULL/NOT NULL；租户边界、删除策略、审计版本与幂等键进入schema，不能只画实体名称。"
+    },
+    {
+      "type": "paragraph",
+      "text": "规范化减少更新/插入/删除异常，读模型或历史快照可冗余但必须说明来源和更新协议。选择订单、明细、支付或会话等几个真实聚合，逐一讲主访问路径与约束；题目未指定表数量和访问耗时，不能据此给出唯一规模结论。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从具体谓词决定列序，并澄清聚合一词"
+    },
+    {
+      "type": "paragraph",
+      "text": "WHERE B=10 AND A>0 AND A<100时，(B,A)可先定位固定B段再扫描A范围，通常比先扫所有0<A<100再过滤B更窄；若投影覆盖或其他主查询只按A，(A,B)仍可能有整体价值。最终以数据分布/执行计划和读写代价比较，不把候选“先B后A”当无条件结论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题意“聚合索引”不是这里统一标准术语。若指多列索引，按联合索引(a,b,c)的字典序解释最左前缀和CREATE INDEX；若指聚簇索引，则描述叶页保存行与唯一组织。下一题最左匹配暗示联合索引，但应保留歧义，不默默把两个概念合并。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "过期字段必须进入有效性判断"
+    },
+    {
+      "type": "paragraph",
+      "text": "教学leases含tenant_id、user_id、state、expires_at、version，expires_at为空明确表示无截止；时点now有效条件为state=ACTIVE AND (expires_at IS NULL OR expires_at>now)，等于now已经过期。后台清理还没删物理行，查询也不能把过期记录当有效。时间统一单位并使用可信时钟，不能让客户端任意传未来/过去时间绕校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户有效列表可评估(tenant_id,user_id,state,expires_at,id)，到期清理可评估(state,expires_at,id)。一个索引无法在所有混合OR/排序/分页条件下都最优；有大量永不过期项时，可按业务拆查询/状态投影，但需保持NULL语义和结果去重。分页用唯一稳定顺序/游标，清理小批提交，避免长事务和大范围锁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "代码与边界条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "索引存在不证明会被选，用EXPLAIN及同参数ANALYZE比较实际扫描、回表、排序与写入成本；新增索引应验证构建期间DDL/磁盘/复制影响。若追问实际规模，应给出真实表结构、数据分布和测量条件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 expiry_model.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/expiry_model.sql",
+      "value": "-- Portable value semantics; logical integer UTC instants in a declared unit.\nCREATE TABLE leases (\n  id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL, user_id BIGINT NOT NULL,\n  state VARCHAR(12) NOT NULL, expires_at BIGINT, version BIGINT NOT NULL\n);\nCREATE INDEX ix_user_live ON leases(tenant_id,user_id,state,expires_at,id);\nCREATE INDEX ix_due ON leases(state,expires_at,id);\nINSERT INTO leases VALUES(1,1,7,'ACTIVE',100,0),(2,1,7,'ACTIVE',101,0),\n (3,1,7,'ACTIVE',NULL,0),(4,2,7,'ACTIVE',200,0),(5,1,7,'REVOKED',200,0);\n-- At instant 100, IDs 2 and 3 are usable for tenant 1 / user 7.\nSELECT id FROM leases WHERE tenant_id=1 AND user_id=7 AND state='ACTIVE'\n  AND (expires_at IS NULL OR expires_at>100) ORDER BY id;\n-- Cleanup is asynchronous; boundary expires_at=now is already invalid.\nSELECT id FROM leases WHERE state='ACTIVE' AND expires_at<=100 ORDER BY expires_at,id;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "代码/文档校验项目需要哪些持久化，数据库、文件和检索索引分别存什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久化不等于一定要关系数据库；多人协作和可恢复校验需要固定输入版本、任务状态、结果证据及权限元数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：代码/文档校验项目需要哪些持久化，数据库、文件和检索索引分别存什么？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先区分真正不落盘与不用关系数据库"
+    },
+    {
+      "type": "paragraph",
+      "text": "若程序只读现有仓库和本地文档、即时比较并输出报告，事实本来就持久在Git/文件中，可能无需另建业务数据库；只把结果放内存则进程重启会丢未保存任务。是否需要跨设备、多用户、历史审计和断点恢复决定是否增加服务端存储，不能从前端项目推断“全在浏览器”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果有多人协作和异步校验，可在关系库保存project/成员权限、repository/source注册、revision及content hash、check_run任务状态、finding结果和证据位置、用户确认状态。原代码/大文档/大报告可放原有版本库或对象存储，DB存可回读且受控的引用与hash；Embedding/倒排索引是由这些版本派生的搜索视图。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一份结果必须指向同一批输入"
+    },
+    {
+      "type": "paragraph",
+      "text": "check_run绑定代码commit、文档revision、规则版本和模型配置，finding指具体文件/范围/规则及证据。不能用今天代码与昨天文档比完又把结果标签成最新；异步任务启动固定manifest，发布结果检查是否仍适用当前版本，旧结果保留历史标记而非静默覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写任务和可靠事件可同事务，worker按run/request ID幂等产出，状态机防晚结果覆盖取消/已新建任务。SQLite单机可承担小型本地任务库，多实例共享服务需重新考虑连接、锁、备份与迁移；Zustand 内存状态、IndexedDB 本地缓存与服务端权威事实应分别定义恢复和同步边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "查询、索引和生命周期"
+    },
+    {
+      "type": "paragraph",
+      "text": "常用查询按tenant/project+状态+创建时间、run+严重度/文件；组合索引按过滤排序设计并用真实计划验证，finding大量正文可外置但稳定引用不能丢。删除项目需要传播到对象引用、任务结果、全文/向量和缓存，版本间共用对象要确认仍被谁引用再回收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试重启续跑、双worker重复结果、相同内容不同权限、文件删除/移动、老run晚完成、撤权和备份恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把过期 并发和未知结果接回业务状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "条件 UPDATE 影响 0 行可能表示不存在、租户不符、旧版本、状态已变或已经过期，不能直接当重复成功。若要把重复请求当成功，须读取该逻辑命令的持久收据，确认身份与不可变载荷一致。一次逻辑命令的网络重试必须复用 command_id；每次双击都新建 command_id 不能单独实现防双击。"
+    },
+    {
+      "type": "paragraph",
+      "text": "截止时间还必须说明判定时点。MySQL NOW() 对一条语句取语句开始时刻；语句在截止前开始、锁等待到截止后才执行时，不能据此承诺“提交瞬间仍未过期”。若需要获取守卫后重新判定，可把锁定与时间判断分成受控步骤，明确线性化点，并针对锁等待跨期限写集成测试。后台 Job 是物理状态清理，不能替代读写路径中的有效性条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "检索投影回查权威库能排除复核时已经撤销或版本过时的数据，但复核到使用、模型生成及展示之间仍有时间窗口。敏感用途可以在交模型前或展示前重新授权，必要时结合版本门控和取消；不能把“回查一次”说成所有阶段瞬时撤销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave 当前代码中的检查点有两条路径：旧记录保存对象引用，INCREMENTAL_V1 的 hydration 载荷直接存入 MySQL，并在恢复时校验身份、大小、哈希和账本摘要。它恢复的是业务账本，不能恢复 JVM 线程栈；相关高级开关还存在默认关闭的配置，是否生效由本次运行的冻结配置决定。制造业平台的教学表名、MySQL 版本与复制方案不能从这一项目移植成实际经历。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

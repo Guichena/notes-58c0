@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-alignment-code",
+  "kind": "doc",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "实现参考与验证边界",
+  "title": "完整 PyTorch 与 NumPy：对齐损失及数值反例",
+  "tags": [
+    "完整教学代码",
+    "未执行源代码"
+  ],
+  "sections": [
+    {
+      "id": "s-alignment-415",
+      "title": "14 原生损失与 PPO 更新代码",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 原生实现 DPO、GAE、组内优势和 PPO 更新，怎样区别 token 平均与 sequence 平均？"
+        },
+        {
+          "type": "paragraph",
+          "text": "这份 PyTorch 代码把前面四类计算放在一起：DPO 的序列 log-prob、组内优势、区分终止与截断的 GAE，以及 PPO/GRPO/DAPO 可用的裁剪损失；另有离散策略的一次 actor/critic 更新。读代码时先沿输入、mask、优势和聚合方式追踪一个样本，再核对梯度与边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这些构件尚不是完整 RLHF：仍需接入 LLM rollout、reference KL、奖励和分布式采样。下面的输入合同与实现一并保留，不能因能解释损失就声称已验证端到端训练。"
+        },
+        {
+          "type": "paragraph",
+          "text": "GAE 示例的五个输入都采用相同设备上的 B×T 形状，B、T 均为正。values 和 next_values 使用相同的 float32 或 float64 类型；奖励允许整数表示，计算前转成价值估计的浮点类型，优势和回报也用该类型保存。terminated 与 trace_continues 是布尔张量：真实终止关闭 bootstrap 并切断轨迹递推；截断可保留 next value，但也必须切断轨迹递推。输入数值应有限，γ、λ 在 [0,1] 内；填充位置要先排除，或将其奖励和价值置零并切断递推，不能把别的 episode 接进来。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "alignment/policy_losses.py",
+          "value": "\"\"\"Preference and policy losses with a categorical PPO update.\"\"\"\nimport torch\nfrom torch.nn import functional as F\n\n\ndef masked_mean(x, mask):\n    mask=mask.to(x.dtype)\n    n=mask.sum()\n    if n.item() <= 0:\n        raise ValueError('empty action mask')\n    return (x*mask).sum()/n\n\n\ndef sequence_logps(logits, ids, action_mask):\n    if logits.shape[:2] != ids.shape or ids.shape != action_mask.shape:\n        raise ValueError('shape mismatch')\n    logp=F.log_softmax(logits[:,:-1,:].float(),dim=-1)\n    chosen=logp.gather(-1,ids[:,1:,None]).squeeze(-1)\n    return (chosen*action_mask[:,1:]).sum(-1)\n\n\ndef dpo_loss(chosen, rejected, ref_chosen, ref_rejected, beta=.1):\n    if beta <= 0:\n        raise ValueError('beta must be positive')\n    margin=(chosen-rejected)-(ref_chosen.detach()-ref_rejected.detach())\n    return -F.logsigmoid(beta*margin).mean()\n\n\ndef group_advantage(rewards, eps=1e-8):\n    # rewards: prompts x responses. All-equal group yields zero advantage.\n    if rewards.ndim != 2 or rewards.size(1) < 2:\n        raise ValueError('at least two responses per prompt')\n    r=rewards.float()\n    return ((r-r.mean(-1,keepdim=True))/(r.std(-1,unbiased=False,keepdim=True)+eps)).detach()\n\n\ndef gae(rewards, values, next_values, terminated, trace_continues,\n        gamma=.99, lam=.95):\n    # Inputs: B,T. At truncation, next_values may bootstrap, but trace stops.\n    # terminated suppresses bootstrap; trace_continues controls trace recursion.\n    if values.dtype not in (torch.float32, torch.float64) or next_values.dtype != values.dtype:\n        raise ValueError('float32/float64 value estimates with matching dtype required')\n    rewards=rewards.to(dtype=values.dtype)\n    adv=torch.zeros_like(values)\n    running=torch.zeros_like(values[:,0])\n    for t in reversed(range(rewards.size(1))):\n        delta=rewards[:,t]+gamma*(~terminated[:,t]).to(values.dtype)*next_values[:,t]-values[:,t]\n        running=delta+gamma*lam*trace_continues[:,t].to(values.dtype)*running\n        adv[:,t]=running\n    return adv.detach(),(adv+values).detach()\n\n\ndef clipped_policy_loss(new_logp, old_logp, advantage, mask,\n                        clip_low=.2, clip_high=.2, reduction='token'):\n    log_ratio=new_logp.float()-old_logp.detach().float()\n    if not torch.isfinite(log_ratio).all() or log_ratio.max().item() > 80:\n        raise FloatingPointError('unstable importance ratios')\n    ratio=log_ratio.exp()\n    a=advantage.detach()\n    objective=torch.minimum(ratio*a,ratio.clamp(1-clip_low,1+clip_high)*a)\n    if reduction == 'sequence':\n        count=mask.sum(-1)\n        if torch.any(count == 0):\n            raise ValueError('empty sequence')\n        return -((objective*mask).sum(-1)/count).mean()\n    if reduction != 'token':\n        raise ValueError('invalid reduction')\n    return -masked_mean(objective,mask)\n\n\ndef ppo_update(actor, critic, optimizer, states, actions, old_logp,\n               old_values, advantages, returns, mask, clip=.2,\n               value_coef=.5, entropy_coef=.01):\n    # A minimal categorical policy update. Caller owns rollout and GAE.\n    dist=torch.distributions.Categorical(logits=actor(states))\n    logp=dist.log_prob(actions)\n    policy=clipped_policy_loss(logp,old_logp,advantages,mask,clip,clip)\n    values=critic(states).squeeze(-1)\n    clipped=old_values.detach()+(values-old_values.detach()).clamp(-clip,clip)\n    vf=.5*masked_mean(torch.maximum((values-returns.detach()).square(),\n                                    (clipped-returns.detach()).square()),mask)\n    entropy=masked_mean(dist.entropy(),mask)\n    loss=policy+value_coef*vf-entropy_coef*entropy\n    optimizer.zero_grad(set_to_none=True)\n    loss.backward()\n    params=list(actor.parameters())+list(critic.parameters())\n    norm=torch.nn.utils.clip_grad_norm_(params,1.)\n    if not torch.isfinite(norm):\n        raise FloatingPointError('nonfinite gradient')\n    optimizer.step()\n    return {'loss':float(loss.detach()),'policy':float(policy.detach()),\n            'value':float(vf.detach()),'entropy':float(entropy.detach())}\n\n\ndef tests():\n    a=group_advantage(torch.tensor([[1.,1.],[0.,1.]]))\n    torch.testing.assert_close(a,torch.tensor([[0.,0.],[-1.,1.]]))\n    l=dpo_loss(torch.tensor([0.]),torch.tensor([0.]),torch.tensor([0.]),torch.tensor([0.]))\n    torch.testing.assert_close(l,torch.log(torch.tensor(2.)))\n    ratios=torch.tensor([[1.5,.5]])\n    loss=clipped_policy_loss(ratios.log(),torch.zeros_like(ratios),\n                            torch.tensor([[1.,-1.]]),torch.ones_like(ratios))\n    torch.testing.assert_close(loss,torch.tensor(-.2))\n    r=torch.tensor([[1.,2.]])\n    adv,ret=gae(r,torch.zeros_like(r),torch.zeros_like(r),\n                torch.tensor([[False,True]]),torch.tensor([[True,False]]),1.,1.)\n    torch.testing.assert_close(adv,torch.tensor([[3.,2.]]))\n    print('PASS mathematical loss/GAE tests; this is not an end-to-end rollout test')\n\nif __name__ == '__main__': tests()\n"
+        }
+      ]
+    },
+    {
+      "id": "s-alignment-540",
+      "title": "15 数值反例与代数检验",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 用数值例子检验 KL、clip 分支、DPO 双概率下降和全同分组。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先不运行代码，手算 KL 方向和 k3 估计值，再用正负优势各检查一次 min 分支；最后解释 DPO 双概率下降以及全同分组为什么没有相对信号。下面的数值反例正对应这四处容易背错的结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对照测试可检查代数判断，但不能据此宣称端到端训练有效。完整训练的质量、收敛和吞吐仍要在独立任务上比较。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "alignment/alignment_counterexamples.py",
+          "value": "\"\"\"CPU mathematical counterexamples for preference and policy optimization.\"\"\"\nimport numpy as np\n\ndef kl(p,q):\n    p,q=np.array(p,float),np.array(q,float)\n    if np.any(p<=0) or np.any(q<=0) or not np.isclose(p.sum(),1) or not np.isclose(q.sum(),1):\n        raise ValueError('strictly positive probability vectors')\n    return np.sum(p*np.log(p/q))\n\ndef main():\n    p=np.array([.2,.8]);q=np.array([.5,.5]);d=np.log(q/p)\n    np.testing.assert_allclose(np.sum(p*(np.exp(d)-d-1)),kl(p,q))\n    assert not np.isclose(kl(p,q),kl(q,p))\n    ratio=np.array([1.5,.5]);adv=np.array([1.,-1.])\n    target=np.minimum(ratio*adv,np.clip(ratio,.8,1.2)*adv)\n    np.testing.assert_allclose(target,[1.2,-.8])\n    assert np.all(np.minimum(np.array([.5,1.5])*adv,np.clip([.5,1.5],.8,1.2)*adv)==[.5,-1.5])\n    # Both probabilities can fall while the chosen/rejected preference improves.\n    before=np.log(.2/.1);after=np.log(.15/.05)\n    assert after>before and .15<.2 and .05<.1\n    reward=np.array([[2.,2.],[0.,1.]])\n    a=(reward-reward.mean(-1,keepdims=True))/(reward.std(-1,keepdims=True)+1e-8)\n    np.testing.assert_allclose(a,[[0,0],[-1,1]],atol=1e-7)\n    print('PASS KL direction/k3 value; both signs of PPO min; DPO probability-decrease counterexample; group normalization')\nif __name__=='__main__': main()\n"
+        }
+      ]
+    }
+  ]
+}

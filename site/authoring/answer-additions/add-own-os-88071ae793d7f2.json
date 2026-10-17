@@ -1,0 +1,246 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-88071ae793d7f2",
+  "entryId": "own-juc-coordination",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "fce0e5dce5a93dbc088f5e63b6f047ce2df57550ee695ceb0e3a1288737d2834",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "生产者消费者怎样从单生产单消费升级到MPMC"
+    },
+    {
+      "type": "paragraph",
+      "text": "MPMC有界队列必须原子维护数据、索引、数量和关闭状态，并通过条件等待避免丢失唤醒。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不能只把线程数量改大"
+    },
+    {
+      "type": "paragraph",
+      "text": "把 SPSC 改成 MPMC，不能只多启动几个线程。SPSC 的一些环队列依赖生产者独占写索引、消费者独占读索引；一旦多生产者争 tail、多消费者争 head，没有原子协调就可能覆盖、重复领取或读到未初始化元素。"
+    },
+    {
+      "type": "paragraph",
+      "text": "通用教学方案先用一把 mutex 保护数组、head、tail、count 和 closed，再用 not_empty/not_full 两个条件分别协调读写等待。"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量为c的不变量是0≤count≤c，head指下一个出队位置、tail指下一个入队位置。入队在非满且未关闭时写元素、推进tail并加count；出队在非空时读取、推进head并减count。这些复合操作必须在同一临界区线性化，不能先在锁外看size再决定入队。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "条件等待与内存可见性"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产者while队列满且未关闭时等待not_full，消费者while空且未关闭时等待not_empty；wait原子释放mutex并在返回前重取，循环/谓词形式处理虚假唤醒及其他线程先取走资源。入队后唤醒一个消费者，出队后唤醒一个生产者。数据和索引都在锁协议里，通知仅促使重查，不代表许可被专门预留给某个线程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个条件配notify_one可能唤醒错误类别的等待者而停滞，两条件分别唤醒更清楚；关闭必须唤醒两边全部等待者。C++示例解锁后notify以减少立即唤醒再抢锁的竞争；Java Condition要求持有关联锁才能signal。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "关闭 失败和不同线程数的协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "关闭队列要先约定已有数据怎么办。本实现 close 幂等，之后拒绝新入队，但已经入队的元素继续被取走；只有关闭且为空时，pop/take 才返回无值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "正常收尾由控制者等待全部生产者结束后再 close，不能第一个生产者结束就关，消费者也不随意关闭共享队列。立即取消时可用 close 解除等待，但“排空已有数据”和“丢弃剩余任务”是不同 API 合同，必须明确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不用某个普通int作停止哨兵，以免与合法数据冲突；若使用毒丸，必须正确覆盖所有消费者且只在全部生产结束后发送。任务执行移出队列锁，异常通过独立结果/错误通道传回，队列内取出不等于业务处理成功。重试可能重复副作用，队列只保证本次进程内领取协议，不提供持久化或端到端exactly-once。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++ bounded_mpmc.cpp使用固定int环数组避免元素拷贝异常扰乱不变量；Java BoundedIntQueue以ReentrantLock和两个Condition实现同样关闭后排空语义，等待支持InterruptedException且finally释放锁。调用者收到中断应按职责传播或恢复中断标志，不能无声吞掉继续工作。每次成功入出队数组操作O(1)，空间O(c)，阻塞时间不承诺常数或公平。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C/C++跨进程同步不能复用普通进程内mutex假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程间可用std::mutex/condition_variable或pthread互斥原语；不同进程各自new一把std::mutex不是同一同步对象，也不能把标准C++对象直接放共享页就假定获得可移植的跨进程契约。Linux/POSIX可在真正共享映射中放pthread_mutex_t，并在初始化属性中指定PTHREAD_PROCESS_SHARED，所有进程按同一对象与生命周期使用；匿名sem_init的pshared非零也要求sem_t位于共享存储，或用sem_open具名信号量。P操作获取/扣许可，V操作归还/唤醒，用于槽位、并发名额和阶段交接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨进程条件变量也要设进程共享属性，并关联正确的 mutex。若使用 robust mutex，持锁进程死亡后，下一获取者可能得到 EOWNERDEAD；这时必须先修复共享不变量，再按协议调用 pthread_mutex_consistent。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能忽略错误继续使用半写数据。健壮锁只报告特定拥有者死亡，不会自动恢复业务事务；文件锁、消息队列或单独服务可以提供其他边界，但仍需核对崩溃与继承语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "bounded_mpmc.cpp 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "label": "bounded_mpmc.cpp",
+      "value": "#include <algorithm>\n#include <atomic>\n#include <cassert>\n#include <condition_variable>\n#include <cstddef>\n#include <iostream>\n#include <mutex>\n#include <optional>\n#include <stdexcept>\n#include <thread>\n#include <vector>\nclass IntQueue {\n    std::mutex mu;\n    std::condition_variable not_empty, not_full;\n    std::vector<int> data;\n    std::size_t head=0, tail=0, count=0;\n    bool closed=false;\n    static std::size_t checked(std::size_t n) {\n        if(n==0 || n>4096) throw std::invalid_argument(\"capacity 1..4096\");\n        return n;\n    }\npublic:\n    explicit IntQueue(std::size_t capacity):data(checked(capacity)){}\n    bool push(int v) {\n        std::unique_lock<std::mutex> lk(mu);\n        not_full.wait(lk,[&]{return closed || count<data.size();});\n        if(closed) return false;\n        data[tail]=v; tail=(tail+1)%data.size(); ++count;\n        lk.unlock(); not_empty.notify_one(); return true;\n    }\n    std::optional<int> pop() {\n        std::unique_lock<std::mutex> lk(mu);\n        not_empty.wait(lk,[&]{return closed || count>0;});\n        if(count==0) return std::nullopt;\n        int v=data[head]; head=(head+1)%data.size(); --count;\n        lk.unlock(); not_full.notify_one(); return v;\n    }\n    void close() {\n        {std::lock_guard<std::mutex> lk(mu); closed=true;}\n        not_empty.notify_all(); not_full.notify_all();\n    }\n};\nint main() {\n    for(std::size_t cap: {0u,4097u}) {\n        bool threw=false; try {IntQueue q(cap);}catch(const std::invalid_argument&){threw=true;}\n        assert(threw);\n    }\n    IntQueue fifo(3); assert(fifo.push(7)&&fifo.push(8)); fifo.close(); fifo.close();\n    assert(fifo.pop()==7 && fifo.pop()==8 && !fifo.pop() && !fifo.push(9));\n    // Close races are tested even if close wins just before the actual wait.\n    for(int n=0;n<100;++n) {\n        IntQueue full(1); assert(full.push(1)); std::atomic<bool> attempted{false}; bool result=true;\n        std::thread p([&]{attempted=true;result=full.push(2);});\n        while(!attempted.load()) {std::this_thread::yield();}\n        full.close(); p.join(); assert(!result);\n        assert(full.pop()==1 && !full.pop());\n        IntQueue empty(1); attempted=false; std::optional<int> v=42;\n        std::thread c([&]{attempted=true;v=empty.pop();});\n        while(!attempted.load()) {std::this_thread::yield();}\n        empty.close();c.join();assert(!v);\n    }\n    int trials=0, total=0;\n    for(int np: {1,4}) for(std::size_t cap: {1u,2u,17u}) for(int round=0;round<20;++round) {\n        const int each=200, n=np*each, nc=np==1?1:3;\n        IntQueue q(cap); std::vector<int> seen(static_cast<std::size_t>(n));\n        std::mutex seen_mu; std::vector<std::thread> ps,cs;\n        for(int c=0;c<nc;++c)cs.emplace_back([&]{\n            while(auto v=q.pop()) {\n                assert(*v>=0 && *v<n);std::lock_guard<std::mutex> lk(seen_mu);\n                ++seen[static_cast<std::size_t>(*v)];\n            }\n        });\n        for(int p=0;p<np;++p)ps.emplace_back([&,p]{\n            for(int i=0;i<each;++i)assert(q.push(p*each+i));\n        });\n        for(auto& t:ps) {t.join();}\n        q.close(); for(auto& t:cs) {t.join();}\n        for(int count:seen)assert(count==1);\n        assert(!q.pop() && !q.push(99));++trials;total+=n;\n    }\n    std::cout<<\"PASS C++ queue: \"<<trials<<\" SPSC/MPMC trials, \"<<total<<\" unique items, 200 close races\\n\";\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "BoundedIntQueue.java 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "BoundedIntQueue.java",
+      "value": "import java.util.OptionalInt;\nimport java.util.concurrent.locks.Condition;\nimport java.util.concurrent.locks.ReentrantLock;\npublic final class BoundedIntQueue {\n    private final ReentrantLock lock=new ReentrantLock();\n    private final Condition notEmpty=lock.newCondition(),notFull=lock.newCondition();\n    private final int[] items;\n    private int head,tail,size;\n    private boolean closed;\n    public BoundedIntQueue(int capacity) {\n        if(capacity<1 || capacity>4096)throw new IllegalArgumentException(\"capacity 1..4096\");\n        items=new int[capacity];\n    }\n    public boolean put(int value) throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while(!closed && size==items.length)notFull.await();\n            if(closed)return false;\n            items[tail]=value;tail=(tail+1)%items.length;size++;\n            notEmpty.signal();return true;\n        }finally{lock.unlock();}\n    }\n    public OptionalInt take() throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while(!closed && size==0)notEmpty.await();\n            if(size==0)return OptionalInt.empty();\n            int value=items[head];head=(head+1)%items.length;size--;\n            notFull.signal();return OptionalInt.of(value);\n        }finally{lock.unlock();}\n    }\n    public void close() {\n        lock.lock();\n        try{closed=true;notEmpty.signalAll();notFull.signalAll();}\n        finally{lock.unlock();}\n    }\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "C++主线程等子线程消费资源 怎样用mutex和condition_variable正确实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "主线程先创建resource、mutex、condition_variable和done=false，再启动子线程，保证这些对象活到子线程退出。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "需要保护的是状态而不是通知次数"
+    },
+    {
+      "type": "paragraph",
+      "text": "主线程先创建resource、mutex、condition_variable和done=false，再启动子线程，保证这些对象活到子线程退出。子线程持同一把mutex访问或修改resource，把done设为true，释放锁后notify；主线程用unique_lock加锁，再以谓词done等待。"
+    },
+    {
+      "type": "paragraph",
+      "text": "条件变量等待不怕通知先来，前提是把“完成事实”保存在受保护的状态里。wait 原子释放 mutex 并等待，醒来后重新加锁；谓词版本不断检查 done，处理虚假唤醒和竞争。即使子线程先通知，done 已为 true，主线程也能直接通过。"
+    },
+    {
+      "type": "paragraph",
+      "text": "反过来，主线程拿着 mutex 去 join，而子线程还需要这把锁才能结束，就会形成死锁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完成与失败都要有收尾路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "子线程异常不能直接越过std::thread入口，否则可能terminate；示例捕获并保存exception_ptr，在锁下设置done，通知主线程，主线程join后再传播错误。所有访问共享int和状态的并发路径使用同一把锁；join在成功返回后也建立相应同步关系，但不能替代线程运行过程中需要的互斥。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以只用join等待整个子线程结束，但题目要展示消费完成的wait语义时，条件变量能把“资源已消费”与“线程整个生命周期结束”区分。等待超时并不会自动杀死子线程，任何回收前都须确认不再访问资源；若生产任务可能永久阻塞，还需要合作取消/任务期限和外部隔离策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "resource_handoff.cpp中主线程创建int=7，子线程持锁乘6，主线程wait_for带done谓词后得到42，最后在锁外join。测试200次交接，其中100次刻意先join子线程再开始条件等待，证明先通知也不丢完成状态；另有4线程各2000次对同一int加锁递增，最终8000。"
+    },
+    {
+      "type": "paragraph",
+      "text": "wait_for的2秒只限制条件等待，后续join仍须等子线程真正结束，并不是强制中止任意任务的硬期限。演示假定线程能够创建且系统互斥操作正常；生产实现还需处理创建失败、系统错误与不合作任务的隔离回收。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "resource_handoff.cpp 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "label": "resource_handoff.cpp",
+      "value": "#include <cassert>\n#include <chrono>\n#include <condition_variable>\n#include <exception>\n#include <iostream>\n#include <mutex>\n#include <thread>\n#include <vector>\n// Main creates resource. Child consumes under the same mutex and publishes done.\n// Predicate is durable state; condition_variable notification is not stored state.\nint handoff(bool notify_before_wait) {\n    std::mutex mu;\n    std::condition_variable cv;\n    int resource = 7;\n    bool done = false;\n    std::exception_ptr error;\n    std::thread worker([&] {\n        try {\n            std::lock_guard<std::mutex> lock(mu);\n            resource *= 6;\n            done = true;\n        } catch (...) {\n            std::lock_guard<std::mutex> lock(mu);\n            error = std::current_exception(); done = true;\n        }\n        cv.notify_one();\n    });\n    if (notify_before_wait) worker.join(); // tests notification happens before wait\n    bool completed;\n    int result;\n    { std::unique_lock<std::mutex> lock(mu);\n      completed = cv.wait_for(lock, std::chrono::seconds(2), [&] { return done; });\n      result = resource; }\n    // Never join while holding the mutex the worker needs.\n    if (worker.joinable()) worker.join();\n    assert(completed);\n    if (error) std::rethrow_exception(error);\n    return result;\n}\nint main() {\n    for (int i = 0; i < 200; ++i) assert(handoff(i % 2 == 0) == 42);\n    std::mutex mu; int value = 0; std::vector<std::thread> workers;\n    for (int i = 0; i < 4; ++i) workers.emplace_back([&] {\n        for (int j = 0; j < 2000; ++j) {\n            std::lock_guard<std::mutex> lock(mu); ++value;\n        }\n    });\n    for (auto& t : workers) t.join();\n    assert(value == 8000);\n    std::cout << \"PASS 200 handoffs (100 early notifications) + 8000 protected increments\\n\";\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q12 ArrayBlockingQueue LinkedBlockingQueue与进程队列怎样区分"
+    },
+    {
+      "type": "paragraph",
+      "text": "ArrayBlockingQueue容量固定，适合明确内存预算；LinkedBlockingQueue可指定容量，无参构造容量极大，不等于工程上可放心无界。SynchronousQueue没有内部存储槽，用于直接交接；ConcurrentLinkedQueue非阻塞但本身没有容量背压。队列是否有界、是否阻塞与是否跨进程是三个不同属性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：容量→阻塞语义→完成协议→总内存"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：有界队列不等于有界Future和结果缓存"
+    },
+    {
+      "type": "paragraph",
+      "text": "put/take可阻塞且可中断，offer/poll带期限适合服务边界；add/remove失败以异常表达。size、isEmpty只是瞬时观测，不能用“先isEmpty再take”证明不会等，也不能用队列暂时为空推断所有生产者已完成。Java BlockingQueue没有通用的close或task_done/join协议，应使用已知任务数、终止消息、Future或门闩计数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "有界队列，只限制排队项目数，不代表整条流水线内存有界。容量 q 没有约束每项字节数、正在运行的任务、预取输入和结果缓冲；无限生产者加有界输入、再加无界结果队列，仍可能耗尽内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要画等待图。主线程只写输入不读结果，工作线程又只写结果时，两边可能同时堵住，光把队列设小并不能解决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java Atomic与Disruptor怎样协调认领发布和槽位复用"
+    },
+    {
+      "type": "paragraph",
+      "text": "Atomic 保证的是指定操作原子，不是整个对象或业务自动安全。AtomicInteger.compareAndSet 把比较与条件更新合成一个操作，但先 get 再 set 仍是两步；AtomicReference 原子更新引用，也不会保护引用对象的所有字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "updateAndGet 的计算函数可能因竞争重试，不能在里面无条件扣款或发消息。复合业务不变量仍需协议，C++ 的 memory_order 枚举也不能直接当成 Java API。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以Disruptor4.0.0为例，RingBuffer用固定槽位承载事件，Sequencer负责取号、容量与发布。生产者取得可用序号后填充槽位，再发布；消费者须确认该序号已发布且前置消费者依赖已完成，才能读取并推进自己的进度。多生产者可能乱序完成，较大序号已发布不代表此前所有槽都可读；连续可读范围必须停在首个未发布空洞。认领后不能随意放弃而留下永久空洞，填充失败也要有明确的无效事件或失败处理协议，不能把半成品当正常消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "槽位能不能复用，要等相关消费者真的用完。生产者回绕之前，检查已配置 gating sequences 中相关消费者的最小完成进度，避免盖掉慢消费者还要读取的数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费者依赖图可以让多个处理器接收同一事件，再按依赖推进，并非默认一条事件只给一个消费者。若处理后还把槽内可变对象交给异步任务，应复制所需内容，或用生命周期协议推迟复用；不能先宣布完成，再继续依赖将被覆盖的对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多生产者取号使用原子操作：该版本next路径使用getAndAdd，tryNext路径用CAS重试并在容量不足时失败；单生产者路径不需要竞争同一个取号位置，但仍要遵守发布与可见性协议。WaitStrategy主要控制消费者等事件或依赖进度的方式，生产者等空闲容量是另一条路径；该版本next可能park等待容量，tryNext可立即报告不足。消费者可选择自旋、让出或阻塞等待，BlockingWaitStrategy包含monitor等待与通知。因此“不用显式Mutex”不意味着所有配置、所有路径都lock-free或wait-free；无锁也不自动提供公平、容量背压或业务完成保证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-producer-consumer",
+  "targetOrigin": "authored"
+}

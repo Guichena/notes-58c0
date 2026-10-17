@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s12337",
+  "entryId": "ai-模型与评测-3",
+  "expectedOriginalHash": "f60326d14ffbada8023e4a5da246a4ba668a873393c17c4abea8ca94cd782c6c",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "14.2 GPU显存、CUDA执行、并行加速与训练通信怎样解释"
+    },
+    {
+      "type": "paragraph",
+      "text": "GPU靠大量并行线程和层次化内存提高数据并行吞吐，训练加速还受显存、算子利用率和跨卡同步限制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：GPU与CPU有何区别；CUDA线程如何执行；多卡为什么不一定线性加速。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "讨论GPU执行、内存和通信系统，性能取决于实际硬件、张量形状、精度和并行策略。PyTorch DP/DDP接口语义以2.8为例，实际训练后端与硬件须另核对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "显存容量不是参数文件大小"
+    },
+    {
+      "type": "paragraph",
+      "text": "估显存要列运行时账，不能只看参数文件。推理至少包括权重、KV Cache、激活/临时张量、算子workspace，以及分配器保留和碎片。训练还要加梯度、优化器状态，以及精度策略可能要求的高精度主权重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同优化器、精度和分片方式对应不同倍数。7B参数的FP16权重约14GB十进制，只是权重这一项，不能把“参数量×2字节”当总显存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见KV估算为2×层数×batch×序列长度×KV头数×每头维度×元素字节；2对应K/V，GQA/MQA用KV头数不是查询头数。实际还受分页块对齐、共享前缀、不同并行分片与实现影响。推理并发/长上下文能使KV成为瓶颈；训练激活与batch、序列长、checkpoint重计算策略相关。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "CUDA从主机发起到设备并行"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次CUDA计算由CPU host发起：调用API分配或传输数据，再launch kernel。设备线程组成block，block组成grid；block被调度到SM，线程以warp参与SIMT执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "warp通常有32线程，分支发散会降低有效利用率。但不能因此假定线程永远隐式同步；同步和内存可见性，仍须按CUDA模型使用屏障。"
+    },
+    {
+      "type": "paragraph",
+      "text": "寄存器是线程局部高速资源，shared memory主要供block内协作，global device memory容量大但带宽/访问延迟不同；合并访问减少无效内存事务。block之间一般不能靠自旋等待假设都同时调度，跨block同步需合法机制/分kernel。寄存器/shared使用过多会限制occupancy，occupancy高也不必然吞吐最高。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "推理优化按真实瓶颈选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "先profile算子、显存峰值、带宽、CPU喂数与传输。批处理/连续批处理提升设备利用率但会增加排队，KV缓存避免重复计算但占显存，量化降低权重字节/计算代价同时需验证精度/内核支持。算子融合、优化attention和CUDA Graph减少部分访存/launch开销，收益受形状/版本约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "总token/s与单请求首token/逐token延迟是不同目标，不能只看GPU利用率。Prefill较重计算与Decode常受访存/KV影响，但具体由模型/硬件/批次决定。模型并行减少单卡容量压力却增加通信，不应在模型已能单卡高效运行时默认越多卡越快。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "DP、TP、PP与同步方式"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据并行复制模型，各rank处理不同样本并聚合梯度后保持等价更新；PyTorch 2.8 DDP由应用负责输入分片，梯度all-reduce后各rank以相同优化规则更新。DDP不是把所有参数每步从rank0广播替代梯度同步，buffer广播是另一机制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "张量并行切分层内矩阵，常有频繁all-reduce/all-gather；流水线并行按层分阶段传激活/梯度，通过microbatch减少空泡但增加调度和中间激活。参数/梯度/优化器状态分片降低内存，用通信换空间。同步训练受慢rank拖尾；异步参数更新可减少等待但带梯度陈旧/一致性与算法收敛代价，不能免费获得同一语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "通信优化与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "NCCL的all-reduce使各rank取得规约结果，reduce-scatter分散规约分块、all-gather聚合各rank分块；具体算法由消息大小/拓扑/版本选择。单机NVLink/PCIe、多机网络/RDMA及GPU到网卡亲和性影响路径，不能说用了RDMA就没有CPU/内存/交换网络瓶颈。"
+    },
+    {
+      "type": "paragraph",
+      "text": "梯度分桶让反向计算有机会与通信重叠。小桶较早开始传，但启动次数多；大桶带宽利用更好，却可能推迟第一批通信。ring all-reduce的理想每rank传输量约2(p−1)/p×梯度字节，前提是相应算法假设成立；多rail和层次算法的实际行为可能不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "正确性还要求所有rank的collective次序、形状和参与集合一致。某个rank异常退出，其他rank可能挂起或报错，应依靠可靠checkpoint恢复，不能随意跳过一次同步。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "记录硬件型号/互联/驱动/CUDA/NCCL/框架版本、模型/精度、batch和序列分布，再测单卡基线与扩卡效率、峰值显存、首token/p99及通信占比。测试不同消息尺寸、慢rank、OOM和重启恢复；未具备这些条件时只能解释机制和容量公式，不能编造本地训练经历或加速倍数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "14.6 DP与DDP如何区别，DP、PP、TP、EP和其他显存优化怎样组合"
+    },
+    {
+      "type": "paragraph",
+      "text": "DP复制模型分数据，PP分层，TP分张量计算，EP分专家；组合需同时考虑显存、通信拓扑和负载均衡。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：DP与DDP区别是什么；PP TP EP怎么组合；还有哪些显存优化。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据并行范式与PyTorch DataParallel类名分开，DDP、PP、TP和EP切分对象不同。PyTorch DataParallel、DistributedDataParallel及FSDP接口语义以2.8为例。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "DP概念与PyTorchDP/DDP实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "先区分DP范式和PyTorch的DataParallel类。DP表示多个模型副本处理不同数据，再按训练目标聚合梯度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DataParallel通常采用单进程多线程：沿batch维scatter输入，在各设备复制模型执行，再把输出gather到指定设备并汇总梯度。主设备负载、复制/gather和Python线程开销会限制扩展；这些副本并非互不通信。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DistributedDataParallel通常每GPU一个进程，每进程持模型副本，在反向中按桶聚合梯度，可多机并与计算重叠；它不会自动替你分片输入，需DistributedSampler等并正确设epoch。各rank参数注册/collective顺序、形状和参与集合应一致，rank失联/未执行某次collective可能挂起。"
+    },
+    {
+      "type": "paragraph",
+      "text": "梯度同步了，不代表已经等价于全局样本平均。DDP一般按rank聚合梯度，还要检查每rank的实际样本/token数与loss reduction。例如两rank分别有2个和5个样本，它们的局部均值不能简单各占一半。"
+    },
+    {
+      "type": "paragraph",
+      "text": "梯度累积同样要正确缩放loss、安排同步时机，并处理尾批与不等长输入。CPU模型给出上述反例及正确加权结果，不能仅凭做了all-reduce就宣称数值等价。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "TP、PP与EP分别切什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "TP把层内矩阵/张量分给rank，列切分可并行算不同输出，行切分对局部结果求和；在正确位置做all-reduce/all-gather/reduce-scatter，非线性前后不能随意交换。它减少每卡参数/计算压力，却带层内高频通信，通常更依赖高速互联；CPU模型只验证线性层切分的代数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PP把不同层放到流水线stage，前向传激活、反向传梯度，microbatch提高利用率但有填充/排空空泡、激活占用和stage负载不均。stage掉线影响整个流水段，checkpoint和重放需保持同训练step语义；不能简单把每层放一台就线性提速。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EP把MoE专家分布到不同rank，router按token选专家，dispatch/combine常用all-to-all；热点专家、token负载倾斜、capacity和通信拓扑会拖慢整体。专家并行与数据/张量并行可叠加，是否少通信取决于路由和实际张量，第14.3节给EP/TP具体反例，不把“只激活少量专家”误当总参数显存都消失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "除了DeepSpeed还可用哪些方法"
+    },
+    {
+      "type": "paragraph",
+      "text": "显存优化按“谁占内存”选。PyTorch FSDP/FSDP2走参数、梯度和优化器状态分片路线；activation checkpointing减少激活，用反向重算换空间；混合精度改变存储和算子，BF16/FP16的数值范围与硬件支持不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LoRA只训练低秩增量，QLoRA等进一步减少冻结权重存储，但增加量化、适配和质量验证要求，不能默认效果等同全参训练。"
+    },
+    {
+      "type": "paragraph",
+      "text": "小microbatch加梯度累积可降低单步激活峰值，但不减少权重常驻且改变吞吐/同步时序；序列packing减少padding计算，必须保持attention mask/样本边界；高效Attention/融合算子改善内存读写与中间矩阵占用。CPU/NVMe offload扩大容量但可能降低速度，不能把省显存都称提升算力。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "提高GPU利用率先看时间线"
+    },
+    {
+      "type": "paragraph",
+      "text": "区分GPU忙碌百分比、有效模型FLOPs利用率、有效tokens/s和端到端时间。CPU数据加载、tokenize、存储IO、host-device传输、长短序列不均、同步慢rank、通信和小kernel启动都可能让卡空转；盲目增batch或堆卡可能OOM/更慢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先单卡基线profile，再优化预取/有界流水、合理batch与长度桶、通信计算重叠、拓扑亲和与算子，最后选择混合并行。保持全局batch、数据顺序/随机策略、精度与收敛目标可比，记录峰值显存、step/p99、吞吐和质量；没有指标不能声称“利用率从30%到90%”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "故障与实现边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "分片训练保存全局一致checkpoint及manifest，不在各rank任意不同step拼权重；更换world size可能需要重分片支持，不能自动恢复任意布局。rank失败、OOM和网络超时要统一结束/恢复训练，而非剩余rank继续更新旧梯度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实际卡数、并行配置与使用经历应据实说明。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "6"
+}

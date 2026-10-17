@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s1095",
+  "entryId": "scenario-short-url",
+  "expectedOriginalHash": "097acb7f05ea5f428925ac6f7c8b484505e2f14643f34ef487a65cc8e2796ea7",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3.2 短链系统怎样拆模块、生成短码、设置有效期并分库分表"
+    },
+    {
+      "type": "paragraph",
+      "text": "短链以唯一短码映射持久目标地址，创建和跳转独立扩展，过期、风控与缓存按权威版本判断。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：短链系统怎么设计；短码怎样生成；过期与分库分表怎么处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "短链是短码到目标URL的映射，一般不能从固定长度短码直接还原任意长URL；生命周期和重定向语义需预先定义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "核心链路与模块"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建链路：认证/配额→解析和安全校验长URL→短码分配/自定义码冲突处理→权威数据库事务→返回短URL。跳转链路：解析域名/namespace与code→查状态/有效期和风险规则→查目标→返回带Location的重定向。统计点击可异步发送，不能为埋点阻塞主要跳转或把消息发送失败当链接不存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模块包括API与身份限额、URL校验/风险策略、码分配、映射存储/缓存、跳转服务、失效撤销管理、审计统计和运维对账。短域名的DNS/TLS/入口负载也是可用性组成。读多写少时跳转服务独立扩展，创建与管理面需更严格认证和反滥用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生成与自定义短码"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用全局唯一ID经Base62编码，简单且可路由，但连续码可枚举，不能把短码当私密授权；也可用安全随机码并以数据库唯一约束重试冲突，码长按空间A^L、累计链接数和允许碰撞概率估算。hash长URL截断也会碰撞，不能仅说hash几乎不重复而省略冲突处理。相同长URL是否复用由租户、权限、有效期和统计归属决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自定义短码靠唯一插入裁决竞争，不能先查空闲，再无保护写入。先限制字符、长度、保留路径和大小写规范，并对 (namespace,code) 建唯一约束；冲突就明确返回已占用，不能覆盖别人的目标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建请求的幂等键按租户和创建者限定范围：同键同载荷返回原结果，不同载荷拒绝。自动码可以有限重试，自定义码却不能偷偷换成随机码。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "字段、过期与状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "建议记录namespace、code、longUrl、ownerId、createdAt、expiresAt、status、version及requestId；expiresAt用UTC绝对时间，可空表示永久。创建时检查有效范围和用户策略，判有效要同时满足status=ACTIVE且(expiresAt为空或now<expiresAt)，精确到期边界now=expiresAt即无效。DISABLED/REVOKED/DELETED等状态独立于时间，不能用一个未及时刷新的“未过期”布尔值作唯一依据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "短链过期的正确性，应靠每次跳转检查，定时清理只负责回收空间。缓存要带 expiresAt/status/version，TTL 不超过剩余有效期，读取时仍然校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "撤销可以用失效通知、版本检查，或短 TTL 配明确传播 SLA；若要求立即全局生效，就要承担强读权威或在线策略检查的代价，永久本地缓存给不了这种保证。负缓存可防随机码穿透，但创建成功后要失效，避免新链接被旧 404 挡住。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "重定向与可变目标"
+    },
+    {
+      "type": "paragraph",
+      "text": "临时重定向可选择302或307，永久映射才考虑301/308，并按HTTP方法保留和缓存语义选择；公开短链通常以GET为主，但不能把所有状态码视作完全等价。若目标可变、会过期或可能撤销，浏览器/CDN永久缓存可能绕过服务端新策略，应设置与业务一致的Cache-Control并避免不受控永久缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Location必须来自已校验记录，拒绝危险scheme、控制字符等；是否允许http、用户信息、非标准端口和跳转次数需安全政策。链接对公众提供跳转本身不应让创建服务主动访问任意内网URL；若有预览/抓取功能，另做DNS/IP/重定向全链路SSRF防护。风险检查在创建及跳转两处，详见第3.3节。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分片与路由映射"
+    },
+    {
+      "type": "paragraph",
+      "text": "分库先固定逻辑路由，再映射到实际库表。跳转一般按 (namespace,code) 等值查，可对规范化完整键稳定 hash 到固定逻辑桶，再由带版本的桶→物理库表映射定位；ID 带路由位，也要固定解释与迁移规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "直接 hash%当前库数，扩容时可能几乎把数据全部重映射。需要固定槽、虚拟桶和元数据版本，或一套明确迁移协议，不能说完“取模分库”就结束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扩容复制基线+增量，校验水位再切桶owner，旧路由转发/拒写并防旧版本覆盖；删除/撤销tombstone也要迁移。按创建者列出链接可另建(ownerId,createdAt,code)索引投影，不要求跳转主表同时满足所有维度。热点短码仍可能成为单键热点，可多层缓存/副本承接读，创建唯一性依旧在权威分片裁决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "真实数据库示例与验证边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面H2/JDBC程序实际测试自定义短码唯一插入、相同请求重放、载荷冲突、namespace隔离、精确过期、撤销、文件重开及20创建者竞争仅1成功。数据库查询是权威判定，示例没有实现缓存/分片/黑名单，也不是完整URL规范化器；不要把本地事务测试冒充生产负载测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "每次运行传入新的H2文件路径，保留数据库便于复核，不覆盖已有数据。生产创建接口还应补全owner/request长度、非空与有效期上限等契约校验。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "003/ShortLinkStore.java",
+      "value": "import java.sql.*;\nimport java.net.URI;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** H2/JDBC example: custom-code uniqueness, idempotent create and authoritative expiry/status.\n * Not a production URL canonicalizer, cache, sharding layer or SSRF fetcher. */\npublic final class ShortLinkStore {\n    private final String db;\n    public ShortLinkStore(String db) throws SQLException {\n        this.db = db;\n        try (Connection c = connect(); Statement s = c.createStatement()) {\n            s.execute(\"CREATE TABLE IF NOT EXISTS links(ns VARCHAR(50), code VARCHAR(50), owner_id VARCHAR(50), req_key VARCHAR(50), target VARCHAR(2048), expires BIGINT, state VARCHAR(12), PRIMARY KEY(ns,code), UNIQUE(ns,owner_id,req_key))\");\n        }\n    }\n    private Connection connect() throws SQLException { return DriverManager.getConnection(db); }\n    public void create(String ns, String code, String owner, String request, String target, Long expires) throws SQLException {\n        if (ns == null || owner == null || request == null || !code.matches(\"[A-Za-z0-9_-]{1,50}\") || (expires != null && expires < 0)) throw new IllegalArgumentException();\n        URI u = URI.create(target);\n        if (!(\"https\".equalsIgnoreCase(u.getScheme()) || \"http\".equalsIgnoreCase(u.getScheme())) || u.getHost() == null || u.getUserInfo() != null || target.length() > 2048) throw new IllegalArgumentException(\"invalid destination\");\n        try (Connection c = connect()) {\n            c.setAutoCommit(false);\n            try (PreparedStatement p = c.prepareStatement(\"INSERT INTO links VALUES(?,?,?,?,?,?, 'ACTIVE')\")) {\n                p.setString(1, ns); p.setString(2, code); p.setString(3, owner); p.setString(4, request); p.setString(5, target);\n                if (expires == null) p.setNull(6, Types.BIGINT); else p.setLong(6, expires);\n                p.executeUpdate(); c.commit();\n            } catch (SQLException e) {\n                if (!rollbackPreserving(c, e)) throw e;\n                if (!\"23505\".equals(e.getSQLState())) throw e;\n                try (PreparedStatement p = c.prepareStatement(\"SELECT code,target,expires FROM links WHERE ns=? AND owner_id=? AND req_key=?\")) {\n                    p.setString(1, ns); p.setString(2, owner); p.setString(3, request);\n                    try (ResultSet r = p.executeQuery()) {\n                        if (r.next()) {\n                            long ex = r.getLong(3); Long storedExpiry = r.wasNull() ? null : ex;\n                            if (code.equals(r.getString(1)) && target.equals(r.getString(2)) && Objects.equals(expires, storedExpiry)) return;\n                            throw new IllegalStateException(\"same request with different payload\");\n                        }\n                    }\n                }\n                throw new IllegalStateException(\"custom code already owned\", e);\n            }\n        }\n    }\n    public Optional<String> resolve(String ns, String code, long now) throws SQLException {\n        if (now < 0) throw new IllegalArgumentException();\n        try (Connection c = connect(); PreparedStatement p = c.prepareStatement(\"SELECT target FROM links WHERE ns=? AND code=? AND state='ACTIVE' AND (expires IS NULL OR expires>?)\")) {\n            p.setString(1, ns); p.setString(2, code); p.setLong(3, now);\n            try (ResultSet r = p.executeQuery()) { return r.next() ? Optional.of(r.getString(1)) : Optional.empty(); }\n        }\n    }\n    public void revoke(String ns, String code) throws SQLException {\n        try (Connection c = connect(); PreparedStatement p = c.prepareStatement(\"UPDATE links SET state='REVOKED' WHERE ns=? AND code=?\")) {\n            p.setString(1, ns); p.setString(2, code); p.executeUpdate();\n        }\n    }\n    private static void check(boolean ok) { if (!ok) throw new AssertionError(); }\n    private static void fails(RunnableSql r) throws Exception { try { r.run(); throw new AssertionError(); } catch (IllegalStateException expected) {} }\n    interface RunnableSql { void run() throws Exception; }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 1) throw new IllegalArgumentException(\"unique H2 path required\");\n        String db = \"jdbc:h2:\" + args[0]; ShortLinkStore s = new ShortLinkStore(db);\n        s.create(\"a\", \"sale\", \"u\", \"req\", \"https://example.com/a\", 100L);\n        s.create(\"a\", \"sale\", \"u\", \"req\", \"https://example.com/a\", 100L);\n        check(s.resolve(\"a\", \"sale\", 99).isPresent()); check(s.resolve(\"a\", \"sale\", 100).isEmpty());\n        fails(() -> s.create(\"a\", \"new\", \"u\", \"req\", \"https://example.com/b\", 100L));\n        fails(() -> s.create(\"a\", \"sale\", \"v\", \"r2\", \"https://example.com/b\", null));\n        s.create(\"b\", \"sale\", \"v\", \"r2\", \"https://example.com/b\", null);\n        check(s.resolve(\"b\", \"sale\", 1000).isPresent()); s.revoke(\"b\", \"sale\"); check(s.resolve(\"b\", \"sale\", 1000).isEmpty());\n        check(new ShortLinkStore(db).resolve(\"a\", \"sale\", 99).isPresent());\n        ExecutorService pool = Executors.newFixedThreadPool(8);\n        try {\n            List<Callable<Boolean>> work = new ArrayList<>();\n            for (int i = 0; i < 20; i++) { final int n = i;\n                work.add(() -> { try { s.create(\"race\", \"same\", \"u\" + n, \"r\" + n, \"https://example.com/\" + n, null); return true; } catch (IllegalStateException e) { return false; } });\n            }\n            int accepted = 0; for (Future<Boolean> f : pool.invokeAll(work)) if (f.get()) accepted++;\n            check(accepted == 1 && s.resolve(\"race\", \"same\", 0).isPresent());\n        } finally { pool.shutdownNow(); }\n        System.out.println(\"PASS ShortLinkStore: unique code, idempotent retry, payload conflict, namespace isolation, exact expiry, revoke, reopen, 20 creators yield 1 owner\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "容量和故障验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "计算活跃链接数×映射/索引/副本字节，分别估创建QPS、跳转QPS和热门度分布；短码数量不是并发量。压测数据库/缓存失效、热点、随机码攻击、迁移切换、时钟偏差、到期瞬间和撤销传播；监控跳转成功率、p99、错误分类、缓存命中和风险规则更新延迟。用户统计/访问日志按所需粒度保存，不能无限保留不必要的访客数据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "短链瓶颈是在读还是在写"
+    },
+    {
+      "type": "paragraph",
+      "text": "短链先量读写比例，再定位瓶颈。公开服务通常跳转多、创建少，但这不是题目必然条件，要核对创建率、跳转率、热点和允许延迟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读路径看缓存命中、负缓存、热点短码、网络和数据库索引；写路径看冲突、唯一索引、号段、幂等登记和持久日志。若风控、点击统计同步串在跳转上，它们也可能比映射查询更慢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读瓶颈可用按短码分片、受控多级缓存与只读副本处理允许的新鲜度，撤销和过期不能被无限旧缓存绕过。未知短码先校验格式，再用有限负缓存或Bloom预筛；Bloom误报只会多一次权威查询，不能因误报就返回伪造目标。一个爆款短链仍是单热key，需要L1复制与限回源，而不是只增加虚拟节点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写瓶颈可批取不重叠号段、分散创建请求和优化事务，但创建成功仍必须对应持久映射。点击统计在可靠性合同允许时异步聚合，不能让统计失败阻塞所有跳转；如果统计用于结算，则先持久受理事件再异步计算，不能简单丢弃。分别压测冷缓存、热点、撤销传播、无效短码风暴和发号故障，观测p99及正确率后再决定优化读或写。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3.3 短链黑名单拦什么，数据量变大怎样查而不乱承诺延迟"
+    },
+    {
+      "type": "paragraph",
+      "text": "黑名单先规范化URL域名IP等身份，再用精确集合或分层概率筛选加权威校验，低延迟必须按真实规模验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：黑名单拦什么；百万数据还能亚毫秒吗；Bloom误判如何避免错误封禁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "黑名单十万、百万及更大规模的查询，应明确拦截对象、准确性、内存和尾延迟目标。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "定义对象和匹配规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "可拦恶意完整URL、域名/子域范围、特定短码、创建账号以及有证据的风险来源；不同对象不能混在一个字符串集合后模糊匹配。完整URL规则需明确scheme、host大小写/IDNA、默认端口、路径、query和fragment语义；query可能影响资源身份，不能无条件排序/删除所有参数。域名规则按标签边界匹配example.com及授权子域范围，不能简单contains误伤notexample.com。"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建时阻止已知危险目标，跳转时重新检查已生效的新规则并检查短码撤销，避免先创建正常、后来变恶意仍持续跳转；已封目标换个短码不能绕过目标规则。目标后续再重定向到哪里可能改变，需要结合风险扫描/隔离和最新规则，但普通同步跳转不应无边界抓取所有重定向链。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "持久来源与在线索引分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "权威规则库保存ruleId、类型、规范化值/摘要、理由、状态、有效期、版本、创建审核/撤销记录。在线Redis Set可存规范化精确URL摘要或域名集合，以SISMEMBER做单值成员查；摘要命中时按风险和碰撞模型核对原值，不能未经说明把hash碰撞当绝对不可能。精确URL、域名和短码分命名空间，有效期/状态可用额外元数据或分桶版本管理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端/本地缓存保存带版本规则快照，更新通过可靠增量与定期全量核对，先加载新快照校验再原子切换。新增高风险规则传播慢会漏拦，删除规则传播慢会误拦，需要不同的失效/SLA与降级政策。规则服务不可用时可对高风险请求拒绝/警示、对低风险使用已知快照，明确陈旧上限。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "超过十万/百万后的扩展"
+    },
+    {
+      "type": "paragraph",
+      "text": "SISMEMBER 的 O(1) 是数据结构复杂度，不是任意规模下都亚毫秒的承诺。真实时延还受网络和负载影响；内存要算成员字节、对象与哈希表、碎片、复制和持久化开销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大 Set 是一个难横向分散的 key，迁移、备份、全量更新也会影响尾延迟。百万短字符串是否可行，要测实际字节与资源，不能仅按条数给唯一容量结论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可按规则类型和hash前缀分多个桶/分片，让精确URL规则一次定位固定桶；域名匹配仅检查规范host的标签后缀候选，不全表遍历所有域名。若内存仍昂贵，用本地Bloom/Cuckoo类预筛加持久精确查询：无假阴性的有效过滤器可快速放过确定不在名单者，阳性仍核对，不能因Bloom误报直接永久封禁。过滤器构建/更新落后会破坏“无假阴性”前提，需版本屏障、增量覆盖及撤销重建策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "查询与维护必须一起测"
+    },
+    {
+      "type": "paragraph",
+      "text": "分离服务端执行、网络往返、连接等待和端到端p50/p95/p99；测10万、100万和计划更大集合，固定成员长度、命中率、QPS、客户端连接、TLS、复制/AOF条件并记录内存/CPU。测试高比例新规则、全量切换、热点、分片失联和缓存冷启动，读快但更新期间不可用也不合格。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果提出各层查询都小于1ms，应说明测试环境、冷热缓存、样本分位、并发与失败路径；单次理想命中不能证明端到端延迟目标。在线成员查询不需要SMEMBERS拉全表；维护任务分批/限速扫描、离线校验并防长Lua阻塞。即便使用SCAN类迭代也要理解遍历期间变化与重复、不能用它保证一个原子规则快照。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

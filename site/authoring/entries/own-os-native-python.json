@@ -1,0 +1,680 @@
+{
+  "schemaVersion": 1,
+  "id": "own-os-native-python",
+  "kind": "doc",
+  "module": "syntax",
+  "part": "OS完整实验与运行时对照",
+  "category": "完整源码与语义边界",
+  "title": "原生对照：Python任务与内存生命周期",
+  "source": "操作系统与 Linux 面试复习手册",
+  "sections": [
+    {
+      "id": "section-os-60540791218f",
+      "title": "PYTHONPATH是什么 与PATH和sys.path有什么区别",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "PYTHONPATH是什么 与PATH和sys.path有什么区别"
+        },
+        {
+          "type": "paragraph",
+          "text": "PYTHONPATH在Python启动时补充模块搜索目录，PATH供操作系统或shell查找可执行程序，sys.path则是当前解释器实际使用的模块搜索路径列表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在Linux上PYTHONPATH通常以冒号分隔目录，Windows通常以分号分隔；不要把脚本文件名当目录或把两个平台分隔符混用。Python初始化sys.path还会考虑脚本目录或相应启动位置、标准库、虚拟环境及site-packages等，不是只读取一个环境变量。修改当前进程的sys.path不会永久修改父shell环境；修改shell的PYTHONPATH也不反向更新已启动的解释器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "排查import错误先确认实际Python可执行文件与版本、当前虚拟环境、启动方式、sys.path及目标模块实际装载路径。全局设置PYTHONPATH可能影响多个Python环境并让同名文件遮蔽标准库或依赖，应优先使用明确的包结构与环境隔离；不把不可信或他人可写目录随意加入搜索路径。-E忽略PYTHON环境变量，-I隔离模式还限制若干默认搜索路径，因此环境变量存在不代表该次启动一定使用它。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-b01367ee35c1",
+      "title": "原生语言对照三 Python任务生命周期",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "原生语言对照三 Python任务生命周期"
+        }
+      ]
+    },
+    {
+      "id": "section-os-e09e52c376da",
+      "title": "Python有多线程吗 GIL为何存在 Lock与RLock怎样选择",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python有多线程吗 GIL为何存在 Lock与RLock怎样选择"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python可以创建多个线程。传统CPython的GIL主要协调解释器内部状态，并不代替业务锁；业务是否允许同线程重入，才是选择Lock或RLock时要先说明的条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "区分常规带GIL的CPython和可选free-threaded构建，Python语言本身不规定所有实现必须有GIL。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "GIL保护的是解释器运行时"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python的threading可以创建多个线程。传统CPython用GIL协调访问解释器对象等内部状态，简化对象管理和C扩展交互；常见结果是在同一解释器中同一时刻只有持GIL的线程执行Python字节码。因此纯Python CPU计算通常难靠多个线程在多核上加速，但不能说线程不存在。"
+        },
+        {
+          "type": "paragraph",
+          "text": "阻塞I/O和部分原生扩展会释放GIL，多个线程可重叠等待，原生计算库还可能自行并行。GIL不会把业务的“检查后写入”或多字段不变量变成原子事务，线程切换与扩展调用仍使共享业务状态需要同步。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Lock和RLock的具体语义"
+        },
+        {
+          "type": "paragraph",
+          "text": "threading.Lock是非重入原始锁，同一线程重复acquire会等待或超时；CPython的这个原语不记录必由哪个线程release的所有权，不能把这一点推广到C++mutex或Java ReentrantLock。RLock记录拥有线程和递归层数，同一线程可重复获取，必须由拥有者对应释放到零，其他线程才可进入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "优先用with保证释放，重入只解决同线程再次进同一锁，不解决两把锁反向顺序死锁。Condition把谓词、关联锁和等待队列结合，wait时释放关联锁、返回前重新获得，需循环重查谓词；Semaphore维护许可计数，BoundedSemaphore还能检测多释放；Event表示一个可设置/清除的状态而非累计消息数，Barrier用于多方会合。它们是不同同步原语，不都称为互斥锁。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎样选模型并说明版本"
+        },
+        {
+          "type": "paragraph",
+          "text": "I/O密集型可用有界线程池配超时，或在库真正支持异步时用asyncio；单事件循环里跑CPU循环或同步阻塞调用会挡住其他协程。纯Python CPU任务可用进程池，但需付序列化、进程内存和启动成本；释放GIL的数值库可能更适合线程，先测瓶颈。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPython自3.13提供可选free-threaded构建，3.14有进一步支持；不是安装任意Python3.13/3.14就默认没有GIL。不兼容扩展还可能触发重新启用，应用要确认构建/运行配置和依赖。即使去掉GIL也不消除业务数据竞争、锁顺序和资源上限。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-24ab0c75384a",
+      "title": "Python多进程怎样共享数据 Lock Event Semaphore Queue各做什么",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python多进程怎样共享数据 Lock Event Semaphore Queue各做什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "进程通常有独立地址空间，共享数据必须明确走消息传输还是共享存储。Lock负责互斥，Event表达状态，Semaphore计许可，Queue传任务和结果，不能混用它们的职责。"
+        },
+        {
+          "type": "paragraph",
+          "text": "使用multiprocessing原语，不能拿threading.Lock或普通全局dict充当跨进程同步/共享。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先选择数据所有权与传输"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通进程有独立地址空间，fork的写时复制也不让父子后续写普通list/dict自动同步。首选Queue/Pipe传消息，让一个拥有者更新状态；multiprocessing.Queue会序列化对象并通过底层管道/馈送机制传递，接收的通常是重建对象而非原对象引用，必须限制消息大小与积压。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要共享大块数据可用SharedMemory或Value/Array，但须定义字节布局、所有权、同步、close/unlink职责；不要在共享区写仅对一个进程有效的裸对象地址。Manager通过服务进程和代理提供共享对象，更方便但有远程调用成本，代理的两个方法调用不自动合成一个原子事务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "四种原语分别用在什么地方"
+        },
+        {
+          "type": "paragraph",
+          "text": "multiprocessing.Lock保护临界区，所有进程必须使用同一把进程共享锁；Value.value的读改写也应把整个v.value += 1放在其get_lock作用域内。Event是可设置/清除的状态，适合启动或停止信号，不累计100个事件；Semaphore维护并发许可，acquire后必须在finally归还。Queue保存有边界的任务/结果消息，支持生产者消费者，不等于互斥锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "队列empty/qsize只提供受竞争影响的观察，不能作为正确性判断的唯一依据；用get/put的超时、明确终止消息或带版本状态。等待子进程退出前还需持续消费其输出，避免队列/管道满导致子等写而父等join。强杀持有锁或正写队列的进程可能破坏协议，不能保证其他进程自动恢复。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "启动方式 失败和收尾"
+        },
+        {
+          "type": "paragraph",
+          "text": "spawn启动新解释器，目标函数和参数要可传递，入口用if __name__ == \"__main__\"防递归启动；fork复制当前进程状态，多线程父进程的锁与原生库状态尤其危险；forkserver让专用服务创建子进程。Python3.14在支持的POSIX环境默认转为forkserver，Windows/macOS常用spawn，不能背“Linux永远默认fork”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进程/锁/队列从一致的multiprocessing context创建，不随意混合启动上下文。任务用ID和明确结果/错误消息，父进程检查exitcode并限时等待，关闭队列/管道并按所有权清理共享区；跨进程副作用依然需要幂等与结果未知处理。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-43e29a1c0846",
+      "title": "Python并发调用Tool FastAPI阻塞与Agent取消怎样闭环",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python并发调用Tool FastAPI阻塞与Agent取消怎样闭环"
+        },
+        {
+          "type": "paragraph",
+          "text": "独立Tool调用可并发调度，但要同时限制在途任务和资源预算。async接口里的同步阻塞仍会堵住事件循环；停止Agent也必须沿其拥有的任务和资源逐层取消、关闭并确认收尾。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用户主动停止与网络断开是不同事件，应分别定义是否取消任务，以及由谁负责收尾。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "用户主动停止生成或者网络断开以后，后端怎么终止当前 Agent 任务？"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Python 里多个 Tool 同时调用时，怎么做异步并发？"
+        },
+        {
+          "type": "paragraph",
+          "text": "FastAPI 中如果异步接口里出现阻塞操作，会有什么问题？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "并发提交不是依次await"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果for循环每次await完一个工具再发下一个，通常串行等待；可把独立IO任务交TaskGroup并发，并用Semaphore等限制在途数量。限制不只要控制执行数，还要控制输入任务总数/队列、输出字节、下游连接以及整体deadline。共享Session状态用单所有者或适当同步，不能因为事件循环单线程就忽略await两边的业务交错。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python3.11起TaskGroup把任务生命周期纳入作用域，一项普通失败会取消其他任务并等待它们收尾，通常以ExceptionGroup呈现；它与gather默认异常传播行为不同。取消是合作式，协程需要到可取消点，清理放finally/async context，通常不要吞CancelledError。CPU长循环不让出事件循环时，取消和超时也不能及时被处理。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整有限批处理与错误契约"
+        },
+        {
+          "type": "paragraph",
+          "text": "async_tools.py先验证limit在1到64、批量最多512、期限为正有限值，接收工具工厂而非提前创建协程对象。每个任务取得并发许可后才开始单工具期限，外层总期限包含排队；成功结果按输入次序返回，任意普通失败采用整批fail-fast，没有自动重试外部副作用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单个子任务取消要另行看待：TaskGroup中单个子任务的CancelledError本身不触发普通失败的fail-fast。代码因此保留任务句柄，在作用域正常退出后逐一读取result()，把子任务取消向上传播，不能把未填结果槽当成合法None。其余任务先在既有总期限内完成或收尾，不承诺单个子任务取消就立即取消所有兄弟。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有些业务要收集部分成功，应显式把预期错误转成结构化结果，但仍传播取消和严重异常。返回错误或超时并不证明远端工具没有执行；写操作应带幂等键与结果查询，未知结果不能盲目再次提交。本示例只调用本地测试协程，没有真实支付/数据库/模型。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "async def里的普通阻塞函数仍会堵住事件循环"
+        },
+        {
+          "type": "paragraph",
+          "text": "在async路由中直接time.sleep、同步HTTP/DB调用或大量CPU计算，会占住当前事件循环线程，让同worker其他请求、心跳和取消处理滞后。优先使用真正异步客户端；遗留阻塞IO可受控转线程池，CPU密集纯Python通常考虑进程池或合适原生计算，但都要限制容量与生命周期。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FastAPI自动调用普通def路由/依赖时可放到外部线程池；你在async函数内直接调用自己写的def辅助函数，不会被框架自动移走。多worker只能分摊，不修复单worker阻塞和无限排队。await asyncio.to_thread可移走阻塞调用，但取消await并不强制终止已经运行的线程，必须有底层超时/合作取消或隔离进程。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "停止生成要取消整棵拥有的任务并确认收尾"
+        },
+        {
+          "type": "paragraph",
+          "text": "用户明确停止时按身份与任务代次更新取消状态，阻止新模型/工具调用，向属于本次运行的asyncio任务发取消，并按HTTP客户端或供应商契约关闭流/发取消请求；在资源所有者finally中关闭响应体、许可、计时器和文件。取消早于句柄注册也要由迟到注册检查处理，完成与取消竞争只能发布合适终态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "网络断开可能是切网或代理超时，按业务决定仅取消订阅还是也取消独占任务，共享后台任务不能被一个订阅者随意杀掉。已发出的字节与已经提交外部副作用无法物理撤回；远端停止未确认时保留取消中/结果未知，不声称费用归零。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试应覆盖并发上限、输入与参数边界、兄弟任务失败清理、单项与总期限、父任务取消；可通过事件循环回调观察同步sleep阻塞，并用受控事件确认to_thread的等待取消后，底层线程仍须自行完成和收尾。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例只使用有限本地协程与线程，不代表FastAPI/ASGI、SSE或供应商API的集成契约。生产还需任务持久状态、认证、断线政策、观测、跨实例路由和副作用对账，不能把超时当抢占式硬终止。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "async_tools.py 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "async_tools.py",
+          "value": "\"\"\"Python 3.12 bounded, fail-fast asynchronous tool batch; no network calls.\"\"\"\nimport asyncio\nimport math\nfrom collections.abc import Awaitable, Callable, Sequence\nfrom typing import TypeVar, cast\nT = TypeVar(\"T\")\n\nasync def run_tools(\n    tools: Sequence[Callable[[], Awaitable[T]]],\n    *, limit: int = 4, per_tool_timeout: float = 2.0,\n    total_timeout: float = 5.0,\n) -> list[T]:\n    # Snapshot bounded indexed slots; never invoke a caller-defined iterator.\n    count = len(tools)\n    if type(limit) is not int or not 1 <= limit <= 64 or count > 512:\n        raise ValueError(\"bounded batch/parallelism\")\n    if any(not math.isfinite(x) or x <= 0 for x in (per_tool_timeout, total_timeout)):\n        raise ValueError(\"positive finite timeouts\")\n    # Sequence indexing must finish; this bounds slots, not arbitrary user code.\n    factories = tuple(tools[i] for i in range(count))\n    if any(not callable(f) for f in factories):\n        raise TypeError(\"tool factories required\")\n    results: list[T | None] = [None] * len(factories)\n    semaphore = asyncio.Semaphore(limit)\n    async def one(index: int) -> None:\n        async with semaphore:\n            async with asyncio.timeout(per_tool_timeout):\n                results[index] = await factories[index]()\n    tasks: list[asyncio.Task[None]] = []\n    async with asyncio.timeout(total_timeout):\n        async with asyncio.TaskGroup() as group:\n            for i in range(len(factories)):\n                tasks.append(group.create_task(one(i)))\n    # A child cancellation is not a TaskGroup ordinary failure. Propagate it\n    # after joining, rather than mistaking its untouched slot for a valid None.\n    for task in tasks:\n        task.result()\n    # Every task completed successfully; None is also a legal tool result.\n    return cast(list[T], results)\n\nasync def example() -> None:\n    async def tool(value: int) -> int:\n        await asyncio.sleep(0)\n        return value * value\n    assert await run_tools([lambda i=i: tool(i) for i in range(10)], limit=3) == [i*i for i in range(10)]\n    print(\"PASS async tool example; no actual model/tool service contacted\")\n\nif __name__ == \"__main__\":\n    asyncio.run(example())\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-6894f65eaf79",
+      "title": "Python怎样管理内存 引用计数 循环GC与缓存保留如何区分",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python怎样管理内存 引用计数 循环GC与缓存保留如何区分"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPython通常用引用计数处理最后强引用消失，再用循环GC识别不可达的受跟踪循环。缓存等仍持有对象时，它依然可达；释放对象以后，分配器也不保证立即把内存还给OS。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "memory leak 大概会有哪些原因造成？"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Python 这个语言它是怎么去做内存的管理？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "变量绑定 对象和分配器层次"
+        },
+        {
+          "type": "paragraph",
+          "text": "名字保存对象绑定，多个名字/容器可以引用同一个对象，赋值通常不深拷贝。对象的类型、引用等元数据以及内容由解释器管理；局部名字所在执行帧不意味着其引用的对象全在原生线程栈里。小整数/字符串等实现缓存也不能推导任意对象生命周期。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPython有raw、mem、object等内存分配API域，小对象可由pymalloc等分配器管理pool/arena，再向底层取得更大块；具体阈值、arena尺寸与所用分配器受版本/构建影响。扩展模块应匹配对应分配/释放API与GIL/线程状态要求，不能混用malloc与PyObject域就假定安全。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "引用计数与循环收集各解决什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "减少一个名字引用不等于对象引用数归零；最后相关强引用消失时，CPython常能较及时销毁很多对象。但A引用B且B引用A的循环即使外界断开，计数仍可非零，循环GC识别适当跟踪的容器图并找不可达部分。"
+        },
+        {
+          "type": "paragraph",
+          "text": "弱引用可以观察对象而不成为保持其生存的普通强引用；对象仍被全局缓存、闭包、任务、traceback或回调注册持有时是可达的，gc.collect不应强行回收。减少有效引用、取消并收尾任务、限定缓存容量等才解决保留链，重复collect不是无界缓存的修复。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "释放对象不保证RSS立刻降低"
+        },
+        {
+          "type": "paragraph",
+          "text": "解释器/分配器可能保留块供下次复用，部分arena不能整体归还，原生扩展/映射/线程栈也可贡献RSS。定位先做稳定负载的前后比较，用tracemalloc查Python分配热点，再按需要查原生分配和进程映射；只看一个总数无法判断根因。"
+        },
+        {
+          "type": "paragraph",
+          "text": "资源生命周期另用with/try-finally/显式close管理，别依赖垃圾回收定时释放文件/锁/连接。析构时重入、循环、解释器退出和异常路径都可能复杂。栈与堆有什么区别 栈溢出 内存耗尽和泄漏怎样排查 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnt2AnoLKQvP6cAB6u3YEFAc)与Python和Rust背景下怎样分析内存泄漏 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnK6BMOOX8bTs9A4Qzqbtjwc)给完整泄漏诊断及Python/Rust差异，静态动态语言与编译执行 垃圾回收有什么关系 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnO8qXBrdd0Ukrk3OKac1idh)补不同语言GC分类。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "python_memory.py用weakref观察别名仍保持对象、断开别名后可回收；短暂禁自动GC创建两节点环，显式collect后确认两者消失；缓存强引用下collect后对象仍活，清空后才回收。finally恢复原有自动GC设置，不改变其他进程或持久解释器配置。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "python_memory.py 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "python_memory.py",
+          "value": "\"\"\"CPython reference/cycle retention observations, not an RSS benchmark.\"\"\"\nimport gc\nimport weakref\n\nclass Node:\n    pass\n\ndef main() -> None:\n    first = Node()\n    alias = first\n    ref = weakref.ref(first)\n    del first\n    assert ref() is alias  # Removing one name does not remove all owners.\n    del alias\n    gc.collect()\n    assert ref() is None\n\n    was_enabled = gc.isenabled()\n    gc.disable()\n    try:\n        left, right = Node(), Node()\n        left.peer, right.peer = right, left\n        lr, rr = weakref.ref(left), weakref.ref(right)\n        del left, right\n        assert lr() is not None and rr() is not None\n        gc.collect()  # Explicit collection works even with automatic GC disabled.\n        assert lr() is None and rr() is None\n        cache = {\"kept\": Node()}\n        held = weakref.ref(cache[\"kept\"])\n        gc.collect()\n        assert held() is not None  # Reachable cache content is not garbage.\n        cache.clear()\n        gc.collect()\n        assert held() is None\n    finally:\n        if was_enabled:\n            gc.enable()\n    print(\"PASS CPython alias/cycle/reachable-cache lifetimes; GC policy restored; no RSS or immediate-free guarantee for all Python implementations\")\n\nif __name__ == \"__main__\":\n    main()\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-611c0fb92657",
+      "title": "Python async与await怎样运行 阻塞IO和高并发该怎样选模型",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python async与await怎样运行 阻塞IO和高并发该怎样选模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "调用async def通常先得到协程对象，需await或调度才会推进。await等待尚未完成的结果时可让其他任务运行，但不能把内部同步阻塞自动变成异步；选模型仍要看实际工作是IO等待还是CPU计算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Python 中 async 和 await 的原理是什么？"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "I/O 密集型和 CPU 密集型任务分别适合多线程、多进程还是协程？"
+        },
+        {
+          "type": "paragraph",
+          "text": "阻塞 I/O 和非阻塞 I/O 都可以用协程实现吗？"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "Python 的 GIL 锁机制？如何优化高并发下的 Python 服务性能？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "协程对象 Task Future和事件循环各做什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "调用async def函数通常先得到协程对象，不立刻执行其函数体；单纯创建而不await或调度不会完成工作。Task封装并驱动协程推进，事件循环选择就绪回调/任务，Future代表尚未完成或已完成的结果；await通过可等待协议取得结果或把当前协程的后续挂到等待条件上。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以默认CPython3.12 asyncio调度为例，Task遇到尚未完成Future时挂起自己，事件循环处理IO/定时器/其他任务；Future完成后Task得到再次运行机会。await并不保证每次真的让出：一个已完成Future可直接返回；await asyncio.sleep(0)明确提供让其他任务运行的机会。Python3.12可选eager task factory会改变新Task执行前缀时机，示例未启用它。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "阻塞IO也能提供协程接口 但需真实适配"
+        },
+        {
+          "type": "paragraph",
+          "text": "协程本身不是IO模式转换器。在async函数里直接调用同步阻塞read/requests/time.sleep会阻塞承载线程；外面加async和await名字不能改变内部行为。可以用真正非阻塞/异步客户端，由事件循环等待就绪或完成，也可把遗留阻塞IO放有界线程池，以await接回结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "后者对调用协程提供异步接口，但底层工作线程仍阻塞，取消await也不强制停止那条线程。Windows事件循环可使用不同完成式机制，不把所有asyncio实现都说成epoll；普通磁盘文件、DNS或扩展库也可能借助线程。须检查库的真实契约、deadline和资源关闭。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "IO CPU和高并发服务分别定位"
+        },
+        {
+          "type": "paragraph",
+          "text": "带GIL的CPython中，纯PythonCPU热点常考虑算法改进、进程池或释放GIL的原生库；IO等待可用有界线程或asyncio，原生库若释放GIL则线程也可并行计算。free-threaded构建是另一个版本/依赖条件，仍需数据同步。进程有序列化/内存和启动成本，不是所有CPU任务都值得拆。"
+        },
+        {
+          "type": "paragraph",
+          "text": "高并发服务先量event-loop lag、CPU、排队、连接池、FD、内存和下游429/延迟。若瓶颈是模型API配额或数据库连接，去掉GIL不会提高其配额；限制任务/队列/在途字节，复用连接，设置总deadline和取消，必要时多个服务worker与独立CPU池。不要无界create_task或在线程池满时继续无穷排队。"
+        },
+        {
+          "type": "paragraph",
+          "text": "async_steps.py在默认CPython3.12.14跑100轮，验证协程惰性创建、create_task调度、pending Future挂起、done Future不让出和sleep0让出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "生产性能需要相同负载与错误率下的端到端验证，不能仅用本地调度顺序测试代替。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "async_steps.py 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "async_steps.py",
+          "value": "\"\"\"CPython3.12 coroutine scheduling observations; no IO service contacted.\"\"\"\nimport asyncio\n\nasync def observe() -> list[str]:\n    loop = asyncio.get_running_loop()\n    log: list[str] = []\n    async def child() -> int:\n        log.append('child-start')\n        await asyncio.sleep(0)\n        log.append('child-end')\n        return 7\n    coroutine = child()\n    assert log == []  # Calling async def creates a coroutine, not an eager body run.\n    task = asyncio.create_task(coroutine)\n    log.append('caller')\n    await asyncio.sleep(0)\n    assert log == ['caller', 'child-start']\n    assert await task == 7\n    assert log == ['caller', 'child-start', 'child-end']\n    done = loop.create_future()\n    done.set_result(9)\n    loop.call_soon(log.append, 'callback')\n    assert await done == 9\n    assert log[-1] == 'child-end'  # Awaiting a done Future need not yield in asyncio.\n    await asyncio.sleep(0)\n    assert log[-1] == 'callback'\n    gate = loop.create_future()\n    loop.call_soon(gate.set_result, 10)\n    assert await gate == 10  # Pending Future suspends and callback can complete it.\n    return log\n\nif __name__ == '__main__':\n    for _ in range(100):\n        assert asyncio.run(observe()) == ['caller', 'child-start', 'child-end', 'callback']\n    print('PASS Python100 scheduling rounds; lazy coroutine/task/pending Future/done Future/explicit yield')\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-5c2684afc71d",
+      "title": "Python解释器怎样从源码执行到结果 字节码 帧与运行时是什么",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python解释器怎样从源码执行到结果 字节码 帧与运行时是什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPython先把源码编译成代码对象，再由执行帧和求值器按字节码推进。代码对象保存可执行内容，帧保存这一次调用的状态，运行时还负责对象、异常等支持。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Python 解释器是怎么实现的？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先编译成代码对象 再执行"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPython读取/解码源码，词法和语法分析形成AST，结合符号/作用域分析与编译步骤形成code object，内含字节码、常量、名字、局部变量和调试信息。调用compile可以只得到代码对象而尚未执行；SyntaxError可能在这个阶段出现，不是执行到坏行时才一定发现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "代码对象不是运行中的函数调用帧，函数对象还关联全局命名空间、默认参数、闭包等环境。模块执行会创建函数对象并执行顶层语句；import缓存已加载模块，合法.pyc可减少部分重复编译工作，但不等于把模块全部业务结果提前算好。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "求值循环与对象操作"
+        },
+        {
+          "type": "paragraph",
+          "text": "执行帧保存当前指令位置、局部变量/操作数状态和调用上下文。求值器按字节码推进，加载对象、进行运算/调用、处理分支、异常与返回；加法可能根据对象类型走相应数值协议，不是所有a+b都一条裸CPU加指令。调用原生扩展则可能进入编译好的C/C++机器码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CPython3.11以后具有自适应/特化字节码与内联缓存等优化，3.12的dis可以显示相关形式。字节码是实现细节，跨版本opcode和帧内部结构会变；不能以一个版本的反汇编编号作为Python语言永恒规则，也不能概括成“逐行把文本翻译执行”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "内存 GIL和异步各处在什么层"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象内存管理常含引用计数、循环GC与分配器，完整机制见Python怎样管理内存 引用计数 循环GC与缓存保留如何区分 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnK8tw7LE9hFpO5rjnuKRzYg)；带GIL构建限制同一解释器中同时执行Python字节码的线程，但IO等待、释放GIL扩展及free-threaded另论。Python有多线程吗 GIL为何存在 Lock与RLock怎样选择 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnCL7228jCj8854pwkTL7Bkh)说明GIL，并不因此否定多线程IO。"
+        },
+        {
+          "type": "paragraph",
+          "text": "asyncio是驱动协程和IO的库/事件循环模型，不是解释器碰见async关键字就自动把所有CPU循环变并行。纯PythonCPU热点在async函数里仍会堵住所在循环，Python async与await怎样运行 阻塞IO和高并发该怎样选模型 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn76K8dOzA2N79BbUAMrygWe)给实际调度与有界卸载方案；解释器机制和应用并发调度需分层回答。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例使用边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "interpreter_probe.py对固定自编写片段先ast.parse，再compile得到模块与嵌套函数code，exec后得到42；核对函数__code__、加载局部和返回指令，再执行10000次热调用并用dis显示自适应形式；另验证非法语法在compile报错。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个实验只编译固定教学片段，把“形成代码对象”和“执行得到结果”分开；它不覆盖任意用户输入、CPython构建、所有opcode与C扩展，也不能代替吞吐基准。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "interpreter_probe.py 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "interpreter_probe.py",
+          "value": "\"\"\"CPython3.12 teaching probe; compiles a constant authored fixture, no user input.\"\"\"\nimport ast\nimport dis\nimport types\n\ndef main():\n    src = \"def twice(x):\\n    return x + x\\nanswer = twice(21)\\n\"\n    tree = ast.parse(src, filename=\"fixture.py\", mode=\"exec\")\n    module = compile(tree, \"fixture.py\", \"exec\")\n    assert isinstance(module, types.CodeType)\n    body = next(x for x in module.co_consts if isinstance(x, types.CodeType))\n    assert body.co_name == \"twice\" and body.co_varnames == (\"x\",)\n    instructions = list(dis.get_instructions(body))\n    assert any(x.opname == \"LOAD_FAST\" for x in instructions)\n    assert any(x.opname == \"RETURN_VALUE\" for x in instructions)\n    namespace = {}\n    assert \"answer\" not in namespace\n    exec(module, namespace)\n    assert namespace[\"answer\"] == 42\n    f = namespace[\"twice\"]\n    assert f.__code__ is body and f(5) == 10\n    instructions_before = body.co_code\n    for _ in range(10000): assert f(3) == 6\n    # Adaptive instructions are version-specific; don't assert one opcode layout.\n    dis.dis(f, adaptive=True, show_caches=True)\n    assert body.co_code == instructions_before\n    try: compile(\"def :\", \"bad.py\", \"exec\")\n    except SyntaxError: pass\n    else: raise AssertionError(\"syntax error expected before execution\")\n    print(\"PASS CPython compile/code/function/exec/dis; 10000 hot calls\")\nif __name__ == \"__main__\": main()\n\n"
+        }
+      ]
+    },
+    {
+      "id": "section-os-39fa30be9119",
+      "title": "Python项目怎样用有界线程池 Java核心数与最大数能直接套用吗",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Python项目怎样用有界线程池 Java核心数与最大数能直接套用吗"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python线程池适合把独立阻塞IO交给受控工作者，但限制工作线程数还不够，待执行任务也要有边界。Java的核心数、最大数和队列策略不能直接套到Python执行器，关闭与取消也要遵循线程实际能做的事。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "8. 项目中如何使用线程池进行异步任务处理？"
+        },
+        {
+          "type": "paragraph",
+          "text": "9. 线程池核心线程数、最大线程数等参数的配置思路与调优依据是什么？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先说任务为何适合线程池"
+        },
+        {
+          "type": "paragraph",
+          "text": "把独立阻塞IO从请求执行路径交给受控工作者，通过Future取得结果、异常和取消状态。请求应有总期限，任务使用底层HTTP/DB超时和幂等标识；结果必须被消费或持久化，不能submit后完全不看异常。纯Python CPU密集任务在传统GIL构建中通常不能只靠加线程多核加速，Python有多线程吗 GIL为何存在 Lock与RLock怎样选择 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnCL7228jCj8854pwkTL7Bkh)和Python async与await怎样运行 阻塞IO和高并发该怎样选模型 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn76K8dOzA2N79BbUAMrygWe)给进程/原生扩展分支。"
+        },
+        {
+          "type": "paragraph",
+          "text": "真实项目应补任务类型、库/版本、提交位置、排队和下游配额、错误/停机处理以及测量结果。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Java与Python的同名执行器不是同一配置模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java ThreadPoolExecutor有corePoolSize、maximumPoolSize、keepAliveTime/unit、workQueue、threadFactory和拒绝策略，提交通常先按核心阈值建worker，再尝试排队，队列满才扩到最大；无界队列会让max难以发挥预期扩容作用。例如core=2、max=4、队列容量2，且所有已接收任务持续占用worker时，前两项创建核心worker，中间两项排队，再两项扩到最大，第7项触发拒绝；若任务期间已完成，结果会不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python3.12 concurrent.futures.ThreadPoolExecutor公开max_workers等配置，没有与Java一一对应的core/max/有界workQueue七参数。max_workers限制工作线程数，不等于所有已提交工作和Future占用都有限。生产者仍需窗口化提交、真实有界队列或其他明确准入协议，不能擅改标准库私有队列宣称稳定API。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Python固定池把运行数和待执行数分别约束"
+        },
+        {
+          "type": "paragraph",
+          "text": "bounded_pool.py用固定非daemon工作者与Queue(maxsize=pending)。提交时，submit持状态锁检查closed并put_nowait；队列满或已关闭就显式Rejected，每个成功项带Future。"
+        },
+        {
+          "type": "paragraph",
+          "text": "工作者取出后先调用set_running_or_notify_cancel：已取消就跳过，否则在池状态锁之外运行任务函数，将结果/异常写入Future，最后task_done。这样，队列状态修改和用户任务执行的锁边界是分开的。"
+        },
+        {
+          "type": "paragraph",
+          "text": "外部取消尚在队列里的Future不会立即释放真实队列槽，直到工作者取走或关闭时清空，防止“许可已归还但已取消工作项仍无限堆在底层队列”的隐藏增长。该队列容量是待执行项数，最多还会有workers个已取出的执行项；每项携带的大对象字节量仍需另加预算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "关闭与取消必须遵循实际线程能力"
+        },
+        {
+          "type": "paragraph",
+          "text": "shutdown先在同一状态锁下停止接收，可取消仍在队列里的项；与worker已经取出的项存在竞态，这些项可能继续运行。Future回调在池状态锁之外触发，避免用户回调重入死锁。wait等待工作者退出，不强制杀已经运行的Python线程；任务不合作或永久阻塞时，wait同样可能一直等。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试工作均有自己的Event等待上限；真实不可信任务应移到受限进程/沙箱并由所有者回收。池内任务调用等待自身池的shutdown会被拒绝，同池提交后同步等子任务仍可能造成饥饿死锁，调用方必须避免。示例不是标准Executor的全部API替代，不承诺公平、实时期限或恶意回调隔离。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "调参的依据与真实验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "从有效CPU/容器配额、每任务计算/等待时间、到达率与目标尾延迟估计并发；用吞吐乘平均在途时间估在途规模，等待/计算比公式只是起点。下游连接数、限流和内存常先形成上限；队列太大只是把拒绝变成长排队，CPU低也可能是在等同一个数据库瓶颈。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java与Python的配置模型应分别验证；线程池局部测试不能直接推出FastAPI服务的吞吐与尾延迟。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "bounded_pool.py 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "bounded_pool.py",
+          "value": "\"\"\"CPython 3.12: fixed workers, truly bounded pending queue, explicit close.\nTrusted cooperative functions only; no forced interruption of running threads.\n\"\"\"\nfrom concurrent.futures import Future\nfrom queue import Queue, Empty, Full\nfrom threading import Lock, Thread, current_thread\nfrom typing import Callable, Any\n\nclass Rejected(RuntimeError):\n    pass\n\nclass BoundedPool:\n    def __init__(self, workers: int, pending: int):\n        if not 1 <= workers <= 32 or not 1 <= pending <= 512:\n            raise ValueError(\"bounded workers and pending capacity\")\n        self._queue: Queue = Queue(maxsize=pending)\n        self._lock = Lock()\n        self._closed = False\n        self._threads: list[Thread] = []\n        try:\n            for n in range(workers):\n                t = Thread(target=self._work, name=f\"bounded-{n}\", daemon=False)\n                t.start()\n                self._threads.append(t)\n        except BaseException:\n            with self._lock:\n                self._closed = True\n            for t in self._threads:\n                t.join()\n            raise\n\n    def submit(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future:\n        if not callable(fn):\n            raise TypeError(\"callable required\")\n        future: Future = Future()\n        with self._lock:\n            if self._closed:\n                raise Rejected(\"closed\")\n            try:\n                self._queue.put_nowait((future, fn, args, kwargs))\n            except Full:\n                raise Rejected(\"pending queue full\") from None\n        return future\n\n    def _work(self) -> None:\n        while True:\n            try:\n                future, fn, args, kwargs = self._queue.get(timeout=0.05)\n            except Empty:\n                with self._lock:\n                    if self._closed and self._queue.empty():\n                        return\n                continue\n            try:\n                if future.set_running_or_notify_cancel():\n                    try:\n                        result = fn(*args, **kwargs)\n                    except BaseException as exc:\n                        future.set_exception(exc)\n                    else:\n                        future.set_result(result)\n            finally:\n                self._queue.task_done()\n\n    def shutdown(self, *, wait: bool = True, cancel_pending: bool = False) -> None:\n        if wait and current_thread() in self._threads:\n            raise RuntimeError(\"worker must not join its own pool\")\n        cancelled = []\n        with self._lock:\n            self._closed = True\n            if cancel_pending:\n                while True:\n                    try:\n                        item = self._queue.get_nowait()\n                    except Empty:\n                        break\n                    cancelled.append(item[0])\n                    self._queue.task_done()\n        # Future callbacks are arbitrary user code: never invoke under pool lock.\n        for future in cancelled:\n            future.cancel()\n        if wait:\n            for thread in self._threads:\n                thread.join()\n\n"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "OS/Linux主线与版本边界"
+    },
+    {
+      "entryId": "own-java-modern",
+      "questionId": "q-own-java-cross-language-contracts",
+      "label": "Java基础：跨语言契约"
+    }
+  ]
+}

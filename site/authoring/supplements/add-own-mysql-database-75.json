@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-75",
+  "entryId": "database-75",
+  "expectedOriginalHash": "5fa481175575da09cb8040cb7a68765d6d5655dec437a005d2ca45b433f6c797",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "统计总分最高的学生"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按学生 ID 算总分，再返回总分等于最大值的所有学生，最后取姓名。这里比较的是学生的汇总结果，同名的两个人也必须分别参赛。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本题使用 students(student_id,student_name) 与 scores(student_id,course_id,score)。默认至少有一条成绩才参加排名，最高分并列就全部返回。若存在补考或多次考试，要先说清每科取最高分、最近一次还是全部记录；否则 SUM 会把不该重复计算的成绩加进去。"
+    },
+    {
+      "type": "paragraph",
+      "text": "汇总后，可以再连接 MAX(总分)，也可以用窗口函数。下面选择 MAX 的写法，让“所有并列最高”直接体现在查询里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "沿用范式题已创建的 students 与 courses；scores 专供本题，复合主键保证一名学生每门课只有一条成绩。若有补考，不可直接复用这一事实粒度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 scores_setup.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/scores_setup.sql",
+      "value": "CREATE TABLE scores (\n  student_id BIGINT NOT NULL,\n  course_id BIGINT NOT NULL,\n  score DECIMAL(5,2) NOT NULL,\n  PRIMARY KEY(student_id,course_id),\n  FOREIGN KEY(student_id) REFERENCES students(student_id),\n  FOREIGN KEY(course_id) REFERENCES courses(course_id)\n) ENGINE=InnoDB;\nINSERT INTO scores VALUES\n (1,1,80),(1,2,90),(2,1,100),(2,2,70),(3,1,75),(3,2,75);\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 scores_winners.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/scores_winners.sql",
+      "value": "WITH totals AS (\n  SELECT student_id, SUM(score) AS total_score\n  FROM scores\n  GROUP BY student_id\n)\nSELECT s.student_id, s.student_name, t.total_score\nFROM totals AS t\nJOIN students AS s ON s.student_id = t.student_id\nWHERE t.total_score = (SELECT MAX(total_score) FROM totals)\nORDER BY s.student_id;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "若无成绩学生也以 0 分参与，使用下面的 LEFT JOIN 变体；不要把会排除无成绩行的条件放入 WHERE。若只返回一名，按总分降序、student_id 升序后 LIMIT 1，让并列选择可重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 scores_variants.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/scores_variants.sql",
+      "value": "-- Variant A: include students without scores as zero; keep all winners.\nWITH totals AS (\n  SELECT s.student_id,COALESCE(SUM(sc.score),0) AS total_score\n  FROM students AS s\n  LEFT JOIN scores AS sc ON sc.student_id=s.student_id\n  GROUP BY s.student_id\n)\nSELECT s.student_id,s.student_name,t.total_score\nFROM totals AS t JOIN students AS s ON s.student_id=t.student_id\nWHERE t.total_score=(SELECT MAX(total_score) FROM totals)\nORDER BY s.student_id;\n\n-- Variant B: only students with scores participate; one stable winner.\nWITH totals AS (\n  SELECT student_id,SUM(score) AS total_score\n  FROM scores GROUP BY student_id\n)\nSELECT s.student_id,s.student_name,t.total_score\nFROM totals AS t JOIN students AS s ON s.student_id=t.student_id\nORDER BY t.total_score DESC,s.student_id ASC\nLIMIT 1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "两种变体是不同契约，按题意选一种。当前样本 A 返回学生 1、2，B 只返回学生 1；不要把 LIMIT 1 用来回答“所有并列最高”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "推演：学生 1 的分数 [80,90] 总分 170；学生 2 的 [100,70] 也为 170；学生 3 为 150，返回 1 与 2。空 scores 时 totals 为空，因此结果为空。"
+    },
+    {
+      "type": "paragraph",
+      "text": "性能：需要处理参评成绩并聚合，索引 scores(student_id,course_id) 对分组与唯一性有帮助，但需结合计划。若课程数不同，按总分比较是否公平是业务问题，可改为平均分/限定统一课程集合，但不能擅自更改题意。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试：并列、同名、无成绩、重复课程成绩、NULL 分数、负数分数是否允许、空表。SUM 忽略 NULL，全部 NULL 的组总和是 NULL；应约定缺考口径并在建模时约束。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

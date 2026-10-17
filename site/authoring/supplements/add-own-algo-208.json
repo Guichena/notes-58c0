@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-208",
+  "entryId": "208",
+  "expectedOriginalHash": "1c84f3d633d4eb876c380fef41c90dc9d95e563001a62c2e306efbe06a400480",
+  "title": "算法练习补充：用 Trie 做最长前缀意图路由",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用 Trie 做最长前缀意图路由"
+    },
+    {
+      "type": "paragraph",
+      "text": "从根沿输入依次向下走，每遇到一个终止节点就更新最近的有效匹配，直到走不下去；返回最深终止节点对应的意图，并用它的原文偏移切出剩余槽位。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "“输入字符串列表，用 Trie 匹配最长前缀意图，返回意图名和剩余槽位字符串。”",
+        "“已经匹配到短意图，还要继续往下找吗？”",
+        "“请求里有关键词就能命中吗？查订单 和 查 同时存在时返回哪个？”"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入含义不能省略"
+    },
+    {
+      "type": "paragraph",
+      "text": "“字符串列表”可能是意图触发词列表，也可能省略了触发词与意图名的映射。若列表元素本身就是意图名，可用 put(word, word)；若多个触发词对应同一业务意图，需要显式提供 prefix → intent 映射。本例的入口接受这样的二元关系，不凭空根据触发词猜意图名。"
+    },
+    {
+      "type": "paragraph",
+      "text": "采用字面前缀匹配：不跳过开头空格，不忽略大小写，不做 Unicode 归一化，不分词、不包含匹配。输入 查订单 42、触发词 查订单，剩余字符串先是一个 ASCII 空格，再是字符 4 和 2；用 ␠ 表示空格时，可写作“␠42”，空格并未被丢弃。“剩余槽位字符串”只是未匹配后缀，不代表已经校验出了合法订单号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若规则要求英文词边界，book 是否应匹配 booking 需要另行指定。可以在访问 terminal 时额外检查后一个码点是否是允许的分隔符，不能无声地替换字面最长前缀语义。同样，模糊表达“帮我看看”并不会因为使用 Trie 就自动消歧；无匹配时返回空结果，由上层选择澄清、默认路由或模型判别。"
+    },
+    {
+      "type": "paragraph",
+      "text": "空触发词默认拒绝，避免根节点变成隐藏的兜底意图。相同前缀重复注册同一意图是幂等的，注册不同意图会报错；如果业务需要优先级或一对多，数据结构和返回值都要跟着改变。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "机制与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "节点保存孩子映射和可空意图名。终止节点可以同时有孩子，例如 查 和 查订单 都是有效触发词。"
+    },
+    {
+      "type": "paragraph",
+      "text": "沿 Trie 往下走时，“走得到”不等于“已经匹配到一个完整词”。当前节点对应已匹配的完整输入前缀；只有 terminal 才能作为答案，非终止节点只是更长词的中间路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此一路记住两个量：best 是访问过的最深 terminal，bestEnd 是它在输入中的 UTF-16 排他偏移。后面即使继续走到非终止节点，也不能把它的意图当成答案返回。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果下一条边不存在，任何更长触发词都必须经过这条边，因此不可能继续匹配。已经记录的最深 terminal 就是答案。若一路有节点但没有 terminal，说明输入只是某个触发词的真前缀，应返回无匹配。例如仅注册 查订单，输入 查订 不能命中。"
+    },
+    {
+      "type": "paragraph",
+      "text": "使用码点作为孩子键，遍历偏移却保留为 Java 字符串偏移，因此既不会把正常的补充字符拆成两个独立边，也能直接切出原输入中的槽位文本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Java 入口与复杂度"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整实现如下："
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.HashMap;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.Optional;\n\n/** Literal Unicode-code-point prefixes; duplicate mappings must agree. */\npublic final class SSAIntentTrie {\n    private static final class Node {\n        final Map<Integer, Node> children = new HashMap<>();\n        String intent;\n    }\n    public record Match(String intent, String prefix, String slots) {}\n    private final Node root = new Node();\n    public void put(String prefix, String intent) {\n        Objects.requireNonNull(prefix); Objects.requireNonNull(intent);\n        if (prefix.isEmpty() || intent.isEmpty()) throw new IllegalArgumentException(\"empty prefix or intent\");\n        Node node = root;\n        for (int i = 0; i < prefix.length();) {\n            int cp = prefix.codePointAt(i); i += Character.charCount(cp);\n            node = node.children.computeIfAbsent(cp, unused -> new Node());\n        }\n        if (node.intent != null && !node.intent.equals(intent))\n            throw new IllegalArgumentException(\"conflicting intent for prefix\");\n        node.intent = intent;\n    }\n    public Optional<Match> route(String text) {\n        Objects.requireNonNull(text);\n        Node node = root; String best = null; int bestEnd = 0;\n        for (int i = 0; i < text.length();) {\n            int cp = text.codePointAt(i);\n            node = node.children.get(cp);\n            if (node == null) break;\n            i += Character.charCount(cp);\n            if (node.intent != null) { best = node.intent; bestEnd = i; }\n        }\n        return best == null ? Optional.empty()\n                : Optional.of(new Match(best, text.substring(0, bestEnd), text.substring(bestEnd)));\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "SSAIntentTrie trie = new SSAIntentTrie();\ntrie.put(\"查\", \"genericLookup\");\ntrie.put(\"查订单\", \"orderLookup\");\nSSAIntentTrie.Match match = trie.route(\"查订单 42\").orElseThrow();\n// intent = orderLookup, prefix = 查订单, slots = \" 42\"\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "设所有注册前缀总长为 L，查询实际访问 m 个码点。孩子用 HashMap 时，构建期望 O(L)，遍历期望 O(m)，节点与映射占 O(L)。本例返回复制得到的前缀和后缀，实际返回字符串所需时间和空间还包含输入长度 O(n)；若追求查询 O(m)、零拷贝返回，可以只返回 intent + bestEnd，让调用方按需取子串。哈希操作的常数时间是通常模型下的期望复杂度，不应把它说成所有实现、所有输入都无条件的严格保证。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "必须覆盖的反例"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "同时注册 查 与 查订单，查询 查订单A 返回后者。",
+        "查询走入更长词的中间路径后失败，仍应回退到已经记录的短 terminal。",
+        "输入恰好等于触发词，剩余槽位是空字符串。",
+        "根本没有 terminal 被访问，返回空结果。",
+        "存在不同码点但视觉相似的字符串，不擅自认为相同。",
+        "多线程场景下不能把正在写入的普通 HashMap Trie 当作自动安全的共享路由表；可在构建完成后以不可变快照发布，或单独设计更新同步机制。"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "在 Trie 中返回所有前缀匹配单词"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定位 prefix 对应节点，再遍历整个子树，收集所有 terminal 节点；有效单词不等于叶子，内部终止节点也必须返回。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "“构建前缀树，给定 prefix，返回所有具有该前缀的有效单词列表。”",
+        "“定位前缀节点后 DFS 收集叶子单词，是否就够了？”",
+        "“如果 app 和 apple 都在字典里，查询 app 应返回哪些？”"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "和最长前缀路由的区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "这两道 Trie 题先问清“谁是谁的前缀”。路由题问：哪个字典词是输入的最长前缀？沿输入的一条路径走，并记录最深的完整词即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "枚举题问：哪些字典词以给定输入前缀开头？先找到此前缀，再往下展开收集词。一个沿输入找祖先答案，一个从前缀向下找后代，不能只改接口名字就互相替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“包含该前缀”在这里采用 starts-with 语义。如果要求任意位置包含给定子串，普通前缀 Trie 的一次根路径定位不能直接解决，需要调整索引或查询方式。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么不能只收集叶子"
+    },
+    {
+      "type": "paragraph",
+      "text": "字典为 app, apple, apply 时，app 对应的节点有两个方向的后继，同时也是合法单词终点。只在“孩子为空”时输出，会漏掉 app。应把“终止标志”和“是否有孩子”作为完全独立的属性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本例直接在 terminal 保存完整单词引用：走到 terminal 就输出其单词，既不会误把未注册的前缀当作单词，也不用为每个中间节点反复拼字符串。重复插入相同词只占一个终止位置，返回列表不重复。空字符串允许成为根节点的有效单词，空前缀则匹配所有词，包括已注册的空词；这是一种明确选择，也可以根据题目要求禁用空词。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "DFS 与不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "定位失败立即返回空列表。定位成功时先检查该节点是不是 terminal，再使用迭代 DFS 访问其孩子。本例用保存子节点迭代器的显式栈，每个栈帧对应一层路径，避免超长单词触发 Java 递归调用栈溢出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "遍历不变量是：输出中的每个词都是当前前缀子树中已经访问的 terminal，且仅输出一次；尚未访问的子树都由栈里的迭代器精确保留。因为树中每个节点只有唯一父路径，遍历完毕后所有且仅有匹配词都已输出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "孩子使用 TreeMap，按码点数值顺序遍历，因此输出顺序稳定，且一个词排在它的严格扩展之前。该顺序是码点序，不是语言环境下的词典排序；对补充字符与某些 BMP 字符的比较，也不等同于 Java String.compareTo 的 UTF-16 代码单元序。题目不要求排序时，HashMap 加结果集合即可；要求某种本地化排序时，需要另行定义排序器和费用。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Java 入口与复杂度"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.ArrayDeque;\nimport java.util.ArrayList;\nimport java.util.Deque;\nimport java.util.Iterator;\nimport java.util.List;\nimport java.util.Objects;\nimport java.util.TreeMap;\n\n/** Enumerates words that START WITH prefix, including internal terminal nodes. */\npublic final class SSAPrefixTrie {\n    private static final class Node {\n        final TreeMap<Integer, Node> children = new TreeMap<>();\n        String word;\n    }\n    private final Node root = new Node();\n    public void add(String word) {\n        Objects.requireNonNull(word);\n        Node node = root;\n        for (int i = 0; i < word.length();) {\n            int cp = word.codePointAt(i); i += Character.charCount(cp);\n            node = node.children.computeIfAbsent(cp, unused -> new Node());\n        }\n        node.word = word;\n    }\n    public List<String> wordsWithPrefix(String prefix) {\n        Objects.requireNonNull(prefix);\n        Node node = root;\n        for (int i = 0; i < prefix.length();) {\n            int cp = prefix.codePointAt(i); i += Character.charCount(cp);\n            node = node.children.get(cp);\n            if (node == null) return List.of();\n        }\n        List<String> result = new ArrayList<>();\n        if (node.word != null) result.add(node.word);\n        Deque<Iterator<Node>> stack = new ArrayDeque<>();\n        stack.push(node.children.values().iterator());\n        while (!stack.isEmpty()) {\n            Iterator<Node> iterator = stack.peek();\n            if (!iterator.hasNext()) { stack.pop(); continue; }\n            Node child = iterator.next();\n            if (child.word != null) result.add(child.word);\n            stack.push(child.children.values().iterator());\n        }\n        return List.copyOf(result);\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "SSAPrefixTrie trie = new SSAPrefixTrie();\ntrie.add(\"app\"); trie.add(\"apple\"); trie.add(\"apply\");\nList<String> words = trie.wordsWithPrefix(\"app\");\n// [app, apple, apply]\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "设前缀有 p 个码点，匹配子树有 V 个节点，最大分支数为 A，输出单词数为 k。TreeMap 定位前缀需要 O(p log(A+1))，完整子树遍历 O(V+k)，辅助 DFS 栈 O(h)，结果列表 O(k)。输出保存的是已有字符串引用；如果把结果序列化为文本，还应计入输出字符串总长度 R 的 O(R) 时间。构建总费用为 O(L log(A+1))，其中 L 是全部插入词的总长度；不能把“查找前缀很快”误写成“返回任意多结果也只要 O(p)”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "超大字典常见扩展包括返回前 k 项、分页游标、压缩 Trie 或只保存词 ID。分页还需要稳定版本或快照，否则并发更新可能造成重复和漏项。这些都是额外接口约定，基础题无需擅自加入。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

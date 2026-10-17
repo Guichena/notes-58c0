@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-tools-guide",
+  "kind": "doc",
+  "module": "ai",
+  "part": "工具与 MCP 工程",
+  "category": "实现参考与验证边界",
+  "title": "工具工程：接口、运行条件与验收边界",
+  "tags": [
+    "工具调用",
+    "完整教学代码"
+  ],
+  "sections": [
+    {
+      "id": "s-677",
+      "title": "第十章　MCP 接入与可运行合同测试",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "接入验收要证明真实消息跨进程到达正确回调并返回可验证结果，单个函数或 Map 分发器不能证明 MCP 互通。"
+        }
+      ]
+    },
+    {
+      "id": "s-681",
+      "title": "可能问法",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "“Java Host 怎样接 Python Server？”“Dify 连不上 MCP 从哪查？”“怎样验证工具不会假成功？”“没有模型密钥能测什么？”“重构工具后如何防止其他能力退化？”"
+        }
+      ]
+    },
+    {
+      "id": "s-685",
+      "title": "10.1 本地伴随工程的入口",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "伴随目录提供 Java 21、Python 标准库及 H2 2.3.232 的完整本地例子，执行 bash run-all.sh 编译并运行。Java 没有独立 javac 命令时，脚本通过 JDK 的 jdk.compiler 模块调用编译器；需要真实 JDK，不是只带 java 的裁剪 JRE。代码不需要模型密钥、网络服务或数据库安装。"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "入口",
+            "主要教学范围"
+          ],
+          "rows": [
+            [
+              "ToolExecutorTest",
+              "严格解析、授权、状态、重试预算、并发重放、取消、输出和清理"
+            ],
+            [
+              "DemoBackend",
+              "版本 CAS、完整大结果取回与哈希、跨租户访问拒绝"
+            ],
+            [
+              "agent_runtime_demo.py",
+              "Python 协作式 async 执行、权限、幂等、版本冲突、大结果与十三项测试"
+            ],
+            [
+              "ToolWrapper",
+              "已解码参数的轻量 Java 执行边界与不合作任务"
+            ],
+            [
+              "OperationRecovery",
+              "H2 持久操作日志、真实本地子进程、UNKNOWN 与回执恢复"
+            ],
+            [
+              "FieldPlanTest",
+              "受限中文过滤语法、真实 JDBC 绑定、租户隔离与恶意值"
+            ],
+            [
+              "McpInteropTest",
+              "Java Host 调用真实 Python stdio Server"
+            ],
+            [
+              "test_modern.py",
+              "Python Host 调用真实 Java/Python stdio Server 及协议负例"
+            ],
+            [
+              "test_dynamic.py",
+              "同一 Python 进程中，SQLite 配置发布、目录刷新和真实工具回调"
+            ],
+            [
+              "http_contract.py",
+              "HTTP 元数据编码与匹配的离线合同夹具"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "完整源文件在伴随工程内，不依赖隐藏 helper。ToolPort 是工具层接口，不是 Agent 调度器；外层负责状态机、模型调用、审批和持久恢复。Context 必须从可信认证和当前策略构建，模型不能自己提供 capabilities。"
+        }
+      ]
+    },
+    {
+      "id": "s-704",
+      "title": "10.2 两端究竟实现了什么",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "现代互通示例固定协议 2026-07-28，不使用第三方 MCP SDK。Java 和 Python 两端都有真实逐行 stdio 读写、字节边界、请求检查、版本检查、discover、tools/list 和 tools/call。工具是无外部副作用的有界整数加法，回传 text 与 structuredContent，并验证响应 id 和必需结果字段。协议错误和工具参数错误采用不同返回路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个现代示例能运行，但只覆盖一个有限协议剖面。资源策略是每进程最多 128 帧、每帧最多 8192 字节；目录只有一个静态只读工具，不产生分页游标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它不承诺资源、Prompt、MRTR、长期订阅、OAuth、HTTP、实时进度或长任务并发取消。进度 token 即使传入，也只校验类型，不表示服务会发送通知。客户端不能把未声明能力当成已经实现，更不能把这个例子称为完整 SDK 或全规范认证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SQLite 动态示例把发布版本、公开名称、允许的适配器和启用状态保存在本地数据库。每个请求读取并验证候选配置；非法配置保持上一版；版本升级后同一进程的发现结果和真实回调一起变化，旧名被拒绝；停用后列表和调用同时失效。它只支持已经审核的 bounded_sum 适配器，不加载数据库里的任意 Python 代码，不演示分布式配置一致性、真实身份系统或网络连接排空。"
+        },
+        {
+          "type": "paragraph",
+          "text": "2025-11-25 的 initialize 夹具独立存放，现代路径会拒绝 initialize。这个夹具用于比较字段，不代表旧 SDK 集成已经运行。NoteWeave 使用旧式 initialize 的源码事实，也不因教学示例支持现代协议而被改写。"
+        },
+        {
+          "type": "paragraph",
+          "text": "此有限剖面对数值请求 id 和 progressToken 限定为有符号 64 位数学整数，字符串标识受帧与字符串长度限制。Python 先精确解析十进制词法，再判断整数，避免把 1.0000000000000001 舍入成 1 后误执行；1.0 仍可表示整数。超出边界时拒绝而不执行，不能把这一教学限制说成 MCP 对所有实现统一规定的整数范围。"
+        }
+      ]
+    },
+    {
+      "id": "s-718",
+      "title": "10.3 为什么要保留 Python 运行时的边界",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Python runtime 包含十三个可独立运行的测试：读请求、允许列表和参数校验、权限、幂等、撤权后的重放拒绝、并发版本冲突、只读有限重试、读超时取消、父任务取消、共享预算、写超时 UNKNOWN、未知工具和大结果引用等。它用内存后端和锁验证局部事务语义，没有声称跨进程持久化或分布式 exactly-once。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Python runtime 的 asyncio 取消是协作式的。测试中的短暂 sleep 能被取消，不证明所有真实库都能及时停止；父取消接口也要由上层按写入阶段保留不确定性，普通取消异常不能当成“操作没发生”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 用显式 UNKNOWN/interrupt 合同向调用者暴露这条边界。比较两种实现时，应沿写入开始、停止等待和结果确认分别推演，不能因为状态名字相似，就宣布语义完全等价。"
+        }
+      ]
+    },
+    {
+      "id": "s-762",
+      "title": "10.6 一分钟综合回答",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "“我把工具能力拆成模型协议、工具执行和业务状态三层。模型提出名称和参数，应用先做严格校验与当前授权，再进入有界执行器。只读短暂失败可以在共享预算内重试，写操作一旦开始却拿不到回执就返回 UNKNOWN，保留原 operationId 查询，不盲目重发。MCP 负责发现和跨语言消息，Skill 负责按需加载任务方法，二者都不替代权限和幂等。接入时固定协议年代，验证真实 Java/Python 进程与回调，再测错误、取消、输出上限和资源清理。项目表达只讲可证明的实现与实验口径，不把教学样例当作线上业绩。”"
+        }
+      ]
+    },
+    {
+      "id": "s-766",
+      "title": "附录 A　本地编译与依赖准备",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "在伴随工程的 companion 目录执行 bash run-all.sh。需要 JDK 21、Python 3.11+ 和 Bash；Python 只使用标准库。Java 编译使用 jdk.compiler 模块。H2 2.3.232 是唯一的第三方二进制依赖，包内已经包含，不需要在线下载、Maven、pip 或模型密钥。"
+        },
+        {
+          "type": "paragraph",
+          "text": "H2 的 Maven 坐标是 com.h2database:h2:2.3.232，文件为 deps/h2-2.3.232.jar，大小 2,651,157 字节，SHA-256 为 8dae62d22db8982c3dcb3826edb9c727c5d302063a67eef7d63d82de401f07d3。许可为 MPL 2.0 或 EPL 1.0；具体条款与上游发布地址见伴随工程的 deps/3rdparty_license.txt。二进制无需复制到文本代码块中。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果在新的目录仅从本附录重建工程，应先按下一节的相对路径保存全部文本文件，再从 Maven Central 的固定版本地址获取 H2。以下命令在 companion 目录执行，先验证下载的临时文件，再将它放到依赖路径；校验失败时不得编译或改成忽略校验。已有正确的包内依赖时，直接运行主入口即可。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "examples/fence-3.sh",
+          "value": "mkdir -p deps\ncurl --fail --location --proto '=https' --tlsv1.2 \\\n  'https://repo.maven.apache.org/maven2/com/h2database/h2/2.3.232/h2-2.3.232.jar' \\\n  --output deps/h2-2.3.232.jar.part\npython3 - <<'PYH2'\nimport hashlib\nfrom pathlib import Path\np = Path('deps/h2-2.3.232.jar.part')\nexpected = '8dae62d22db8982c3dcb3826edb9c727c5d302063a67eef7d63d82de401f07d3'\nif hashlib.sha256(p.read_bytes()).hexdigest() != expected:\n    raise SystemExit('H2 SHA-256 mismatch; dependency was not installed')\np.replace('deps/h2-2.3.232.jar')\nPYH2\nbash run-all.sh\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "run-all.sh 在编译之前显式验证依赖，不依赖可以被 Python 优化模式移除的断言。运行生成的类、日志和每次独立的恢复数据库分别位于 java/classes、logs 与 work。这些运行产物不是源文件；持久化示例要求每次使用新路径，不能把已有回执当成本次执行结果。"
+        }
+      ]
+    },
+    {
+      "id": "s-793",
+      "title": "附录 B　完整伴随工程",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "下面按相对路径给出全部文本文件，包括接口、实现、配置校验清单、测试、固定输入、运行脚本与使用说明。每个代码块都可以独立复制到所示路径；字节数与 SHA-256 用于核对保存后的 UTF-8 文件，换行采用 LF。测试仅运行受控的本地算术、内存后端、H2、SQLite 与自有子进程，不需要真实业务服务。"
+        }
+      ]
+    },
+    {
+      "id": "s-797",
+      "title": "B.1　companion/README.md",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "UTF-8 字节数：8047；SHA-256：e91bd80e329f666c7b46cfebc7f608a0d59c12308668a3732bd91cfecdaba1c5。"
+        },
+        {
+          "type": "code",
+          "language": "markdown",
+          "label": "companion/README.md",
+          "value": "# 可运行伴随工程\n\n本地教学工程，主入口为 `bash run-all.sh`。在本目录执行。需要 JDK 21、Python 3.11+、Bash；验证环境为 OpenJDK 21.0.12.1、Python 3.12.14。H2 2.3.232 的未修改 jar 已包含并校验 SHA-256。没有 Maven、pip、模型密钥或在线服务依赖。\n\n## 文件与命令\n\n- `java/src/interview/tools/ToolPort.java`：工具层适配器合同。\n- `ToolExecutor.java`、`StrictJson.java`、`Cleanup.java`：有界执行、严格 JSON、独立清理。\n- `ToolExecutorTest.java`：本地故障与竞争测试。\n- `DemoBackend.java`：版本 CAS、完整大结果分页取回、内容哈希与租户隔离的内存后端。该 ASCII 产物示例按字符偏移分页，不是通用 Unicode 游标服务。\n- `ModernMcp.java`：Java 的有限 tools-only stdio Server。\n- `McpInteropTest.java`：Java Host 启动 Python Server 并核验真实响应。\n- `McpResponseGuard.java`：有限现代响应合同与错 ID、缺必需字段等负例。\n- `python/agent_runtime_demo.py`：完整 Python 协作式运行时与十三项测试。\n- `legacy/ToolWrapper.java`：已解码 Map 的轻量方案；不是 JSON 解析器。\n- `legacy/OperationRecovery.java`：H2 日志与真实无害子进程，必须使用新的数据库及回执路径。\n- `legacy/FieldPlan.java`、`FieldPlanTest.java`：受限语法与 JDBC 绑定测试。\n- `mcp/modern_server.py`、`test_modern.py`：Python Server 和双语言协议测试。\n- `mcp/dynamic_server.py`、`test_dynamic.py`：SQLite 发布配置、同进程刷新与实际回调。\n- `mcp/http_contract.py`：HTTP 元数据纯函数夹具，不启动 HTTP 服务。\n- `fixtures/legacy-2025-11-25.json`：独立旧式 initialize 对照。\n\n编译后的类输出到 `java/classes`，运行日志到 `logs/latest.log`；持久化恢复例子的数据库和回执保留在每次新建的 `work/recovery-*` 目录。脚本不会删除已有数据。Windows 可使用 WSL，其他方式需要改写 Bash 命令和 classpath 分隔符。\n\n## Java ToolPort 的精确语义\n\n`invoke(Context, Call, Budget)` 返回 Reply，不通过未分类的中断异常隐藏写入不确定性。Context 由宿主从可信认证与当前授权构建；capabilities 不能来自模型。Call 的 callId 关联此次请求；operationId 关联原业务操作。写操作要求非空 operationId。\n\n前置回调合同：业务 Validator 及入队/重放前的 Authorizer 在 invoke 调用线程同步运行，必须是可信、本地、有界且非阻塞代码。Budget 的 deadline 和 cancellation 不会抢占或强制限制这些回调的等待；违反前提时，invoke 可能超过期限或不能及时返回。声明此前提不是运行时强制措施，也不解决任意不合作回调。远程策略查询须在自身有超时和失败时拒绝策略的受限适配层完成；当前权限仍须在实际资源事务边界落实。worker 内也会再次调用 Authorizer，调用方停止等待不证明该 callback/worker 已结束。\n\nReply 的 `effectUncertain` 当且仅当 `status == UNKNOWN`。UNKNOWN 必须携带 operationId。写操作一旦可能开始，等待超时、取消、中断或未知执行失败均不能宣称回滚。中断返回后恢复线程中断标记。只读请求可返回 CANCELLED/DEADLINE_EXCEEDED，但实际工作线程是否停止仍取决于合作。\n\nBudget 是本 JVM 单调时钟截止点、共享原子尝试次数和取消标记。raw 截止点限当前时刻前后一天；推荐 `Budget.after`。nanoTime 不跨进程传输。每次提交预留一个次数，拒绝提交也消耗该预留；无下溢。只有只读且明确标记可重试的失败，才在同一预算中有限重试。写操作不自动重试。\n\n变更日志按 tenant/user/resourceScope/tool/operationId 索引，比较按 key 排序的 JSON 载荷和工具版本。此规范化不是 RFC 8785 通用实现；数字表示按本地解析合同保留。先做当前授权再重放；实际 worker 开始前再次授权。业务服务还要在真正修改资源的事务边界落实授权与 CAS。\n\n日志有容量上限、不自动淘汰，满后拒绝新写入。它是易失内存记录，不提供崩溃恢复。UNKNOWN 保留并阻止盲重放；没有对账接口自动改写终态。`OperationRecovery` 展示另一层持久状态，但没有消除任意外部效果的启动/提交崩溃窗口。\n\nStrictJson 限制 8192 字节、深度 16、节点 512、数组 256、字符串 4096；拒绝重复键、非法 Unicode 和非有限值。它是语法解析器，不是通用 JSON Schema 引擎。业务 Validator 是每个工具的可信代码。Output 限制累积 UTF-8 字节；最终 JSON 校验还会拒绝非法 surrogate。handler 自己提前分配的大对象不受 Output 限制。\n\nclose 尝试关闭拥有的执行池，逐个取消排队任务，并在五秒内等待终止；保留失败与中断。这个期限限制等待，不是强制杀线程的保证。不合作的线程可能继续占用 JVM，需外部隔离。不要把宿主共享 executor 传给一个无权关闭它的组件。\n\n## MCP 2026-07-28 有限剖面\n\n支持：UTF-8 换行帧、逐请求必需元数据、server/discover、tools/list、tools/call、版本错误、请求关联、结果类型、TTL/cacheScope、text 与 structuredContent。固定一个有界、无副作用的 sum 工具。数学整数可写为 1 或 1.0，bool 不被接受为整数。Python 对十进制和指数词法先按 Decimal 精确解析，再判断是否为数学整数，不能先转二进制浮点后接受被舍入的小数。此有限剖面的数值请求 id 与 progressToken 限有符号 64 位整数；超界整数可能在 Java 的有界解析层或 Python 的字段校验层被拒绝，二者都不执行工具。字符串标识仍受帧与字符串长度上限约束。\n\n边界：单帧最多 8192 字节，单进程最多 128 帧；解析复杂度有界；目录只有一页，不发 cursor。服务顺序执行微小算术，在读取取消通知时没有仍在运行的算术任务；不声称长任务取消支持。无需客户端可选能力，不发送反向请求、MRTR 或订阅通知。未实现 HTTP、OAuth、资源、Prompt、分页、多模态、进度、扩展与第三方 SDK。任何兼容结论仅针对交付的这一剖面与测试。\n\nJava Host 验证的子进程是本工程自己的 Python 代码，启动参数不来自模型。stdout/stderr 分开、并发、有界读取，输入关闭后等待，必要时终止，再检查结束。不是任意程序执行沙箱。\n\n动态示例使用 SQLite 的单行版本发布合同。每次请求重新读取完整行并校验，候选非法则保留上一有效快照。适配器名仅允许 bounded_sum；同版本变内容拒绝，回滚内容须通过新的递增发布版本。当前实现仅本地单进程、只读工具，无用户认证，无跨节点发布/回滚协调。配置发布本身由测试代码控制，不向模型开放。\n\nHTTP 夹具验证 header/body 对应、Base64 sentinel、防 header 注入、annotation 静态路径/类型/唯一性、版本错误等。它使用较严格的精确文本比较，不演示规范建议的整数 header 数值归一化，也不演示 Accept、Origin、TLS、HTTP 状态管线、SSE 解析或 OAuth。因此它不能用于声称完整 HTTP 兼容。\n\n## Python 运行时边界\n\n`agent_runtime_demo.py` 使用合作式 asyncio handler、内存 ledger 和内存产物，适合学习与回归；不是沙箱、持久任务系统或完整 MCP Server。wait_for 可能等待取消完成而超过名义超时。父取消会传播取消异常，上层对已经开始的写操作仍需保存 UNKNOWN/操作查询语义，不能把取消当成没有副作用的证明。\n\n## 验证层级\n\nrun-all 的成功证明这些本地合同和故障用例运行，不证明 NoteWeave、Dify、Spring AI、真实 OAuth 服务、真实 MySQL 或云业务系统集成成功。工程不运行任何原项目仓库代码，不发网络请求，也不进行外部写入。\n"
+        }
+      ]
+    },
+    {
+      "id": "s-validation-boundary",
+      "title": "怎样使用伴随工程的验证结论",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "编译、运行测试、第三方系统集成和生产验收是不同层次。源码里的 PASS 字符串不是运行证据；有限 MCP 剖面的测试不能证明全规范兼容，也不能证明 Spring AI、Dify、NoteWeave、OAuth 或 MySQL 集成已经完成。只有在对应环境实际运行并保存结果后，才引用该次验证结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "从文本恢复伴随工程时，H2 2.3.232 二进制需要另行准备并核对固定 SHA-256。源文件字节数和摘要用于核对复制完整性，不替代依赖供应链审查或运行测试。"
+        }
+      ]
+    }
+  ]
+}

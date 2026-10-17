@@ -1,0 +1,369 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-decimal-parser",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "手写十进制转浮点：精度、范围与正确舍入分开",
+  "questions": [
+    {
+      "id": "q-own-algo-decimal-parser",
+      "question": "手写十进制转浮点：精度、范围与正确舍入分开",
+      "shortAnswer": "小数位很多，不等于数值越界：0.后跟5000个9仍接近1。先分清问题出在哪一层：把全部小数位积进long可能使中间整数溢出；二进制精度有限会舍入；指数过大导致范围溢出，过小则进入次正规/下溢；文本本身还可能不合法。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "手写十进制转浮点：精度、范围与正确舍入分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "小数位很多，不等于数值越界：0.后跟5000个9仍接近1。先分清问题出在哪一层：把全部小数位积进long可能使中间整数溢出；二进制精度有限会舍入；指数过大导致范围溢出，过小则进入次正规/下溢；文本本身还可能不合法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整手写实现先扫描出BigInteger精确十进制有效整数和10的幂分母，再用整数商余数完成nearest、ties-to-even舍入，组装64位格式。生产路径不调用parseDouble或BigDecimal。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "可能的问法"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "怎样手写字符串转浮点数？小数位特别多会带来哪些问题？",
+            "中间整数溢出、最终数值范围和正确舍入有什么区别？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "输入、输出与前提"
+        },
+        {
+          "type": "paragraph",
+          "text": "题目未给定文本语法、float32 或 double64 以及错误策略时，需要先确认。这里明确选择Java binary64 double，支持ASCII正负号、十进制整数/小数、可选e/E指数；拒绝空白、NaN/Infinity字面量、十六进制、类型后缀及其他字符。最多10000字符，指数绝对值<=10000，超出是资源合同拒绝。允许数学值舍入为正负Infinity或正负0，调用方若只接受有限数可额外检查isFinite。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么这样做"
+        },
+        {
+          "type": "paragraph",
+          "text": "语法写清再编码：[+-]?(digits(.digits?)?|.digits)([eE][+-]?digits)?。至少出现一位尾数数字，最多一个点，指数有符号时后面仍必须有数字，结尾必须全被消费。1.、.5、+01.25、1.e2在此合同合法；只有符号/点、重复点、1e+、1x非法。字符使用0..9范围判断，不把Unicode数字混入ASCII十进制协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "扫描尾数时忽略小数点，用BigInteger按S=S×10+d保存所有数字，另计小数位f与有符号十进制指数e10，精确值是S×10^(e10−f)。若scale=f−e10>=0，N=S、D=10^scale；否则N=S×10^(−scale)、D=1。符号单独保存，S=0仍保留输入负号为−0.0。指数逐位累加前检查上界，不能先int溢出再比较。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一种面试简化写法用fraction+=digit×factor且factor每次乘0.1，确实不会让一个巨大十进制小数整数溢出，但逐步二进制舍入、factor下溢和进位可能使最后值与正确舍入不同；同样只保留前17位再乘10幂也需处理被丢弃尾数及半途舍入。若只要求近似可约定误差后选简化法，不能把它无条件称为与标准解析器逐位一致。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本实现求e=floor(log2(N/D))：先用两整数bitLength差估计，再比较N与D×2^e（负e则移N）修正最多1。e>1023必溢出；e<−1075离最小正次正规数的一半还小，舍入为带符号0。对于正常数e>=−1022，把精确值缩放2^(52−e)，希望得到53位有效整数；更小值统一按次正规步长2^−1074缩放。"
+        },
+        {
+          "type": "paragraph",
+          "text": "舍入可以完全变成整数比较。整数除法得a=q×b+r，0<=r<b后，比较2r与b：小于则取q，大于则取q+1；相等时正好在中点，再看q最低位，奇数加1、偶数不加，这就是ties-to-even。"
+        },
+        {
+          "type": "paragraph",
+          "text": "全过程用精确整数，所以不会先把判断中点的double舍入，再拿它决定舍入方向。负数先对绝对值对称舍入，最后加符号位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正常数的有效整数若进位到2^53，就右移1并把二进制指数加1；若因此超过1023，返回Infinity。否则用e+1023编码指数，减去隐含前导2^52，留下52位尾数字段。"
+        },
+        {
+          "type": "paragraph",
+          "text": "次正规数直接把舍入整数用作低位编码。若恰好进到2^52，其位模式会自动成为最小正常数，不能截掉这个进位。最后的Double.longBitsToDouble只按位解释结果，不进行十进制解析。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要区分异常与数值结果：语法或资源合同不符抛IllegalArgumentException；合法巨大数返回Infinity，合法极小数可能舍入0，长尾小数仅损失无法在53有效位内表示的精度。比如Double.MIN_VALUE是最小正非零值2^−1074，不是最负数；MIN_NORMAL是2^−1022。要存精确金额/十进制业务值可保留十进制数而非强转double，这里不声称binary64能精确保留所有输入位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "默认长度和指数上限用于限制资源，不能当成题目天然给出的范围。完整解析仍要检查后缀，不能看到巨大指数就忽略后面的非法字符。扩大输入合同需要重新分析大整数构造、舍入证明与资源预算。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "例子与推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "可生成包含正负号、不同小数点位置、长尾数及正负大指数的合法十进制文本，把结果与 Double.parseDouble 按原始 64 位比较。标准解析器只作独立测试参考，不参与手写转换算法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可构造 2^−1075 中点及其上下两侧、1+2^−53 中点及上侧，以及最大有限数到 Infinity 的舍入阈值与前一整数，分别检查 ties-to-even、次正规与溢出进位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "十进制解析测试覆盖 0 后五千个 9、负零、最小次正规数、最小正常数附近、巨大正负指数、非法语法与长度上限；按位比较舍入结果，不能只比较打印出的十进制外观。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "复杂度与正确性"
+        },
+        {
+          "type": "paragraph",
+          "text": "字符扫描O(L)次，但BigInteger乘10/构造10幂/移位/除法成本与位数有关，不能宣称总O(L)时间O(1)空间。令中间整数最大位数B=O(L+|e10|)，主数据需O(B)位；逐位乘10在普通字运算模型可累计二次工作，幂和大整数除法另有实现相关成本。示例以明确输入上限控制资源，不声称是高性能生产解析器。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "边界、反例与追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "接口应明确浮点类型、合法语法、长度上限，以及非有限结果是返回还是拒绝。下面选择 binary64，并分别处理语法错误、资源超限、溢出与舍入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“小数位很多导致溢出”需要区分中间量与最终值：用 long 累计小数分子可能溢出，最终浮点值却未必超范围；即使不溢出，也可能因为有效位有限而舍入。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整Java实现与自测"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.*;\nimport java.util.*;\n\npublic final class DecimalToDouble {\n    private static final int MAX_CHARS = 10000, MAX_EXPONENT = 10000;\n    private static final BigInteger TWO52 = BigInteger.ONE.shiftLeft(52);\n    private DecimalToDouble() {}\n    private static boolean digit(char c) { return c >= '0' && c <= '9'; }\n    // Grammar: [+-]? (digits ('.' digits?)? | '.' digits) ([eE][+-]?digits)?\n    // Correct round-to-nearest, ties-to-even binary64, without parseDouble/BigDecimal in production.\n    public static double parse(String s) {\n        Objects.requireNonNull(s);\n        if (s.isEmpty() || s.length() > MAX_CHARS) throw new IllegalArgumentException(\"length bound\");\n        int i = 0, digits = 0, fractional = 0, n = s.length(); boolean negative = false, dot = false;\n        if (s.charAt(i) == '+' || s.charAt(i) == '-') { negative = s.charAt(i) == '-'; i++; }\n        BigInteger significand = BigInteger.ZERO;\n        while (i < n) {\n            char c = s.charAt(i);\n            if (digit(c)) {\n                significand = significand.multiply(BigInteger.TEN).add(BigInteger.valueOf(c - '0'));\n                digits++; if (dot) fractional++; i++;\n            } else if (c == '.' && !dot) { dot = true; i++; }\n            else break;\n        }\n        if (digits == 0) throw new IllegalArgumentException(\"digits required\");\n        int exponent = 0;\n        if (i < n && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {\n            i++; boolean minus = false;\n            if (i < n && (s.charAt(i) == '+' || s.charAt(i) == '-')) { minus = s.charAt(i) == '-'; i++; }\n            int start = i;\n            while (i < n && digit(s.charAt(i))) {\n                int d = s.charAt(i++) - '0';\n                if (exponent > (MAX_EXPONENT - d) / 10) throw new IllegalArgumentException(\"exponent bound\");\n                exponent = exponent * 10 + d;\n            }\n            if (i == start) throw new IllegalArgumentException(\"exponent digits required\");\n            if (minus) exponent = -exponent;\n        }\n        if (i != n) throw new IllegalArgumentException(\"invalid decimal grammar\");\n        long sign = negative ? Long.MIN_VALUE : 0;\n        if (significand.signum() == 0) return Double.longBitsToDouble(sign);\n        int scale = fractional - exponent;\n        BigInteger numerator = significand, denominator = BigInteger.ONE;\n        if (scale >= 0) denominator = BigInteger.TEN.pow(scale);\n        else numerator = numerator.multiply(BigInteger.TEN.pow(-scale));\n        int e = numerator.bitLength() - denominator.bitLength();\n        int comparison = e >= 0 ? numerator.compareTo(denominator.shiftLeft(e)) : numerator.shiftLeft(-e).compareTo(denominator);\n        if (comparison < 0) e--;\n        if (e > 1023) return Double.longBitsToDouble(sign | 0x7ff0000000000000L);\n        if (e < -1075) return Double.longBitsToDouble(sign);\n        boolean normal = e >= -1022;\n        int shift = normal ? 52 - e : 1074;\n        BigInteger a = numerator, b = denominator;\n        if (shift >= 0) a = a.shiftLeft(shift); else b = b.shiftLeft(-shift);\n        BigInteger[] qr = a.divideAndRemainder(b); BigInteger q = qr[0];\n        int half = qr[1].shiftLeft(1).compareTo(b);\n        if (half > 0 || (half == 0 && q.testBit(0))) q = q.add(BigInteger.ONE);\n        long bits;\n        if (!normal) bits = q.longValueExact(); // 2^52 is exactly the minimum normal encoding.\n        else {\n            if (q.bitLength() > 53) { q = q.shiftRight(1); e++; }\n            if (e > 1023) bits = 0x7ff0000000000000L;\n            else bits = ((long)(e + 1023) << 52) | q.subtract(TWO52).longValueExact();\n        }\n        return Double.longBitsToDouble(sign | bits);\n    }\n    private static void same(String s) {\n        long got = Double.doubleToRawLongBits(parse(s)), expected = Double.doubleToRawLongBits(Double.parseDouble(s));\n        if (got != expected) throw new AssertionError(s + \" got=\" + Long.toHexString(got) + \" expected=\" + Long.toHexString(expected));\n    }\n    private static void invalid(String s) {\n        try { parse(s); throw new AssertionError(\"must reject \" + s); }\n        catch (IllegalArgumentException expected) { /* expected */ }\n    }\n    public static void main(String[] args) {\n        Random random = new Random(1792);\n        for (int trial = 0; trial < 5000; trial++) {\n            StringBuilder s = new StringBuilder(random.nextBoolean() ? \"-\" : \"+\"); int count = 1 + random.nextInt(200), dot = random.nextInt(count + 1);\n            for (int i = 0; i < count; i++) { if (i == dot) s.append('.'); s.append((char)('0' + random.nextInt(10))); }\n            if (dot == count) s.append('.'); s.append('e').append(random.nextInt(1201) - 600); same(s.toString());\n        }\n        for (String s : new String[]{\"0\",\"-0\",\"+.5\",\"1.\",\"01.2500\",\"1e309\",\"-1e309\",\"1e-10000\",\"-1e-10000\",\"4.9406564584124654e-324\",\"2.2250738585072014e-308\",\"1.7976931348623157e308\",\"0.\"+\"9\".repeat(5000)}) same(s);\n        BigDecimal halfZero = new BigDecimal(BigInteger.valueOf(5).pow(1075),1075);\n        BigDecimal small = BigDecimal.ONE.scaleByPowerOfTen(-2000);\n        same(halfZero.toPlainString()); same(halfZero.subtract(small).toPlainString()); same(halfZero.add(small).toPlainString());\n        BigDecimal halfOne = BigDecimal.ONE.add(new BigDecimal(BigInteger.valueOf(5).pow(53),53));\n        same(halfOne.toPlainString()); same(halfOne.add(BigDecimal.ONE.scaleByPowerOfTen(-100)).toPlainString());\n        BigInteger overflowHalf = BigInteger.ONE.shiftLeft(1024).subtract(BigInteger.ONE.shiftLeft(970));\n        same(overflowHalf.toString()); same(overflowHalf.subtract(BigInteger.ONE).toString());\n        for (String s : new String[]{\"\",\"+\",\".\",\"1..0\",\"1e\",\"1e+\",\"1x\",\"NaN\",\"Infinity\",\" 1\",\"1 \",\"0x1p0\",\"1f\",\"1e10001\",\"1e-10001\",\"1\".repeat(10001)}) invalid(s);\n        System.out.println(\"PASS: 5000 random decimal literals bit-identical to JDK parser; 5000 fractional digits, signed zero, normal/subnormal midpoint ties and neighbors, overflow threshold, grammar/resource bounds\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "逐字符把十进制字符串转换为浮点数"
+        },
+        {
+          "type": "paragraph",
+          "text": "在已保证合法的普通十进制输入上，可以选择按位累加来实现实时转换：整数位按“乘十加当前位”、小数位按递减的十进制位权相加；这种方案能更新前缀近似值，但不保证等于对完整十进制数做一次正确舍入。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "可能的问法"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "“输入一个字符串，输出 float。需要考虑非法输入吗？那就考虑。”",
+            "“需要实时转化为 float：输入 1.1，输出 1.1；输入 1.12，输出 1.12。”",
+            "“实时版本需要考虑非法输入吗？可以不考虑。”"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "语言与要求的边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里保留原生 Python 解法，因为 Python 的 float 转换就是问题的一部分。Java 对照使用 double 来承载 binary64 级别的浮点值，不能仅看到英文 float 就机械换成 Java 32 位 float。常见平台采用二进制浮点表示，许多十进制小数不能精确表示；若运行环境有特殊浮点格式，应检查实际环境，而不是忽略平台。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最初允许考虑非法输入，与后来简化为可以不考虑非法输入，是两阶段要求，不能同时声称“面试官要求全部非法情况”或“从始至终都不用校验”。实时转换并未进一步指定必须提供逐字符追加接口；逐字符、逐位累计来自一种具体实现思路，本章把它展开为可复用的流式学习分支。下面的核心数值更新服务于后一个阶段；配套接口另外附带一份小而明确的校验契约，便于完整调用。它不宣称所有这些附加格式和接口都是题面已经要求的。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例接收 [+-]?(digits(.digits*)?|.digits+)：可有正负号，允许 1. 和 .5，但必须至少有一位 ASCII 数字。不接受空白、指数、NaN、Infinity、十六进制、下划线和其他数字字符。若只需要正数和一个小数点，删除符号分支即可；若要支持科学计数法，必须另设指数状态和完整输入判定。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "不要用 eval 代替解析"
+        },
+        {
+          "type": "paragraph",
+          "text": "把允许字符拼接起来，再交给 eval，既不是逐字符数值转换，也把数据解析变成表达式求值。即便某个具体过滤器限制了输入字符，也不应据此把通用 eval 当成数字解析器；01、孤立小数点、空结果等语法差异仍可能失败。遇到非法字符就停下，还会把“严格解析”悄悄改成“只读合法前缀”。正确做法是先确定接受的语言，再用显式状态判断，而不是把词法、执行和容错混在一起。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "数值状态与逐字符更新"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存非负 magnitude、小数位权 place、是否已经遇到小数点、是否有过数字以及符号。初始 magnitude=0.0, place=1.0。"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "小数点前读到 d：magnitude = magnitude * 10.0 + d。",
+            "第一次读到小数点：只切换状态，不改数值。",
+            "小数点后读到 d：先 place /= 10.0，再 magnitude += d * place。",
+            "返回时才应用负号，以便 -0.0 的符号不被整数零提前抹掉。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "如果把运算想象成无限精度实数，已经读入 k 位小数时，位权为 10^-k，累加值正好等于当前十进制前缀。实际代码每次除法、乘法、加法都会进行二进制舍入，所以这个等式是理想模型的推导，不是实际浮点变量的精确不变量。真实可保证的是：状态完全由已读字符和规定的浮点运算顺序决定，没有回看原输入，也没有字符串求值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读完 - 或 . 尚未形成数字，本例返回“暂时无数值”，分别对应 Java OptionalDouble.empty() 和 Python None。读入 1. 后已经有数字，前缀值为 1.0；完整输入是否允许小数点后没有数字，是已明确采用的语法选择。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Java 与原生 Python 入口"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整实现如下："
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.OptionalDouble;\n\n/** Approximate prefix values, NOT a correctly rounded decimal-to-binary64 parser. */\npublic final class SSAIncrementalDecimal {\n    private boolean started, negative, dot, digits, closed;\n    private double magnitude = 0.0, place = 1.0;\n    public OptionalDouble accept(char c) {\n        if (closed) throw new IllegalStateException(\"already finished\");\n        if (!started && (c == '+' || c == '-')) {\n            started = true; negative = c == '-';\n        } else if (c == '.' && !dot) {\n            started = true; dot = true;\n        } else if (c >= '0' && c <= '9') {\n            started = true; digits = true;\n            int digit = c - '0';\n            if (!dot) magnitude = magnitude * 10.0 + digit;\n            else { place /= 10.0; magnitude += digit * place; }\n        } else throw new IllegalArgumentException(\"invalid decimal character\");\n        return current();\n    }\n    public OptionalDouble current() {\n        return digits ? OptionalDouble.of(negative ? -magnitude : magnitude) : OptionalDouble.empty();\n    }\n    public double finish() {\n        if (!digits) throw new IllegalArgumentException(\"digits required\");\n        closed = true;\n        return current().orElseThrow();\n    }\n    public static double parseApproximate(String text) {\n        if (text == null) throw new IllegalArgumentException(\"null input\");\n        SSAIncrementalDecimal parser = new SSAIncrementalDecimal();\n        for (int i = 0; i < text.length(); i++) parser.accept(text.charAt(i));\n        return parser.finish();\n    }\n}\n"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "SSAIncrementalDecimal parser = new SSAIncrementalDecimal();\nparser.accept('1'); // 1.0\nparser.accept('.'); // 1.0\nparser.accept('1'); // 1.1\nparser.accept('2'); // 1.12\nparser.finish();    // 1.12\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "get_float2(text) 是批量调用入口，但内部仍逐字符更新；需要真正流式使用时，直接调用 accept，不必每次从字符串开头重新计算。字符转数字使用 ord(char)-ord(\"0\") 或 c-'0'，没有 eval、整串 float(text) 或 int(text)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "附加的生命周期契约是：非法字符报错且不改变已有状态，可以由调用方决定丢弃当前 token 或继续；成功 finish() 以后不能再追加，重复读取最终结果允许。尚无数字时的 finish() 报错，但不会结束解析，之后仍可继续补数字。这是接口设计选择；若业务需要“任何错误都会永久污染本次解析”，应增加失败状态并调整契约。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么近似增量不等于正确舍入"
+        },
+        {
+          "type": "paragraph",
+          "text": "可用 0.29 做具体反例：逐次更新出的二进制值与标准完整字符串转换得到的 binary64 位模式不同。两者在十进制显示上可能看起来极其接近，但不能据此说完全相同。还存在更明显的极端情况：整数部分会溢出到无穷大，小数位权会下溢到零，随后更靠后的数字可能再也无法影响当前状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“正确舍入”的含义是：先把整个十进制文本解释为一个精确数，再选最近的可表示二进制浮点值，恰好在中点时选有效数最低位为偶数的一侧。它不意味着 0.1 可以被二进制浮点精确表示。Java 的 Double.valueOf/parseDouble 对完整字符串给出了这样的十进制到 binary64 转换语义，包括零符号与溢出下溢。"
+        },
+        {
+          "type": "paragraph",
+          "text": "只保留一个近似 double 和有限几个标志，已经舍掉的十进制信息不会在 EOF 时自动恢复。也不能声称“最后改成高精度”就恢复原始输入，因为从近似 double 构造的高精度值仍然承接此前误差。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "最终值要求正确舍入时的两条路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "允许标准转换库时，可以保留原始字符，在 EOF 对完整合法文本做一次 Double.parseDouble。配套 code/SSAExactDecimalStream.java 将这条路径独立出来：accept 返回近似前缀，finish 返回库支持的正确舍入最终值，两个承诺明确区分。构造器要求设置输入字符上限，达到上限后拒绝追加；它保存 O(n) 原文，绝不是 O(1) 空间的增量近似器。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "SSAExactDecimalStream exact = new SSAExactDecimalStream(10000);\nfor (char c : \"0.29\".toCharArray()) exact.accept(c);\ndouble finalValue = exact.finish();\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "它也提供 exactCurrent()：若已形成合法数字，就重新转换目前的完整文本，得到该前缀的正确舍入值。若每来一个字符都调用一次，就会反复读取越来越长的前缀，不能继续宣称每字符 O(1)。缓冲本身的字符追加是摊销 O(1)，转换调用的费用另算；总时间至少可能包含 O(n²) 的重复扫描量，具体转换算法的额外成本也不能忽略。"
+        },
+        {
+          "type": "paragraph",
+          "text": "禁止标准转换库、同时要求正确舍入时，应保留足够的精确信息：例如把有效数字积累成大整数 M，记录十进制尺度 k，将数表示为精确有理数 M / 10^k，最后用整数商余数判断二进制舍入。完整的一次性高精度实现可独立采用以下机制："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "确定符号、有效数字和尺度，并用资源上限约束输入。",
+            "用整数比较确定二进制指数 e，使 2^e <= x < 2^(e+1)。",
+            "正常数按 53 位有效精度缩放，次正规数按固定的 2^-1074 网格缩放。",
+            "除法得到 q 和余数 r；比较 2r 与除数，超过一半进位，小于一半不进位，正好一半按 q 的奇偶处理。",
+            "处理尾数进位引起的指数变化、最大有限数到无穷大的边界、最小次正规数到带符号零的边界。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "这个精确算法是另一个数值转换问题，不能用它悄悄替换实时转换要求，也不能把本章选择的逐字符近似方案反过来说成题面的唯一指定方法。大整数随输入增长，空间与位运算费用也随之增长，不能按固定机器字运算把整个精确版本写成 O(n) 时间、O(1) 空间。需要整串手写正确舍入的场合，可与专门的 DecimalToDouble.parse 实现对接；本章的增量 companion 不隐含依赖该类，也不把库封装说成手写正确舍入算法。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "复杂度和误差怎样回答"
+        },
+        {
+          "type": "paragraph",
+          "text": "对 SSAIncrementalDecimal 和原生 Python 增量版，在通常固定宽度浮点运算模型下，每字符 O(1)，n 个字符总时间 O(n)，数值及语法状态 O(1)。调用方若把所有前缀返回值存进列表，列表本身另需 O(n) 空间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不要给任意输入长度承诺一个未经证明的统一误差阈值。有限范围的例子可以用绝对误差、相对误差或 ULP 比较，阈值必须说明适用范围；接近零时只用相对误差会失效，存在无穷值时普通减法比较也不适用。要求正确舍入时，应比较位模式，尤其区分正负零，并单独覆盖中点、次正规数、溢出和下溢。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果业务是钱款、额度或必须按十进制规则精确计算的数据，应重新选择十进制定点或明确精度的十进制数值模型；这属于业务数值语义选择，不是把本题中的近似算法加一行四舍五入就能解决的。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "自查时应解释的反例"
+        },
+        {
+          "type": "paragraph",
+          "text": "完成代码以后，能解释反例比只记住模板更重要："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "句子比容量还长时，为什么硬上限与不截句可能无解？",
+            "app 有孩子，为什么仍必须作为合法词返回？",
+            "输入是某个意图词的一半，为什么不能把非 terminal 节点当答案？",
+            "x(a)y 提取内容为什么是 a，删除最外层为什么是 xay？",
+            "相对路径开头的 .. 为什么不能像绝对路径那样丢弃？",
+            "-2147483648 为什么要求先处理负数域边界？",
+            "0.29 的即时累加值为什么不必与最终正确舍入位模式相同？"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "配套 Java 与 Python 文件均可独立阅读和调用。边界检查并非附带修饰：它们决定了实现究竟解决了哪一个问题。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "SSAExactDecimalStream.java 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.OptionalDouble;\n\n/** Retains decimal characters; library-backed correctly rounded final conversion.\n * This is the explicit alternative WHEN a standard conversion library is allowed.\n * It is not the handwritten approximate algorithm or an O(1)-space parser.\n */\npublic final class SSAExactDecimalStream {\n    private final StringBuilder text = new StringBuilder();\n    private final SSAIncrementalDecimal grammar = new SSAIncrementalDecimal();\n    private final int maximumCharacters;\n    public SSAExactDecimalStream(int maximumCharacters) {\n        if (maximumCharacters <= 0) throw new IllegalArgumentException(\"positive character limit required\");\n        this.maximumCharacters = maximumCharacters;\n    }\n    public OptionalDouble accept(char c) {\n        if (text.length() == maximumCharacters) throw new IllegalArgumentException(\"character limit\");\n        OptionalDouble approximate = grammar.accept(c);\n        text.append(c);\n        return approximate;\n    }\n    public OptionalDouble exactCurrent() {\n        return grammar.current().isEmpty() ? OptionalDouble.empty()\n                : OptionalDouble.of(Double.parseDouble(text.toString()));\n    }\n    public double finish() {\n        grammar.finish();\n        return Double.parseDouble(text.toString());\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        }
+      ]
+    }
+  ]
+}

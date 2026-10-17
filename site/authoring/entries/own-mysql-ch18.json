@@ -1,0 +1,277 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch18",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 事务契约：ACID、原子提交与业务一致性",
+  "title": "事务契约：ACID、原子提交与业务一致性",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s909",
+      "order": 909,
+      "question": "SQL 执行到一半失败，如何判断回滚范围和安全重试？",
+      "shortAnswer": "报错不等于整笔事务已经回滚：死锁受害者通常整笔回滚，重复键和默认锁等待超时通常只撤销失败语句。业务失败应明确结束整笔事务，清理成功后才对可重试错误开新事务，重新读取、校验，并限制次数、时间和退避。COMMIT 应答丢失属于结果未知，应沿原业务键查权威结果，不能换号重做。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "执行到一半出错，究竟发生了什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "用余额 100→90 的独立例子分层推演："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "RR 事务第一次普通一致性读建立读视图；它决定后续一致性读能看哪些版本。",
+            "更新 A 时，InnoDB 修改内存页、记录用于撤销的 undo，并产生相应 redo，取得需要的事务锁。",
+            "第二条写 B 的语句失败。先看错误类型：如果只是失败语句回滚，A 的未提交修改可能仍在，事务也可能继续持锁。",
+            "应用选择回滚整笔业务后，引擎撤销该事务已做的修改；完整结束后释放事务锁。回滚本身会修改页，也需要恢复日志保护，不能说“回滚就是删掉 redo”。",
+            "undo 的物理回收还受活动读视图等条件限制，结束事务不等于所有旧字节立即消失。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "捕获异常后继续 COMMIT，可能把业务的前半段提交。把异常吞掉、只重试最后一条 SQL、释放连接前不确认事务结束，都是常见失败窗口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "还有一种失败不能马上按回滚处理：客户端发出 COMMIT 后断网。数据库可能已经提交，只是成功应答没有回来。此时应说“结果未知”，先沿稳定业务键查询权威结果，再按原接口的幂等约定处理。若直接认定失败、换新请求号再扣一次，就可能把一笔业务执行两遍。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "超时与死锁的回滚范围不同"
+        },
+        {
+          "type": "paragraph",
+          "text": "第二条 UPDATE 超时后，能否直接 COMMIT？先看它到底回滚了多少。死锁通常整笔回滚；普通重复键通常只回滚失败语句；锁等待超时默认也只回滚当前语句，innodb_rollback_on_timeout 才会改变后者。若只是语句回滚，第一条修改和已有持锁可能仍在，直接 COMMIT 就可能提交半笔业务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "处理已分类的事务失败时，先明确 ROLLBACK 这笔业务，确认回滚成功、连接关闭或清理完成；只有已知可重试的并发错误，才开新事务重读、重判和执行。重试要有次数上限、允许开始重试的总时间预算、退避抖动；收到取消或线程中断也应结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "COMMIT 调用失败要另走一条分支：结果可能已经落库，只是应答丢了。它不是已知安全回滚，不能立刻换 request_id 重做；应拿原请求身份到权威库核对结果。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "25.4 RR 事务执行到一半出错，究竟回滚什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "前提必须保留：显式 RR 事务、同一连接、所有目标表均为 InnoDB。RR 决定读取视图，错误回滚范围则由错误类型与配置决定，两者不能混成“RR 出错一定全部回滚”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "设事务 T1 的第一次普通 SELECT 建立读视图，第一条 UPDATE 把 A 的余额从 100 改为 90，第二条更新 B 时失败："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "普通重复键错误通常撤销失败语句，第一条更新仍可能留在事务中。",
+            "死锁受害事务会被整体回滚，重试应从完整业务事务重新开始。",
+            "锁等待超时默认回滚当前语句；启用 innodb_rollback_on_timeout 会改变这一行为。",
+            "语句级回滚不表示事务的所有锁都释放。若应用捕获异常后继续 COMMIT，可能把“半段业务”提交。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "因此一般业务处理应在失败边界显式结束事务，再根据错误是否可重试、新事务是否幂等做决定。框架中的异常吞掉、自调用、跨连接或不符合回滚规则等问题，都可能让“写了事务注解”与真实回滚不一致。"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据库事务的撤销不要求业务为每个 UPDATE 再手写一次反向 UPDATE；这样做还可能覆盖别人后来提交的值。它也不会撤销已经发出的邮件、HTTP 调用或非事务表修改。DDL 的隐式提交同样不属于这笔普通业务事务可任意撤销的范围。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“回滚后恢复到原始状态”应解释为撤销本事务的效果，而不是把整个数据库恢复成某个历史全局快照。并发事务可以合法提交其他变化。验证时应在同一业务身份下检查余额守恒、主详情一致、没有重复购买等不变量；不要只看一行打印出的旧值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "监控也必须分层：记录 SQL 错误码和业务请求号，关注长期未结束事务、锁等待、死锁、回滚积压与恢复耗时；若涉及消息，再看 outbox 积压、消费水位、失败隔离与对账差异。不能把所有异常都计成“事务已回滚”。大事务的回滚需要真实 CPU、锁和 I/O 工作，断开连接不是立即清空成本。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "dbqa-4",
+          "label": "MySQL 什么时候容易死锁？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s927",
+      "order": 927,
+      "question": "收银系统怎样证明订单与收支一致？",
+      "shortAnswer": "先定义金额口径、币种、支付时点和记账不变量，再让必须共同生效的订单、支付和分录进入同一事务。金额用精确 DECIMAL、BigDecimal 或受控整数；回调验签后还要校验金额、身份、幂等和合法状态。代理只能组织边界，外部扣款不能本地回滚，迟到支付、部分退款和提交未知要靠状态机、对账与有审计的冲正收口。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "收银系统插入订单，怎样校验收支一致"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果问题只给“用了 proxy”，仍缺少代理拦截范围、数据模型、金额口径与失败时序。不能仅凭代理存在或面试官评价判断正确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先把四个问题拆开："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "订单应收怎么算：商品、折扣、税费、运费、退款、手续费分别归在哪里？",
+            "钱在什么时点发生：订单创建、支付授权、实际收款、会计入账不是同一事件。",
+            "哪个不变量要成立：同一记账事件、同一币种的借贷合计应平；订单应收与累计实收的关系则取决于业务状态。",
+            "并发与重试怎么收口：稳定事件号、唯一约束、合法状态转换，以及必须共同提交的订单/支付/分录记录。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "金额用边界受控的整数最小单位或精确 DECIMAL；Java 用 BigDecimal 或经过溢出检查的整数，不能把 double 求和加一个容差当作账务证明。订单刚创建时可能尚未收款，拆单支付和部分退款也不能硬套“每插一行订单，现金就必须立即同额到账”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "支付回调写入前先验证渠道签名与消息来源，并核对金额、币种和业务标识；通过身份校验也不等于可以跳过幂等和状态检查。代理能组织校验和事务入口，却不能代替数据库约束。要核对自调用是否绕过代理、异常是否触发回滚、是否跨连接/线程、是否混入外部支付。支付平台已执行的扣款不能由本地 undo 撤销。持续对账还应按渠道、日期、币种比较总额与明细；修复保留审计，用补单或冲正表达，而非任意覆盖历史流水。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问应覆盖金额不符、不同币种、手续费、部分退款、重复回调、迟到支付、订单取消后成功、提交未知，以及支付成功但本地更新失败。业务链路的完整实现应同时处理幂等、状态机和外部结果，本节只建立事务一致性判断方法。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-87",
+          "label": "库存扣减与超卖"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s947",
+      "order": 947,
+      "question": "只读报表为什么需要事务，怎样保证总额和明细来自同一视图？",
+      "shortAnswer": "多条查询要核对同一批数据时，可在同一连接的 RR 只读事务中只做普通一致性读；RC 每次新视图可能把不同时间的总额和明细拼在一起。自己的写、加锁读、多连接和不同副本不能直接共享这一承诺。长导出会保留历史版本，分块提交或固定主键上界都不保证跨块快照，应按需求选受控导出、版本化数据或离线快照。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "报表只是查询，为什么也需要事务"
+        },
+        {
+          "type": "paragraph",
+          "text": "读报表也可能需要一个固定视图。比如先查总额、再查明细，中间有人退款：RC 的两次一致性读各取新视图，就可能把退款前的总额和退款后的明细拼在一起。若必须核对同一批可见数据，可在同一个 RR 只读事务里做普通一致性读；若一条聚合 SQL 已经能表达需求，就不必额外拉长事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这项保证有边界：同一实例、同一事务、普通一致性读，不能混入自己的写或 FOR UPDATE 读取的当前状态。多线程各拿连接通常不共享快照，发往不同副本的查询更不能直接视作同一时间点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "报表过程还可能要写状态：保存筛选条件，创建导出任务，记录权限和水位，推进 RUNNING/SUCCEEDED/FAILED，发布文件地址。这些应使用短事务。对象存储上传与数据库状态并不自动原子，需要明确何时发布、哪一步可重试、遗留文件如何清理。下载时还要复核当前权限，撤权就拒绝；失败任务应通过有界重试或失败终态结束，不能永久留在 RUNNING，也不能留下永不清理的大文件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最后再加一个条件：导出持续一小时。线上 RR 快照会让历史版本保留更久。逐块提交虽然缩短事务，却不再保证跨块同一快照；固定主键上界只能挡住后续新增 ID，挡不住已有行被修改或删除。要求严格重放时，应考虑受控快照导出、版本化数据或离线分析副本，并交代复制延迟和授权时点。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整 JDBC 例子：同一快照核对总额与明细"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的两段分别保存为 report-schema.sql、SnapshotReport.java；完整内容都在此处。它们是有限数据量的只读核对示例，不是大型文件导出框架。先用独立的教学账号在全新的隔离练习库执行建表，再运行 Java；不要在业务库创建同名表。库名已存在则先停下确认，不要删除重建。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/transactions/code/transactions/report-schema.sql",
+          "value": "CREATE DATABASE mysql_txn_report_learning;\nUSE mysql_txn_report_learning;\nCREATE TABLE report_sale (\n  id BIGINT PRIMARY KEY,\n  tenant_id BIGINT NOT NULL,\n  occurred_at DATETIME(6) NOT NULL,\n  amount DECIMAL(20,2) NOT NULL,\n  INDEX ix_report (tenant_id, occurred_at, id)\n) ENGINE=InnoDB;\nINSERT INTO report_sale VALUES\n  (1,7,'2026-01-01 10:00:00.000000',100.00),\n  (2,7,'2026-01-02 10:00:00.000000',-20.00),\n  (3,8,'2026-01-01 10:00:00.000000',999.00);\n"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/transactions/code/transactions/SnapshotReport.java",
+          "value": "import java.math.BigDecimal;\nimport java.net.URI;\nimport java.net.URISyntaxException;\nimport java.sql.*;\nimport java.time.LocalDateTime;\nimport java.util.Properties;\n\npublic final class SnapshotReport {\n    private static final int MAX_DETAIL_ROWS = 10_000;\n    private static final int QUERY_TIMEOUT_SECONDS = 10;\n    private static final String LAB_SCHEMA = \"mysql_txn_report_learning\";\n    private static final String LAB_OPT_IN = \"I_UNDERSTAND_THIS_IS_AN_AUTHORIZED_LAB\";\n\n    public record Totals(long rows, BigDecimal amount) {}\n\n    private static String requiredEnv(String name) {\n        String value = System.getenv(name);\n        if (value == null || value.isBlank()) {\n            throw new IllegalArgumentException(\"Missing environment variable: \" + name);\n        }\n        return value;\n    }\n\n    private static String checkedLabUrl(String url) {\n        if (!url.startsWith(\"jdbc:mysql://\")) {\n            throw new IllegalArgumentException(\"A single-host jdbc:mysql:// lab URL is required\");\n        }\n        URI u;\n        try { u = new URI(url.substring(5)); }\n        catch (URISyntaxException invalid) {\n            throw new IllegalArgumentException(\"Invalid lab URL syntax\");\n        }\n        String host = u.getHost();\n        String path = u.getRawPath();\n        if (host == null || u.getRawUserInfo() != null || u.getRawQuery() != null\n                || u.getRawFragment() != null || path == null\n                || !path.matches(\"/[A-Za-z0-9_]+\")\n                || (u.getPort() != -1 && (u.getPort() < 1 || u.getPort() > 65535))) {\n            throw new IllegalArgumentException(\"Use one host and schema; no credentials or URL options\");\n        }\n        // Literal loopback only: do not accept an arbitrary DNS name resolving locally.\n        boolean loopback = host.equals(\"127.0.0.1\") || host.equals(\"[::1]\") || host.equals(\"::1\");\n        boolean dedicatedSchema = path.equals(\"/\" + LAB_SCHEMA);\n        if ((!loopback || !dedicatedSchema)\n                && !LAB_OPT_IN.equals(System.getenv(\"MYSQL_LAB_OPT_IN\"))) {\n            throw new IllegalArgumentException(\"Non-loopback or other schema requires explicit authorized-lab opt-in\");\n        }\n        return url;\n    }\n\n    private static void verifyTeachingRuntime(Connection c) throws SQLException {\n        if (Runtime.version().feature() != 21) {\n            throw new SQLException(\"This teaching entry requires Java 21\");\n        }\n        DatabaseMetaData m = c.getMetaData();\n        String server = m.getDatabaseProductVersion();\n        String driver = m.getDriverVersion();\n        boolean serverMatches = server.equals(\"8.4.0\") || server.startsWith(\"8.4.0-\");\n        boolean driverMatches = driver.equals(\"mysql-connector-j-8.4.0\")\n                || driver.startsWith(\"mysql-connector-j-8.4.0 \");\n        if (!m.getDatabaseProductName().equals(\"MySQL\") || !serverMatches\n                || !m.getDriverName().equals(\"MySQL Connector/J\") || !driverMatches) {\n            throw new SQLException(\"This teaching entry requires MySQL 8.4.0 and Connector/J 8.4.0\");\n        }\n        try (PreparedStatement p = c.prepareStatement(\n                \"SELECT ENGINE FROM information_schema.TABLES \"\n                + \"WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='report_sale'\")) {\n            p.setQueryTimeout(QUERY_TIMEOUT_SECONDS);\n            try (ResultSet r = p.executeQuery()) {\n                if (!r.next() || !\"InnoDB\".equalsIgnoreCase(r.getString(1)) || r.next()) {\n                    throw new SQLException(\"report_sale must exist as an InnoDB table in the selected lab schema\");\n                }\n            }\n        }\n    }\n\n    private static void bind(PreparedStatement p, long tenant,\n                             LocalDateTime from, LocalDateTime until) throws SQLException {\n        p.setLong(1, tenant);\n        p.setObject(2, from);\n        p.setObject(3, until);\n        p.setQueryTimeout(QUERY_TIMEOUT_SECONDS);\n    }\n\n    public static Totals read(Connection c, long tenant,\n                              LocalDateTime from, LocalDateTime until) throws SQLException {\n        if (tenant <= 0 || !from.isBefore(until)) {\n            throw new IllegalArgumentException(\"positive tenant and nonempty [from,until) required\");\n        }\n        if (!c.getAutoCommit()) {\n            throw new IllegalArgumentException(\"The method requires a fresh, unshared connection\");\n        }\n        c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);\n        c.setReadOnly(true);\n        c.setAutoCommit(false);\n        try {\n            Totals expected;\n            String predicate = \" WHERE tenant_id=? AND occurred_at>=? AND occurred_at<?\";\n            try (PreparedStatement p = c.prepareStatement(\n                    \"SELECT COUNT(*),COALESCE(SUM(amount),0) FROM report_sale\" + predicate)) {\n                bind(p, tenant, from, until);\n                try (ResultSet r = p.executeQuery()) {\n                    if (!r.next()) throw new SQLException(\"Missing aggregate row\");\n                    expected = new Totals(r.getLong(1), r.getBigDecimal(2));\n                }\n            }\n            if (expected.rows() > MAX_DETAIL_ROWS) {\n                throw new SQLException(\"Report exceeds the 10000-row teaching limit; no partial report returned\");\n            }\n            long count = 0;\n            BigDecimal amount = BigDecimal.ZERO;\n            try (PreparedStatement p = c.prepareStatement(\n                    \"SELECT id,amount FROM report_sale\" + predicate\n                    + \" ORDER BY occurred_at,id LIMIT \" + (MAX_DETAIL_ROWS + 1))) {\n                bind(p, tenant, from, until);\n                try (ResultSet r = p.executeQuery()) {\n                    while (r.next()) {\n                        count = Math.incrementExact(count);\n                        if (count > MAX_DETAIL_ROWS) {\n                            throw new SQLException(\"Oversized detail set; no partial report returned\");\n                        }\n                        amount = amount.add(r.getBigDecimal(2));\n                    }\n                }\n            }\n            if (count != expected.rows() || amount.compareTo(expected.amount()) != 0) {\n                throw new SQLException(\"Totals and details disagree\");\n            }\n            c.commit();\n            return expected;\n        } catch (SQLException | RuntimeException | Error failure) {\n            try { c.rollback(); }\n            catch (SQLException rollbackFailure) {\n                if (failure != rollbackFailure) failure.addSuppressed(rollbackFailure);\n            }\n            throw failure;\n        }\n        // Caller closes this dedicated connection; never return it to arbitrary code mid-transaction.\n    }\n\n    public static void main(String[] args) throws Exception {\n        if (args.length != 3) {\n            throw new IllegalArgumentException(\"Usage: SnapshotReport tenant from-UTC until-UTC\");\n        }\n        String url = checkedLabUrl(requiredEnv(\"DB_URL\"));\n        Properties properties = new Properties();\n        properties.setProperty(\"user\", requiredEnv(\"DB_USER\"));\n        properties.setProperty(\"password\", requiredEnv(\"DB_PASSWORD\"));\n        properties.setProperty(\"connectTimeout\", \"5000\");\n        properties.setProperty(\"socketTimeout\", \"15000\");\n        properties.setProperty(\"readOnlyPropagatesToServer\", \"true\");\n        try (Connection c = DriverManager.getConnection(url, properties)) {\n            verifyTeachingRuntime(c);\n            try (Statement s = c.createStatement()) {\n                s.setQueryTimeout(QUERY_TIMEOUT_SECONDS);\n                s.execute(\"SET time_zone='+00:00'\");\n            }\n            Totals result = read(c, Long.parseLong(args[0]),\n                    LocalDateTime.parse(args[1]), LocalDateTime.parse(args[2]));\n            System.out.println(\"rows=\" + result.rows() + \", amount=\" + result.amount().toPlainString());\n        }\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "默认入口只接受字面环回地址 127.0.0.1 或 [::1]，且 schema 必须为 mysql_txn_report_learning，例如 jdbc:mysql://127.0.0.1:3306/mysql_txn_report_learning。它拒绝 URL 中的凭据、查询选项、片段、多主机和其他 JDBC 协议，避免 URL 覆盖超时配置。使用已获授权的非环回练习实例或其他练习 schema 时，必须显式设置 MYSQL_LAB_OPT_IN=I_UNDERSTAND_THIS_IS_AN_AUTHORIZED_LAB；这只放开地址/schema 关卡，不会跳过版本、引擎和容量检查。localhost 是可解析名称，需使用字面环回地址或同样显式选择。此开关不是访问授权，也不应对生产实例使用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行前，DB_USER、DB_PASSWORD 从本地安全配置注入，不放在源码或命令历史。运行时类路径需要已经取得的 Connector/J 8.4.0 JAR。Linux/macOS 的编译与运行形式如下；Windows 类路径分隔符改为分号："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "code/ch18/fence-013.sh",
+          "value": "javac --release 21 SnapshotReport.java\njava -cp .:mysql-connector-j-8.4.0.jar SnapshotReport 7 2026-01-01T00:00:00 2026-02-01T00:00:00\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "初始数据下预期 rows=2、amount=80.00。DATETIME 列按 UTC 日历字段存储，调用方先把业务时区边界转换为 UTC；区间是左闭右开，租户参数必须来自已校验的身份上下文。示例没有凭空承担鉴权、文件上传或调度能力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "入口连接后检查服务器为 MySQL 8.4.0（允许发行版后缀）、驱动元数据为 Connector/J 8.4.0、Java 主版本为 21，且目标表为 InnoDB；不符即退出。这是读者实际执行时的关卡，本文没有声称连接过真实实例。socket 连接超时为 5 秒（不代表 DNS、认证等连接全过程有 5 秒硬上限），socket 读取超时为 15 秒，各查询超时为 10 秒；查询取消是驱动/服务端协作，超时不是硬实时完成承诺。聚合计数超过 10,000 行立即拒绝，明细另取最多 10,001 行并检查溢出，超过上限回滚且不返回截断报表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这段代码的要点是连接独占、事务开启前设隔离与只读模式、两条 SQL 用相同筛选条件、及时关闭结果集、失败回滚和关闭连接。JDBC 的 setReadOnly 是接口层只读提示，Connector/J 的 readOnlyPropagatesToServer 控制该状态是否传播到服务端；两者都不等同于账号只有 SELECT 权限。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-1",
+          "label": "MVCC 是什么？它解决什么问题，又解决不了什么问题？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

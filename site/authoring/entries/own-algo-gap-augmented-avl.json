@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-augmented-avl",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "AVL、实时排行榜与乱序时间戳计费",
+  "questions": [
+    {
+      "id": "q-own-algo-augmented-avl",
+      "question": "AVL、实时排行榜与乱序时间戳计费",
+      "shortAnswer": "先分清查询沿哪条顺序走：按 ID 找记录用哈希索引，按分数查榜或按时间求累计值用带子树信息的有序索引。一次业务更新可能同时改变两份索引，必须把这些变化作为一个整体。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "AVL、实时排行榜与乱序时间戳计费"
+        },
+        {
+          "type": "paragraph",
+          "text": "先分清查询沿哪条顺序走：按 ID 找记录用哈希索引，按分数查榜或按时间求累计值用带子树信息的有序索引。一次业务更新可能同时改变两份索引，必须把这些变化作为一个整体。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "AVL 的高度、四种旋转与最少节点"
+        },
+        {
+          "type": "paragraph",
+          "text": "AVL 是每个节点左右子树高度差都不超过 1 的二叉搜索树，不只检查根节点，也不要求两边节点数相等。"
+        },
+        {
+          "type": "paragraph",
+          "text": "约定空树高 0、叶子高 1，给定高度 h 的最少节点数满足 N(h)=1+N(h-1)+N(h-2)，初值为 N(0)=0, N(1)=1。要让节点数最少，两个子树分别取允许的高度 h−1、h−2，再各自取最少节点。因此序列为 0、1、2、4、7、12……高度 4 时至少 7 个节点；如果高度按边数算，边高 4 就是节点高 5，至少 12 个。不能未确认高度定义就只报一个数字。"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "LL：插入 30、20、10，根左侧的左侧过高，对 30 右旋。",
+            "RR：插入 10、20、30，对 10 左旋。",
+            "LR：插入 30、10、20，先对左子 10 左旋，再对根 30 右旋。",
+            "RL：插入 10、30、20，先对右子 30 右旋，再对根 10 左旋。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "右旋把左孩子提上来，把该孩子原来的右子树接到旧根左侧，中序顺序没有变。左旋是镜像操作。更新高度、节点数、子树和时，要先更新下沉节点，再更新新根；只改指针而不更新元数据，会使后续排名和前缀和悄悄出错。"
+        },
+        {
+          "type": "paragraph",
+          "text": "手写旋转时，令键 30、20、10 的节点权重分别也是 30、20、10，在纸上写出旋转前后的高度、size 和 sum。最后核对中序仍是 10、20、30，且新根聚合覆盖同样三个节点；仅画出新树形还不能证明排名和累计值正确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最少节点数按斐波那契量级增长，因此 h=O(log n)。单次旋转 O(1)，查找、插入、删除沿根到叶路径处理，均为 O(log n) 次节点操作。删除可能让多个祖先继续失衡，不能在修好一个局部后就无条件停止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "红黑树以根和空叶为黑、红节点不能有红孩子、各路径黑高相等等约束限制高度，不要求每个节点高度差最多 1。两种结构都有 O(log n) 的最坏高度；AVL 的更严格平衡与红黑树的维护方式各有取舍，不能简单说其中一种在所有负载下更快。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "子树大小和子树和能解决什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个节点保存 size=1+左size+右size，查排名时就能跳过整棵子树；保存 sum=左sum+本节点value+右sum，查前缀和时也能一次加入整棵子树，而不逐项扫描。"
+        },
+        {
+          "type": "paragraph",
+          "text": "rank(key) 返回严格排在 key 前面的键数；即使 key 不存在，也能给出插入位置。select(index) 从 0 开始按排名取键。prefix(key,inclusive) 支持严格小于和小于等于，闭区间 [a,b] 的和就是 prefix(b,true)-prefix(a,false)，不用计算 a-1，所以 Long.MIN_VALUE 也安全。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如键是 10、20、30，rank(25) 为 2，而 select(2) 返回 30。先用这个例子说清“严格在前的数量”和“从 0 开始的下标”，再把区间下界改成最小 long 值，解释为什么两次前缀查询仍不需要做下界减一。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整实现"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下三个文件共同构成可运行示例。AVL 比较器必须稳定且不抛异常；公开业务包装器以单个进程内监视器保证复合操作的一致性，不承诺在内存耗尽等虚拟机级故障下回滚。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\n\n/** Single-threaded AVL map with subtree size and exact weight sum. Comparator must be stable and nonthrowing. */\npublic final class AugmentedAvl<K> {\n    private final Comparator<? super K> order;\n    private static final class Node<K> {\n        K key; BigInteger value,sum; Node<K> left,right; int height=1,size=1;\n        Node(K key,BigInteger value){this.key=key;this.value=value;sum=value;}\n    }\n    private Node<K> root;\n    public AugmentedAvl(Comparator<? super K> order){this.order=Objects.requireNonNull(order);}\n    private static int height(Node<?> n){return n==null?0:n.height;}\n    private static int size(Node<?> n){return n==null?0:n.size;}\n    private static BigInteger sum(Node<?> n){return n==null?BigInteger.ZERO:n.sum;}\n    private static void pull(Node<?> n){n.height=1+Math.max(height(n.left),height(n.right));n.size=1+size(n.left)+size(n.right);n.sum=sum(n.left).add(n.value).add(sum(n.right));}\n    private static <K> Node<K> right(Node<K> root){Node<K> top=root.left;root.left=top.right;top.right=root;pull(root);pull(top);return top;}\n    private static <K> Node<K> left(Node<K> root){Node<K> top=root.right;root.right=top.left;top.left=root;pull(root);pull(top);return top;}\n    private static <K> Node<K> balance(Node<K> n){\n        if(n==null)return null;pull(n);int factor=height(n.left)-height(n.right);\n        if(factor>1){if(height(n.left.left)<height(n.left.right))n.left=left(n.left);return right(n);}\n        if(factor< -1){if(height(n.right.right)<height(n.right.left))n.right=right(n.right);return left(n);}return n;\n    }\n    public int size(){return size(root);}\n    public BigInteger total(){return sum(root);}\n    public BigInteger get(K key){Objects.requireNonNull(key);Node<K> n=root;while(n!=null){int c=order.compare(key,n.key);if(c==0)return n.value;n=c<0?n.left:n.right;}return null;}\n    public void put(K key,BigInteger value){Objects.requireNonNull(key);Objects.requireNonNull(value);root=put(root,key,value);}\n    private Node<K> put(Node<K> n,K key,BigInteger value){if(n==null)return new Node<>(key,value);int c=order.compare(key,n.key);if(c<0)n.left=put(n.left,key,value);else if(c>0)n.right=put(n.right,key,value);else n.value=value;return balance(n);}\n    public void remove(K key){Objects.requireNonNull(key);root=remove(root,key);}\n    private Node<K> remove(Node<K> n,K key){\n        if(n==null)return null;int c=order.compare(key,n.key);if(c<0)n.left=remove(n.left,key);else if(c>0)n.right=remove(n.right,key);else{\n            if(n.left==null)return n.right;if(n.right==null)return n.left;Node<K> successor=n.right;while(successor.left!=null)successor=successor.left;\n            n.key=successor.key;n.value=successor.value;n.right=remove(n.right,successor.key);\n        }return balance(n);\n    }\n    /** Number of keys strictly before key, whether or not key exists. */\n    public int rank(K key){Objects.requireNonNull(key);int answer=0;Node<K> n=root;while(n!=null){int c=order.compare(key,n.key);if(c<=0)n=n.left;else{answer+=1+size(n.left);n=n.right;}}return answer;}\n    public K select(int index){if(index<0||index>=size())throw new IndexOutOfBoundsException(\"rank\");Node<K> n=root;while(true){int left=size(n.left);if(index==left)return n.key;if(index<left)n=n.left;else{index-=left+1;n=n.right;}}}\n    public BigInteger prefix(K key,boolean inclusive){Objects.requireNonNull(key);BigInteger answer=BigInteger.ZERO;Node<K> n=root;while(n!=null){int c=order.compare(key,n.key);if(c<0||(c==0&&!inclusive))n=n.left;else{answer=answer.add(sum(n.left)).add(n.value);n=n.right;}}return answer;}\n    public List<K> first(int k){if(k<0)throw new IllegalArgumentException(\"nonnegative k\");List<K> result=new ArrayList<>();Deque<Node<K>> stack=new ArrayDeque<>();Node<K> n=root;while(result.size()<k&&(n!=null||!stack.isEmpty())){while(n!=null){stack.push(n);n=n.left;}n=stack.pop();result.add(n.key);n=n.right;}return List.copyOf(result);}\n    /** Diagnostic full traversal for tests; public operations do not invoke this O(n) check. */\n    public void checkInvariants(){check(root,null,null);}\n    private void check(Node<K> n,K low,K high){if(n==null)return;if((low!=null&&order.compare(n.key,low)<=0)||(high!=null&&order.compare(n.key,high)>=0))throw new AssertionError(\"BST order\");check(n.left,low,n.key);check(n.right,n.key,high);if(Math.abs(height(n.left)-height(n.right))>1||n.height!=1+Math.max(height(n.left),height(n.right))||n.size!=1+size(n.left)+size(n.right)||!n.sum.equals(sum(n.left).add(n.value).add(sum(n.right))))throw new AssertionError(\"AVL metadata\");}\n}\n"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\n\npublic final class OrderedApplications {\n    private OrderedApplications() {}\n    public record Score(String id,long score){public Score{Objects.requireNonNull(id);}}\n    private static final Comparator<Score> BEST=Comparator.comparingLong(Score::score).reversed().thenComparing(Score::id);\n    /** Ordinal ranks: descending score, ties by id ascending. All compound index operations share one monitor. */\n    public static final class Leaderboard {\n        private final Map<String,Long> scores=new HashMap<>();private final AugmentedAvl<Score> order=new AugmentedAvl<>(BEST);\n        public synchronized void set(String id,long score){Objects.requireNonNull(id);Long old=scores.get(id);if(old!=null)order.remove(new Score(id,old));order.put(new Score(id,score),BigInteger.ZERO);scores.put(id,score);}\n        public synchronized long increment(String id,long delta){Objects.requireNonNull(id);long next=Math.addExact(scores.getOrDefault(id,0L),delta);set(id,next);return next;}\n        public synchronized boolean remove(String id){Objects.requireNonNull(id);Long old=scores.remove(id);if(old==null)return false;order.remove(new Score(id,old));return true;}\n        public synchronized OptionalLong score(String id){Objects.requireNonNull(id);Long n=scores.get(id);return n==null?OptionalLong.empty():OptionalLong.of(n);}\n        public synchronized OptionalInt rank(String id){Objects.requireNonNull(id);Long n=scores.get(id);return n==null?OptionalInt.empty():OptionalInt.of(order.rank(new Score(id,n))+1);}\n        public synchronized List<Score> top(int k){return order.first(k);}\n        public synchronized int size(){return scores.size();}\n    }\n    public record Charge(String id,long timestamp,BigInteger amount){public Charge{Objects.requireNonNull(id);Objects.requireNonNull(amount);if(amount.signum()<0)throw new IllegalArgumentException(\"nonnegative amount\");}}\n    /** Explicit model: add unique charge, cancel by id, inclusive timestamp-range sums of currently active charges. */\n    public static final class Billing {\n        private final Map<String,Charge> active=new HashMap<>();private final Map<Long,Integer> atTime=new HashMap<>();private final AugmentedAvl<Long> times=new AugmentedAvl<>(Long::compare);\n        public synchronized void add(Charge charge){Objects.requireNonNull(charge);if(active.containsKey(charge.id))throw new IllegalArgumentException(\"duplicate active id\");BigInteger old=times.get(charge.timestamp);times.put(charge.timestamp,(old==null?BigInteger.ZERO:old).add(charge.amount));active.put(charge.id,charge);atTime.merge(charge.timestamp,1,Integer::sum);}\n        public synchronized boolean cancel(String id){Objects.requireNonNull(id);Charge charge=active.remove(id);if(charge==null)return false;BigInteger next=times.get(charge.timestamp).subtract(charge.amount);int remaining=atTime.get(charge.timestamp)-1;if(remaining==0){atTime.remove(charge.timestamp);times.remove(charge.timestamp);}else{atTime.put(charge.timestamp,remaining);times.put(charge.timestamp,next);}return true;}\n        public synchronized BigInteger query(long fromInclusive,long toInclusive){if(fromInclusive>toInclusive)throw new IllegalArgumentException(\"ordered range\");return times.prefix(toInclusive,true).subtract(times.prefix(fromInclusive,false));}\n        public synchronized BigInteger through(long inclusive){return times.prefix(inclusive,true);}\n        public synchronized BigInteger total(){return times.total();}\n        public synchronized int activeCharges(){return active.size();}\n    }\n    private record Event(long time,String id) {}\n    /** Exact process-local rolling counts over (now-window, now]; processing time must be nonnegative and monotonic. */\n    public static final class RollingTop {\n        private final long window;private long last=-1;private final Deque<Event> events=new ArrayDeque<>();private final Map<String,Long> counts=new HashMap<>();private final TreeSet<Score> order=new TreeSet<>(BEST);\n        public RollingTop(long window){if(window<=0)throw new IllegalArgumentException(\"positive window\");this.window=window;}\n        private void expire(long now){if(now<0||now<last)throw new IllegalArgumentException(\"monotonic nonnegative time\");last=now;long cutoff=now-window;while(!events.isEmpty()&&events.peekFirst().time<=cutoff){Event e=events.removeFirst();long old=counts.get(e.id);order.remove(new Score(e.id,old));if(old==1)counts.remove(e.id);else{counts.put(e.id,old-1);order.add(new Score(e.id,old-1));}}}\n        public synchronized void add(String id,long now){Objects.requireNonNull(id);expire(now);long old=counts.getOrDefault(id,0L),next=Math.addExact(old,1);if(old!=0)order.remove(new Score(id,old));counts.put(id,next);order.add(new Score(id,next));events.addLast(new Event(now,id));}\n        public synchronized List<Score> top(int k,long now){if(k<0)throw new IllegalArgumentException(\"nonnegative k\");expire(now);List<Score> out=new ArrayList<>();for(Score s:order){if(out.size()==k)break;out.add(s);}return List.copyOf(out);}\n        public synchronized long count(String id,long now){Objects.requireNonNull(id);expire(now);return counts.getOrDefault(id,0L);}\n        public synchronized int retainedEvents(long now){expire(now);return events.size();}\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试对每次 AVL 增删检查有序关系、所有节点的平衡度、子树大小和子树和；排行榜与完整排序对照，计费与逐记录扫描对照，滚动榜与逐事件过滤对照，并检查同分、零金额、时间极值、分数溢出和并发重复加分。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\nimport java.util.concurrent.*;\npublic final class OrderedApplicationsTest {\n    static long checks;static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|ArithmeticException|IndexOutOfBoundsException e){return;}throw new AssertionError(\"invalid accepted\");}\n    static List<OrderedApplications.Score> sorted(Map<String,Long> values){return values.entrySet().stream().map(e->new OrderedApplications.Score(e.getKey(),e.getValue())).sorted(Comparator.comparingLong(OrderedApplications.Score::score).reversed().thenComparing(OrderedApplications.Score::id)).toList();}\n    public static void main(String[] args)throws Exception{Random random=new Random(20261028);\n        AugmentedAvl<Integer> tree=new AugmentedAvl<>(Integer::compare);TreeMap<Integer,BigInteger> oracle=new TreeMap<>();\n        for(int z=0;z<18000;z++){int key=random.nextInt(200)-100;if(random.nextInt(3)==0){tree.remove(key);oracle.remove(key);}else{BigInteger value=BigInteger.valueOf(random.nextInt(201)-100);tree.put(key,value);oracle.put(key,value);}tree.checkInvariants();eq(tree.size(),oracle.size());eq(tree.get(key),oracle.get(key));eq(tree.total(),oracle.values().stream().reduce(BigInteger.ZERO,BigInteger::add));int query=random.nextInt(250)-125;eq(tree.rank(query),oracle.headMap(query,false).size());for(boolean inclusive:new boolean[]{false,true})eq(tree.prefix(query,inclusive),oracle.headMap(query,inclusive).values().stream().reduce(BigInteger.ZERO,BigInteger::add));int k=random.nextInt(250);eq(tree.first(k),new ArrayList<>(oracle.keySet()).subList(0,Math.min(k,oracle.size())));if(!oracle.isEmpty()){int rank=random.nextInt(oracle.size());eq(tree.select(rank),new ArrayList<>(oracle.keySet()).get(rank));}}\n        OrderedApplications.Leaderboard board=new OrderedApplications.Leaderboard();Map<String,Long> scores=new HashMap<>();\n        for(int z=0;z<12000;z++){String id=\"u\"+random.nextInt(100);switch(random.nextInt(3)){case 0->{long value=random.nextInt(201)-100;board.set(id,value);scores.put(id,value);}case 1->{long delta=random.nextInt(11)-5;scores.put(id,scores.getOrDefault(id,0L)+delta);eq(board.increment(id,delta),scores.get(id));}default->eq(board.remove(id),scores.remove(id)!=null);}var expected=sorted(scores);int k=random.nextInt(110);eq(board.top(k),expected.subList(0,Math.min(k,expected.size())));eq(board.size(),scores.size());String query=\"u\"+random.nextInt(100);int rank=-1;for(int i=0;i<expected.size();i++)if(expected.get(i).id().equals(query))rank=i+1;eq(board.rank(query),rank<0?OptionalInt.empty():OptionalInt.of(rank));eq(board.score(query),scores.containsKey(query)?OptionalLong.of(scores.get(query)):OptionalLong.empty());}\n        OrderedApplications.Billing billing=new OrderedApplications.Billing();Map<String,OrderedApplications.Charge> active=new HashMap<>();\n        for(int z=0;z<15000;z++){String id=\"c\"+random.nextInt(200);if(random.nextBoolean()){if(!active.containsKey(id)){var c=new OrderedApplications.Charge(id,random.nextInt(201)-100,BigInteger.valueOf(random.nextInt(50)).shiftLeft(random.nextInt(100)));billing.add(c);active.put(id,c);}else bad(()->billing.add(active.get(id)));}else eq(billing.cancel(id),active.remove(id)!=null);long from=random.nextInt(230)-115,to=from+random.nextInt(100);BigInteger sum=BigInteger.ZERO,prefix=BigInteger.ZERO;for(var c:active.values()){if(c.timestamp()>=from&&c.timestamp()<=to)sum=sum.add(c.amount());if(c.timestamp()<=to)prefix=prefix.add(c.amount());}eq(billing.query(from,to),sum);eq(billing.through(to),prefix);eq(billing.activeCharges(),active.size());}\n        for(long t:new long[]{Long.MIN_VALUE,Long.MAX_VALUE}){var c=new OrderedApplications.Charge(\"edge\"+t,t,BigInteger.TEN);billing.add(c);eq(billing.query(t,t),BigInteger.TEN);billing.cancel(c.id());}\n        var zero=new OrderedApplications.Billing();zero.add(new OrderedApplications.Charge(\"a\",0,BigInteger.ZERO));zero.add(new OrderedApplications.Charge(\"b\",0,BigInteger.ZERO));eq(zero.cancel(\"a\"),true);eq(zero.cancel(\"b\"),true);eq(zero.query(Long.MIN_VALUE,Long.MAX_VALUE),BigInteger.ZERO);\n        var rolling=new OrderedApplications.RollingTop(50);List<long[]> events=new ArrayList<>();long now=0;\n        for(int z=0;z<15000;z++){now+=random.nextInt(4);int id=random.nextInt(30);if(random.nextBoolean()){rolling.add(\"u\"+id,now);events.add(new long[]{now,id});}Map<String,Long> counts=new HashMap<>();int retained=0;for(long[] e:events)if(e[0]>now-50){counts.merge(\"u\"+e[1],1L,Long::sum);retained++;}int k=random.nextInt(35);var expected=sorted(counts);eq(rolling.top(k,now),expected.subList(0,Math.min(k,expected.size())));eq(rolling.count(\"u\"+id,now),counts.getOrDefault(\"u\"+id,0L));eq(rolling.retainedEvents(now),retained);if(z%100==0){long cutoff=now-50;events.removeIf(e->e[0]<=cutoff);}}\n        var edge=new OrderedApplications.RollingTop(Long.MAX_VALUE);edge.add(\"x\",0);eq(edge.count(\"x\",Long.MAX_VALUE-1),1L);eq(edge.count(\"x\",Long.MAX_VALUE),0L);\n        board.set(\"max\",Long.MAX_VALUE);bad(()->board.increment(\"max\",1));eq(board.score(\"max\"),OptionalLong.of(Long.MAX_VALUE));bad(()->billing.query(1,0));bad(()->new OrderedApplications.Charge(\"x\",0,BigInteger.ONE.negate()));bad(()->rolling.top(-1,Long.MAX_VALUE));bad(()->rolling.count(\"x\",0));bad(()->tree.select(-1));\n        var concurrent=new OrderedApplications.Leaderboard();ExecutorService workers=Executors.newFixedThreadPool(8);List<Future<?>> futures=new ArrayList<>();for(int t=0;t<8;t++)futures.add(workers.submit(()->{for(int i=0;i<3000;i++)concurrent.increment(\"same\",1);}));for(var f:futures)f.get();workers.shutdown();eq(workers.awaitTermination(1,TimeUnit.MINUTES),true);eq(concurrent.score(\"same\"),OptionalLong.of(24000));eq(concurrent.rank(\"same\"),OptionalInt.of(1));\n        System.out.println(\"OrderedApplicationsTest PASS \"+checks);\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        },
+        {
+          "entryId": "p-tree",
+          "label": "关联结构与共用实现"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": "own-runtime-json-diff",
+  "kind": "qa",
+  "mod": "ai",
+  "part": "Agent Runtime 工程合同",
+  "cat": "状态、编排与可验证交付",
+  "title": "JSON 新旧文件怎样做严格、精确且有界的结构差异比较？",
+  "number": "",
+  "source": "自建知识库",
+  "items": [
+    {
+      "id": "q-own-runtime-json-diff",
+      "q": "JSON 新旧文件怎样做严格、精确且有界的结构差异比较？",
+      "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>严格解析后区分缺失与 null、按 BigDecimal 比数值，数组按下标，输出有界且确定；报告不是 JSON Patch。</p><p class=\"md-p\">以下第一人称表达用于说明设计思路，不代表已经实施。测试/PASS 描述尚未在此独立复验；产品能力仅限注明的版本与观察时点，实际使用前须核对。</p><h3 class=\"md-h md-h3\">JSON 新旧文件对比怎样写成可验证的 Java 程序</h3><p class=\"md-p\">JSON 对比要比较解析后的结构，并先约定对象、数组、数值与缺失值的语义；直接比较文本会把格式变化误报成业务变化。</p><h4 class=\"md-h md-h4\">同题换问</h4><p class=\"md-p\">“两个 JSON 文件有什么不同？”“属性顺序变化算修改吗？”“null 和没这个字段一样吗？”“数组插入一项为什么会出现很多变化？”“大整数、重复键和超大输入怎么办？”</p><p class=\"md-p\">面试时先询问数组是否有稳定业务主键、数字按值还是按字面量比较、输出需要人读还是机器应用。若尚未指定，可以明确采用下面的最小合同，再完成读取、解析、比较、输出和失败处理。这份合同是一个教学选择，不能替代另行确定的业务要求。</p><h4 class=\"md-h md-h4\">最小输入输出合同</h4><p class=\"md-p\">输入是两个 UTF-8 JSON 文件，根节点可为任意 JSON 值。每份最多 1 MiB，最多 50000 个值节点，嵌套深度最多 64。拒绝损坏的 UTF-8、BOM、重复的解码后对象键、未配对代理项、额外尾随内容和非 JSON 数值。重复键采用拒绝策略，不静默保留最后一个值。</p><p class=\"md-p\">对象键的顺序不影响相等，输出按 Java 字符串自然顺序确定性排列。数组按下标比较，顺序有意义；从 [A,B] 变为 [B,A] 是两个位置变化。这一教学合同不推断移动，不计算最短编辑序列，也不会猜测数组元素的业务身份。</p><p class=\"md-p\">数字通过 BigDecimal 精确比较数值，因此 1、1.0、1e0 相等，-0 与 0 相等。9007199254740992 和 9007199254740993 不相等，不经过 double。数字 token 最多 128 个字符，BigDecimal 的 scale 绝对值最多 1000；这两个限制是资源预算，不是 JSON 标准对所有数字的限制。若业务关心金额显示精度或 1 与 1.0 的原始写法，应保留词法信息并另设比较模式。</p><p class=\"md-p\">缺失与 JSON null 严格区分。每条变化含 path、operation、old、new；old/new 各有 present，只有 present=true 才含 value。operation 为 add、remove、replace 或 type。根路径是空字符串，子路径中的 ~ 转为 ~0、/ 转为 ~1。这是差异报告，不是可直接执行的 JSON Patch 指令，不能按输出顺序原地修改数组。</p><p class=\"md-p\">最多输出 10000 条变化且完整 JSON 数组最多 4 MiB。达到预算抛异常、以非零退出码结束；不会输出半份差异冒充成功。Java 默认异常信息进入 stderr。两文件相同和有差异的成功运行都返回退出码 0，调用者通过空数组与非空数组区分；若 CI 要求“有差异返回 1”，应再增加明确的 CLI 退出码合同。</p><p class=\"md-p\">例如旧值为 {}，新值为 {&quot;a&quot;:null}，报告如下。present=false 表示不存在，而非一个值恰好为 null。</p><h4 class=\"md-h md-h4\">实现思路与复杂度</h4><p class=\"md-p\">compare 的输入合同仅限 StrictJson.parse/read 产生的 JSON 对象树，不能传入任意 Java 对象或循环集合。先做有界读取和严格解析，再递归比较。两个对象取键并集；两个数组按共同下标比较，越界的一侧使用专门的 MISSING 标记；其余情况先区分类型，再比较值。类型不同直接报告整个节点，不把字符串 &quot;1&quot; 转成数字 1。</p><p class=\"md-p\">对象使用有序映射便于稳定输出。设输入字节量为 B，节点数为 N，最大对象键数为 K，全部生成路径和差异序列化成本为 P，整体可描述为 O(B + N log K + P)，另计有界十进制数的处理成本。内存保存两棵树和完整差异，约为输入结构加输出预算，不是流式常量内存。路径复制也有成本，不能只说无条件 O(N)。</p><p class=\"md-p\">输出大小需要单独限制：一个很长的父键下有很多变化，即使输入很小，重复路径也能放大输出。代码在加入每条变化之前累计实际 UTF-8 字节预算。大文件可按业务顶层分区、流式读取或外部排序；不能只把 1 MiB 上限删掉就宣称支持 TB 级文件。</p><h4 class=\"md-h md-h4\">AI Coding 时怎样分步验证</h4><p class=\"md-p\">先让模型给出合同和独立样例，再实现解析与比较两个小模块。特别要求测试 {} 与 {&quot;a&quot;:null}、数字与字符串、对象换序、数组换序、大整数、重复键、路径转义和输出放大。对重复键要在解析阶段拒绝；如果先交给会覆盖重复键的映射，再测试 diff，就已经丢失必要信息。</p><p class=\"md-p\">本实现为了无需下载依赖而包含小型解析器，适合阅读算法与边界控制。真实应用通常优先采用经过维护的 JSON 库，并核对其重复键、数值精度、深度限制和 Unicode 行为；不能因为换库就假定这些合同自然保持不变。</p><h4 class=\"md-h md-h4\">Java 教学模型的实现边界</h4><p class=\"md-p\">JSON 差异比较的教学模型以 Java 21 为基线，无外部依赖。应先明确对象、数组、数值与缺失字段的比较合同，再验证边界与错误输入。</p><h4 class=\"md-h md-h4\">运行与测试</h4><p class=\"md-p\">原测试设计列出 241 个断言检查，包括 100 组有独立路径预期的单点修改；本页不附测试类，也未执行这些断言。这样的测试用于验证约定合同，不证明任意第三方 JSON 系统拥有相同的数值或重复键语义。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Agent</li><li>Runtime</li></ul><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-runtime-guide\">适用版本与验证范围</a></li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Agent</li><li>Runtime</li></ul><table><thead><tr><th>字段位置（数组按出现次序）</th><th>值或约束</th></tr></thead><tbody><tr><td>根对象</td><td>数组，共 1 项</td></tr><tr><td>根对象 / 第 1 项</td><td>对象</td></tr><tr><td>根对象 / 第 1 项 / new</td><td>对象</td></tr><tr><td>根对象 / 第 1 项 / new / present</td><td>布尔值 true</td></tr><tr><td>根对象 / 第 1 项 / new / value</td><td>空值 null</td></tr><tr><td>根对象 / 第 1 项 / old</td><td>对象</td></tr><tr><td>根对象 / 第 1 项 / old / present</td><td>布尔值 false</td></tr><tr><td>根对象 / 第 1 项 / operation</td><td>字符串：add</td></tr><tr><td>根对象 / 第 1 项 / path</td><td>字符串：/a</td></tr></tbody></table>",
+      "sub": "",
+      "mk": false,
+      "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>严格解析后区分缺失与 null、按 BigDecimal 比数值，数组按下标，输出有界且确定；报告不是 JSON Patch。</p>",
+      "leadType": "authored"
+    }
+  ]
+}

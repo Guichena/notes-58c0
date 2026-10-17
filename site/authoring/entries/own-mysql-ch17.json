@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch17",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 大表索引变更、批量写入与容量",
+  "title": "大表索引变更、批量写入与容量",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s7662",
+      "order": 7662,
+      "question": "大表新增索引和批量写入怎样控制 MDL、日志、复制与容量风险？",
+      "shortAnswer": "先校验写入和查询语义，再按实际 DDL 算法、元数据锁、额外空间与复制预算做变更；批量提交和批量协议不是一回事。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第17章 大表索引变更、批量写入与容量"
+        },
+        {
+          "type": "paragraph",
+          "text": "大表优化不仅要让查询更快，还要控制变更时的锁、空间、I/O、复制与回滚风险；吞吐评估必须有时间单位、峰值和业务正确性边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "也可能这样问：三千万行表怎么查最近七天未处理任务？能直接在生产加索引吗？每天上万写、上百万流量怎么保证稳定？上千万并发读写怎么扛？写 SQL 为何带来内存波动？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "三千万任务：先写对，再选择索引"
+        },
+        {
+          "type": "paragraph",
+          "text": "需求固定为某租户、最近七天、未处理，priority 从低到高，再 created_at 从早到晚，返回 20 条。教学例冻结 UTC as_of，使用 [as_of−7 days,as_of)，显式追加 id ASC 作为并列规则。原题没给 DDL，下面的表结构是为满足这个需求建立的教学假设，不能当作某个真实生产 schema。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先比较两条索引各自省什么。A=(tenant_id,status,priority,created_at,id) 固定租户和状态后，已经按目标 priority、created_at、id 排好；可以沿顺序过滤时间，够 20 条就停。但如果低优先级数值区域堆着大量七天前旧任务，找到这 20 条之前仍可能扫很远。"
+        },
+        {
+          "type": "paragraph",
+          "text": "B=(tenant_id,status,created_at,priority,id) 则先把时间窗收紧，再按 priority/time/id 排序，少量输出可能用 Top-N。选择哪条，取决于租户活跃量、旧积压、优先级分布与时间相关性。不能为了用 B 把业务排序改成时间优先，也不能去掉七天上界让未来任务混进来。全表三千万只是背景，当前租户候选可能几百，也可能几百万；脚本只提供小数据正确性边界，没有模拟三千万规模计划。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最后区分“列出来”与“领到手”。普通列表 SELECT 不取得任务执行权；多 worker 需要短事务里的状态、版本或租约条件来原子抢占。FOR UPDATE SKIP LOCKED 会跳过被锁任务，可能影响公平性，不能当作展示列表的无损加速写法。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Online DDL 不是无成本 DDL"
+        },
+        {
+          "type": "paragraph",
+          "text": "Online DDL 的意思不是“没有锁，也没有成本”。MySQL 8.4 在适用条件下创建普通二级索引可用 INPLACE 并允许并发 DML，但不是 INSTANT。显式要求 ALGORITHM=INPLACE, LOCK=NONE，可让不支持的操作失败，避免静默采用更强阻塞方式；准备和提交等阶段仍需要元数据锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "沿过程看风险就清楚了：旧长事务可能挡住 DDL 的 MDL，请求队列随后又可能受等待中的 DDL 影响；建索引还要扫描、排序、写新索引，并接纳同期变更，消耗 CPU、I/O、临时和最终空间。写得过快，在线变更日志可能承压或失败。主键变更、FULLTEXT、SPATIAL 和某些列变更各有其他限制，不能照搬普通二级索引结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此先核对版本、表结构、外键、分区、行格式、长事务、磁盘与复制，在同量级数据和写负载演练，估算索引、排序临时空间和日志，并定好延迟、复制滞后和中止阈值。执行中持续看 MDL、DML 延迟、磁盘、CPU、I/O 与副本进度。中止也可能要回滚清理，KILL 不是瞬间恢复按钮。"
+        },
+        {
+          "type": "paragraph",
+          "text": "gh-ost、pt-online-schema-change 等工具可以是特定场景的候选，但各自有 binlog、权限、外键、触发器、切表与拓扑限制；工具名不代表天然安全。未经演练不应在生产直接试。不可见索引可帮助隔离优化器使用和进行回归，但仍要构建和维护，不能省去写放大或 DDL 成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "会话级 lock_wait_timeout 应设置为符合变更窗口的有界值，避免长期等候 MDL；它与 InnoDB 行锁等待参数不是同一个开关。可先构建不可见候选索引，在受控会话启用测试后再决定可见化；上线后同时检查计划、读写尾延迟和复制。回撤可见性或另行删除索引也有前提与成本，DDL 不能靠普通事务 ROLLBACK 撤销。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "批量写入瓶颈怎么拆"
+        },
+        {
+          "type": "paragraph",
+          "text": "客户端可能耗在序列化、SQL 构造、参数绑定、网络和连接池；服务端可能耗在解析、唯一/外键检查、多棵索引、锁争用、redo/binlog/fsync、脏页刷出与存储带宽。批量提交减少每行固定成本，但批次过大增加锁持有、日志与回滚量、包大小、复制延迟和失败重试成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先选择有界批次和有限并发，队列有上限并向上游背压；观察吞吐上升是否伴随 P99、锁等待、重试和积压恶化。不断加线程超过磁盘或热点锁能力，只会增加等待。幂等键和批次重试要定义部分成功与事务边界，不能在结果未知时整批无条件重发。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果输入速率长期超过完成速率，积压与内存会增长；缓存、消息对象、序列化副本、结果集和连接都可能占空间。稳定系统可用 Little 定律近似关联在途量、速率和时间，但在持续失稳的队列上不能把平均公式当安全容量。JVM heap、进程 RSS、堆外缓冲和操作系统页缓存不同，不能看到机器内存变化就宣称 GC 泄漏，更不能编造调参经验。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在简化的稳定平均对象大小模型下，积压增长量约为 (输入速率−完成速率)×时间，内存增长再乘每对象字节数，并加队列/对象开销。并行拉取适合隐藏源端等待，批量拉取减少往返，差异写入则减少不必要更新；它们针对不同瓶颈。先读旧值再比较也消耗数据库、网络和 CPU，还要处理读写间并发，不能预设差异写入总是净收益。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "流量数字先补单位"
+        },
+        {
+          "type": "paragraph",
+          "text": "题目说每天上万条数据和上百万流量，先确认数据是新增行还是全部写操作，流量的时间单位及请求含义。仅作算术示例：若恰为每天 10000 条新增记录，平均约 0.116 条/秒；“上万”没有给出上界，不能推出真实平均一定小于每秒一条。若恰为每天一百万请求，平均约 11.6 请求/秒；每天一千万则约 116/秒。每秒一千万或短时突发又是完全不同的问题，还要看峰值、一次请求的 SQL 数、更新与重试、缓存命中、读写比例和热点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可把 DB 读压力粗分为缓存 miss 请求×每请求 SQL 数，加刷新、重试与后台扫描；缓存失效风暴还需请求合并、抖动、预热和限流。缓存必须尊重租户、权限和可接受陈旧度。读副本会受复制延迟约束，不能用来作必须当前可见的审批或抢占判断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "写侧可以合并允许合并的状态、削峰异步化、批量化及按键串行，但“已进入队列”与“业务已成功提交”不是同一承诺。热点库存、唯一身份等约束不能靠多读副本解决；分片分散负载时又要承担跨片约束、全局查询与迁移成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "抢票场景还要单独回答库存不变量：库存仅剩 1、重复请求、提交结果未知、支付晚到等交错，都不能仅靠缓存命中率解决。若其他条件不变，原来 99% 命中的读缓存全部失效，落库请求可从 1% 变成 100%，即约百倍，这是明确假设下的压力示例。限流、排队与缓存负责保护入口；接收排队不等于已出票，最终扣减、幂等与超时补偿须接到事务、锁与消息一致性章节设计。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "容量和可用性怎样回答完整"
+        },
+        {
+          "type": "paragraph",
+          "text": "容量至少估算行数据、所有索引、增长与保留期、WAL/binlog/undo、临时空间、备份和 DDL 余量；内存估算工作集和并发峰值，磁盘看延迟、IOPS、带宽和空间。不同云盘实例还有突发额度与限额，不应用一条空库 TPS 推算全年。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可用性需要健康检查、故障检测、连接重建、幂等重试、主从与安全切换、备份及恢复演练。副本不是备份，备份存在不代表恢复时间满足要求。RPO、RTO 和业务 SLO 先定清楚，再选择复制、归档和资源。内部提交与副本可见性分开，不能把“双 1”配置说成磁盘损坏也不丢数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最终给出有条件的方案：“我先在单库验证当前工作负载是否达到目标，留出突发和变更余量；如果瓶颈是索引扫描先改路径，如果是热行先改并发模型，如果是持续容量再评估归档、读模型或分片。”这比按三千万行直接宣布分库，更能经受后续追问。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "S1：同样的状态比例，不同的时间分布"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整脚本创建 100000 行：租户 1 有 80000 行，其中 800 行 OPEN；租户 2–21 各 1000 行、10 行 OPEN。目标是租户 1、OPEN、2026-01-01 到 2026-01-02 半开窗口内最新 20 条，按 created_at DESC,id DESC。"
+        },
+        {
+          "type": "paragraph",
+          "text": "候选 ix_filter=(tenant_id,status,created_at,id) 先固定租户和状态，再沿时间逆序找结果；ix_time=(tenant_id,created_at,id,status) 先按租户和时间访问，边扫边检查状态。在均匀且独立的理想分布中，取得 20 条状态比例 p 的记录，粗估可能扫 20/p 条；这只是估计，不是保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "第二阶段把租户 1 最后 10000 行的 OPEN 关闭，再把最早 10000 行中另 100 条改为 OPEN，总数仍为 800。时间优先路径现在可能先扫过长段 CLOSED，过滤优先路径仍可直接进入 OPEN 区域。单列状态比例没变，成本却变了，这解释了为什么只看区分度会误判。"
+        },
+        {
+          "type": "paragraph",
+          "text": "脚本保留两条路径、默认计划和分布断言；强制路径只用于实验对比。取 amount 会涉及覆盖外的列，追加 amount 可以减少取列回表，但扩大索引并增加金额更新成本，不能默认无限覆盖。若状态变成多个 IN 值，或删掉状态条件，需重新分析排序保证。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "十万行 S1 数据生成、计划对照与相关性变化"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 s1_orders.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/query/code/s1_orders.sql",
+          "value": "CREATE TABLE s1_orders (\n  id BIGINT PRIMARY KEY,\n  tenant_id INT NOT NULL,\n  status VARCHAR(12) NOT NULL,\n  created_at DATETIME(6) NOT NULL,\n  amount DECIMAL(12,2) NOT NULL,\n  memo VARCHAR(200) NOT NULL,\n  KEY ix_filter (tenant_id, status, created_at, id),\n  KEY ix_time (tenant_id, created_at, id, status)\n) ENGINE=InnoDB;\nCREATE TABLE s1_digit (n INT PRIMARY KEY);\nINSERT INTO s1_digit VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);\nINSERT INTO s1_orders\nSELECT n + 1,\n       IF(n < 80000, 1, 2 + MOD(n,20)),\n       IF(MOD(IF(n < 80000,n,FLOOR((n-80000)/20)),100)=0, 'OPEN', 'CLOSED'),\n       TIMESTAMPADD(SECOND,n,'2026-01-01 00:00:00'),\n       CAST(10 + MOD(n,10000)/100 AS DECIMAL(12,2)),\n       REPEAT('x',100)\nFROM (\n  SELECT a.n+10*b.n+100*c.n+1000*d.n+10000*e.n AS n\n  FROM s1_digit a CROSS JOIN s1_digit b CROSS JOIN s1_digit c\n  CROSS JOIN s1_digit d CROSS JOIN s1_digit e\n) s;\nANALYZE TABLE s1_orders;\n\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,created_at,amount\nFROM s1_orders FORCE INDEX (ix_filter)\nWHERE tenant_id=1 AND status='OPEN'\n  AND created_at >= '2026-01-01 00:00:00'\n  AND created_at <  '2026-01-02 00:00:00'\nORDER BY created_at DESC,id DESC LIMIT 20;\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,created_at,amount\nFROM s1_orders FORCE INDEX (ix_time)\nWHERE tenant_id=1 AND status='OPEN'\n  AND created_at >= '2026-01-01 00:00:00'\n  AND created_at <  '2026-01-02 00:00:00'\nORDER BY created_at DESC,id DESC LIMIT 20;\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,created_at,amount\nFROM s1_orders\nWHERE tenant_id=1 AND status='OPEN'\n  AND created_at >= '2026-01-01 00:00:00'\n  AND created_at <  '2026-01-02 00:00:00'\nORDER BY created_at DESC,id DESC LIMIT 20;\n\nSELECT tenant_id,COUNT(*) AS total,SUM(status='OPEN') AS open_count FROM s1_orders GROUP BY tenant_id ORDER BY tenant_id;\n-- 在S1基线完成两条候选路径对照后，再单独执行本场景。\n-- 保留tenant=1的OPEN总数800，只改变它们在时间轴上的分布。\nSTART TRANSACTION;\nUPDATE s1_orders\nSET status='CLOSED'\nWHERE tenant_id=1 AND id BETWEEN 70001 AND 80000;\nUPDATE s1_orders\nSET status='OPEN'\nWHERE tenant_id=1 AND id BETWEEN 1 AND 10000\n  AND MOD(id-1,100)=1;\nCOMMIT;\nANALYZE TABLE s1_orders;\nSELECT COUNT(*) AS rows_total,\n       SUM(status='OPEN') AS rows_open\nFROM s1_orders WHERE tenant_id=1;\n-- 预期80000、800；这是待数据库实测的断言，不是性能测量。\n-- 再重跑上面的两个EXPLAIN ANALYZE，保持租户、时间范围和LIMIT不变。\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,created_at,amount\nFROM s1_orders FORCE INDEX (ix_filter)\nWHERE tenant_id=1 AND status='OPEN'\n  AND created_at >= '2026-01-01 00:00:00'\n  AND created_at <  '2026-01-02 00:00:00'\nORDER BY created_at DESC,id DESC LIMIT 20;\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,created_at,amount\nFROM s1_orders FORCE INDEX (ix_time)\nWHERE tenant_id=1 AND status='OPEN'\n  AND created_at >= '2026-01-01 00:00:00'\n  AND created_at <  '2026-01-02 00:00:00'\nORDER BY created_at DESC,id DESC LIMIT 20;\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,created_at,amount\nFROM s1_orders\nWHERE tenant_id=1 AND status='OPEN'\n  AND created_at >= '2026-01-01 00:00:00'\n  AND created_at <  '2026-01-02 00:00:00'\nORDER BY created_at DESC,id DESC LIMIT 20;\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "最近七天任务与两条索引路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 task_query.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/query/code/task_query.sql",
+          "value": "-- MySQL 8.4.0; standalone teaching schema; UTC DATETIME(6).\nCREATE TABLE task(id BIGINT PRIMARY KEY,tenant_id BIGINT NOT NULL,\n status VARCHAR(16) NOT NULL,priority INT NOT NULL,created_at DATETIME(6) NOT NULL) ENGINE=InnoDB;\nCREATE INDEX ix_task_order ON task(tenant_id,status,priority,created_at,id);\n-- Alternative for a separate run: (tenant_id,status,created_at,priority,id).\nINSERT INTO task VALUES\n (1,7,'UNPROCESSED',1,'2026-10-02 00:00:00'),\n (2,7,'UNPROCESSED',1,'2026-10-08 00:00:00'),\n (3,7,'UNPROCESSED',0,'2026-10-01 23:59:59.999999'),\n (4,7,'UNPROCESSED',0,'2026-10-09 00:00:00'),\n (5,7,'DONE',0,'2026-10-05 00:00:00'),\n (6,8,'UNPROCESSED',0,'2026-10-05 00:00:00'),\n (7,7,'UNPROCESSED',1,'2026-10-02 00:00:00'),\n (8,7,'UNPROCESSED',0,'2026-10-04 00:00:00');\nSET @tenant=7;\nSET @as_of=CAST('2026-10-09 00:00:00.000000' AS DATETIME(6));\nSET @lower=DATE_SUB(@as_of,INTERVAL 7 DAY);\nSELECT id,priority,created_at FROM task\nWHERE tenant_id=@tenant AND status='UNPROCESSED' AND created_at>=@lower AND created_at<@as_of\nORDER BY priority ASC,created_at ASC,id ASC LIMIT 20;\n-- Expected IDs: 8,1,7,2. Small correctness fixture, not a 30-million-row benchmark.\nEXPLAIN ANALYZE FORMAT=TREE\nSELECT id,priority,created_at FROM task\nWHERE tenant_id=@tenant AND status='UNPROCESSED' AND created_at>=@lower AND created_at<@as_of\nORDER BY priority ASC,created_at ASC,id ASC LIMIT 20;\n-- Authorized, rehearsed DDL only; do not run against production as a learning step:\n-- ALTER TABLE task ADD INDEX ix_task_time(tenant_id,status,created_at,priority,id),\n-- ALGORITHM=INPLACE, LOCK=NONE;\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "综合演练与检查边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "以用户订单列表为教学场景，写出过滤、稳定排序、复合游标与候选索引；再在事务章节画库存扣减的两会话交错，最后结合分片章节说明路由、写后读和故障切换。每一环分别回答“需要哪种正确性”“哪些成本被转移”“如何验证”，不要让列表优化替代库存并发协议，也不要让复制替代备份。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以用 Python 3 运行 relational_checks.py。把本部分所有 SQL 文件与该脚本放在同一目录，它使用标准库 SQLite 对明确列出的关系结果做适配后校验；不会连接 MySQL，也不会证明其执行计划、字符排序规则、隐式数值转换、锁、I/O 或 Online DDL。时间字面量被统一为六位微秒，便于用文本存储的 SQLite 对照 MySQL DATETIME(6) 的边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 模型可以验证算法不变量；MySQL 的方案仍应在受控的真实 MySQL 8.4.0 环境用本部分 SQL 执行并记录计划，HBase 和 ClickHouse 的服务行为须在各自环境单独验证。没有这些记录时，容量和扫描数写作估算，SQL 结果写作预期，不把它们混成实测性能。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-5",
+          "label": "SQL 查询比较慢，除了索引失效，还可能是什么问题？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

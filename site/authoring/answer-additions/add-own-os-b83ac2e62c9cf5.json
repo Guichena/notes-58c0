@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-b83ac2e62c9cf5",
+  "entryId": "own-juc-correctness",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "88f773bcd3cc7ab8bc50b7771e60f14999e1fc5fd8ab10e05720e47b97c5d688",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q16 线程中断与进程终止怎样设计优雅停机"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程优先合作停止：停止接收、设置状态/中断、任务释放资源、等待退出。interrupt是请求，不是任意代码强杀；捕获InterruptedException后若本层不能完成取消，应恢复中断标志再向上返回/传播。线程正在普通CPU循环中运行时需要检查标志；持有锁进入不响应中断的等待时，更要注意退出路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：停止接收→合作中断→等待→终止兜底"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：中断请求与执行停止、远端撤销是三件事"
+    },
+    {
+      "type": "paragraph",
+      "text": "Process.destroy和destroyForcibly是进程级请求，具体常规终止行为取决于平台；强制终止也不能假定调用返回那一刻已经退出，随后还要等待确认。Java 8的Process接口不提供通用进程树管理；Java 9+ ProcessHandle能力属于另一个版本范围，子孙进程与外部副作用仍需要单独处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "守护线程不能替代生命周期管理：仅剩daemon线程时JVM可以结束，不保证它们的finally、刷新或业务任务完成；关键工作要由非守护所有者明确等待。"
+    },
+    {
+      "type": "paragraph",
+      "text": "停机顺序是停接收→通知结束→继续读取必要输出→有限等待→终止兜底→确认退出→关闭句柄。强杀可能留下半写文件、未完成事务和未知远端效果，不应把“本机不再运行”改写为“业务未执行”。需要临时文件加原子提交、事务、幂等键或人工核对的场景应提前明确。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q25 总期限 取消 异常与关闭如何闭环"
+    },
+    {
+      "type": "paragraph",
+      "text": "等待超时、结果取消、执行停止，要分开回答。Future.get(timeout) 只限制这次等多久，不自动取消任务；FutureTask 类提交结果的 cancel(true) 可以请求中断运行线程，能否及时结束仍取决于任务合作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CompletableFuture.cancel 的 mayInterruptIfRunning 不用于控制计算，阶段变成取消也不等于 supplier 被中断。需要停止执行时，要保留真实执行句柄、专门停止信号，或下游客户端的取消能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：剩余deadline→等待超时→请求取消→确认退出"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：get(timeout)不自动取消；CompletableFuture取消不等于中断"
+    },
+    {
+      "type": "paragraph",
+      "text": "shutdown停止接收并让已提交任务继续；shutdownNow尝试中断运行者并返回尚未执行的任务，不保证全都停止，也不保证被取出的Future自动进入取消状态。拥有者应记录任务句柄、取消需要取消的任务并awaitTermination。Java 8不能把ExecutorService直接放进try-with-resources，应显式finally清理；不要把新版本的自动关闭写法混入基线。"
+    },
+    {
+      "type": "paragraph",
+      "text": "总期限要一路扣剩余时间，不能每个子任务重新获得完整预算。用 System.nanoTime 的差值计算请求 deadline，每次等待只使用剩余预算；若每项 get 都重给 5 秒，n 项最坏就会等 5n 秒。"
+    },
+    {
+      "type": "paragraph",
+      "text": "超时后先标记未知或失败，再尝试取消和有限清理，不能在清理时无限等待。业务副作用还需幂等与后置查询：线程结束，不等于远端效果已撤销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名：CancellationDemo.java。编译运行：javac -encoding UTF-8 CancellationDemo.java；java CancellationDemo。在JDK9及以上可使用javac --release 8进行Java8 API与字节码兼容检查。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "CancellationDemo.java",
+      "value": "import java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicBoolean;\n\n/** Waiting, requesting cancellation, and observing actual termination are different operations. */\npublic final class CancellationDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch latch) throws InterruptedException {\n        if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError(\"latch timeout\");\n    }\n    private static <T> T beforeDeadline(Future<T> future, long deadline) throws Exception {\n        long remaining = deadline - System.nanoTime(); // One monotonic budget for the whole operation.\n        if (remaining <= 0) throw new TimeoutException(\"shared deadline expired\");\n        return future.get(remaining, TimeUnit.NANOSECONDS);\n    }\n    public static void main(String[] args) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(2);\n        CountDownLatch release = new CountDownLatch(1), supplierRelease = new CountDownLatch(1);\n        CountDownLatch deadlineRelease = new CountDownLatch(1);\n        try {\n            CountDownLatch entered = new CountDownLatch(1);\n            Future<Integer> waiting = pool.submit(() -> { entered.countDown(); await(release); return 42; });\n            await(entered);\n            boolean timeout = false;\n            try { waiting.get(20, TimeUnit.MILLISECONDS); } catch (TimeoutException ex) { timeout = true; }\n            check(\"get timeout only stops waiting\", timeout && !waiting.isCancelled() && !waiting.isDone());\n            release.countDown();\n            check(\"timed-out task can still return\", waiting.get(3, TimeUnit.SECONDS) == 42);\n\n            CountDownLatch interruptEntered = new CountDownLatch(1), stopped = new CountDownLatch(1);\n            AtomicBoolean sawInterrupt = new AtomicBoolean();\n            Future<?> cooperative = pool.submit(() -> {\n                try { interruptEntered.countDown(); await(new CountDownLatch(1)); }\n                catch (InterruptedException ex) { sawInterrupt.set(true); Thread.currentThread().interrupt(); }\n                finally { stopped.countDown(); } // Observe cleanup, not merely Future state.\n            });\n            await(interruptEntered);\n            check(\"cancel true accepts request\", cooperative.cancel(true));\n            await(stopped);\n            check(\"cooperative task observes interruption\", sawInterrupt.get());\n            boolean cancelled = false;\n            try { cooperative.get(3, TimeUnit.SECONDS); } catch (CancellationException ex) { cancelled = true; }\n            check(\"cancelled future has no result\", cancelled);\n\n            CountDownLatch supplierEntered = new CountDownLatch(1), supplierStopped = new CountDownLatch(1);\n            AtomicBoolean supplierInterrupted = new AtomicBoolean(), supplierFinished = new AtomicBoolean();\n            CompletableFuture<Integer> stage = CompletableFuture.supplyAsync(() -> {\n                try {\n                    supplierEntered.countDown(); await(supplierRelease);\n                    supplierFinished.set(true); return 9;\n                } catch (InterruptedException ex) {\n                    supplierInterrupted.set(true); Thread.currentThread().interrupt(); return -1;\n                } finally { supplierStopped.countDown(); }\n            }, pool);\n            await(supplierEntered);\n            check(\"CompletableFuture accepts cancellation\", stage.cancel(true) && stage.isCancelled());\n            check(\"CompletableFuture cancel leaves supplier running\", supplierStopped.getCount() == 1);\n            supplierRelease.countDown(); await(supplierStopped);\n            check(\"CompletableFuture cancellation does not interrupt supplier\", supplierFinished.get() && !supplierInterrupted.get());\n\n            Future<Integer> ready = pool.submit(() -> 1);\n            ready.get(3, TimeUnit.SECONDS); // Remove scheduler speed from the deadline test.\n            CountDownLatch deadlineEntered = new CountDownLatch(1);\n            Future<Integer> blocked = pool.submit(() -> { deadlineEntered.countDown(); await(deadlineRelease); return 2; });\n            await(deadlineEntered);\n            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(100);\n            try {\n                check(\"first result uses shared deadline\", beforeDeadline(ready, deadline) == 1);\n                boolean expired = false;\n                try { beforeDeadline(blocked, deadline); } catch (TimeoutException ex) { expired = true; }\n                check(\"later wait uses remaining deadline\", expired);\n            } finally { blocked.cancel(true); }\n        } finally {\n            release.countDown(); supplierRelease.countDown(); deadlineRelease.countDown();\n            pool.shutdown();\n            if (!pool.awaitTermination(3, TimeUnit.SECONDS)) {\n                pool.shutdownNow();\n                if (!pool.awaitTermination(3, TimeUnit.SECONDS)) throw new AssertionError(\"pool stuck\");\n            }\n        }\n        check(\"executor termination observed\", pool.isTerminated());\n        boolean rejected = false;\n        try { pool.submit(() -> 0); } catch (RejectedExecutionException ex) { rejected = true; }\n        check(\"shutdown executor rejects new work\", rejected);\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "演算：先确保任务已经运行，再用极短等待触发TimeoutException，检查它仍未取消；cancel(true)后用清理门闩确认finally已执行；另一实验取消CompletableFuture后，让supplier通过显式门闩结束，证明阶段取消不是执行中断。空间由活动任务数决定，超时策略不会降低任务算法本身复杂度。测试同时验证拒绝新提交和执行器终止。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-cooperative-interruption",
+  "targetOrigin": "authored"
+}

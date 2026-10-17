@@ -1,0 +1,314 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-p-math",
+  "entryId": "p-math",
+  "expectedOriginalHash": "00f5638ac0350223bd984e32601ddeffd05c2e77a21b31517c9ecd90336e3609",
+  "title": "算法练习补充：把题目要求的输出写进接口",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "把题目要求的输出写进接口"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个思路能否成为题目的完整答案，要看它是否返回了要求的长度、路径、全部并列项或数字数组，而不只是一个相近的结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整实现与测试"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.BigInteger;\nimport java.util.*;\n\n/** Explicit interfaces for questions whose output contract matters. */\npublic final class InterfaceAlgorithms {\n    private InterfaceAlgorithms() {}\n    public record Log(int function, boolean start, long timestamp) {\n        public Log { if (function < 0 || timestamp < 0) throw new IllegalArgumentException(\"nonnegative id/time\"); }\n        public static Log parse(String line) {\n            Objects.requireNonNull(line); String[] p = line.split(\":\", -1);\n            if (p.length != 3 || !(p[1].equals(\"start\") || p[1].equals(\"end\"))) throw new IllegalArgumentException(\"id:start|end:time\");\n            if (!digits(p[0]) || !digits(p[2])) throw new IllegalArgumentException(\"decimal id/time\");\n            try { return new Log(Integer.parseInt(p[0]), p[1].equals(\"start\"), Long.parseLong(p[2])); }\n            catch (NumberFormatException ex) { throw new IllegalArgumentException(\"id/time range\", ex); }\n        }\n        private static boolean digits(String s) { if (s.isEmpty()) return false; for (int i=0;i<s.length();i++) if (s.charAt(i)<'0'||s.charAt(i)>'9') return false; return true; }\n    }\n    /** Single thread; start at beginning of tick, end at end of tick; recursion allowed. */\n    public static BigInteger[] exclusiveTimes(int functions, List<Log> logs) {\n        if (functions < 0) throw new IllegalArgumentException(\"function count\"); Objects.requireNonNull(logs);\n        BigInteger[] total = new BigInteger[functions]; Arrays.fill(total, BigInteger.ZERO);\n        Deque<Integer> active = new ArrayDeque<>(); BigInteger cursor = BigInteger.ZERO; long last = -1;\n        for (Log event : logs) {\n            Objects.requireNonNull(event); if (event.function >= functions || event.timestamp < last) throw new IllegalArgumentException(\"id/order\");\n            last = event.timestamp; BigInteger time = BigInteger.valueOf(event.timestamp);\n            if (event.start) {\n                if (time.compareTo(cursor) < 0) throw new IllegalArgumentException(\"start inside completed tick\");\n                if (!active.isEmpty()) { int id = active.peek(); total[id] = total[id].add(time.subtract(cursor)); }\n                active.push(event.function); cursor = time;\n            } else {\n                if (active.isEmpty() || active.peek() != event.function) throw new IllegalArgumentException(\"unmatched end\");\n                BigInteger next = time.add(BigInteger.ONE), duration = next.subtract(cursor);\n                if (duration.signum() < 0) throw new IllegalArgumentException(\"negative duration\");\n                int id = active.pop(); total[id] = total[id].add(duration); cursor = next;\n            }\n        }\n        if (!active.isEmpty()) throw new IllegalArgumentException(\"unclosed call\"); return total;\n    }\n    public static final class BinaryNode { public int bit; public BinaryNode left, right; public BinaryNode(int bit) { this.bit = bit; } }\n    private record Frame(BinaryNode node, BigInteger prefix) {}\n    /** Proper finite binary tree, bits 0/1; reject repeated node identity rather than loop. */\n    public static BigInteger sumRootToLeafBinary(BinaryNode root) {\n        if (root == null) return BigInteger.ZERO;\n        Deque<Frame> stack = new ArrayDeque<>(); stack.push(new Frame(root, BigInteger.ZERO));\n        Set<BinaryNode> seen = Collections.newSetFromMap(new IdentityHashMap<>()); BigInteger sum = BigInteger.ZERO;\n        while (!stack.isEmpty()) {\n            Frame f=stack.pop(); BinaryNode n=f.node; if(!seen.add(n))throw new IllegalArgumentException(\"proper tree\");\n            if(n.bit!=0&&n.bit!=1)throw new IllegalArgumentException(\"binary digit\"); BigInteger value=f.prefix.shiftLeft(1).add(BigInteger.valueOf(n.bit));\n            if(n.left==null&&n.right==null)sum=sum.add(value);\n            if(n.right!=null)stack.push(new Frame(n.right,value)); if(n.left!=null)stack.push(new Frame(n.left,value));\n        }\n        return sum;\n    }\n    public record Lcs(int length, String sequence) {}\n    /** UTF-16 code units. maxCells is a caller-specified allocation budget, not a problem constraint. */\n    public static Lcs lcs2d(String a, String b, long maxCells) {\n        Objects.requireNonNull(a); Objects.requireNonNull(b); long cells=((long)a.length()+1)*(b.length()+1L);\n        if(maxCells<0||cells>maxCells)throw new IllegalArgumentException(\"DP cell budget\");\n        int[][] dp=new int[a.length()+1][b.length()+1];\n        for(int i=1;i<=a.length();i++)for(int j=1;j<=b.length();j++)dp[i][j]=a.charAt(i-1)==b.charAt(j-1)?dp[i-1][j-1]+1:Math.max(dp[i-1][j],dp[i][j-1]);\n        char[] answer=new char[dp[a.length()][b.length()]]; int i=a.length(),j=b.length(),p=answer.length;\n        while(i>0&&j>0){if(a.charAt(i-1)==b.charAt(j-1)){answer[--p]=a.charAt(--i);j--;}else if(dp[i-1][j]>=dp[i][j-1])i--;else j--;}\n        return new Lcs(answer.length,new String(answer));\n    }\n    /** Frequency descending; ties by integer value ascending; k>distinct returns all distinct. */\n    public static int[] topFrequentIntegers(int[] values,int k) {\n        Objects.requireNonNull(values);if(k<0)throw new IllegalArgumentException(\"nonnegative k\");if(k==0)return new int[0];\n        Map<Integer,Integer> frequency=new HashMap<>();for(int value:values)frequency.merge(value,1,Integer::sum);\n        Comparator<Integer> worstFirst=Comparator.<Integer>comparingInt(frequency::get).thenComparing(Comparator.reverseOrder());\n        PriorityQueue<Integer> heap=new PriorityQueue<>(worstFirst);\n        for(int value:frequency.keySet()){heap.offer(value);if(heap.size()>k)heap.poll();}\n        int[] result=new int[heap.size()];for(int p=result.length-1;p>=0;p--)result[p]=heap.remove();return result;\n    }\n    /** All code points tied for highest frequency, in first-appearance order. */\n    public static int[] mostFrequentCodePoints(String text) {\n        Objects.requireNonNull(text);Map<Integer,Integer> counts=new LinkedHashMap<>();text.codePoints().forEach(cp->counts.merge(cp,1,Integer::sum));\n        int max=0;for(int n:counts.values())max=Math.max(max,n);final int best=max;\n        return counts.entrySet().stream().filter(e->e.getValue()==best).mapToInt(Map.Entry::getKey).toArray();\n    }\n    /** Nearest-rank empirical P99, no interpolation; a copy is quickselected. */\n    public static int p99NearestRank(int[] samples) {\n        Objects.requireNonNull(samples);if(samples.length==0)throw new IllegalArgumentException(\"nonempty samples\");\n        int rank=(int)((99L*samples.length+99)/100)-1;int[] a=samples.clone();int low=0,high=a.length-1;SplittableRandom random=new SplittableRandom();\n        while(low<high){int pivot=a[random.nextInt(low,high+1)],less=low,scan=low,greater=high;\n            while(scan<=greater){if(a[scan]<pivot)swap(a,less++,scan++);else if(a[scan]>pivot)swap(a,scan,greater--);else scan++;}\n            if(rank<less)high=less-1;else if(rank>greater)low=greater+1;else return pivot;\n        }return a[low];\n    }\n    private static void swap(int[] a,int i,int j){int t=a[i];a[i]=a[j];a[j]=t;}\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试通过逐 tick 的调用模拟检查独占时间，通过枚举子序列检查二维 LCS，通过排序检查 P99，通过完整频数排序检查整数 TopK；二进制树另覆盖深链和非法共享节点。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.BigInteger;\nimport java.util.*;\npublic final class InterfaceAlgorithmsTest {\n    static long checks;static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|NullPointerException e){return;}throw new AssertionError(\"invalid accepted\");}\n    static boolean subsequence(String s,String t){int p=0;for(int i=0;i<t.length()&&p<s.length();i++)if(s.charAt(p)==t.charAt(i))p++;return p==s.length();}\n    static int bruteLcs(String a,String b){int best=0;for(int mask=0;mask<(1<<a.length());mask++){StringBuilder s=new StringBuilder();for(int i=0;i<a.length();i++)if((mask&(1<<i))!=0)s.append(a.charAt(i));if(subsequence(s.toString(),b))best=Math.max(best,s.length());}return best;}\n    static long tick;static List<InterfaceAlgorithms.Log> log;static List<Integer> busy;\n    static void call(Random r,int depth,int id){log.add(new InterfaceAlgorithms.Log(id,true,tick));int work=1+r.nextInt(3);for(int i=0;i<work;i++){busy.add(id);tick++;if(depth<3&&r.nextInt(4)==0)call(r,depth+1,r.nextInt(5));}log.add(new InterfaceAlgorithms.Log(id,false,tick-1));}\n    static BigInteger treeOracle(InterfaceAlgorithms.BinaryNode n,String prefix){if(n==null)return BigInteger.ZERO;String s=prefix+n.bit;if(n.left==null&&n.right==null)return new BigInteger(s,2);return treeOracle(n.left,s).add(treeOracle(n.right,s));}\n    public static void main(String[] args){Random random=new Random(20261027);\n        for(int z=0;z<4000;z++){\n            StringBuilder a=new StringBuilder(),b=new StringBuilder();for(int i=0,n=random.nextInt(11);i<n;i++)a.append((char)('a'+random.nextInt(3)));for(int i=0,n=random.nextInt(11);i<n;i++)b.append((char)('a'+random.nextInt(3)));var result=InterfaceAlgorithms.lcs2d(a.toString(),b.toString(),200);eq(result.length(),bruteLcs(a.toString(),b.toString()));eq(result.sequence().length(),result.length());eq(subsequence(result.sequence(),a.toString())&&subsequence(result.sequence(),b.toString()),true);\n            int[] values=random.ints(random.nextInt(100),-10,11).toArray();Map<Integer,Integer> counts=new HashMap<>();for(int v:values)counts.merge(v,1,Integer::sum);int k=random.nextInt(25);int[] expected=counts.keySet().stream().sorted(Comparator.<Integer>comparingInt(counts::get).reversed().thenComparingInt(Integer::intValue)).limit(k).mapToInt(Integer::intValue).toArray();eq(Arrays.toString(InterfaceAlgorithms.topFrequentIntegers(values,k)),Arrays.toString(expected));\n            if(values.length>0){int[] sorted=values.clone();Arrays.sort(sorted);int rank=(int)Math.ceil(values.length*0.99)-1;eq(InterfaceAlgorithms.p99NearestRank(values),sorted[rank]);}\n            tick=0;log=new ArrayList<>();busy=new ArrayList<>();for(int i=0,n=1+random.nextInt(3);i<n;i++)call(random,0,random.nextInt(5));BigInteger[] actual=InterfaceAlgorithms.exclusiveTimes(5,log);long[] expectedTimes=new long[5];for(int id:busy)expectedTimes[id]++;for(int id=0;id<5;id++)eq(actual[id],BigInteger.valueOf(expectedTimes[id]));\n            List<InterfaceAlgorithms.BinaryNode> nodes=new ArrayList<>();for(int i=0,n=random.nextInt(30);i<n;i++)nodes.add(new InterfaceAlgorithms.BinaryNode(random.nextInt(2)));for(int i=1;i<nodes.size();i++){int parent=(i-1)/2;if(i%2==1)nodes.get(parent).left=nodes.get(i);else nodes.get(parent).right=nodes.get(i);}var root=nodes.isEmpty()?null:nodes.get(0);eq(InterfaceAlgorithms.sumRootToLeafBinary(root),treeOracle(root,\"\"));\n        }\n        eq(Arrays.toString(InterfaceAlgorithms.exclusiveTimes(2,List.of(InterfaceAlgorithms.Log.parse(\"0:start:0\"),InterfaceAlgorithms.Log.parse(\"1:start:2\"),InterfaceAlgorithms.Log.parse(\"1:end:5\"),InterfaceAlgorithms.Log.parse(\"0:end:6\")))),\"[3, 4]\");\n        eq(InterfaceAlgorithms.exclusiveTimes(1,List.of(new InterfaceAlgorithms.Log(0,true,0),new InterfaceAlgorithms.Log(0,false,Long.MAX_VALUE)))[0],BigInteger.ONE.shiftLeft(63));\n        var r=new InterfaceAlgorithms.BinaryNode(1);var p=r;for(int i=0;i<2000;i++){p.left=new InterfaceAlgorithms.BinaryNode(1);p=p.left;}eq(InterfaceAlgorithms.sumRootToLeafBinary(r),BigInteger.ONE.shiftLeft(2001).subtract(BigInteger.ONE));\n        eq(Arrays.toString(InterfaceAlgorithms.mostFrequentCodePoints(\"😀a😀abb\")),\"[128512, 97, 98]\");eq(InterfaceAlgorithms.mostFrequentCodePoints(\"\").length,0);\n        for(int n:new int[]{100,1000,10000}){int[] a=new int[n];for(int i=0;i<n;i++)a[i]=i+1;eq(InterfaceAlgorithms.p99NearestRank(a),n*99/100);}\n        bad(()->InterfaceAlgorithms.lcs2d(\"abcd\",\"abcd\",24));bad(()->InterfaceAlgorithms.topFrequentIntegers(new int[0],-1));bad(()->InterfaceAlgorithms.p99NearestRank(new int[0]));bad(()->InterfaceAlgorithms.Log.parse(\"0:START:1\"));bad(()->InterfaceAlgorithms.Log.parse(\"-1:start:1\"));\n        bad(()->InterfaceAlgorithms.exclusiveTimes(1,List.of(new InterfaceAlgorithms.Log(0,false,0))));bad(()->InterfaceAlgorithms.exclusiveTimes(1,List.of(new InterfaceAlgorithms.Log(0,true,0))));bad(()->InterfaceAlgorithms.exclusiveTimes(2,List.of(new InterfaceAlgorithms.Log(0,true,0),new InterfaceAlgorithms.Log(1,false,1))));bad(()->InterfaceAlgorithms.exclusiveTimes(1,List.of(new InterfaceAlgorithms.Log(0,true,0),new InterfaceAlgorithms.Log(0,false,0),new InterfaceAlgorithms.Log(0,true,0))));\n        r.right=r;bad(()->InterfaceAlgorithms.sumRootToLeafBinary(r));bad(()->InterfaceAlgorithms.sumRootToLeafBinary(new InterfaceAlgorithms.BinaryNode(2)));\n        System.out.println(\"InterfaceAlgorithmsTest PASS \"+checks);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数值二分、计数与构造：先确定精度和顺序"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "整数立方根向下取整"
+    },
+    {
+      "type": "paragraph",
+      "text": "在满足 x³ <= n 的整数里二分最大 x，就能得到包含负数在内的向下取整立方根。"
+    },
+    {
+      "type": "paragraph",
+      "text": "-9 的答案是 -3；先算正数根再直接取负会得到 -2，这不是向下取整。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对 long 输入，答案必在 [-2097152,2097152] 内。实现用 BigInteger 比较立方，避免中间乘法溢出；二分始终保持左端可行、右端不可行的开区间，直到只剩一个整数。固定 64 位输入只需约 23 次比较；推广到任意位宽时还要计算大整数乘法成本，不能称为任意精度 O(1)。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "整数平方根，保留三位小数"
+    },
+    {
+      "type": "paragraph",
+      "text": "把被开方数乘以 10⁶，先求精确整数平方根，再按明确的舍入规则格式化为三位小数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确认“保留三位”是截断还是四舍五入。接口显式区分两者，拒绝负输入，不用浮点 epsilon 猜边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "四舍五入也能用整数判断：若缩放后的整数根为 q，比较 4N 与 (2q+1)²，就知道真值是否达到 q+0.5。sqrt(2) 得到 1.414，完全平方数也保留尾部零。计算精度由整数运算保证；测试可用更高精度 BigDecimal.sqrt 作独立数值对照。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "1 到 n 中字典序第 k 小的整数"
+    },
+    {
+      "type": "paragraph",
+      "text": "把十进制数字看成隐式前缀树，先计算当前前缀整棵子树包含多少数，再决定跳到下一个兄弟还是进入第一个孩子。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计数时，把前缀区间每下一层乘以 10，再与 [1,n] 取交集；这样就不用生成 n 个字符串。k 从 1 开始，进入孩子时要减去当前前缀自己，不能把它漏算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对 int 上界，计数和前缀扩展使用 long。时间 O(log² n)，空间 O(1)。若允许前导零、包含 0 或负数，排序域已经变化，需要重新确定计数合同。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "n 个不同数的第 m 个全排列"
+    },
+    {
+      "type": "paragraph",
+      "text": "按值排序后，每个首元素下都有 (n-1)! 个排列，用 m 所在的阶乘分组逐位确定元素。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现把 m 当作一基排名，所以先减一，再求商和余数。输入元素必须不同，按整数大小排序；空输入也有一个空排列。阶乘和排名使用 BigInteger，避免 n! 很快溢出 long。"
+    },
+    {
+      "type": "paragraph",
+      "text": "候选容器会影响成本：ArrayList 删除第 i 个候选是 O(n)，因此除大整数运算外，总时间 O(n²)；改用顺序统计树，可把选取部分降到 O(n log n)。如果数字有重复，就要改用多重集合排列计数，不能继续让每组都乘相同阶乘。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "0 到 8 的圆环，走 n 步回到 0"
+    },
+    {
+      "type": "paragraph",
+      "text": "令 dp[位置] 表示走完当前步数后的路径数量，每一轮从左右相邻位置转移，初始只有 dp[0]=1。"
+    },
+    {
+      "type": "paragraph",
+      "text": "圆环有 9 个位置，取模分别是 (p+8)%9 与 (p+1)%9。顺时针、逆时针的选择序列不同，就算不同方案；n=0 时“不走”是一种方案。必须使用新数组，避免同一轮刚更新的值被再次使用。BigInteger 防止方案数溢出，执行 O(9n) 次加法，保留 9 个计数；这些计数的位长随 n 增长，所以位空间并不是与 n 无关。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "十枪打出八十环，有多少种情况？"
+    },
+    {
+      "type": "paragraph",
+      "text": "确认每枪允许的环数与是否区分射击顺序后，用“已经打了几枪、累计环数”的计数 DP。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目只给“10 枪、80 环”还不足以确定答案：脱靶 0 环算不算，最低是否 1 环，交换两枪是否是同一种，都影响结果。代码接收每枪最小、最大环数，统计有序射击序列；调用 shotScoreWays(10,80,0,10) 或 (10,80,1,10) 对应两种明确模型。0 枪凑出 0 环为 1 种。直接转移时间 O(枪数×目标环数×环数范围)，空间 O(目标环数)，均另计大整数位成本；更大分值范围可用滑动窗口求和优化每轮转移。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "约瑟夫环，求最后一人还是完整出圈顺序？"
+    },
+    {
+      "type": "paragraph",
+      "text": "只求幸存者时使用 f(n)=(f(n-1)+m)%n；要打印完整淘汰顺序，则额外维护动态存活位置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里人员编号 0 到 n-1，从 0 开始报 1，每报到 m 淘汰当前人，下一个存活者重新报 1。m=1 时按编号顺序淘汰，最后是 n-1。递推只存一个下标，O(n) 时间、O(1) 空间。先做 m % size 再相加，避免很大的 long m 溢出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整顺序用树状数组记录每个原位置是否存活，通过二进制提升查找第 k 个存活者，每次 O(log n)，总 O(n log n)，空间 O(n)，返回列表最后一个人就是幸存者。若只用 ArrayList 模拟删除，代码更短，但最坏 O(n²)，面试时要把这个成本说出来。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "分割金条的最小花费"
+    },
+    {
+      "type": "paragraph",
+      "text": "若每次分割的花费等于当前被切金条长度，倒过来看就是每次合并两段的花费等于两段长度和；始终合并最短两段最优。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是最优合并/Huffman 的交换论证：最小的两个权重可以安排在最深的兄弟叶子上，合并后缩成一个子问题。最小堆重复取两项、合并、放回，时间 O(n log n)、堆空间 O(n)，另计大整数操作。空集合与一段金条都不需要切割，花费为 0；长度必须非负。若切割花费有固定启动费、位置限制或不能自由重排，需重新建模。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "“拼接出最大的数”至少有两种不同合同"
+    },
+    {
+      "type": "paragraph",
+      "text": "若使用全部非负整数并可任意换序，按 a+b 与 b+a 的字典序决定两项先后；若从两个数字数组选 k 位并保留各自内部次序，则要枚举两边取多少位，再合并最优子序列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一种是 [3,30,34,5,9]→9534330，拼接比较不把整个结果转成数值，避免溢出。所有项为 0 时输出一个 0，空输入返回空串。对固定 int 输入，比较的字符串长度有固定上限，排序 O(n log n)；一般任意长字符串要乘比较字符成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二种先用单调栈，分别找出每个数组在指定长度下的最大子序列。合并时不能只比较当前一位，而要比较两个剩余后缀。例如当前都为 6，下一位仍可能决定从哪边取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "枚举可行拆分数为 S，当前直接后缀比较实现的时间上界为 O(S(m+n+k²))，空间 O(m+n+k) 的宽松上界，工作子序列与答案实际为 O(k)。这个直接实现不能承诺 O(m+n)。下面保留两种题意的完整代码，先确认是否允许重排，再选对应接口。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.BigInteger;\nimport java.util.*;\n\npublic final class NumericVariants {\n    private NumericVariants() {}\n    public static long floorCubeRoot(long n) {\n        long l = -2_097_152, r = 2_097_153;\n        BigInteger value = BigInteger.valueOf(n);\n        while (l + 1 < r) {\n            long m = l + (r - l) / 2;\n            if (BigInteger.valueOf(m).pow(3).compareTo(value) <= 0) l = m;\n            else r = m;\n        }\n        return l;\n    }\n    /** Nonnegative input; halfUp=false truncates, true rounds halfway upward. */\n    public static String squareRootThreeDecimals(long n, boolean halfUp) {\n        if (n < 0) throw new IllegalArgumentException(\"nonnegative radicand\");\n        BigInteger scaled = BigInteger.valueOf(n).multiply(BigInteger.valueOf(1_000_000));\n        BigInteger l = BigInteger.ZERO, r = BigInteger.ONE.shiftLeft((scaled.bitLength() + 1) / 2 + 1);\n        while (l.add(BigInteger.ONE).compareTo(r) < 0) {\n            BigInteger m = l.add(r).shiftRight(1);\n            if (m.multiply(m).compareTo(scaled) <= 0) l = m; else r = m;\n        }\n        if (halfUp && scaled.shiftLeft(2).compareTo(l.shiftLeft(1).add(BigInteger.ONE).pow(2)) >= 0)\n            l = l.add(BigInteger.ONE);\n        BigInteger[] pieces = l.divideAndRemainder(BigInteger.valueOf(1000));\n        return pieces[0] + \".\" + String.format(Locale.ROOT, \"%03d\", pieces[1].intValueExact());\n    }\n    public static int kthLexicographicalNumber(int n, int k) {\n        if (n < 1 || k < 1 || k > n) throw new IllegalArgumentException(\"1 <= k <= n\");\n        long prefix = 1; int remaining = k - 1;\n        while (remaining > 0) {\n            long count = 0, first = prefix, next = prefix + 1;\n            while (first <= n) {\n                count += Math.min((long) n + 1, next) - first;\n                first *= 10; next *= 10;\n            }\n            if (count <= remaining) { remaining -= (int) count; prefix++; }\n            else { prefix *= 10; remaining--; }\n        }\n        return (int) prefix;\n    }\n    /** Lexicographic order by integer value. Input values must be distinct. Rank is 1-based. */\n    public static List<Integer> kthPermutation(int[] values, BigInteger rank) {\n        Objects.requireNonNull(values); Objects.requireNonNull(rank);\n        int[] sorted = values.clone(); Arrays.sort(sorted);\n        List<Integer> unused = new ArrayList<>();\n        for (int i = 0; i < sorted.length; i++) {\n            if (i > 0 && sorted[i] == sorted[i - 1]) throw new IllegalArgumentException(\"distinct values required\");\n            unused.add(sorted[i]);\n        }\n        BigInteger[] factorial = new BigInteger[values.length + 1]; factorial[0] = BigInteger.ONE;\n        for (int i = 1; i <= values.length; i++) factorial[i] = factorial[i - 1].multiply(BigInteger.valueOf(i));\n        if (rank.signum() <= 0 || rank.compareTo(factorial[values.length]) > 0) throw new IllegalArgumentException(\"rank out of range\");\n        BigInteger r = rank.subtract(BigInteger.ONE);\n        List<Integer> out = new ArrayList<>();\n        for (int left = values.length; left > 0; left--) {\n            BigInteger[] division = r.divideAndRemainder(factorial[left - 1]);\n            out.add(unused.remove(division[0].intValueExact())); r = division[1];\n        }\n        return out;\n    }\n    /** Ring positions 0..8; each step chooses one of two directions. */\n    public static BigInteger ringNineReturnWays(int steps) {\n        if (steps < 0) throw new IllegalArgumentException(\"negative steps\");\n        BigInteger[] dp = new BigInteger[9]; Arrays.fill(dp, BigInteger.ZERO); dp[0] = BigInteger.ONE;\n        for (int s = 0; s < steps; s++) {\n            BigInteger[] next = new BigInteger[9];\n            for (int p = 0; p < 9; p++) next[p] = dp[(p + 8) % 9].add(dp[(p + 1) % 9]);\n            dp = next;\n        }\n        return dp[0];\n    }\n    /** Ordered shot outcomes; every score in [minimum,maximum] is available each time. */\n    public static BigInteger shotScoreWays(int shots, int total, int minimum, int maximum) {\n        if (shots < 0 || total < 0 || minimum < 0 || maximum < minimum || total == Integer.MAX_VALUE)\n            throw new IllegalArgumentException(\"invalid bounds\");\n        if ((long) shots * minimum > total || (long) shots * maximum < total) return BigInteger.ZERO;\n        BigInteger[] dp = new BigInteger[total + 1]; Arrays.fill(dp, BigInteger.ZERO); dp[0] = BigInteger.ONE;\n        for (int s = 0; s < shots; s++) {\n            BigInteger[] next = new BigInteger[total + 1]; Arrays.fill(next, BigInteger.ZERO);\n            for (int sum = 0; sum <= total; sum++) {\n                for (int x = minimum; x <= maximum && x <= total - sum; x++) {\n                    next[sum + x] = next[sum + x].add(dp[sum]);\n                }\n            }\n            dp = next;\n        }\n        return dp[total];\n    }\n    /** Players are 0..n-1; counting begins at 0 with count 1. */\n    public static int josephusSurvivor(int n, long step) {\n        if (n < 1 || step < 1) throw new IllegalArgumentException(\"positive n and step\");\n        long winner = 0;\n        for (long size = 2; size <= n; size++) winner = (winner + step % size) % size;\n        return (int) winner;\n    }\n    /** Full elimination order, including the survivor as its final element. */\n    public static List<Integer> josephusOrder(int n, long step) {\n        if (n < 1 || step < 1) throw new IllegalArgumentException(\"positive n and step\");\n        Fenwick tree = new Fenwick(n); for (int i = 1; i <= n; i++) tree.add(i, 1);\n        List<Integer> out = new ArrayList<>(); long rank = 0;\n        for (int size = n; size > 0; size--) {\n            rank = (rank + (step - 1) % size) % size;\n            int position = tree.select((int) rank + 1);\n            out.add(position - 1); tree.add(position, -1);\n        }\n        return out;\n    }\n    private static final class Fenwick {\n        final int[] tree;\n        Fenwick(int n) { if (n == Integer.MAX_VALUE) throw new IllegalArgumentException(\"array bound\"); tree = new int[n + 1]; }\n        void add(int i, int delta) {\n            while (i < tree.length) {\n                tree[i] += delta;\n                long next = (long) i + (i & -i); if (next >= tree.length) break; i = (int) next;\n            }\n        }\n        int select(int k) {\n            int at = 0;\n            for (int jump = Integer.highestOneBit(tree.length - 1); jump != 0; jump >>>= 1) {\n                long next = (long) at + jump;\n                if (next < tree.length && tree[(int) next] < k) { at = (int) next; k -= tree[at]; }\n            }\n            return at + 1;\n        }\n    }\n    public static BigInteger minimumGoldCutCost(long[] pieces) {\n        Objects.requireNonNull(pieces);\n        PriorityQueue<BigInteger> heap = new PriorityQueue<>();\n        for (long x : pieces) {\n            if (x < 0) throw new IllegalArgumentException(\"negative length\");\n            heap.add(BigInteger.valueOf(x));\n        }\n        BigInteger total = BigInteger.ZERO;\n        while (heap.size() > 1) {\n            BigInteger merged = heap.remove().add(heap.remove()); total = total.add(merged); heap.add(merged);\n        }\n        return total;\n    }\n    public static String largestConcatenation(int[] values) {\n        Objects.requireNonNull(values);\n        if (values.length == 0) return \"\";\n        String[] a = new String[values.length];\n        for (int i = 0; i < a.length; i++) {\n            if (values[i] < 0) throw new IllegalArgumentException(\"nonnegative integers\");\n            a[i] = Integer.toString(values[i]);\n        }\n        Arrays.sort(a, (x,y) -> (y + x).compareTo(x + y));\n        return a[0].equals(\"0\") ? \"0\" : String.join(\"\", a);\n    }\n    /** Pick k digits, maintaining order within each input, and freely interleave the picks. */\n    public static int[] largestNumberFromTwoArrays(int[] a, int[] b, int k) {\n        Objects.requireNonNull(a); Objects.requireNonNull(b);\n        for (int x : a) if (x < 0 || x > 9) throw new IllegalArgumentException(\"digits\");\n        for (int x : b) if (x < 0 || x > 9) throw new IllegalArgumentException(\"digits\");\n        if (k < 0 || k > (long) a.length + b.length) throw new IllegalArgumentException(\"k\");\n        int[] best = null;\n        for (int take = Math.max(0, k - b.length); take <= Math.min(k, a.length); take++) {\n            int[] x = maximumSubsequence(a, take), y = maximumSubsequence(b, k - take), merged = new int[k];\n            int i = 0, j = 0;\n            for (int p = 0; p < k; p++) merged[p] = suffixAtLeast(x, i, y, j) ? x[i++] : y[j++];\n            if (best == null || suffixAtLeast(merged, 0, best, 0)) best = merged;\n        }\n        return best;\n    }\n    private static int[] maximumSubsequence(int[] a, int k) {\n        int[] stack = new int[k]; int size = 0, discard = a.length - k;\n        for (int x : a) {\n            while (size > 0 && discard > 0 && stack[size - 1] < x) { size--; discard--; }\n            if (size < k) stack[size++] = x; else discard--;\n        }\n        return stack;\n    }\n    private static boolean suffixAtLeast(int[] a, int i, int[] b, int j) {\n        while (i < a.length && j < b.length && a[i] == b[j]) { i++; j++; }\n        return j == b.length || (i < a.length && a[i] > b[j]);\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "回归测试用 BigInteger 检查立方根的两侧不等式，用显式排序验证字典序，用全部排列、全部方向序列、全部合并选择与短数组全部取数方案作对照。故意包含 Long.MIN_VALUE、Long.MAX_VALUE、负立方根、单人约瑟夫环和非法排名。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.*;\nimport java.util.*;\npublic final class NumericVariantsTest {\n    static long checks;\n    static void eq(Object a, Object b) { checks++; if (!Objects.equals(a,b)) throw new AssertionError(a+\" != \"+b); }\n    static void bad(Runnable r) { checks++; try { r.run(); } catch (IllegalArgumentException | NullPointerException e) { return; } throw new AssertionError(\"accepted invalid input\"); }\n    public static void main(String[] args) {\n        Random r = new Random(20261014);\n        long[] edges = {Long.MIN_VALUE, Long.MAX_VALUE, -28, -27, -26, -9, -8, -1, 0, 1, 7, 8, 9, 26, 27, 28};\n        for (long x : edges) cube(x);\n        for (int i = 0; i < 12000; i++) cube(r.nextLong());\n        for (int n = 1; n <= 100; n++) {\n            List<Integer> sorted = new ArrayList<>(); for (int i = 1; i <= n; i++) sorted.add(i);\n            sorted.sort(Comparator.comparing(Object::toString));\n            for (int k = 1; k <= n; k++) eq(NumericVariants.kthLexicographicalNumber(n,k), sorted.get(k-1));\n        }\n        eq(NumericVariants.kthLexicographicalNumber(Integer.MAX_VALUE, 1), 1);\n        for (int n = 0; n <= 7; n++) {\n            int[] a = new int[n]; for (int i = 0; i < n; i++) a[i] = i - 3;\n            List<List<Integer>> permutations = new ArrayList<>(); perm(a, new boolean[n], new ArrayList<>(), permutations);\n            for (int i = 0; i < permutations.size(); i++) eq(NumericVariants.kthPermutation(a, BigInteger.valueOf(i+1)), permutations.get(i));\n        }\n        for (int steps = 0; steps <= 17; steps++) {\n            long count = 0;\n            for (int bits = 0; bits < (1 << steps); bits++) if (Math.floorMod(2 * Integer.bitCount(bits) - steps, 9) == 0) count++;\n            eq(NumericVariants.ringNineReturnWays(steps), BigInteger.valueOf(count));\n        }\n        for (int shots = 0; shots <= 5; shots++) for (int total = 0; total <= 25; total++) {\n            eq(NumericVariants.shotScoreWays(shots,total,0,5), BigInteger.valueOf(shot(shots,total,0,5)));\n            eq(NumericVariants.shotScoreWays(shots,total,1,5), BigInteger.valueOf(shot(shots,total,1,5)));\n        }\n        for (int n = 1; n <= 100; n++) for (long step : new long[]{1,2,3,17,Long.MAX_VALUE}) {\n            List<Integer> people = new ArrayList<>(), order = new ArrayList<>();\n            for (int i = 0; i < n; i++) people.add(i);\n            long at = 0;\n            while (!people.isEmpty()) { at = (at + (step - 1) % people.size()) % people.size(); order.add(people.remove((int) at)); }\n            eq(NumericVariants.josephusOrder(n,step), order);\n            eq(NumericVariants.josephusSurvivor(n,step), order.get(n-1));\n        }\n        MathContext context = new MathContext(50);\n        for (int i = 0; i < 1000; i++) {\n            long x = r.nextLong() & Long.MAX_VALUE;\n            BigDecimal root = BigDecimal.valueOf(x).sqrt(context);\n            eq(NumericVariants.squareRootThreeDecimals(x,false), root.setScale(3,RoundingMode.DOWN).toPlainString());\n            eq(NumericVariants.squareRootThreeDecimals(x,true), root.setScale(3,RoundingMode.HALF_UP).toPlainString());\n        }\n        eq(NumericVariants.squareRootThreeDecimals(0,true), \"0.000\");\n        eq(NumericVariants.squareRootThreeDecimals(2,true), \"1.414\");\n        for (int z = 0; z < 300; z++) {\n            long[] a = r.longs(r.nextInt(7),0,10).toArray();\n            List<BigInteger> list = new ArrayList<>(); for (long x : a) list.add(BigInteger.valueOf(x));\n            eq(NumericVariants.minimumGoldCutCost(a), gold(list,new HashMap<>()));\n        }\n        eq(NumericVariants.minimumGoldCutCost(new long[]{Long.MAX_VALUE,Long.MAX_VALUE}), BigInteger.valueOf(Long.MAX_VALUE).shiftLeft(1));\n        for (int z = 0; z < 350; z++) {\n            int[] a = r.ints(r.nextInt(5),0,5).toArray(), b = r.ints(r.nextInt(5),0,5).toArray();\n            for (int k = 0; k <= a.length + b.length; k++) {\n                String best = create(a,0,b,0,k,new HashMap<>());\n                int[] actual = NumericVariants.largestNumberFromTwoArrays(a,b,k);\n                StringBuilder s = new StringBuilder(); for (int x : actual) s.append(x);\n                eq(s.toString(),best);\n            }\n            int[] values = r.ints(r.nextInt(7),0,100).toArray();\n            String best = concat(values,new boolean[values.length],new StringBuilder());\n            if (!best.isEmpty() && best.charAt(0)=='0') best=\"0\";\n            eq(NumericVariants.largestConcatenation(values),best);\n        }\n        bad(() -> NumericVariants.squareRootThreeDecimals(-1,false));\n        bad(() -> NumericVariants.kthLexicographicalNumber(1,2));\n        bad(() -> NumericVariants.kthPermutation(new int[]{1,1},BigInteger.ONE));\n        bad(() -> NumericVariants.kthPermutation(new int[]{1},BigInteger.ZERO));\n        bad(() -> NumericVariants.ringNineReturnWays(-1));\n        bad(() -> NumericVariants.shotScoreWays(1,3,3,2));\n        bad(() -> NumericVariants.josephusSurvivor(0,1));\n        bad(() -> NumericVariants.josephusOrder(1,0));\n        bad(() -> NumericVariants.minimumGoldCutCost(new long[]{-1}));\n        bad(() -> NumericVariants.largestConcatenation(new int[]{-1}));\n        bad(() -> NumericVariants.largestNumberFromTwoArrays(new int[]{10},new int[0],1));\n        bad(() -> NumericVariants.largestNumberFromTwoArrays(new int[0],new int[0],1));\n        System.out.println(\"NumericVariantsTest PASS \" + checks);\n    }\n    static void cube(long n) {\n        long q = NumericVariants.floorCubeRoot(n); BigInteger value = BigInteger.valueOf(n);\n        eq(BigInteger.valueOf(q).pow(3).compareTo(value) <= 0,true);\n        eq(BigInteger.valueOf(q+1).pow(3).compareTo(value) > 0,true);\n    }\n    static void perm(int[] a, boolean[] used, List<Integer> path, List<List<Integer>> out) {\n        if (path.size()==a.length) { out.add(List.copyOf(path)); return; }\n        for(int i=0;i<a.length;i++) if(!used[i]) {used[i]=true;path.add(a[i]);perm(a,used,path,out);path.remove(path.size()-1);used[i]=false;}\n    }\n    static long shot(int left,int total,int low,int high) { if(left==0)return total==0?1:0; if(total<0)return 0;long count=0;for(int x=low;x<=high;x++)count+=shot(left-1,total-x,low,high);return count; }\n    static BigInteger gold(List<BigInteger> a,Map<String,BigInteger> memo) {\n        if(a.size()<2)return BigInteger.ZERO;\n        List<BigInteger> sorted=new ArrayList<>(a);Collections.sort(sorted);String key=sorted.toString();\n        if(memo.containsKey(key))return memo.get(key);\n        BigInteger best=null;\n        for(int i=0;i<a.size();i++)for(int j=i+1;j<a.size();j++) {\n            List<BigInteger> next=new ArrayList<>();for(int p=0;p<a.size();p++)if(p!=i&&p!=j)next.add(a.get(p));\n            BigInteger sum=a.get(i).add(a.get(j));next.add(sum);BigInteger cost=sum.add(gold(next,memo));if(best==null||cost.compareTo(best)<0)best=cost;\n        }\n        memo.put(key,best);return best;\n    }\n    static String create(int[] a,int i,int[] b,int j,int k,Map<String,String> memo) {\n        if(k==0)return \"\";if(a.length-i+b.length-j<k)return null;\n        String key=i+\":\"+j+\":\"+k;if(memo.containsKey(key))return memo.get(key);String best=null;\n        for(int p=i;p<a.length;p++){String tail=create(a,p+1,b,j,k-1,memo);if(tail!=null){String s=a[p]+tail;if(best==null||s.compareTo(best)>0)best=s;}}\n        for(int p=j;p<b.length;p++){String tail=create(a,i,b,p+1,k-1,memo);if(tail!=null){String s=b[p]+tail;if(best==null||s.compareTo(best)>0)best=s;}}\n        memo.put(key,best);return best;\n    }\n    static String concat(int[] a,boolean[] used,StringBuilder path) {\n        int count=0;for(boolean x:used)if(x)count++;if(count==a.length)return path.toString();String best=\"\";\n        for(int i=0;i<a.length;i++)if(!used[i]){int old=path.length();path.append(a[i]);used[i]=true;String s=concat(a,used,path);if(s.compareTo(best)>0)best=s;used[i]=false;path.setLength(old);}return best;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "随机源方向、红包分配、取整与梯度下降"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "随机分红包，需要先说哪一种公平"
+    },
+    {
+      "type": "paragraph",
+      "text": "若总金额为整数分、每人至少一分，并希望所有有序正整数分配方案等概率，可以从 1 到 M-1 中均匀选 N-1 个不同切点，排序后取相邻差。"
+    },
+    {
+      "type": "paragraph",
+      "text": "M 是总分数，N 是人数。把切点排好后，相邻差就是每个人的金额；反过来，把一份有序正整数分配逐项累加，也能还原那组切点。因此两者一一对应，均匀选切点集合就得到均匀分配方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的公平指方案等概率：所有人的期望金额相同，但每个人的各种可能金额并不等概率，也不同于常见的“二倍均值”业务规则。最小/最大红包、尾包限制、展示公平和防作弊若另有要求，都应先明确，不能只用“随机”概括。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现使用稀疏 Fisher–Yates 选切点，不分配长度 M 的数组；M 可为 long。选点期望 O(N) 次哈希操作，排序 O(N log N)，空间 O(N)。每个红包为正，精确加总等于 M，不用 double 存钱。N=1 不调用随机源，M<N 直接拒绝。参数 uniformBelow(bound) 必须对 [0,bound) 独立均匀采样；测试可注入固定序列，实际有对抗需求时应使用合适的密码学随机源与服务端审计，不能把可预测伪随机种子当成防作弊措施。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "每项向上或向下取整，使总和等于目标且变化最小"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把全部元素向下取整，再把小数部分最大的若干项改成向上取整即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的目标整数，是全部取整结果的总和；代价是各项绝对变化之和。先设全部 floor 的和为 F，目标为 T：每把一个非整数项从 floor 换成 ceil，总和就增加一，因此需要恰好 T-F 项改用 ceil。"
+    },
+    {
+      "type": "paragraph",
+      "text": "原本为整数的项没有两个不同选项，不能拿来增加总和。若需要提升的数量不在 0 到非整数项个数之间，就无解。"
+    },
+    {
+      "type": "paragraph",
+      "text": "某项小数部分为 f，向下的代价为 f，向上的代价为 1-f，改选向上的增量代价就是 1-2f，所以按 f 从大到小选最优。负数也成立，例如 -1.2 的 floor 是 -2，小数部分为 0.8；不能用截断到零替代 floor。相同小数部分按原下标决定，输出稳定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "BigDecimal 版本计算十进制精确代价与 BigInteger 目标；double 包装明确按每个有限 double 的规范十进制表示建模，不宣称等于对原二进制分数做任意精度解析。若题目所谓“变化”是平方误差、相对误差或最大误差，交换论证要重新验证；如果目标整数不是总和，必须另行澄清。排序时间 O(n log n)，空间 O(n)，数值运算成本另计。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.*;\nimport java.util.*;\nimport java.util.function.IntSupplier;\nimport java.util.function.LongUnaryOperator;\n\npublic final class RandomAndRounding {\n    private RandomAndRounding() {}\n    /** Supplied draws must be independent and uniform on 1..7. Output is uniform on 1..10. */\n    public static int rand7To10(IntSupplier source){Objects.requireNonNull(source);for(;;){int a=source.getAsInt(),b=source.getAsInt();if(a<1||a>7||b<1||b>7)throw new IllegalArgumentException(\"rand7 range\");int x=(a-1)*7+b-1;if(x<40)return x%10+1;}}\n    /** IID source: P(0)=p, P(1)=1-p, with fixed unknown 0<p<1. */\n    public static int unbiasedBit(IntSupplier biased){Objects.requireNonNull(biased);for(;;){int a=biased.getAsInt(),b=biased.getAsInt();if((a!=0&&a!=1)||(b!=0&&b!=1))throw new IllegalArgumentException(\"bit source\");if(a!=b)return a;}}\n    private static long below(LongUnaryOperator source,long bound){long value=source.applyAsLong(bound);if(value<0||value>=bound)throw new IllegalArgumentException(\"random result outside bound\");return value;}\n    /** Uniform over ORDERED positive-integer compositions, not a double-mean business rule. */\n    public static long[] splitRedPackets(long totalFen,int people,LongUnaryOperator uniformBelow){\n        Objects.requireNonNull(uniformBelow);if(people<1||totalFen<people)throw new IllegalArgumentException(\"each person needs at least one fen\");\n        long[] cuts=new long[people-1];Map<Long,Long> swaps=new HashMap<>();long population=totalFen-1;\n        for(int i=0;i<cuts.length;i++){long remaining=population-i,index=below(uniformBelow,remaining),last=remaining-1;long chosen=swaps.getOrDefault(index,index),replacement=swaps.getOrDefault(last,last);if(index!=last)swaps.put(index,replacement);swaps.remove(last);cuts[i]=chosen+1;}\n        Arrays.sort(cuts);long[] result=new long[people];long previous=0;for(int i=0;i<cuts.length;i++){result[i]=cuts[i]-previous;previous=cuts[i];}result[people-1]=totalFen-previous;return result;\n    }\n    public record Rounded(List<BigInteger> values,BigDecimal absoluteChange){public Rounded{values=List.copyOf(values);}}\n    private record Fraction(int index,BigDecimal value) {}\n    /** Each result is floor/ceil of its input, their sum equals target; minimize sum(abs(change)). */\n    public static Optional<Rounded> roundToTarget(List<BigDecimal> input,BigInteger target){\n        Objects.requireNonNull(input);Objects.requireNonNull(target);List<BigInteger> floors=new ArrayList<>();List<Fraction> fractions=new ArrayList<>();BigInteger total=BigInteger.ZERO;BigDecimal cost=BigDecimal.ZERO;int index=0;\n        for(BigDecimal x:input){Objects.requireNonNull(x);BigInteger floor=x.setScale(0,RoundingMode.FLOOR).toBigIntegerExact();BigDecimal fraction=x.subtract(new BigDecimal(floor));floors.add(floor);total=total.add(floor);cost=cost.add(fraction);if(fraction.signum()!=0)fractions.add(new Fraction(index,fraction));index++;}\n        BigInteger need=target.subtract(total);if(need.signum()<0||need.compareTo(BigInteger.valueOf(fractions.size()))>0)return Optional.empty();\n        fractions.sort(Comparator.comparing(Fraction::value).reversed().thenComparingInt(Fraction::index));int count=need.intValueExact();\n        for(int i=0;i<count;i++){Fraction f=fractions.get(i);floors.set(f.index,floors.get(f.index).add(BigInteger.ONE));cost=cost.add(BigDecimal.ONE.subtract(f.value.multiply(BigDecimal.valueOf(2))));}\n        return Optional.of(new Rounded(floors,cost));\n    }\n    /** Uses the canonical decimal spelling of each finite double, not its exact binary fraction. */\n    public static Optional<Rounded> roundFiniteDoubles(double[] input,BigInteger target){Objects.requireNonNull(input);List<BigDecimal> decimal=new ArrayList<>();for(double x:input){if(!Double.isFinite(x))throw new IllegalArgumentException(\"finite inputs\");decimal.add(BigDecimal.valueOf(x));}return roundToTarget(decimal,target);}\n    public record RootApproximation(double value,double normalizedResidual,int iterations,boolean converged) {}\n    /** Gradient descent on scaled loss 1/2*(y*y-q)^2; no sqrt/Newton step. */\n    public static RootApproximation squareRootGradient(double x,double tolerance,int maximumIterations){\n        if(!Double.isFinite(x)||x<0||!Double.isFinite(tolerance)||tolerance<=0||tolerance>=1||maximumIterations<0)throw new IllegalArgumentException(\"root parameters\");if(x==0)return new RootApproximation(0,0,0,true);\n        int exponent=Math.getExponent(x);if(exponent==Double.MIN_EXPONENT-1){exponent=Math.getExponent(Math.scalb(x,54))-54;}\n        int half=Math.floorDiv(exponent,2);double q=Math.scalb(x,-2*half),y=1.0; // q in [1,4), y remains in [1,2]\n        for(int i=0;i<=maximumIterations;i++){\n            double residual=Math.abs(y*y-q)/q;if(residual<=tolerance)return new RootApproximation(Math.scalb(y,half),residual,i,true);\n            if(i==maximumIterations)return new RootApproximation(Math.scalb(y,half),residual,i,false);\n            double gradient=2*y*(y*y-q);y-=gradient/64.0;\n        }\n        throw new AssertionError();\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试穷举全部接受随机状态和拒绝后重试路径，检查红包的切点选择序列与分配频次；取整题枚举全部 floor/ceil 选择，梯度下降与 Math.sqrt 比较多个数量级及 double 极值，同时检验未收敛标记。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.*;\nimport java.util.*;\nimport java.util.function.IntSupplier;\npublic final class RandomAndRoundingTest {\n    static long checks;static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|NullPointerException e){return;}throw new AssertionError(\"invalid accepted\");}\n    static IntSupplier draws(int...values){int[] at={0};return ()->{if(at[0]==values.length)throw new AssertionError(\"unexpected random draw\");return values[at[0]++];};}\n    public static void main(String[] args){\n        int[] count=new int[11];for(int x=0;x<40;x++)count[RandomAndRounding.rand7To10(draws(x/7+1,x%7+1))]++;for(int i=1;i<=10;i++)eq(count[i],4);\n        for(int reject=40;reject<49;reject++)for(int x=0;x<40;x++)eq(RandomAndRounding.rand7To10(draws(reject/7+1,reject%7+1,x/7+1,x%7+1)),x%10+1);\n        eq(RandomAndRounding.unbiasedBit(draws(0,0,1,1,0,1)),0);eq(RandomAndRounding.unbiasedBit(draws(1,0)),1);\n        Map<String,Integer> compositions=new HashMap<>();for(int first=0;first<5;first++)for(int second=0;second<4;second++){int[] selected={first,second},at={0};long[] split=RandomAndRounding.splitRedPackets(6,3,bound->{eq(bound,5L-at[0]);return selected[at[0]++];});eq(at[0],2);compositions.merge(Arrays.toString(split),1,Integer::sum);}eq(compositions.size(),10);for(int frequency:compositions.values())eq(frequency,2);\n        Random r=new Random(20261024);for(int test=0;test<1000;test++){int people=1+r.nextInt(100);long total=people+r.nextInt(10000);long[] packets=RandomAndRounding.splitRedPackets(total,people,r::nextLong);long sum=0;for(long p:packets){eq(p>0,true);sum+=p;}eq(sum,total);}\n        eq(Arrays.toString(RandomAndRounding.splitRedPackets(Long.MAX_VALUE,1,b->{throw new AssertionError();})),\"[9223372036854775807]\");\n        for(int z=0;z<4000;z++){List<BigDecimal> values=new ArrayList<>();int n=r.nextInt(9);for(int i=0;i<n;i++)values.add(BigDecimal.valueOf(r.nextInt(101)-50,1));BigInteger target=BigInteger.valueOf(r.nextInt(51)-25);BigDecimal best=null;\n            for(int mask=0;mask<(1<<n);mask++){BigInteger sum=BigInteger.ZERO;BigDecimal cost=BigDecimal.ZERO;for(int i=0;i<n;i++){BigDecimal x=values.get(i);BigInteger rounded=x.setScale(0,(mask&(1<<i))==0?RoundingMode.FLOOR:RoundingMode.CEILING).toBigIntegerExact();sum=sum.add(rounded);cost=cost.add(new BigDecimal(rounded).subtract(x).abs());}if(sum.equals(target)&&(best==null||cost.compareTo(best)<0))best=cost;}\n            var actual=RandomAndRounding.roundToTarget(values,target);eq(actual.isPresent(),best!=null);if(actual.isPresent()){var result=actual.orElseThrow();eq(result.absoluteChange().compareTo(best),0);BigInteger sum=BigInteger.ZERO;BigDecimal cost=BigDecimal.ZERO;for(int i=0;i<n;i++){BigInteger rounded=result.values().get(i);sum=sum.add(rounded);BigDecimal x=values.get(i);eq(rounded.equals(x.setScale(0,RoundingMode.FLOOR).toBigIntegerExact())||rounded.equals(x.setScale(0,RoundingMode.CEILING).toBigIntegerExact()),true);cost=cost.add(new BigDecimal(rounded).subtract(x).abs());}eq(sum,target);eq(cost.compareTo(result.absoluteChange()),0);}}\n        for(int i=0;i<5000;i++){double x=Double.longBitsToDouble(r.nextLong()&Long.MAX_VALUE);if(!Double.isFinite(x))continue;var result=RandomAndRounding.squareRootGradient(x,1e-12,1000);eq(result.converged(),true);eq(result.normalizedResidual()<=1e-12,true);double expected=Math.sqrt(x);eq(Math.abs(result.value()-expected)<=expected*1e-11,true);}\n        for(double x:new double[]{0,1,2,Double.MIN_VALUE,Double.MIN_NORMAL,Double.MAX_VALUE}){var result=RandomAndRounding.squareRootGradient(x,1e-12,1000);eq(result.converged(),true);eq(Math.abs(result.value()-Math.sqrt(x))<=Math.sqrt(x)*1e-11,true);}\n        eq(RandomAndRounding.squareRootGradient(2,1e-12,0).converged(),false);\n        bad(()->RandomAndRounding.rand7To10(draws(0,1)));bad(()->RandomAndRounding.unbiasedBit(draws(2,0)));bad(()->RandomAndRounding.splitRedPackets(1,2,b->0));bad(()->RandomAndRounding.splitRedPackets(5,2,b->b));bad(()->RandomAndRounding.roundFiniteDoubles(new double[]{Double.NaN},BigInteger.ZERO));bad(()->RandomAndRounding.squareRootGradient(-1,1e-6,100));bad(()->RandomAndRounding.squareRootGradient(1,0,100));\n        System.out.println(\"RandomAndRoundingTest PASS \"+checks);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三次重复中的单个数、紧凑标签与整数几何"
+    },
+    {
+      "type": "paragraph",
+      "text": "位运算题把每一位当成独立的小状态机，几何题则尽量保留整数关系，避免浮点斜率和先溢出再转大整数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.BigInteger;\nimport java.util.*;\n\npublic final class BitGeometryVariants {\n    private BitGeometryVariants() {}\n    /** One value occurs once, every other value exactly three times. No full frequency validation. */\n    public static int singleAmongTriples(int[] a){Objects.requireNonNull(a);if(a.length==0)throw new IllegalArgumentException(\"nonempty\");int answer=0;for(int bit=0;bit<32;bit++){int remainder=0;for(int x:a)remainder=(remainder+((x>>>bit)&1))%3;if(remainder!=0)answer|=1<<bit;}return answer;}\n    public static int singleAmongTriplesStateMachine(int[] a){Objects.requireNonNull(a);if(a.length==0)throw new IllegalArgumentException(\"nonempty\");int ones=0,twos=0;for(int x:a){ones=(ones^x)&~twos;twos=(twos^x)&~ones;}return ones;}\n    /** Two tags 0..15, four tags 0..200, final tag 100..20000. */\n    public static long packTags(int[] tags){\n        Objects.requireNonNull(tags);if(tags.length!=7)throw new IllegalArgumentException(\"seven tags\");\n        if(tags[0]<0||tags[0]>15||tags[1]<0||tags[1]>15||tags[6]<100||tags[6]>20000)throw new IllegalArgumentException(\"tag range\");\n        long packed=tags[0]|((long)tags[1]<<4);\n        for(int i=2;i<6;i++){if(tags[i]<0||tags[i]>200)throw new IllegalArgumentException(\"tag range\");packed|=(long)tags[i]<<(8+8*(i-2));}\n        return packed|((long)(tags[6]-100)<<40);\n    }\n    public static int[] unpackTags(long packed){\n        if(packed<0||(packed>>>55)!=0)throw new IllegalArgumentException(\"packed range\");int[] a=new int[7];a[0]=(int)(packed&15);a[1]=(int)((packed>>>4)&15);for(int i=2;i<6;i++)a[i]=(int)((packed>>>(8+8*(i-2)))&255);a[6]=(int)((packed>>>40)&32767)+100;packTags(a);return a;\n    }\n    /** Numeric order groups by final tag first, then by the remaining packed fields. */\n    public static long[] uniqueTagsSortedByLast(int[][] records){\n        Objects.requireNonNull(records);long[] packed=new long[records.length];for(int i=0;i<records.length;i++)packed[i]=packTags(records[i]);Arrays.sort(packed);int size=0;for(long value:packed)if(size==0||value!=packed[size-1])packed[size++]=value;return Arrays.copyOf(packed,size);\n    }\n    public record Point(int x,int y) {}\n    private record Slope(long dy,long dx) {}\n    /** All points counted, including repeated coordinates; collinearity without floating slopes. */\n    public static int maximumCollinear(List<Point> supplied){\n        Objects.requireNonNull(supplied);List<Point> points=new ArrayList<>(supplied);for(Point p:points)Objects.requireNonNull(p);int best=0;\n        for(int i=0;i<points.size();i++){Map<Slope,Integer> count=new HashMap<>();int duplicates=0,sameSlope=0;Point a=points.get(i);\n            for(int j=i+1;j<points.size();j++){Point b=points.get(j);long dx=(long)b.x-a.x,dy=(long)b.y-a.y;if(dx==0&&dy==0){duplicates++;continue;}long gcd=gcd(Math.abs(dx),Math.abs(dy));dx/=gcd;dy/=gcd;if(dx<0||(dx==0&&dy<0)){dx=-dx;dy=-dy;}int n=count.merge(new Slope(dy,dx),1,Integer::sum);sameSlope=Math.max(sameSlope,n);}\n            best=Math.max(best,1+duplicates+sameSlope);\n        }return best;\n    }\n    private static long gcd(long a,long b){while(b!=0){long t=a%b;a=b;b=t;}return a;}\n    public record Rectangle(long left,long bottom,long right,long top){public Rectangle{if(left>right||bottom>top)throw new IllegalArgumentException(\"ordered rectangle bounds\");}}\n    public static BigInteger intersectionArea(Rectangle a,Rectangle b){\n        Objects.requireNonNull(a);Objects.requireNonNull(b);long left=Math.max(a.left,b.left),right=Math.min(a.right,b.right),bottom=Math.max(a.bottom,b.bottom),top=Math.min(a.top,b.top);\n        if(left>=right||bottom>=top)return BigInteger.ZERO;\n        return BigInteger.valueOf(right).subtract(BigInteger.valueOf(left)).multiply(BigInteger.valueOf(top).subtract(BigInteger.valueOf(bottom)));\n    }\n    /** Four corners in arbitrary order, axis-aligned, distinct; degeneracy is rejected. */\n    public static Rectangle fromFourCorners(long[][] points){\n        Objects.requireNonNull(points);if(points.length!=4)throw new IllegalArgumentException(\"four corners\");long left=Long.MAX_VALUE,right=Long.MIN_VALUE,bottom=Long.MAX_VALUE,top=Long.MIN_VALUE;\n        for(long[] p:points){if(p==null||p.length!=2)throw new IllegalArgumentException(\"point\");left=Math.min(left,p[0]);right=Math.max(right,p[0]);bottom=Math.min(bottom,p[1]);top=Math.max(top,p[1]);}\n        if(left==right||bottom==top)throw new IllegalArgumentException(\"nondegenerate rectangle\");boolean[] seen=new boolean[4];for(long[] p:points){if((p[0]!=left&&p[0]!=right)||(p[1]!=bottom&&p[1]!=top))throw new IllegalArgumentException(\"axis-aligned corners\");int index=(p[0]==right?2:0)+(p[1]==top?1:0);if(seen[index])throw new IllegalArgumentException(\"duplicate corner\");seen[index]=true;}return new Rectangle(left,bottom,right,top);\n    }\n    /** LC11: unit-spaced nonnegative heights; endpoints alone form container walls. */\n    public static long maximumContainerArea(int[] height){Objects.requireNonNull(height);for(int h:height)if(h<0)throw new IllegalArgumentException(\"nonnegative heights\");int left=0,right=height.length-1;long best=0;while(left<right){best=Math.max(best,(long)(right-left)*Math.min(height[left],height[right]));if(height[left]<=height[right])left++;else right--;}return best;}\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可重复自测"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试覆盖带符号整数、重复坐标、竖直与水平线、坐标极值、矩形接触与极大面积，并把双指针容器面积与所有端点对枚举对照。标签测试检查范围、往返解码、完整记录去重和末字段排序。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.math.BigInteger;\nimport java.util.*;\npublic final class BitGeometryVariantsTest {\n    static long checks;static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|NullPointerException e){return;}throw new AssertionError(\"invalid accepted\");}\n    public static void main(String[] args){Random random=new Random(20261026);\n        for(int z=0;z<4000;z++){Set<Integer> unique=new HashSet<>();int single=random.nextInt();unique.add(single);List<Integer> items=new ArrayList<>(List.of(single));for(int i=0;i<random.nextInt(20);i++){int x=random.nextInt();if(unique.add(x)){items.add(x);items.add(x);items.add(x);}}Collections.shuffle(items,random);int[] a=items.stream().mapToInt(Integer::intValue).toArray();eq(BitGeometryVariants.singleAmongTriples(a),single);eq(BitGeometryVariants.singleAmongTriplesStateMachine(a),single);\n            List<BitGeometryVariants.Point> points=new ArrayList<>();for(int i=0;i<random.nextInt(10);i++)points.add(new BitGeometryVariants.Point(random.nextInt(9)-4,random.nextInt(9)-4));eq(BitGeometryVariants.maximumCollinear(points),collinear(points));\n            int[] h=random.ints(random.nextInt(15),0,15).toArray();long best=0;for(int i=0;i<h.length;i++)for(int j=i+1;j<h.length;j++)best=Math.max(best,(long)(j-i)*Math.min(h[i],h[j]));eq(BitGeometryVariants.maximumContainerArea(h),best);\n            long x=random.nextInt(15)-7,y=random.nextInt(15)-7,w=random.nextInt(8),t=random.nextInt(8),X=random.nextInt(15)-7,Y=random.nextInt(15)-7,W=random.nextInt(8),T=random.nextInt(8);var r1=new BitGeometryVariants.Rectangle(x,y,x+w,y+t);var r2=new BitGeometryVariants.Rectangle(X,Y,X+W,Y+T);long area=0;for(long i=-7;i<15;i++)for(long j=-7;j<15;j++)if(i>=r1.left()&&i<r1.right()&&j>=r1.bottom()&&j<r1.top()&&i>=r2.left()&&i<r2.right()&&j>=r2.bottom()&&j<r2.top())area++;eq(BitGeometryVariants.intersectionArea(r1,r2),BigInteger.valueOf(area));}\n        int[][] records=new int[100000][];Set<String> unique=new HashSet<>();for(int i=0;i<records.length;i++){int[] a={random.nextInt(16),random.nextInt(16),random.nextInt(201),random.nextInt(201),random.nextInt(201),random.nextInt(201),100+random.nextInt(19901)};if(i>0&&i%5==0)a=records[i-1].clone();records[i]=a;unique.add(Arrays.toString(a));eq(Arrays.toString(BitGeometryVariants.unpackTags(BitGeometryVariants.packTags(a))),Arrays.toString(a));}\n        long[] packed=BitGeometryVariants.uniqueTagsSortedByLast(records);eq(packed.length,unique.size());int previous=99;Set<String> got=new HashSet<>();for(long value:packed){int[] a=BitGeometryVariants.unpackTags(value);eq(a[6]>=previous,true);previous=a[6];got.add(Arrays.toString(a));}eq(got,unique);\n        var huge=new BitGeometryVariants.Rectangle(Long.MIN_VALUE,Long.MIN_VALUE,Long.MAX_VALUE,Long.MAX_VALUE);eq(BitGeometryVariants.intersectionArea(huge,huge),BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE).pow(2));eq(BitGeometryVariants.fromFourCorners(new long[][]{{3,4},{1,2},{3,2},{1,4}}),new BitGeometryVariants.Rectangle(1,2,3,4));\n        List<BitGeometryVariants.Point> extremes=List.of(new BitGeometryVariants.Point(Integer.MIN_VALUE,Integer.MIN_VALUE),new BitGeometryVariants.Point(0,0),new BitGeometryVariants.Point(Integer.MAX_VALUE,Integer.MAX_VALUE));eq(BitGeometryVariants.maximumCollinear(extremes),3);\n        bad(()->BitGeometryVariants.packTags(new int[]{16,0,0,0,0,0,100}));bad(()->BitGeometryVariants.packTags(new int[]{0,0,201,0,0,0,100}));bad(()->BitGeometryVariants.unpackTags(1L<<55));bad(()->BitGeometryVariants.fromFourCorners(new long[][]{{0,0},{0,0},{1,0},{1,1}}));bad(()->BitGeometryVariants.maximumContainerArea(new int[]{-1}));bad(()->BitGeometryVariants.singleAmongTriples(new int[0]));\n        System.out.println(\"BitGeometryVariantsTest PASS \"+checks);\n    }\n    static int collinear(List<BitGeometryVariants.Point> a){if(a.isEmpty())return 0;int best=1;for(int i=0;i<a.size();i++){int duplicate=0;for(var p:a)if(p.equals(a.get(i)))duplicate++;best=Math.max(best,duplicate);for(int j=i+1;j<a.size();j++){if(a.get(i).equals(a.get(j)))continue;long dx=(long)a.get(j).x()-a.get(i).x(),dy=(long)a.get(j).y()-a.get(i).y();int count=0;for(var p:a){long x=(long)p.x()-a.get(i).x(),y=(long)p.y()-a.get(i).y();if(BigInteger.valueOf(dx).multiply(BigInteger.valueOf(y)).equals(BigInteger.valueOf(dy).multiply(BigInteger.valueOf(x))))count++;}best=Math.max(best,count);}}return best;}\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

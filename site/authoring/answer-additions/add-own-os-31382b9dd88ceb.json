@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-31382b9dd88ceb",
+  "entryId": "own-juc-synchronizers",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "30a466ba3cad0747569e2f8ef6cd27f298bad2c038ef9838540400bf75f30e9c",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "只用普通mutex的lock unlock怎样实现读写锁"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个读者可同时访问，只要没有写者；写者进入时必须没有读者也没有其他写者。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先明确读写语义和所有权"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个读者可同时访问，只要没有写者；写者进入时必须没有读者也没有其他写者。状态由一个普通mutex保护：readers记录已获读许可的数量，writer表示写许可已授予，waiting_writers阻止后来读者无限插队。状态mutex只在修改这些字段时持有，不能覆盖整个读临界区，否则读者也全部串行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“第一个读者加锁，最后一个读者解锁”不能直接套普通 mutex。第一个和最后一个读者可能是不同线程，而 C++ std::mutex、Java ReentrantLock 都要求拥有者线程解锁，跨线程释放违反契约。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果用的是允许其他线程归还许可的二元信号量，那是另一种协议。手写读写锁之前，必须先说清底层原语的语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "只用mutex的完整算法"
+    },
+    {
+      "type": "paragraph",
+      "text": "RLock循环：拿state；若writer为false且waiting_writers为零，readers加一，放state并返回；否则放state再重试。RUnlock拿state、readers减一、放state。WLock先在state内登记waiting_writers加一，再循环拿state；只有writer为false且readers为零时，等待数减一、writer置true、放state并返回。WUnlock在state内清writer。"
+    },
+    {
+      "type": "paragraph",
+      "text": "任何失败等待都在放开state后重试，避免拿着状态锁等待导致读者无法退出。示例yield只是调度提示，去掉不改变互斥安全；它不是一个带通知的阻塞等待。所有普通mutex都由拿它的同一线程释放，逻辑读写许可不等同一直持有底层mutex。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "正确性 可见性和代价"
+    },
+    {
+      "type": "paragraph",
+      "text": "不变量为readers不负、writer为true时readers为零，所有准入决策在同一mutex内线性化，因此写写和读写无法同时获准。业务写发生在WUnlock之前，后续RLock/WLock经过state的释放/获取链观察；读者退出也经过同一锁建立必要次序。读者共享的业务对象仍必须在读区只读，不能把隐藏缓存写入当普通读。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是写优先的教学子集，不可重入，不支持读锁升级、降级、取消、超时或错误解锁检测；持续写者可能饿死读者，mutex本身也不保证公平。轮询次数无有限上界，空间O(1)，不能称等待O(1)、lock-free或无饥饿。异常退出业务区必须用作用域守卫或finally归还许可。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "若允许增加condition_variable，可以在同一state锁下用谓词等待，把上述重试替换为wait；最后读者退出或写者退出后notify_all，等待者醒来仍重查谓词。公平队列/票号需要额外状态和取消处理，不能凭一个waiting_writers字段声称FIFO。生产通常优先标准shared_mutex或明确公平性的库。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "mutex_rw.cpp 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "label": "mutex_rw.cpp",
+      "value": "#include <atomic>\n#include <cassert>\n#include <cstddef>\n#include <iostream>\n#include <mutex>\n#include <thread>\n#include <vector>\n// Non-reentrant teaching lock; balanced operations by the same logical owner.\n// The only synchronization primitive in this lock is an ordinary owned mutex.\n// yield is a scheduling hint and can be removed without changing safety.\nclass MutexOnlyRW {\n    std::mutex state;\n    std::size_t readers = 0, waiting_writers = 0;\n    bool writer = false;\npublic:\n    void RLock() {\n        for (;;) {\n            state.lock();\n            if (!writer && waiting_writers == 0) {\n                ++readers; state.unlock(); return;\n            }\n            state.unlock(); std::this_thread::yield();\n        }\n    }\n    void RUnlock() {\n        state.lock(); assert(readers > 0 && !writer);\n        --readers; state.unlock();\n    }\n    void WLock() {\n        state.lock(); ++waiting_writers; state.unlock();\n        for (;;) {\n            state.lock();\n            if (!writer && readers == 0) {\n                --waiting_writers; writer = true; state.unlock(); return;\n            }\n            state.unlock(); std::this_thread::yield();\n        }\n    }\n    void WUnlock() {\n        state.lock(); assert(writer && readers == 0);\n        writer = false; state.unlock();\n    }\n};\nint main() {\n    MutexOnlyRW rw;\n    std::atomic<int> entered{0}; std::atomic<bool> release{false};\n    std::vector<std::thread> pair;\n    for (int i=0;i<2;++i) pair.emplace_back([&] {\n        rw.RLock(); ++entered;\n        while (!release.load()) std::this_thread::yield();\n        rw.RUnlock();\n    });\n    while (entered.load()!=2) std::this_thread::yield(); // external timeout bounds test\n    release=true; for (auto& t:pair) t.join();\n    int value=0;\n    std::atomic<int> active_readers{0}, active_writers{0}, reads{0};\n    std::atomic<bool> start{false}; std::vector<std::thread> workers;\n    for (int t=0;t<4;++t) workers.emplace_back([&] {\n        while (!start.load()) std::this_thread::yield();\n        for (int i=0;i<1000;++i) {\n            rw.RLock(); ++active_readers;\n            assert(active_writers.load()==0); assert(value>=0 && value<=2000);\n            ++reads; --active_readers; rw.RUnlock();\n        }\n    });\n    for (int t=0;t<2;++t) workers.emplace_back([&] {\n        while (!start.load()) std::this_thread::yield();\n        for (int i=0;i<1000;++i) {\n            rw.WLock(); assert(active_writers.fetch_add(1)==0);\n            assert(active_readers.load()==0); ++value;\n            assert(active_writers.fetch_sub(1)==1); rw.WUnlock();\n        }\n    });\n    start=true; for(auto& t:workers)t.join();\n    assert(value==2000 && reads==4000 && entered==2);\n    std::cout<<\"PASS RW: 2 simultaneous readers, 4000 reads, 2000 writes\\n\";\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "用互斥锁和条件变量实现四个读写锁API"
+    },
+    {
+      "type": "paragraph",
+      "text": "state mutex保护readers、writer、waiting_writers。"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++17非重入、写者优先的教学实现；允许条件变量，区别于只用普通mutex的lock unlock怎样实现读写锁 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnB9SPvw1go7zUIfrCWEeXzb)只有mutex时的忙等版本。调用者必须同线程成对获取/释放，不能升级、降级或销毁仍被使用的锁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态与不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "state mutex保护readers、writer、waiting_writers。读许可允许多个读者同时访问，只要writer为false；写许可只在readers为0且writer为false时授予。已有等待写者时阻止新读者插队，因此不会被源源不断的新读者无限推迟，但没有FIFO或所有参与者绝对无饥饿保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "state mutex只保护短小状态转换，不由第一位读者长期持有再让最后一位读者释放。普通std::mutex有拥有者约束，跨线程解锁是错误。获得逻辑读/写许可后放开state mutex，使多个读者能真正并行访问业务数据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "四个方法的顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "四个 API 都围绕同一份状态推进。acquire_read 持锁，用谓词 wait 等到没有 writer、也没有 waiting_writers，再增加 readers；release_read 持锁减计数，最后一个读者离开时通知等待者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "acquire_write 先登记等待写者，等到没有读者和写者，再撤销等待计数并置 writer；release_write 清掉 writer，通知其他等待者重新竞争。"
+    },
+    {
+      "type": "paragraph",
+      "text": "wait原子释放state mutex并等待，返回前重新获取；谓词检查处理虚假唤醒和通知后条件再变化，通知不是许可本身。代码用notify_all简化共享条件队列的正确性，代价是可能惊群。业务写入在release_write之前，后继许可通过同一state mutex获得必要的可见性关系；读者不能在读锁内修改共同数据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "接口边界与验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "ReadGuard/WriteGuard用RAII保证普通异常时撤销许可；等待写者的wait异常路径恢复登记并通知。代码没有线程拥有者检查、计数溢出防御、递归、超时/取消或跨进程能力，不应直接作为生产库。等待者存在时锁对象要活得更久，持读锁再申请写锁会等待自己的读许可造成死锁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "cv_rw.cpp 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "label": "cv_rw.cpp",
+      "value": "#include <atomic>\n#include <cassert>\n#include <condition_variable>\n#include <iostream>\n#include <mutex>\n#include <thread>\n#include <vector>\n// Non-reentrant; no upgrade/downgrade; balanced same-thread acquire/release.\n// Queued writers have preference, but there is no FIFO fairness guarantee.\nclass RWLock {\n    std::mutex state_;\n    std::condition_variable changed_;\n    unsigned readers_ = 0;\n    unsigned waiting_writers_ = 0;\n    bool writer_ = false;\npublic:\n    void acquire_read() {\n        std::unique_lock<std::mutex> lock(state_);\n        changed_.wait(lock, [&] { return !writer_ && waiting_writers_ == 0; });\n        ++readers_;\n    }\n    void release_read() {\n        std::lock_guard<std::mutex> lock(state_);\n        assert(readers_ != 0);\n        if (--readers_ == 0) changed_.notify_all();\n    }\n    void acquire_write() {\n        std::unique_lock<std::mutex> lock(state_);\n        ++waiting_writers_;\n        try { changed_.wait(lock, [&] { return !writer_ && readers_ == 0; }); }\n        catch (...) { --waiting_writers_; changed_.notify_all(); throw; }\n        --waiting_writers_; writer_ = true;\n    }\n    void release_write() {\n        std::lock_guard<std::mutex> lock(state_);\n        assert(writer_); writer_ = false; changed_.notify_all();\n    }\n    unsigned waiting_writers_for_test() {\n        std::lock_guard<std::mutex> lock(state_); return waiting_writers_;\n    }\n};\nclass ReadGuard {\n    RWLock& lock_;\npublic:\n    explicit ReadGuard(RWLock& lock) : lock_(lock) { lock_.acquire_read(); }\n    ~ReadGuard() { lock_.release_read(); }\n    ReadGuard(const ReadGuard&) = delete;\n    ReadGuard& operator=(const ReadGuard&) = delete;\n};\nclass WriteGuard {\n    RWLock& lock_;\npublic:\n    explicit WriteGuard(RWLock& lock) : lock_(lock) { lock_.acquire_write(); }\n    ~WriteGuard() { lock_.release_write(); }\n    WriteGuard(const WriteGuard&) = delete;\n    WriteGuard& operator=(const WriteGuard&) = delete;\n};\nint main() {\n    RWLock rw;\n    std::atomic<int> entered{0}; std::atomic<bool> leave{false};\n    auto reader = [&] { ReadGuard g(rw); ++entered; while (!leave.load()) std::this_thread::yield(); };\n    std::thread a(reader), b(reader);\n    while (entered.load() != 2) std::this_thread::yield();\n    leave = true; a.join(); b.join();\n    rw.acquire_read(); std::atomic<int> order{0};\n    std::thread w([&] { WriteGuard g(rw); assert(++order == 1); });\n    while (rw.waiting_writers_for_test() == 0) std::this_thread::yield();\n    std::thread r([&] { ReadGuard g(rw); assert(++order == 2); });\n    rw.release_read(); w.join(); r.join();\n    int value = 0;\n    std::atomic<int> live_r{0}, live_w{0}; std::vector<std::thread> workers;\n    for (int i=0;i<6;++i) workers.emplace_back([&,i] {\n        for (int j=0;j<1000;++j) {\n            if (i<2) {\n                WriteGuard g(rw); assert(live_w.fetch_add(1)==0); assert(live_r.load()==0);\n                ++value; assert(live_w.fetch_sub(1)==1);\n            } else {\n                ReadGuard g(rw); ++live_r; assert(live_w.load()==0); assert(value>=0 && value<=2000); --live_r;\n            }\n        }\n    });\n    for(auto& t:workers) { t.join(); }\n    assert(value==2000);\n    try { WriteGuard g(rw); throw 1; } catch(int) {}\n    { ReadGuard g(rw); assert(value==2000); }\n    std::cout << \"PASS RW: 2 concurrent readers, queued-writer preference, 4000 reads, 2000 writes, RAII exception release\\n\";\n}\n\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-read-write-locks",
+  "targetOrigin": "authored"
+}

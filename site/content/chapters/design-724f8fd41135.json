@@ -1,0 +1,153 @@
+{
+  "entries": [
+    {
+      "id": "scenario-massive-topk",
+      "number": "场景 11",
+      "title": "1 亿/海量数据取最大的前 100 个（Top K）",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图 + 上传资料",
+      "scenario": true,
+      "idea": "流式扫描 + 大小为 K 的小顶堆；数据跨多个大文件时每个分片先做 Local TopK，再归并为 Global TopK。并行化应让线程拥有局部堆，避免所有线程争一个全局锁。",
+      "description": "数据量远大于内存，例如 1 亿个整数，或 100 个文件、每个文件数亿个数字，需要找出全局最大的 K 个。要求讨论有限内存、4 核 CPU、磁盘 IO 与并行优化。",
+      "metrics": "单遍或少量遍历；内存 O(K×并行度)；顺序 IO；可并行",
+      "components": "Buffered/FileChannel Reader / Worker Pool / Local Min-Heap / Global Merge",
+      "requirements": [
+        "不能把所有数字加载内存，也不应对 N 个元素做全量排序。",
+        "找最大 K 个时使用大小 K 的小顶堆，堆顶是当前 TopK 中最容易淘汰的最小值。",
+        "4 核机器可让多个 Worker 并行处理不同文件/文件块，但每个 Worker 使用自己的堆。",
+        "最终只需要合并 workerCount × K 个候选，而不是再次扫描所有原始数据。"
+      ],
+      "architecture": [
+        "Map 阶段：每个文件/分片顺序读取，维护 local min-heap(K)。",
+        "Reduce 阶段：把所有 Local TopK 合并到一个 global min-heap(K)。",
+        "IO 优化：大 buffer、FileChannel/MappedByteBuffer；对 HDD 避免随机读取，对 SSD 控制并发。",
+        "如果 K 很小且值域有限，也可以按值域分桶/计数；通用解法仍是堆。"
+      ],
+      "dataFlow": [
+        "文件列表 → 固定大小线程池。",
+        "Worker 顺序读取 → Local TopK。",
+        "收集所有局部 K 候选 → Global TopK。",
+        "最终按需要降序输出。"
+      ],
+      "keyPoints": [
+        "复杂度 O(N log K)，当 K=100 时远小于 O(N log N) 全排序。",
+        "不要让多线程共享一个 PriorityQueue 再加大锁；高并发下锁竞争会抵消并行收益。",
+        "“内存无限”也不代表应该全量 sort：IO 与排序 CPU 仍然浪费。",
+        "如果输入单文件巨大，可以按 byte range 切块，但必须按记录边界切分。"
+      ],
+      "followups": [
+        "只有 10MB 内存怎么办？",
+        "如果需要前 100 个去重后的数字怎么办？",
+        "如果数据是持续不断的数据流而不是静态文件怎么办？",
+        "如何处理数值可能超过 int 范围或记录格式不固定？"
+      ],
+      "code": "worker(file):\n    heap = MinHeap(K)\n    for value in streamRead(file):\n        if heap.size < K: heap.push(value)\n        else if value > heap.min:\n            heap.replaceMin(value)\n    return heap\n\nlocals = parallelMap(files, worker, concurrency=4)\nglobal = MinHeap(K)\nfor heap in locals:\n    for value in heap:\n        keepTopK(global, value)\nreturn sortDescending(global)",
+      "capacityPlan": [
+        "N 很大、K 很小时单 worker 只需 O(K) 内存；并行 worker 数按 CPU 和磁盘吞吐确定，不是越多越好。",
+        "如果有 M 个 worker，Reduce 阶段候选最多 M×K；这决定最终归并内存。"
+      ],
+      "consistency": [
+        "输入文件应是不可变快照或带版本；处理中途文件被覆盖会让结果不可复现。",
+        "并行分块必须按完整记录边界切割，并记录处理 offset 便于失败重试。"
+      ],
+      "failureModes": [
+        "worker 失败只重跑对应文件/分块；局部 TopK 可落临时结果并校验。",
+        "内存不足时算法仍只保留 K 候选；真正风险更多来自 IO、坏记录和磁盘故障。"
+      ],
+      "observability": [
+        "监控每文件读取吞吐、坏记录、worker 耗时倾斜、heap 更新比例和总扫描进度。"
+      ],
+      "interviewAnswer": "这是外存流式 TopK，不要全量排序。每个分片顺序扫并维护 K 大小的小顶堆，4 核用局部堆并行，最后只归并 M×K 个候选。复杂度 O(N log K)，内存 O(MK)。",
+      "tradeoffs": [
+        "全排序简单但 IO/CPU 浪费；局部 TopK + 全局 TopK 把内存和比较集中在 K 个候选。",
+        "共享一个全局堆看似省合并步骤，却会让多线程竞争同一把锁；线程本地堆 + reduce 更可扩展。"
+      ],
+      "security": [
+        "文件目录和临时结果遵守最小权限，坏记录/超长行要限长解析，避免数据文件成为资源耗尽入口。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "海量数据"
+    },
+    {
+      "id": "scenario-external-sort",
+      "number": "场景 12",
+      "title": "大文件排序：外部排序怎么设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "内存装不下时使用 External Merge Sort：分块读入内存排序形成多个有序 run，再用多路归并顺序读写；优化点在 run 大小、归并路数、缓冲区和磁盘临时空间。",
+      "description": "一个超大文件无法整体加载内存，需要对全部记录排序。要求给出可落地的磁盘算法，并考虑内存限制、磁盘 IO、临时文件、稳定性和故障恢复。",
+      "metrics": "顺序 IO 为主；峰值内存有界；可恢复；临时空间可估算",
+      "components": "Chunk Reader / In-memory Sort / Sorted Runs / K-way Merge / Temp Storage",
+      "requirements": [
+        "根据可用内存选择 chunkSize，每次只加载一块。",
+        "每块在内存中排序后写成有序临时文件 run。",
+        "第二阶段使用优先队列做 k-way merge，每个 run 只保留小 buffer，不把整份 run 读入内存。",
+        "磁盘空间不足、进程重启时需要知道哪些 run 已完成并可继续归并。"
+      ],
+      "architecture": [
+        "Phase 1：read chunk → sort → write run-N.tmp，直到原文件结束。",
+        "Phase 2：为每个 run 打开 buffered reader，把首元素放入小顶堆；每弹出一个最小值就从对应 run 补一个。",
+        "run 数过多时分多轮归并，避免同时打开超过 fd 限制的文件。",
+        "写最终文件使用临时路径，完成并 fsync/校验后原子 rename。"
+      ],
+      "dataFlow": [
+        "大文件 → 多个内存 chunk。",
+        "chunk 排序 → run1/run2/...。",
+        "多路归并 → final.tmp。",
+        "校验完成 → rename 成最终结果 → 清理临时 run。"
+      ],
+      "keyPoints": [
+        "外部排序优化目标主要是减少磁盘读写轮数，而不是把比较次数降到最低。",
+        "chunk 越大 run 越少，但必须为 JVM、输入输出 buffer、堆和 GC 留余量。",
+        "若记录是变长文本，排序 key 和原始 record 的序列化方式会影响内存估算。",
+        "如果只需要 TopK，不要做完整外排，直接流式小顶堆更省。"
+      ],
+      "followups": [
+        "100GB 文件、8GB 内存如何选 chunk？",
+        "有 10 万个 run 超过文件句柄限制怎么办？",
+        "如果排序 key 很小但 record 很大，能否只排序 offset/index？",
+        "分布式场景下如何演化为 MapReduce shuffle + merge？"
+      ],
+      "code": "runs = []\nwhile chunk = readUpTo(memoryBudget):\n    sort(chunk)\n    runs += writeTempRun(chunk)\n\nwhile runs.size > maxOpenFiles:\n    runs = mergeInBatches(runs, fanIn=maxOpenFiles)\n\nmergeKWay(runs, outputTmp)\nfsync(outputTmp)\natomicRename(outputTmp, output)",
+      "capacityPlan": [
+        "run 大小≈可用内存减 JVM/缓冲安全余量；归并 fan-in 受内存 buffer 与文件描述符上限共同限制。",
+        "总磁盘临时空间通常需要接近输入规模的 1~2 倍，且多轮归并会增加总 IO 字节。"
+      ],
+      "consistency": [
+        "输入按版本固定；每个 run 写完后带校验和/元数据，最终文件写临时路径并 fsync 后原子 rename。"
+      ],
+      "failureModes": [
+        "进程重启读取 manifest，复用已经完成的 run/merge level；临时文件有生命周期和垃圾回收。",
+        "坏记录按策略隔离到 error file，避免一条数据让整批无法恢复。"
+      ],
+      "observability": [
+        "监控读写 MB/s、run 数、归并轮次、磁盘占用、fd 使用、排序阶段耗时和失败重试。"
+      ],
+      "interviewAnswer": "内存装不下就做 External Merge Sort：分块读入、内存排序形成 run，再用小顶堆多路归并。优化目标主要是减少磁盘 IO 轮次，所以 run 大小、fan-in、buffer 和临时空间比“比较次数”更关键。",
+      "tradeoffs": [
+        "更大 chunk 会减少 run 数和归并轮次，但挤压 JVM/IO buffer 内存；过小 chunk 则增加临时文件和 IO 次数。",
+        "一次 k-way merge 路数高可减少轮次，但文件描述符、buffer 内存和随机 IO 压力更大。"
+      ],
+      "security": [
+        "临时文件权限、磁盘配额、路径规范化和校验和要明确；不要接受可穿越目录的任意输出路径。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "海量数据"
+    }
+  ]
+}

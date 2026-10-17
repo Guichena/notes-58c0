@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-3-1",
+  "entryId": "bg-redis-3",
+  "expectedOriginalHash": "490d667cc3226b91b815704f8bda30c5c446c2ae996b646dc359e35dc87c533a",
+  "title": "刷盘、重写和 Redis 7 多部件 AOF",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读边界：旧短答概括了重写目标，具体切换流程应以本节 Redis 7 多部件 AOF 为准，不能把旧版单文件追加与替换时序当成所有版本通则。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "AOF 刷盘、重写与混合持久化有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "AOF 要先把恢复操作记下来，这是追加；这些字节什么时候达到持久化承诺，由 fsync 策略决定；历史操作积累太多，怎样去掉不影响最终状态的冗余，则是重写的问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再区分两个容易混淆的名字：混合持久化改变基线的编码，多部件 AOF 改变文件的组织方式。它们可以与刷盘策略一起讨论，却都不能代替刷盘策略。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "从内存执行到落盘，要经过哪些边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次写操作可以已经改变 Redis 内存，但相应 AOF 内容尚未完成持久化。用户态缓冲、write 进入内核页缓存、fsync 请求落到持久介质是不同阶段。write 成功不等于断电后一定可恢复；最终保证还依赖文件系统、设备对刷新请求的正确实现及故障范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "appendfsync 有三种典型策略："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "always：按追加批次执行 fsync，再完成相应回复路径。多客户端或 pipeline 的命令可能合并为一次写入与刷盘，并不机械等于每条命令一次独立系统调用。耐久性更强，延迟与吞吐更受磁盘制约。",
+        "everysec：普通追加写入与约每秒的后台 fsync 分开。它不是“每秒才把用户态 AOF 缓冲写一次文件”。常见风险描述是约一秒更新，但长时间 I/O 阻塞、调度、错误及配置会改变实际窗口，不能把一秒说成任何故障下的绝对上界。",
+        "no：Redis 不按此策略主动 fsync，write 之后由操作系统控制刷盘。它不是只留在 Redis 用户态内存，也不能不看内核设置就保证固定的落盘周期。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 x=1 已进入内核页缓存，断电时还没有完成要求的 fsync，这次更新就可能丢失。即使 always 保住了旧主本机的 AOF，也不自动保证异步故障切换选出的新主已经拥有该更新。持久化与复制必须分别解释。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重写或快照期间若设置 no-appendfsync-on-rewrite yes，会为了减轻 I/O 干扰放松相应 fsync 行为，此时不能继续沿用原来的 everysec 损失预算。默认值、存储语义和有效配置都应实际核对。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "重写为什么不等于保留每个 key 最后一条命令"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设计数器从 0 连续 INCR 一百次，恢复当前状态只需要重建值 100，不必逐条执行一百个历史操作。但如果只保留最后一条 INCR，就无法知道它之前的值。集合增删、过期时间与不同数据类型也有类似问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "BGREWRITEAOF 根据当前内存状态构造等价恢复基线，并保留重写期间的新写入。目标是“恢复同样的数据状态”，不是文本压缩或按 key 简单去重。它需要 fork、子进程序列化、额外内存、磁盘空间和最后切换，失败时必须继续保有可用的旧恢复链，不能先删掉旧日志再生成新文件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自动触发通常同时考虑相对上次重写基线的增长百分比与最小文件大小，对应 auto-aof-rewrite-percentage 和 auto-aof-rewrite-min-size。只满足很大的百分比、但文件本身很小时，不一定值得重写；百分比设为 0 可以关闭自动触发，并不关闭 AOF 追加本身。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis 7 多部件 AOF 怎样衔接新旧文件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7 的 AOF 包含至多一个有效 base、一个或多个 incremental 文件及描述有效集合的 manifest，位于相应 AOF 目录。base 可以用 RDB 或 AOF 编码。重写时父进程打开新的增量文件承接后续写，子进程生成新 base；准备完成后以新的 manifest 原子替换生效，之后再清理不再需要的旧文件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若重写失败，旧 base、旧增量和此次继续记录的新增量仍应构成恢复依据，不能把失败当成已完成切换。旧版单文件 AOF 则主要由旧文件继续追加、重写缓冲补入新文件、最后替换的方式承接新写。讲原理可以共用“稳定基线加增量”，讲实际文件与缓冲路径必须区分版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件变小不代表历史仍全在。AOF 重写后通常不能再逐条追溯过去每笔业务操作；审计、补偿与回放事件应使用有稳定事件 ID、动作和版本的业务账本或持久消息流。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "混合持久化与多部件 AOF 的关系"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 4—6 的典型混合结构，可以理解为同一 AOF 文件中的“RDB 前缀 + AOF 命令尾部”：重写先用 RDB 记录基线，后续写入以 AOF 形式继续保留。Redis 7 则把这个思路组织成“base + incremental + manifest”。混合决定 base 的内容编码，多部件决定它们如何分文件管理，不是互斥的两种方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "恢复先加载已确认基线，再按顺序回放对应增量。只拿 base 会漏掉基线后的更新，拼错代际可能回放错误历史；较老 Redis 也未必能读取较新的格式或模块对象。混合方式通常能减少长命令日志的加载成本，但实际恢复时间仍取决于数据量和增量长度，不能用“混合”直接承诺固定 RTO。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "1"
+}

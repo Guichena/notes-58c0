@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-juc-1512",
+  "entryId": "hwqa-3",
+  "expectedOriginalHash": "03846d41d62d8fee1c2e1714ec3698e84c7edbf081ca8e157b9151827b744b88",
+  "title": "整批原子删除、异常回滚与代际条件",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原题的 CHM 条件删除按 equals 匹配，只保证单条原子与弱一致遍历。下文增加整批可见性、比较失败不改原表及显式版本条件；分段锁只有覆盖全部相关访问和分片时才可能达到整批契约。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按 value 批量删除和一致快照"
+    },
+    {
+      "type": "paragraph",
+      "text": "要让“找出所有匹配 value 的条目并一次性删除”对其他访问者呈现原子效果，所有访问必须遵守同一锁或整版快照替换协议。对并发 Map 逐条 remove 只保证每条操作，其他线程仍可能观察到中间状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若筛选回调可能失败，而契约要求失败时原表不变，应先在受控范围内计算待提交结果，再一次提交；不能删到一半才发现错误却宣称回滚。返回内部可变 Map 也会让调用者绕过保护。需要复制时成本为 O(n)，不能为了口述简短省略这项代价。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面完整实现按 value 的整体提交删除、按版本的条件删除以及插入序/访问序快照。值的 equals 若依赖可变外部对象，锁不能冻结那些外部对象；示例要求键和值的比较语义稳定，且拒绝比较回调重新进入同一模块。CHM.remove(key, observedValue) 按相等性匹配，换成 equals 相等的新一代仍可能被删除，真正防代际 ABA 需显式版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "code/CollectionsLab.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\npublic final class CollectionsLab {\n    /** All methods share one monitor; batch comparison happens on a private candidate map. */\n    static final class ValueMap<K, V> {\n        private Map<K, V> data = new HashMap<>();\n        private boolean inOperation;\n        private void enter() {\n            if (inOperation) throw new IllegalStateException(\"reentrant key/value callback\");\n            inOperation = true;\n        }\n        synchronized void put(K key, V value) {\n            enter(); try { data.put(key, value); } finally { inOperation = false; }\n        }\n        synchronized V get(K key) {\n            enter(); try { return data.get(key); } finally { inOperation = false; }\n        }\n        synchronized int removeValue(V target) {\n            enter();\n            try {\n                Map<K, V> candidate = new HashMap<>(data);\n                int before = candidate.size();\n                candidate.entrySet().removeIf(entry -> Objects.equals(entry.getValue(), target));\n                data = candidate; // Commit only after every comparison succeeded.\n                return before - candidate.size();\n            } finally { inOperation = false; }\n        }\n        synchronized int size() { enter(); try { return data.size(); } finally { inOperation = false; } }\n    }\n    static final class OrderedMap<K, V> {\n        private final LinkedHashMap<K, V> data;\n        OrderedMap(boolean accessOrder) { data = new LinkedHashMap<>(16, 0.75f, accessOrder); }\n        synchronized V get(K key) { return data.get(key); }\n        synchronized void put(K key, V value) { data.put(key, value); }\n        synchronized Map<K, V> snapshot() {\n            return Collections.unmodifiableMap(new LinkedHashMap<>(data));\n        }\n    }\n    record Versioned(long version, String value) {}\n    public static void main(String[] args) {\n        ValueMap<String, String> map = new ValueMap<>();\n        map.put(\"a\", \"delete\"); map.put(\"b\", \"keep\"); map.put(\"c\", \"delete\");\n        Checks.that(map.removeValue(\"delete\") == 2 && map.size() == 1 && map.get(\"b\").equals(\"keep\"), \"whole-batch deletion by value\");\n        ValueMap<String, Object> throwing = new ValueMap<>();\n        Object broken = new Object() { public boolean equals(Object other) { throw new IllegalStateException(\"comparison failed\"); } };\n        throwing.put(\"a\", \"target\"); throwing.put(\"b\", broken);\n        try { throwing.removeValue(\"target\"); throw new AssertionError(\"expected comparison failure\"); }\n        catch (IllegalStateException expected) { }\n        Checks.that(throwing.size() == 2, \"failed batch did not commit partial deletion\");\n        ValueMap<String, Object> recursive = new ValueMap<>();\n        recursive.put(\"a\", new Object() { public boolean equals(Object other) { recursive.put(\"x\", \"x\"); return true; } });\n        try { recursive.removeValue(\"target\"); throw new AssertionError(\"reentry accepted\"); }\n        catch (IllegalStateException expected) { }\n        Checks.that(recursive.size() == 1, \"reentrant mutation rejected\");\n        ConcurrentHashMap<String, Versioned> versions = new ConcurrentHashMap<>();\n        Versioned observed = new Versioned(1, \"delete\"); versions.put(\"k\", observed);\n        versions.put(\"k\", new Versioned(2, \"delete\"));\n        Checks.that(!versions.remove(\"k\", observed), \"version prevents deleting an equal-payload replacement\");\n        for (var entry : versions.entrySet())\n            if (entry.getValue().value().equals(\"delete\")) versions.remove(entry.getKey(), entry.getValue());\n        Checks.that(versions.isEmpty(), \"weak per-entry deletion example\");\n        OrderedMap<String, Integer> insertion = new OrderedMap<>(false), access = new OrderedMap<>(true);\n        for (OrderedMap<String, Integer> ordered : List.of(insertion, access)) {\n            ordered.put(\"a\", 1); ordered.put(\"b\", 2); ordered.get(\"a\");\n        }\n        Checks.that(new ArrayList<>(insertion.snapshot().keySet()).equals(List.of(\"a\", \"b\")), \"insertion order\");\n        Checks.that(new ArrayList<>(access.snapshot().keySet()).equals(List.of(\"b\", \"a\")), \"access order\");\n        CopyOnWriteArrayList<Integer> cow = new CopyOnWriteArrayList<>(List.of(1, 2));\n        Iterator<Integer> snapshot = cow.iterator(); cow.add(3);\n        List<Integer> old = new ArrayList<>(); snapshot.forEachRemaining(old::add);\n        Checks.that(old.equals(List.of(1, 2)) && cow.size() == 3, \"COW snapshot\");\n        System.out.println(\"CollectionsLab OK\");\n    }\n}\n",
+      "label": "code/CollectionsLab.java"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-juc-reference",
+      "label": "运行支持与教学范围"
+    },
+    {
+      "entryId": "own-java-collections",
+      "questionId": "q-own-java-atomic-value-removal",
+      "label": "Java 基础：整批删除与回滚契约"
+    }
+  ],
+  "questionId": "0"
+}

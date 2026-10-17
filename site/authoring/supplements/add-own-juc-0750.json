@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-juc-0750",
+  "entryId": "handwrite-58",
+  "expectedOriginalHash": "f93aa5342c3ad271b8917e35e2d1cb019b2704b76d45c822e1293ddcfac0554a",
+  "title": "线程池完整提交、拒绝与容量边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原示例中的核心线程并非必然常驻；本补充按 Java 21 说明按需创建、核心超时和 CallerRuns 的额外执行者。池大小不等于所有调用路径的严格下游并发上限。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "7 线程池从任务接收到容量预算"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "七个参数和真正的提交顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "ThreadPoolExecutor 先尝试补足核心 worker，再尝试入队，入队失败才尝试扩到最大 worker，仍不能接收或池已关闭时执行拒绝处理。核心数是配置阈值，不是“目前忙碌的核心线程数”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "七个参数是 corePoolSize、maximumPoolSize、keepAliveTime、TimeUnit、workQueue、ThreadFactory、RejectedExecutionHandler。核心 worker 默认按需创建，也可预启动；keepAliveTime 是符合回收条件的 worker 等新任务时的空闲时间，不是线程从出生开始的寿命。允许核心超时要满足正 keepAlive 等参数条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "任务入队后还要复查池状态，处理提交与关闭并发发生的竞态，并保证需要时有 worker 取队列。不能只画一条静态 if 流程就漏掉这一步。源码把池运行状态和 worker 数组合管理，用 worker 自身的机制区分正在执行任务和可被回收的空闲状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用 core=2、max=4、队列容量=2 且已运行任务全部阻塞的例子推演：任务 1、2 创建 worker，3、4 入队，5、6 扩容 worker，7 拒绝。若队列几乎总能入队，maximumPoolSize 通常不会因积压增长而发挥作用。SynchronousQueue 没有存放元素的容量，提交需要与取任务者交接，无法交接时更容易触发扩容或拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有 maximumPoolSize=30，无法回答“上个任务完成后下个任务必定复用还是新建”。若 worker 数仍低于 core，提交路径会尝试新增；达到 core 后，队列和空闲 worker 状态共同影响结果。线程可能已因空闲超时退出，池也可能已关闭，必须补全这些条件。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-juc/executor-admission.png",
+      "alt": "ThreadPoolExecutor 先补核心 worker，再 offer 队列，失败后按 maximum 扩容或拒绝；入队成功仍复查关闭状态及 worker 存活。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "线程池队列怎样选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "队列选择同时决定内存上限、排队延迟和扩容行为，不能仅凭“数组快还是链表快”选择。ArrayBlockingQueue 是固定容量数组队列；LinkedBlockingQueue 可以显式有界，省略容量时默认上限很大，不能笼统说它一定无界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组方案空间布局紧凑，不需要为每个元素分配链节点，常以一把锁配合两个条件；链式阻塞队列的放入与取出可用分离的锁及计数协调，代价包括节点分配和额外指针。具体吞吐依工作负载，不能从“两把锁”直接推出永远更快。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PriorityBlockingQueue 的优先级影响出队顺序，默认不会为你提供严格容量上限；同优先级任务顺序应自行定义。DelayQueue 让元素到期后可被取出，但也需要积压预算。SynchronousQueue 的 size 常为零，不代表没有压力或等待者。ConcurrentLinkedQueue 非阻塞却无内建背压，用 size 再 offer 不能组成严格容量闸门。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Executors 工厂并非语法上不能用于生产，风险在于隐含策略：固定池和单线程池常用无界工作队列，cached 池可扩出大量线程，定时池有到期任务积压。有限且已被上层约束的小批量与无限在线流量不能混为一谈；显式配置能让资源决策可审查。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "四种拒绝策略和结果责任"
+    },
+    {
+      "type": "paragraph",
+      "text": "拒绝策略首先要明确接收是否成功以及结果句柄由谁终结，然后才谈重试、降级或回压。池关闭也可能拒绝，不只是“线程数和队列都满了”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AbortPolicy 抛 RejectedExecutionException，让提交失败可见；重要任务也适合明确失败，再交由持久接收或幂等重试协议处理。DiscardPolicy 静默丢新任务；DiscardOldestPolicy 移除队头后重试，队头在优先队列里未必是最旧任务。被丢弃的 FutureTask 若未取消，调用者持有的 Future 可能永不完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CallerRunsPolicy 会把工作交回提交者：池未关闭时由提交线程执行，关闭后则丢弃。假设池里已有四个 worker 调用下游，请求线程又在拒绝回调中执行第五个任务，下游就可能同时收到五次调用。因此“池大小为四”不能在这个策略下保证严格四并发。"
+    },
+    {
+      "type": "paragraph",
+      "text": "沿调用栈继续看代价：提交者可能是事件循环，也可能正持有业务锁，内联执行会阻塞它或扩大持锁范围。如果慢任务已经在 submit 内运行，调用者甚至还没走到后面的 get(timeout)。结果等待超时只管后面那次等待，覆盖不了已经发生的提交耗时。"
+    },
+    {
+      "type": "paragraph",
+      "text": "轻量自定义 handler 可以记录拒绝原因、取消已知 Future 包装并抛出明确异常，不应在拒绝回调里做无限阻塞或无限递归重提。日志也应限量，避免过载时每次拒绝再同步写大日志。需要永不丢任务，必须定义持久化确认、重试、幂等、死信与补偿；线程池本身不提供机器宕机后的恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "线程数 队列和下游容量怎样估算"
+    },
+    {
+      "type": "paragraph",
+      "text": "先测任务计算时间、等待时间、到达速率和下游容量，再选初始并发与队列预算，最后用目标负载验证。CPU 密集型可以从有效核心数附近起步，I/O 密集型常可更多，但连接池、内存、尾延迟和容器配额会先成为约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "估算 N≈有效核心数×目标 CPU 利用率×(1+等待时间/计算时间) 只是起点。等待 90ms、计算 10ms，等待计算比是 9，不是 90/100。系统还存在 GC、其他池和请求线程，不能给每个池都独占整个 CPU 预算，也不能机械把 I/O 池定成 2N。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用稳定系统中的 L≈λW 可以检查在途量级，但单位要一致，突发及尾部另算。例如排队增加只是把拒绝转换成等待与内存占用，超过调用总期限的任务即使最终执行也可能已无价值。队列预算要结合任务闭包保留的请求体、结果对象、线程栈及每次调用的字节成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程池相关 OOM 至少有两条不同路径。任务排得太多，闭包会把请求体等堆对象长期留住；线程建得太多，则可能耗尽本地线程、栈或系统配额。结果无人消费、ThreadLocal 未清理、直接缓冲区，以及任务自己分配的大对象，也要分别检查，不能看见线程池就认定只有队列问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "排查从可观察现象分流：先核对错误类型、堆占用、线程数与容器记录。容器因总内存超限被系统杀死，不一定留下 Java OutOfMemoryError。再在授权诊断环境分析 heap dump、JFR 或已启用的 Native Memory Tracking；NMT 本身也不覆盖所有第三方本地分配。"
+    },
+    {
+      "type": "paragraph",
+      "text": "预防要对应刚才的路径：有界队列限制积压，按字节和并发准入限制保留资源，受限线程数控制执行者规模；还要确保实际资源释放并处理过期任务。单纯增加最大堆，并不能修好这些失控机制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设要用十万条数据调用容量未知的第三方 API，先开一个有上限的小窗口，完成一部分就流式消费结果、再补进下一部分。不要在开头就为十万项建立全部在途任务，否则还没摸清下游容量，自己先保留了大量任务和结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "窗口可以参考一段时间内的成功率、延迟以及 429/过载信号缓慢增加，遇到拥塞则乘法缩小；同时设置最小值、最大值、冷却与抖动，尊重 Retry-After 和重试幂等条件。它控制的是在途数：请求变快以后，同样窗口也可能发出更多 QPS，所以已知速率上限时仍需限速器。单个异常或慢样本不应引发无界震荡；验证要覆盖下游容量变化、超时但未退出的调用，以及拥塞后的恢复过程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "监控至少包括提交与完成速率、排队深度和等待分位数、活跃 worker、拒绝原因、任务执行时间、取消后仍在运行的任务、下游连接等待、CPU/GC 和锁竞争。poolSize、activeCount 是不同指标，部分运行时指标仅是近似快照。压测要验证完成结果和错误率，而不是只看发出的请求数量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "动态调整会不会丢掉队列里的任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "通过合法的公开 setter 调整 core/max 通常不会因此删除已有 LinkedBlockingQueue 积压，改变的是 worker 创建与回收规则。降低线程数也不是立即杀死正执行任务的线程，执行中的业务仍按自身协议结束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扩大时先保证 maximum 不小于目标 core，再调 core；缩小时先把 core 调到合法范围，再降低 maximum，避免中间状态违反 core≤max。增大 core 时可能为已有队列补 worker；减小 core 可能使多余空闲 worker 退出。每一步保留旧配置、校验、灰度观察并可回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "标准 BlockingQueue 通常没有通用的 setCapacity，不能看到“动态线程池”就假设任意队列都能在线变容量。直接清空队列会改变任务接收契约，还可能留下永不完成的 Future，必须按明确取消或转移协议处理。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-juc-reference",
+      "label": "运行支持与教学范围"
+    }
+  ]
+}

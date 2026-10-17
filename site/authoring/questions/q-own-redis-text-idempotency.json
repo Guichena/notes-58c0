@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-text-idempotency",
+  "order": 142,
+  "question": "同一用户一小时内不能发布相同文本，怎样定义幂等与重试？",
+  "shortAnswer": "区分操作身份与内容约束，以可靠状态机定义发布时点和窗口，未知结果查询同一请求，不能把 SET NX 当成完整业务提交。",
+  "commonPhrasings": [
+    "只消费一条究竟指什么原子性？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis 业务原子性与失败恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 可以原子地修改自己的状态；业务是否只发生一次，要由稳定的操作身份、权威收据、状态迁移和外部系统协议共同决定。锁负责减少并发冲突，去重负责识别重复，状态机负责限定下一步，持久账本负责在重启和重试后保留事实。库存、领券和文本发布都应先说清成功承诺，再选择命令。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "操作身份与业务幂等"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等针对同一逻辑操作的业务效果。即使分布式锁已经过期，只要权威系统还保留这个操作的身份和结果，重试仍可以返回原结果；反过来，即使每次都正确加锁，也可能把同一操作执行两次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "这些问法怎样连起来回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "“SETNX 是原子的，为什么还会超卖或一人多单”“锁过期后再发相同请求还幂等吗”“完全一样的请求能否保证幂等”“除了一人一单，还怎么做幂等”，核心都是先确定需要保持什么不变量。秒杀的一人一单是业务资格限制，接口重试防重是操作身份限制，库存不超扣是数量约束，三者需要共同成立，不能只拿一把锁回答。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "互斥成立也可能重复执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "设 A 拿到锁，创建订单后释放锁；B 随后拿到同一把锁，又创建一笔订单。两个请求从未并发，互斥完全成立，却已经产生了两次效果。等待 TTL 过期后再拿锁，结果也一样：锁不会记住上次订单已经完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "另一个风险是 A 的租约到期后仍在运行，B 已经拿到新租约，A 和 B 都向数据库或渠道提交。比较 owner 再删锁，只能避免误删 B 的锁，不能撤销 A 的外部写入。需要外部资源接受版本或 fencing token，或者由资源自己的条件更新、唯一约束裁决。单机 synchronized 只约束一个 JVM；Redis 单命令的执行原子性也只约束它自己的状态，不能直接扩大到 MySQL、MQ 或 HTTP 调用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相同参数不是相同意图"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一用户、同一商品、同一数量，可以是网络超时后的重试，也可以是用户真的想再买一次。不能只比较 HTTP 字节或参数摘要就决定“是同一笔”。请求头、序列化顺序变化也不该让真正的重试变成新操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种设计是为每次逻辑操作创建稳定 requestId，把它绑定到已认证的 tenant、user、API 或业务域以及规范化后的参数。所有重试复用这个 ID；用户真正开始新操作时才创建新 ID。同一 ID 对应不同参数必须报冲突，不能覆盖原记录，也不能悄悄解释成新业务。参数指纹要明确字段、类型、顺序和规范化规则，必要时保留可精确比较的规范参数；ID 和租户、用户身份不能信任客户端任意拼接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果活动要求每人只能成功购买一次，还需要独立的业务唯一约束，例如 (tenant, activity, user)。requestId 解决一次请求重放；业务唯一约束阻挡同一个人换多个 requestId 再买。普通商品允许重复购买时，则不能误加永久“一人一单”约束。取消后能否重新购买也必须单独定义，新购买用新 ID，旧取消请求和旧下单请求的历史仍然保留。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "幂等收据要和业务效果共同提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果业务效果在关系数据库里，最直接的办法是把幂等记录、条件业务更新和结果收据放进同一个本地事务。唯一键裁决谁第一次使用这个 requestId；首次请求执行更新并保存业务 ID、结果及必要版本，事务提交后才能报告成功。重复请求读取已提交收据，核对身份和参数后返回同一笔业务的结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能先写一个“已处理”标记再做业务：中间崩溃会漏做；也不能先做业务再写标记：中间崩溃会重做。并发唯一键冲突只说明需要核对已有操作，不能把任何 SQL 异常都当作“别人已经成功”。冲突、死锁、连接断开、权限错误应分别处理；需要确认时，从能看到该次提交的权威状态查询，不能用滞后副本的一次空结果推断未执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "返回同一个 orderId，但订单状态从待支付变为已支付，不违反“没有重复创建订单”的效果幂等。接口可以约定返回首次响应快照，也可以返回同一业务的当前状态，必须说明所选协议。成功收据通常要持久保存；缺货等拒绝是否也固定重放取决于接口约定。若拒绝不入账，补货后同一请求重试可能重新判定，这与“所有响应永久相同”是两种协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "长任务与外部调用必须保留 UNKNOWN"
+    },
+    {
+      "type": "paragraph",
+      "text": "长任务可以持久记录 PENDING、SUCCEEDED、FAILED 和 UNKNOWN，并带 owner、处理轮次、参数和外部请求号。PENDING 表示尚未确定结果；FAILED 必须有“确定没有产生目标效果”或明确的终止语义；UNKNOWN 表示调用可能已成功，但当前没有可靠收据。它是需要恢复的知识状态，不能直接当失败删除再来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部发送前先持久化稳定的目的端请求号。如果对方支持幂等受理和查询，同一逻辑操作使用同一号码重试与对账；如果对方不支持，就要说明可接受的重复风险、人工核查或补偿路径，不能仅靠 Redis 锁承诺外部效果绝不重复。租约到期允许恢复程序重新检查，不等于旧 worker 已停止或外部调用没成功；接管与提交仍需代际核验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Outbox 把本地业务事实与待发送意图一起提交，消除“业务已提交，但消息只存在进程内存”的缺口。发布器可能在发送成功后、记录确认前崩溃，因此仍可能重复发布；消费者要用 inbox 或业务唯一收据把消费效果共同提交，再 ACK。消息送达、业务执行、渠道受理、用户收到不是同一个成功层级。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "TTL 应服务于保留策略"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁的 TTL、处理中租约、完成收据的保留期是三种期限。幂等历史至少覆盖允许的客户端重试、MQ 重投、最长处理、离线补偿和人工重放窗口。若要求永久不能重复，必须有相应的长期业务唯一约束或永久身份历史，不能靠十分钟或一天的去重缓存推导。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis key 到期、被淘汰、清空或切主丢失后，缓存 miss 只意味着没有缓存证据，不能直接当成新操作。查权威记录或明确降级；容量满时不能为放行新请求而偷偷淘汰仍有效的防重历史。已取消请求也不应通过删除全部幂等历史重新变成可下单请求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用真实业务说明身份和副作用"
+    },
+    {
+      "type": "paragraph",
+      "text": "制造业可靠通知链路可以这样讲：“我采用 Transactional Outbox 配合 RabbitMQ Publisher Confirm/Return 处理落库与发布不一致，消费侧使用数据库账本和处理轮次防重；渠道调用前持久化稳定请求号，超时先对账再决策，通过退避重试、死信隔离和 XXL-Job 补偿收敛异常任务。”Redis Lua 在这里承担渠道出口令牌桶，配合 P0 预留配额与积压滞回降级，不能把可靠防重都归因于 Redis。"
+    },
+    {
+      "type": "paragraph",
+      "text": "HITL 工单审批中的版本 CAS 限定本次审批是否仍有效，CMMS 建单使用稳定请求号对账防重，分别解决并发状态和外部效果。NoteWeave 的解析、切片、向量化和索引构建属于 Kafka 异步任务链，通过任务幂等和失败恢复推进。如果进一步设计其幂等键，我会考虑资料身份、资料版本和处理阶段；这些具体字段属于方案推演。下面的电商库存、MySQL 表结构与领券代码也都是教学设计，不作为个人电商项目经历。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "同一用户一小时内不能发布相同文本"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果只要求“同一用户同一文本一小时内最多获准受理一次”，可以用精确内容身份加 SET NX PX 3600000；如果要求“任意两次成功发布至少间隔一小时”，还必须把发布时间和正在发布的状态放进持久协议。两种窗口不能混用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先定义内容和窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "这道题可以追问为“Redis 的 key、value、TTL 怎么设计”“发布失败能否重试”“窗口从请求到达还是发布成功开始”“到整点后是否能再发”。先约定身份来自已认证会话，内容域包含 tenant、user 和文本规则版本。默认“相同文本”是有效 Unicode 文本的精确相等，空格、大小写以及视觉相同但编码不同的组合字符不自动归一化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果产品要求 trim、折叠空白或 NFC，需要明确这样做会合并哪些原本不同的输入，并隔离规则版本。先做长度、UTF-8 字节数、格式及恶意输入校验，再占位，避免不合法请求占用冷却窗口。不同文本依次刷屏仍能绕过相同内容去重，所以用户总发布速率、并发数和内容审核应另行控制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "受理起算的定义可以是：t 时刻获准后，在 [t, t+3600000) 内拒绝同内容新受理，恰好到 t+3600000 时可以再次受理。重复请求不续 TTL，否则就变成“距最后一次尝试一小时”，恶意重复甚至能把正常用户长期锁住。若业务明确要求“每次尝试都重新冷却一小时”，可以用条件脚本核验内容身份并按该规则更新时间，同时防止恶意尝试无限续窗；这是另一种产品约定。按自然小时分桶也不等价：12:59 和 13:00 的两次请求只差一分钟，却可能分别通过。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis 准入只做一条条件写"
+    },
+    {
+      "type": "paragraph",
+      "text": "在 Redis 7.2 的基础命令范围内，可以为每个内容身份建立一个 String：key 是有边界编码的 tenant、user、规则版本和文本指纹，value 保存本次 requestId 或 owner；执行 SET key requestId NX PX 3600000。未使用 GET 选项时，成功返回 OK，NX 条件不满足返回空。必须检查返回值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先 GET 再 SET 会让两个请求同时看到不存在；先 SETNX 再 EXPIRE 会在两条命令之间崩溃，留下没有 TTL 的标记。单条条件写把存在性和期限一起决定。若 SET 响应丢失，不能断言没有占位；可以按稳定请求号查询状态，查询到同一 owner 也只证明占位属于本次操作，不证明文章已发布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内容较长时，可使用 SHA-256 摘要缩短 key；严格等同性仍有摘要碰撞假设，不能把 Java hashCode 当唯一内容。确实要求无碰撞时，可保存精确规范内容复核，或设计碰撞桶。敏感短文本的普通摘要容易被字典猜测，需考虑有密钥 HMAC、密钥轮换时的历史窗口和最小化日志；Base64 只是编码，不是加密。规则或密钥换代不能直接清空仍有效的历史，否则一小时限制会断档。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "受理起算时怎样处理发布失败"
+    },
+    {
+      "type": "paragraph",
+      "text": "只做准入标记时，先占位后写文章，崩溃可能让文章没有发布却被挡一小时；先写文章再占位，则可能重复发布。这是两次写入之间的失败窗口，不能通过调整顺序消除。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果业务允许“受理过就进入冷却”，可以保守保留标记，让用户查询这次受理状态，失败后是否允许新尝试由产品明确决定。如果允许确定失败后提前释放，必须先确认没有发布效果，再比较 owner 或 generation 后删除；无条件 DEL 会误删下一轮的新标记。结果 UNKNOWN 时先查收据、恢复或人工核查，不能释放后盲目重发。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还有一个容易遗漏的慢请求反例：A 在 12:00 获准，处理超过一小时；B 在 13:00 获准，随后 A、B 都发布成功。受理间隔符合一小时，成功时间却可以很接近。因此受理窗口本身不承诺成功发布间隔；要求成功窗口时，必须采用下面的状态协议。长时间未决的同一 requestId 也不能因为准入 TTL 到期就被换号重复执行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "成功起算需要持久的内容状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果文章写入同一个数据库，我会为每个精确内容域建立可串行更新的 guard，包含 lastPublishedAt、当前 pendingRequest、generation 和必要版本；requestId 收据、文章、guard 更新及 outbox 在同一个事务里提交。锁定 guard 后先核对该请求的历史，再检查是否已有未决发布，以及权威时间是否达到 lastPublishedAt+一小时。到期才允许新操作，不能仅用“自然小时+文本”的唯一索引替代滚动窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "短事务可以在受理时直接创建并提交文章，把定义好的发布时点写入 lastPublishedAt。长审核或外部发布则先持久化 PENDING 和 outbox；其他同内容请求只能查询或等待。工作者成功后，以当前 requestId 和 generation 条件更新 guard、保存目的端收据和 publishedAt；确定无效果的失败可以结束当前 PENDING，是否释放冷却按已选业务规则处理。这里还要确认旧 worker 或在途外部请求不会稍后成功，例如由目的端确认终止或用其支持的代际校验阻止旧提交；一次“暂未查到”不构成这种证明。UNKNOWN 保持排他恢复状态，直到查清结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的 publishedAt 必须对应产品定义的成功事件。若“成功”就是本地文章事务生效，可以定义该事务记录的权威业务时点，并控制事务长度；若要求按真实提交完成时刻精确计时，就要采用可验证的提交时序或保守截止，不能把事务开始时间冒充提交时间。若成功指外部平台已经公开展示，应依据外部可靠收据或可核验结果；本地插入 outbox 的时间并不是外部发布时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PENDING 的 worker 租约可以到期，内容 guard 不能因此自动变成“从未发布”。恢复者先核对上一次外部请求，再决定接管。目的端若既不支持幂等键也不能可靠查询，存在无法同时保证不漏发与不重发的窗口，必须披露风险并保留人工决策路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 只保存已经确认的状态或冷却投影。成功事件晚到时，应按 publishedAt 计算剩余窗口，或写入原始绝对截止，不能每次重放都再延长一小时；不同代际事件还要防止旧事件覆盖新状态。缓存丢失、淘汰、恢复中或只读副本落后时，严格路径回权威 guard，不能绕过它。标记容量不足可以拒绝或受限回权威校验，不能淘汰未过期标记来维持表面可用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java 准入模型和完整依赖"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 TextCooldown 只实现单 JVM 的“受理起算”模型。tenant、user 各最多 128 个 UTF-8 字节，正文最多 4096 字节，三者非空；严格拒绝无效代理字符，避免编码器用问号替换不同输入。长度前缀 UTF-8 加 URL-safe Base64 是无损编码，避免分隔符歧义，不做隐式 Unicode 归一化。Java 只是此处的实现语言，Go 等客户端也必须遵守同样的服务端和业务协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "整个 admit 由同一对象监视器保护。先最多清理 64 条已过期记录，再检查目标 key；容量仍满时抛出拒绝异常，绝不驱逐有效标记。时钟必须是非负、单调的 elapsed 毫秒，不能直接假定系统墙钟不会回退。它没有认证、Redis 网络、持久发布、外部调用和失败后自动释放。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.nio.ByteBuffer;\nimport java.nio.charset.CharacterCodingException;\nimport java.nio.charset.CodingErrorAction;\nimport java.nio.charset.StandardCharsets;\nimport java.util.Base64;\nimport java.util.Objects;\nimport java.util.function.LongSupplier;\n\n/** Exact one-JVM admission model, not a durable publication or Redis transaction. */\npublic final class TextCooldown {\n    public static final long HOUR_MILLIS = 3_600_000L;\n    private final DeadlineCache live;\n    public TextCooldown(int capacity, LongSupplier clock) { live = new DeadlineCache(capacity, clock); }\n    /** Clock/window starts at admission. Failed downstream work is NOT automatically released. */\n    public synchronized boolean admit(String tenant, String authenticatedUser, String text) {\n        String key = exactKey(tenant, authenticatedUser, text);\n        live.drainExpired(64);\n        if (live.get(key).isPresent()) return false;\n        // Fail closed when full: silently evicting a live marker would permit duplicates.\n        live.put(key, \"admitted\", HOUR_MILLIS); return true;\n    }\n    /** Lossless bounded encoding avoids hash collision assumptions; no Unicode normalization. */\n    public static String exactKey(String tenant, String user, String text) {\n        byte[] a = utf8(tenant, 128), b = utf8(user, 128), c = utf8(text, 4096);\n        if (a.length == 0 || b.length == 0 || c.length == 0)\n            throw new IllegalArgumentException(\"empty component\");\n        ByteBuffer frame = ByteBuffer.allocate(12 + a.length + b.length + c.length);\n        frame.putInt(a.length).put(a).putInt(b.length).put(b).putInt(c.length).put(c);\n        return \"text-admission:v1:\" + Base64.getUrlEncoder().withoutPadding().encodeToString(frame.array());\n    }\n    private static byte[] utf8(String value, int bound) {\n        Objects.requireNonNull(value);\n        if (value.length() > bound) throw new IllegalArgumentException(\"component too long\");\n        try {\n            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder()\n                .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)\n                .encode(java.nio.CharBuffer.wrap(value));\n            if (encoded.remaining() > bound) throw new IllegalArgumentException(\"UTF-8 byte bound\");\n            byte[] bytes = new byte[encoded.remaining()]; encoded.get(bytes); return bytes;\n        } catch (CharacterCodingException e) { throw new IllegalArgumentException(\"invalid Unicode\", e); }\n    }\n    public synchronized int residentSize() { return live.residentSize(); }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "DeadlineCache 用 HashMap 定位条目，TreeMap 保存截止与唯一序号；覆盖和删除同时维护两个索引，旧定时项不会积累。读取发现到期便删除，后台可以按预算 drainExpired；这与 Redis 的具体过期实现不是同一个算法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DeadlineCache 的完整 Java 实现见前面的“有界到期索引与时间轮”。这里使用同一实现，文本准入的复合原子性由 TextCooldown 的同步边界保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设 n 为驻留条目数、L 为编码输入长度，一次准入成本为 O(L) 加至多 64 次过期清理和一次插入的 O(log n) 索引开销；空间为 O(nL)，还受容量和单组件字节上限约束。空间满时宁可暂时拒绝，也不能破坏已经承诺的窗口。边界验证应覆盖 3599999 与 3600000 毫秒、拒绝不延长窗口、跨租户与用户、空格、Unicode 组合序列、分隔符、非法编码、容量满和同内容并发；本地模型的互斥不能作为多 Redis 节点或真实文章发布的正确性证明。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "只消费一条究竟是哪种原子性"
+    },
+    {
+      "type": "paragraph",
+      "text": "先问“消费的对象是什么、要保证到哪一层”。从容器原子取走一个元素，可以由单命令完成；让消息对应的数据库更新或外部通知最多发生一次，需要持久业务身份和收据。即使问题出现在 MQ 消费者讨论之后，也不能把未说明的对象擅自认定为某一条 Redis 命令。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "List Set String 和库存有不同答案"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果对象是 List 任务，LPOP 或 RPOP 不带 count 时，一次取出并移除一个元素；BLPOP、BRPOP 可以在没有元素时等待。阻塞的是该客户端的等待，不是让 Redis 主线程停在那里不能服务其他请求。需要 count 时还应核对版本和返回结构，不能把“取 N 个”的调用与“只取一个”混在一起。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果对象是 Set，SPOP 不带 count 时随机取出并移除一个成员，不能承诺 FIFO；只想观察而不移除则是另一种需求。如果是一次性 String，Redis 6.2 起可以用 GETDEL 一次读取并删除，但它不是“比较输入验证码正确后消费”。验证码必须先鉴权、检查用途和有效期，再在原子范围里比较值与删除，错误尝试不能无条件销毁正确凭证，还需限次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果对象是库存，“只减一份且不为负”不能只写 DECR，因为它允许从 0 减为 -1，缺失 key 也按 0 起算。判断正库存与扣减必须共同原子执行；若还要求一人一单，资格与稳定请求 ID 也进入同一裁决。SETNX 只做不存在时创建 key，不会取任务、校验库存或提交业务效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取走一次和成功处理一次之间有故障窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "正常同一实例内，两个消费者原子 pop 不会取走同一个当前列表位置两次；但列表本身可以含重复业务消息，相同内容也可能在两个元素里。取走后立刻崩溃会丢失任务，网络应答丢失还可能让客户端不知道已经取出了什么。可恢复队列因此要保存处理中状态与稳定消息身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "List 可以用 LMOVE 或阻塞的 BLMOVE 把任务从 ready 原子移入 processing，完成后确认删除；这些命令从 Redis 6.2 起提供。processing 中要能识别任务、拥有者、处理代际与到期，不能靠 payload 相等随意移除另一条任务。超时领取者可能仍在运行，重新认领只改变处理权，业务提交还要验证状态。Stream 消费组则通过待确认记录、XACK 和 claim 提供恢复线索，但 PEL、消息保留与清理策略也必须配套，不能提前删掉仍需恢复的消息内容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库消费效果可通过 (业务消费者, eventId) 唯一 inbox，与业务更新、结果收据放进同一事务。提交后再 ACK：ACK 前崩溃会重投，但收据阻止重复效果；先 ACK 后提交则可能漏处理。外部发送不在这个数据库事务内，仍要目的端幂等键、查询和 UNKNOWN 恢复。永久“只成功一次”需要长期权威收据，Redis 短 TTL、SADD 或临时锁都不能代替它。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么要 Lua 也为什么不总要 Lua"
+    },
+    {
+      "type": "paragraph",
+      "text": "单命令已经满足全部条件时，不必为了“原子”再套脚本。若需要检查资格、判断余额、读取旧请求结果并修改多个字段，就用有界 Lua 或 WATCH 条件事务把读改写放在同一 Redis 执行范围。显式传 KEYS、ARGV，普通 Cluster 多键设计要求相关键同槽，脚本不能跨服务器把 MySQL、MQ 和 Redis 一起提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 执行期间不会由其他普通命令插入到这段业务判断中，不代表它自动收集不同用户请求，也不代表执行出错后会回滚。请求带哪些键、身份是否可信、返回值如何解释，都是应用必须定义的契约。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "第一条命令失败并不叫回滚"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果第一条 redis.call 就失败，且此前没有任何写入，脚本终止，后续语句不执行；这时没有先前效果需要撤销，不能描述成“Redis 帮我回滚了”。若前面已经成功写过，后面 redis.call 报错，前面的写仍然保留。redis.pcall 把错误作为返回值交给脚本处理；不检查 err 就继续，可能沿着错误前提执行后续写入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MULTI/EXEC 的执行期错误通常只影响那条命令，其余已排队命令继续执行；入队阶段发现语法或参数错误、WATCH 发现键变化导致 EXEC 放弃、Lua 编译错误和 Lua 执行期错误又是不同阶段。这里要抓住对业务的影响：未开始不等于执行后撤销，部分执行不等于完整成功，连接超时不等于失败。参数、类型和范围尽量写前校验，仍需为运行错误后的部分状态安排查询、隔离和恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证思路是让两个消费者竞争同一元素，再分别安排空容器、错类型、取出后崩溃、业务提交后 ACK 丢失、脚本第一条失败、后段失败和响应丢失。观察的是任务是否可恢复、收据是否唯一、未知结果是否保留，而不是只看命令返回 1。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

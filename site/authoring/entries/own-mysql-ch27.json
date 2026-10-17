@@ -1,0 +1,252 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch27",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 教学 WAL 格式与大记录分片",
+  "title": "教学 WAL 格式与大记录分片",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s10138",
+      "order": 10138,
+      "question": "教学 WAL 如何编码、校验并分片大记录，为什么不等于生产恢复协议？",
+      "shortAnswer": "记录分帧后要验证长度、序号、校验和与完整性，收齐最后一片前不发布；尾部不完整不授权截断生产文件，持久化与恢复还需独立证明。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第27章 教学 WAL 格式与大记录分片"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.1 面试问“日志格式”，先定义哪一层？"
+        },
+        {
+          "type": "paragraph",
+          "text": "先给核心答案：逻辑记录说明“要恢复什么”，物理帧说明“哪些字节是一条完整、可信的输入”。事务提交、日志顺序、刷盘与 checkpoint 再决定“何时可以承诺成功、从哪里恢复”。有长度和 CRC 的文件还不是完整事务 WAL。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果问 MiniSQL 的日志系统支持哪些格式，或 FlexDB 的一个 chunk 多大，必须先拿到该实现的定义。chunk 可能是文件块、物理片段、用户记录或上传分块；名称相同不代表尺寸相同。没有项目格式与配置，就不能替它回答固定的 32KB。"
+        },
+        {
+          "type": "paragraph",
+          "text": "设计一份可长期读取的日志协议，至少需要明确："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "文件身份与版本：magic、格式版本、日志代际、轮转关系、未知版本如何拒绝或迁移。",
+            "逻辑身份：操作类型、事务或请求号、序号，以及键、页或对象定位信息。",
+            "数据边界：字节序、长度字段、编码、单片/单记录/单事务上限。",
+            "完整性：校验算法与覆盖范围，记录缺片、重复、错序与损坏怎样被发现。",
+            "事务边界：提交、终止和未完成事务如何表达；CRC 通过不等于提交。",
+            "恢复边界：稳定水位、checkpoint、保留策略，以及中段损坏和尾部不完整分别怎样处理。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "“文本还是二进制”与“逻辑还是物理”是不同分类。例如 SQL 文本与二进制键值事件都可能表达逻辑操作；页面局部修改则是另一类恢复语义。便于调试、编码紧凑、版本兼容与恢复成本之间需要取舍，没有一个统一格式适用于所有数据库。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.2 LevelDB 的 32KiB 为什么不能当通用答案？"
+        },
+        {
+          "type": "paragraph",
+          "text": "具名对照使用 LevelDB 1.23。它的日志按 32KiB block 组织，物理记录头包含 CRC32C、两字节长度和类型，共七字节；长度和校验字段使用小端序。FULL 表示一条完整用户记录，FIRST/MIDDLE/LAST 表示跨块分片。块尾不足七字节时还有填充规则，因此一个物理片段的 payload 并不等于整个 block 的大小。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所以应分别回答：该实现的 block 是多少字节、frame header 多大、当前 block 还剩多少空间、逻辑记录最大多大。本文下面的 Java 模型使用大端序与九字节头，没有固定 block、块尾填充或 LevelDB 的 CRC 掩码处理，不能拿它读 LevelDB 文件，更不能拿它读取 InnoDB redo。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.3 大 BLOB 怎样写，为什么最后一片之前不能发布？"
+        },
+        {
+          "type": "paragraph",
+          "text": "先手算一条大记录：总长 25 字节，模型的 maxPayload=8，分片就是 FIRST(8)、MIDDLE(8)、MIDDLE(8)、LAST(1)。前 24 字节即使每片 CRC 都正确，也仍少最后一个字节。恢复器应暂存它们，直到收到 LAST 并完成重组才发布；“片段完整”不等于“逻辑对象完整”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "分片并不自动解决全部大对象问题："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "片段太小，头部与函数调用开销增加；片段太大，峰值缓冲、校验延迟与单次 I/O 变大。",
+            "单记录上限限制一次重组，但还需要总日志、总输出和记录数预算；大量空记录也能消耗对象内存。",
+            "多线程交错追加会让无身份的分片链混在一起。要么串行化整条记录，要么加入记录身份与序号并设计多链重组。",
+            "文件轮转若允许一条记录跨文件，需要恢复器知道连续性；若不允许，应在轮转前拒绝或完成本条记录。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "另一种设计是把大值写入独立 blob 文件，在 WAL 里记录引用、长度和校验。它减少了日志主体体积，但先持久化可引用内容、再提交可见引用的顺序不能省；还必须处理写入后未引用的孤儿、快照引用、备份、复制和垃圾回收。只把内存指针或路径写进日志并不产生跨文件原子性。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.4 本模型的精确协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "每帧布局为大端 length:int32 | crc32c:int32 | type:uint8 | payload:length，头长九字节。CRC32C 覆盖长度的四字节表示、类型和 payload，不包含 CRC 字段自身。校验使用 JDK 21 标准库，无第三方依赖。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FULL 或 FIRST/MIDDLE*/LAST 构成一条逻辑记录。零长度值必须用 FULL；零长度分片链在本模型中非法。读取时遵循一个状态机："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "没有活动记录时，只接受 FULL 或 FIRST。",
+            "已有活动记录时，只接受 MIDDLE 或 LAST。",
+            "FULL/LAST 校验并重组成功，才发布记录并更新 validBytes。",
+            "头或 payload 不完整，以及文件恰好结束在未收尾的分片链上，返回 incompleteTail=true。",
+            "完整帧的校验错误、非法类型、孤立续片、嵌套新记录与资源超限，抛出异常。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "validBytes 指最后一条完整逻辑记录结束的位置，不是最后一片 CRC 正确的位置。若第一条是 9 字节空值、第二条是 10 字节单字节值，读取到第 18 字节时只有第一条完整，validBytes 应为 9；第二条不能以缺一字节的形式发布。"
+        },
+        {
+          "type": "paragraph",
+          "text": "资源策略也属于协议：Limits 同时限制 payload、单条重组长度、总日志字节数与记录数；模型硬上限是 8MiB 日志与 4096 条记录，调用方可以设得更小。输入、输出与临时重组都使用数组，会发生拷贝；8MiB 的日志上限不是整个 JVM 只占 8MiB 的承诺。调用期间不得并发修改输入数组，返回的数组也应由调用者按约定独占。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.5 完整实现与可重复运行入口"
+        },
+        {
+          "type": "paragraph",
+          "text": "把下面整个代码块原样保存为 FragmentedWal.java。它包含全部 imports、编码、扫描、校验、异常构造和测试入口，只处理内存中的测试字节，不连接数据库、不访问网络、不读取已有日志，也不安装依赖。"
+        },
+        {
+          "type": "paragraph",
+          "text": "使用完整 JDK 21，在保存文件的目录执行："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "code/ch27/fence-184.sh",
+          "value": "java -version\njava -Xmx128m FragmentedWal.java\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "也可先编译后运行；若环境只有 java 命令但带有 JDK 编译器模块，可执行："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "code/ch27/fence-185.sh",
+          "value": "java com.sun.tools.javac.Main -source 21 -target 21 FragmentedWal.java\njava -Xmx128m FragmentedWal\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试入口固定随机种子，进行 400 组随机输入、四种片段上限的往返与重复扫描；对固定边界样本遍历每一个字节截断位置，验证只发布完整前缀，并验证前缀再次扫描的稳定性。非法长度、类型、链顺序、校验和资源上限另有断言。失败会抛出异常并以非零状态退出，正常结束打印检查数量。这里验证的是帧协议，不是 MySQL 引擎恢复。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/transactions/code/recovery/FragmentedWal.java",
+          "value": "import java.io.ByteArrayOutputStream;\nimport java.io.IOException;\nimport java.nio.ByteBuffer;\nimport java.nio.ByteOrder;\nimport java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.List;\nimport java.util.Objects;\nimport java.util.Random;\nimport java.util.zip.CRC32C;\n\n/** Teaching byte-array framing only. Not a MySQL or LevelDB file format.\n * Header: big-endian length(4), CRC32C(4), type(1), followed by payload.\n * CRC covers length, type and payload. No file header, transactions or fsync.\n * Input/output arrays are bounded but this is not a streaming implementation.\n */\npublic final class FragmentedWal {\n    private static final int FULL = 1, FIRST = 2, MIDDLE = 3, LAST = 4;\n    private static final int HEADER = 9, HARD_BYTES = 8 * 1024 * 1024;\n    private static final int HARD_RECORDS = 4096;\n\n    public record Limits(int maxPayload, int maxRecord, int maxLog,\n                         int maxRecords) {\n        public Limits {\n            if (maxPayload < 1 || maxPayload > HARD_BYTES || maxRecord < 0\n                    || maxRecord > HARD_BYTES || maxLog < 0\n                    || maxLog > HARD_BYTES || maxRecords < 0\n                    || maxRecords > HARD_RECORDS) {\n                throw new IllegalArgumentException(\"invalid teaching limits\");\n            }\n        }\n    }\n    public record Scan(List<byte[]> records, boolean incompleteTail,\n                       int validBytes) {}\n\n    private static int checksum(int length, int type, byte[] data, int offset) {\n        CRC32C crc = new CRC32C();\n        for (int shift = 24; shift >= 0; shift -= 8) {\n            crc.update((length >>> shift) & 255);\n        }\n        crc.update(type);\n        crc.update(data, offset, length);\n        return (int) crc.getValue();\n    }\n    public static byte[] encode(List<byte[]> records, int maxPayload,\n                                int maxRecord) {\n        return encode(records, new Limits(maxPayload, maxRecord,\n                                           HARD_BYTES, HARD_RECORDS));\n    }\n    public static byte[] encode(List<byte[]> records, Limits limits) {\n        Objects.requireNonNull(records);\n        Objects.requireNonNull(limits);\n        if (records.size() > limits.maxRecords()) {\n            throw new IllegalArgumentException(\"record count limit\");\n        }\n        ByteArrayOutputStream out = new ByteArrayOutputStream();\n        for (byte[] value : records) {\n            Objects.requireNonNull(value);\n            if (value.length > limits.maxRecord()) {\n                throw new IllegalArgumentException(\"record length limit\");\n            }\n            int offset = 0;\n            do {\n                int length = Math.min(limits.maxPayload(), value.length - offset);\n                boolean first = offset == 0, last = offset + length == value.length;\n                int type = first ? (last ? FULL : FIRST) : (last ? LAST : MIDDLE);\n                if ((long) out.size() + HEADER + length > limits.maxLog()) {\n                    throw new IllegalArgumentException(\"log length limit\");\n                }\n                byte[] head = ByteBuffer.allocate(HEADER).order(ByteOrder.BIG_ENDIAN)\n                        .putInt(length).putInt(checksum(length, type, value, offset))\n                        .put((byte) type).array();\n                out.writeBytes(head);\n                out.write(value, offset, length);\n                offset += length;\n            } while (offset < value.length);\n        }\n        return out.toByteArray();\n    }\n    public static Scan scan(byte[] bytes, int maxPayload, int maxRecord)\n            throws IOException {\n        return scan(bytes, new Limits(maxPayload, maxRecord,\n                                      HARD_BYTES, HARD_RECORDS));\n    }\n    public static Scan scan(byte[] bytes, Limits limits) throws IOException {\n        Objects.requireNonNull(bytes);\n        Objects.requireNonNull(limits);\n        if (bytes.length > limits.maxLog()) throw new IOException(\"log length limit\");\n        ByteBuffer in = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);\n        List<byte[]> records = new ArrayList<>();\n        ByteArrayOutputStream active = null;\n        int valid = 0;\n        while (in.hasRemaining()) {\n            if (in.remaining() < HEADER) return new Scan(List.copyOf(records), true, valid);\n            int length = in.getInt(), expected = in.getInt(), type = in.get() & 255;\n            if (length < 0 || length > limits.maxPayload() || type < FULL || type > LAST) {\n                throw new IOException(\"invalid frame header\");\n            }\n            if (in.remaining() < length) return new Scan(List.copyOf(records), true, valid);\n            if (expected != checksum(length, type, bytes, in.position())) {\n                throw new IOException(\"checksum mismatch\");\n            }\n            if ((type == FULL || type == FIRST) && active != null) {\n                throw new IOException(\"nested record\");\n            }\n            if ((type == MIDDLE || type == LAST) && active == null) {\n                throw new IOException(\"orphan fragment\");\n            }\n            if (type != FULL && length == 0) throw new IOException(\"empty split fragment\");\n            if (type == FULL || type == FIRST) {\n                if (records.size() >= limits.maxRecords()) throw new IOException(\"record count limit\");\n                active = new ByteArrayOutputStream();\n            }\n            if (length > limits.maxRecord() - active.size()) throw new IOException(\"record length limit\");\n            active.write(bytes, in.position(), length);\n            in.position(in.position() + length);\n            if (type == FULL || type == LAST) {\n                records.add(active.toByteArray());\n                active = null;\n                valid = in.position();\n            }\n        }\n        return new Scan(List.copyOf(records), active != null, valid);\n    }\n\n    // The following helpers are the complete deterministic test harness.\n    private static int checks;\n    private static void check(boolean ok, String label) {\n        if (!ok) throw new AssertionError(label);\n        checks++;\n    }\n    @FunctionalInterface private interface Checked { void run() throws Exception; }\n    private static void rejects(Class<? extends Exception> type, Checked test)\n            throws Exception {\n        try { test.run(); }\n        catch (Exception e) {\n            if (!type.isInstance(e)) throw e;\n            checks++;\n            return;\n        }\n        throw new AssertionError(\"expected \" + type.getSimpleName());\n    }\n    private static boolean same(List<byte[]> left, List<byte[]> right) {\n        if (left.size() != right.size()) return false;\n        for (int i = 0; i < left.size(); i++) {\n            if (!Arrays.equals(left.get(i), right.get(i))) return false;\n        }\n        return true;\n    }\n    private static byte[] join(byte[]... parts) {\n        ByteArrayOutputStream out = new ByteArrayOutputStream();\n        for (byte[] part : parts) out.writeBytes(part);\n        return out.toByteArray();\n    }\n    // Build deliberately malformed chains with otherwise valid checksums.\n    private static byte[] frame(int type, byte[] payload) {\n        return ByteBuffer.allocate(HEADER + payload.length).order(ByteOrder.BIG_ENDIAN)\n                .putInt(payload.length).putInt(checksum(payload.length, type, payload, 0))\n                .put((byte) type).put(payload).array();\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 0) throw new IllegalArgumentException(\"no external input\");\n        Random random = new Random(20261010L);\n        for (int trial = 0; trial < 400; trial++) {\n            List<byte[]> values = new ArrayList<>();\n            for (int i = 0, n = random.nextInt(9); i < n; i++) {\n                byte[] value = new byte[random.nextInt(513)];\n                random.nextBytes(value);\n                values.add(value);\n            }\n            for (int payload : new int[]{1, 7, 64, 256}) {\n                byte[] encoded = encode(values, payload, 512);\n                Scan read = scan(encoded, payload, 512);\n                check(same(values, read.records()), \"round trip\");\n                check(!read.incompleteTail() && read.validBytes() == encoded.length, \"complete\");\n                check(same(read.records(), scan(encoded, payload, 512).records()), \"repeat scan\");\n            }\n        }\n        // Exercise every possible byte truncation, including exact record boundaries.\n        for (int payload : new int[]{1, 4, 16}) {\n            List<byte[]> values = List.of(new byte[0], new byte[]{42},\n                                         new byte[payload], new byte[payload * 2 + 1]);\n            byte[] log = encode(values, payload, 64);\n            int[] ends = new int[values.size()];\n            for (int i = 0, end = 0; i < ends.length; i++) {\n                end += encode(List.of(values.get(i)), payload, 64).length;\n                ends[i] = end;\n            }\n            for (int cut = 0; cut <= log.length; cut++) {\n                int count = 0, valid = 0;\n                while (count < ends.length && ends[count] <= cut) valid = ends[count++];\n                Scan read = scan(Arrays.copyOf(log, cut), payload, 64);\n                check(same(values.subList(0, count), read.records()), \"truncation prefix\");\n                check(read.validBytes() == valid, \"valid bytes\");\n                check(read.incompleteTail() == (cut != valid), \"tail flag\");\n                Scan repaired = scan(Arrays.copyOf(log, read.validBytes()), payload, 64);\n                check(!repaired.incompleteTail() && same(read.records(), repaired.records()), \"rescan prefix\");\n            }\n        }\n        byte[] one = {9};\n        byte[] corrupt = frame(FULL, one); corrupt[HEADER] ^= 1;\n        rejects(IOException.class, () -> scan(corrupt, 8, 32));\n        byte[] badLength = frame(FULL, one); ByteBuffer.wrap(badLength).putInt(-1);\n        rejects(IOException.class, () -> scan(badLength, 8, 32));\n        rejects(IOException.class, () -> scan(frame(5, one), 8, 32));\n        rejects(IOException.class, () -> scan(frame(MIDDLE, one), 8, 32));\n        rejects(IOException.class, () -> scan(frame(LAST, one), 8, 32));\n        rejects(IOException.class, () -> scan(frame(FIRST, new byte[0]), 8, 32));\n        rejects(IOException.class, () -> scan(join(frame(FIRST, one), frame(FULL, one)), 8, 32));\n        rejects(IOException.class, () -> scan(join(frame(FIRST, one), frame(FIRST, one)), 8, 32));\n        rejects(IOException.class, () -> scan(frame(FULL, new byte[9]), 8, 32));\n        rejects(IOException.class, () -> scan(join(frame(FIRST, one), frame(LAST, one)), 8, 1));\n        check(scan(frame(FIRST, one), 8, 32).incompleteTail(), \"unclosed chain\");\n        check(scan(new byte[0], 8, 32).validBytes() == 0, \"empty log\");\n        check(scan(frame(FULL, new byte[0]), 8, 0).records().size() == 1, \"empty value\");\n        Limits tiny = new Limits(8, 8, 10, 1);\n        rejects(IOException.class, () -> scan(new byte[11], tiny));\n        rejects(IllegalArgumentException.class, () -> encode(List.of(new byte[2]), tiny));\n        rejects(IllegalArgumentException.class, () -> encode(List.of(new byte[9]), tiny));\n        rejects(IllegalArgumentException.class, () -> encode(List.of(one, one), tiny));\n        rejects(IOException.class, () -> scan(join(frame(FULL, one), frame(FULL, one)),\n                                               new Limits(8, 8, 32, 1)));\n        rejects(IllegalArgumentException.class, () -> new Limits(0, 8, 32, 1));\n        rejects(IllegalArgumentException.class, () -> new Limits(8, -1, 32, 1));\n        rejects(IllegalArgumentException.class, () -> new Limits(8, 8, HARD_BYTES + 1, 1));\n        System.out.println(\"PASS: \" + checks + \" bounded framing checks; no database or disk crash tested.\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.6 为什么不能看见 incompleteTail 就直接截断生产文件？"
+        },
+        {
+          "type": "paragraph",
+          "text": "incompleteTail 只能告诉你扫描到不完整语法，不能独自鉴定物理故障。受控单写者追加时，缺头或缺 payload 常可解释为尾部写了一半；但若长度字段损坏后变大，同样可能表现为剩余字节不够。"
+        },
+        {
+          "type": "paragraph",
+          "text": "反过来，逐帧 CRC 全通过，也不代表日志历史完整：整条合法记录被删掉、被重复插入，或互相独立的 FULL 帧被重排，都可能仍通过每帧校验。CRC 也不认证恶意修改。要发现这些问题，还需要代际、连续序号、事务身份或更强的完整性协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试中的 Arrays.copyOf(log, validBytes) 只是构造新的内存前缀来复查扫描结果。生产截断前还须确认文件角色、复制消费者、事务提交决定、归档备份依赖，并保留原现场。中段损坏不能当尾部处理；本模型遇到完整帧错误就停止，不猜下一条起点继续声称恢复完整。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.7 从帧编码到数据库 WAL，还缺哪些证明？"
+        },
+        {
+          "type": "paragraph",
+          "text": "本实现没有事务提交记录、对象版本、LSN、checkpoint、文件轮转、并发追加、压缩、加密或 fsync。重复调用 scan 只会得到相同的记录列表；如果上层每次都把列表里的“减 100”执行一遍，业务仍然会重复扣款。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要把它扩展成数据库，需要在逻辑层定义事务与应用规则，并证明至少三条不变量："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "对外承诺持久提交之前，覆盖事务内容与提交决定的日志已达到稳定水位。",
+            "数据页/对象更新持久化之前，重建或撤销它所需的日志已持久；恢复不会依赖尚未存在的字节。",
+            "恢复从明确 checkpoint 开始，对已应用内部修改的识别与未提交事务处理是可重复的；部分记录不能进入可见业务状态。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "随后再在独立、可丢弃的环境测试写入中断、同步失败、部分页持久化、重复恢复与日志损坏。数组测试、Java 编译成功、H2 或 SQLite 事务测试，都无法代替 MySQL 8.4.0 的真实锁、复制与崩溃恢复证据。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "27.8 面试追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "日志系统支持哪些格式？逻辑操作和物理帧的职责怎样分开？",
+            "用户写入很大的 BLOB，分片与独立 blob 文件各有什么持久化顺序和内存代价？",
+            "一个 chunk 的大小是多少？它指 block、frame payload 还是逻辑记录？没有具体实现时能回答什么？",
+            "为什么 CRC 正确的 FIRST/MIDDLE 片段还不能发布？为什么 LAST 不是事务 COMMIT？",
+            "删除整条合法帧，CRC 能否发现？扫描同一 WAL 两遍，怎样避免上层重复扣款？",
+            "为什么合法完整记录边界结束时 incompleteTail=false，即使原始日志后面本来还有更多记录？",
+            "若把模型改成流式文件扫描，如何限制重组内存、处理短读/短写和记录跨文件边界？"
+          ]
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-6",
+          "label": "redo log 和 undo log 分别是做什么的？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

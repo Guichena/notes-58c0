@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-multimodal-code",
+  "kind": "doc",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "实现参考与验证边界",
+  "title": "完整 Java：InfoNCE、向量 logits 与 MaxSim",
+  "tags": [
+    "完整教学代码",
+    "未执行源代码"
+  ],
+  "sections": [
+    {
+      "id": "s-multimodal-851",
+      "title": "27. 手写双向 InfoNCE：先把目标与维度说清楚",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "下面的三个完整类分别保存为 ContrastiveLoss.java、EmbeddingLogits.java 和 LateInteraction.java，放在同一目录。使用完整 JDK 执行 javac -Xlint:all -Werror ContrastiveLoss.java EmbeddingLogits.java LateInteraction.java，再依次运行 java ContrastiveLoss、java EmbeddingLogits、java LateInteraction。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法： 给一批图文向量，写对比学习损失；正样本在哪里？双向损失怎么计算？如何避免 exp 溢出？"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 先计算图文两两相似度矩阵，再分别按行和按列做对角线为正样本的交叉熵，最后取平均。"
+        },
+        {
+          "type": "paragraph",
+          "text": "输入相似度矩阵 S 是 N×N，S[i][j] 表示第 i 张图与第 j 段文本的 logit。图文样本顺序已经配对，因此 S[i][i] 是正样本；如果原始数据不是这个顺序，应先构造真实标签，不能机械使用对角线。"
+        },
+        {
+          "type": "paragraph",
+          "text": "行损失是 −S[i][i]+log Σj exp(S[i][j])，列损失同理。下面代码直接接收已经包含温度缩放的 logits，不负责编码图片、文本、归一化向量或训练模型。用 max-shift 计算稳定 softmax，并先计算 max−positive，再加 log(sum)，避免大常数相减损失精度。输入要求非空、方阵和有限数；若有限输入的极端差值仍导致结果无法用 double 表示，明确拒绝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "梯度也可以一起讲：行 softmax 与列 softmax 的贡献分别是 p/(2N)，每个对角线正样本合计减 1/N。这是对 logits 的梯度；若还需要对原始 embedding 求导，必须继续经过温度、点积与归一化的链式法则。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "multimodal/ContrastiveLoss.java",
+          "value": "import java.util.Random;\n\n/** Symmetric diagonal-positive cross entropy on a finite square logit matrix. */\npublic final class ContrastiveLoss {\n    private ContrastiveLoss() { }\n\n    public static double loss(double[][] logits) {\n        int n = validate(logits);\n        double total = 0.0;\n        for (int i = 0; i < n; i++) {\n            total += crossEntropy(logits, i, false) / (2.0 * n);\n            total += crossEntropy(logits, i, true) / (2.0 * n);\n        }\n        if (!Double.isFinite(total)) throw new IllegalArgumentException(\"loss overflow\");\n        return total;\n    }\n\n    private static double crossEntropy(double[][] a, int i, boolean column) {\n        double max = Double.NEGATIVE_INFINITY;\n        for (int j = 0; j < a.length; j++)\n            max = Math.max(max, column ? a[j][i] : a[i][j]);\n        double sum = 0.0;\n        for (int j = 0; j < a.length; j++)\n            sum += Math.exp((column ? a[j][i] : a[i][j]) - max);\n        // Subtract the positive logit before adding log(sum), preserving precision.\n        return (max - a[i][i]) + Math.log(sum);\n    }\n\n    public static double[][] gradient(double[][] logits) {\n        int n = validate(logits);\n        double[][] g = new double[n][n];\n        for (int i = 0; i < n; i++) {\n            addSoftmax(logits, g, i, false);\n            addSoftmax(logits, g, i, true);\n            g[i][i] -= 1.0 / n;\n        }\n        return g;\n    }\n\n    private static void addSoftmax(double[][] a, double[][] g, int i, boolean col) {\n        int n = a.length;\n        double max = Double.NEGATIVE_INFINITY;\n        for (int j = 0; j < n; j++) max = Math.max(max, col ? a[j][i] : a[i][j]);\n        double sum = 0.0;\n        for (int j = 0; j < n; j++) sum += Math.exp((col ? a[j][i] : a[i][j]) - max);\n        for (int j = 0; j < n; j++) {\n            double p = Math.exp((col ? a[j][i] : a[i][j]) - max) / sum / (2.0 * n);\n            if (col) g[j][i] += p; else g[i][j] += p;\n        }\n    }\n\n    private static int validate(double[][] a) {\n        if (a == null || a.length == 0) throw new IllegalArgumentException(\"empty logits\");\n        int n = a.length;\n        for (double[] row : a) {\n            if (row == null || row.length != n) throw new IllegalArgumentException(\"not square\");\n            for (double x : row) if (!Double.isFinite(x))\n                throw new IllegalArgumentException(\"nonfinite logit\");\n        }\n        return n;\n    }\n\n    private static void near(double actual, double expected, double tolerance) {\n        if (!Double.isFinite(actual) || Math.abs(actual - expected) > tolerance)\n            throw new AssertionError(actual + \" != \" + expected);\n    }\n    private static void rejects(Runnable r) {\n        try { r.run(); } catch (IllegalArgumentException expected) { return; }\n        throw new AssertionError(\"expected rejection\");\n    }\n    public static void main(String[] args) {\n        near(loss(new double[][]{{1234}}), 0, 0);\n        near(loss(new double[3][3]), Math.log(3), 1e-14);\n        near(loss(new double[][]{{1000, -1000}, {-1000, 1000}}), 0, 0);\n        near(loss(new double[][]{{-1000, 1000}, {1000, -1000}}), 2000, 0);\n        Random random = new Random(20261012);\n        int derivatives = 0;\n        for (int n = 1; n <= 7; n++) for (int trial = 0; trial < 100; trial++) {\n            double[][] a = new double[n][n], shifted = new double[n][n], transposed = new double[n][n];\n            for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {\n                a[i][j] = random.nextDouble() * 8 - 4;\n                shifted[i][j] = a[i][j] + 1000;\n                transposed[j][i] = a[i][j];\n            }\n            near(loss(a), loss(shifted), 2e-13);\n            near(loss(a), loss(transposed), 1e-13);\n            double[][] g = gradient(a);\n            double sum = 0;\n            for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {\n                double old = a[i][j], h = 1e-5;\n                a[i][j] = old + h; double up = loss(a);\n                a[i][j] = old - h; double down = loss(a);\n                a[i][j] = old;\n                near(g[i][j], (up - down) / (2 * h), 2e-9);\n                sum += g[i][j]; derivatives++;\n            }\n            near(sum, 0, 1e-13);\n        }\n        rejects(() -> loss(null));\n        rejects(() -> loss(new double[0][0]));\n        rejects(() -> loss(new double[][]{{1, 2}}));\n        rejects(() -> loss(new double[][]{{Double.NaN}}));\n        rejects(() -> loss(new double[][]{{Double.POSITIVE_INFINITY}}));\n        rejects(() -> loss(new double[][]{{-Double.MAX_VALUE, Double.MAX_VALUE}, {0, 0}}));\n        System.out.println(\"ContrastiveLoss OK; finite-difference checks=\" + derivatives);\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "复杂度： 损失时间 O(N²)，除输入外只用常数辅助空间；输出完整梯度需要 O(N²) 空间。实际 CLIP 的编码器计算、跨设备特征聚合与梯度传播不包含在这个手写题里。"
+        },
+        {
+          "type": "paragraph",
+          "text": "边界自测： N=1 时没有批内负样本，损失为 0；所有 logits 相同，损失为 log N；整体加同一个常数，损失不变；转置矩阵不改变双向损失；极大正负 logits 也不能直接 exp。代码中的有限差分逐元素检查解析梯度，避免只测一个“能跑”的例子。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：重复正样本怎么办？ 若一个 batch 有多段文字都对应同一图片，单一对角线交叉熵会把其他正确文本当负样本。应使用多正样本掩码或调整数据采样与目标。这个实现明确解决一对一配对的教学问题，不伪装成所有对比学习场景的通用训练器。"
+        }
+      ]
+    },
+    {
+      "id": "s-multimodal-981",
+      "title": "从 embedding 计算点积、余弦与温度缩放",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "题目给原始图文向量时，先用这一段生成 logits，再交给上面的 ContrastiveLoss。两组输入都是 N×D，按行一一配对，输出 N×N。点积模式保留向量模长；余弦模式先归一化。温度 τ 必须为有限正数，logit=s/τ。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先把输入合同说清楚再写循环：余弦对零向量没有定义，本实现直接拒绝，不补任意方向。上面的损失函数接收的是已完成温度缩放的 logits，不能在两个入口重复缩放。"
+        },
+        {
+          "type": "paragraph",
+          "text": "归一化先除每行最大绝对值，再计算范数，避免直接平方超大数溢出，也能处理极小非零向量。点积模式对乘积、累加与缩放溢出明确报错，不能将 Infinity 继续交给 softmax。归一化产生新数组，不修改调用方输入。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "multimodal/EmbeddingLogits.java",
+          "value": "import java.util.Random;\n\n/** Paired N-by-D embeddings to N-by-N contrastive logits. */\npublic final class EmbeddingLogits {\n    private EmbeddingLogits() { }\n    public static double[][] build(double[][] images, double[][] texts,\n                                    double temperature, boolean cosine) {\n        if (!(temperature > 0) || !Double.isFinite(temperature))\n            throw new IllegalArgumentException(\"temperature must be positive finite\");\n        int dim = validate(images);\n        if (validate(texts) != dim || images.length != texts.length)\n            throw new IllegalArgumentException(\"paired batch/dimension mismatch\");\n        double[][] left = cosine ? normalized(images) : images;\n        double[][] right = cosine ? normalized(texts) : texts;\n        int n = images.length;\n        double[][] logits = new double[n][n];\n        for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {\n            double dot = 0;\n            for (int k = 0; k < dim; k++) {\n                double term = left[i][k] * right[j][k];\n                if (!Double.isFinite(term)) throw new IllegalArgumentException(\"product overflow\");\n                dot += term;\n                if (!Double.isFinite(dot)) throw new IllegalArgumentException(\"sum overflow\");\n            }\n            if (cosine) dot = Math.max(-1.0, Math.min(1.0, dot));\n            logits[i][j] = dot / temperature;\n            if (!Double.isFinite(logits[i][j])) throw new IllegalArgumentException(\"scaled logit overflow\");\n        }\n        return logits;\n    }\n    private static int validate(double[][] a) {\n        if (a == null || a.length == 0 || a[0] == null || a[0].length == 0)\n            throw new IllegalArgumentException(\"empty embeddings\");\n        int d = a[0].length;\n        for (double[] row : a) {\n            if (row == null || row.length != d) throw new IllegalArgumentException(\"ragged embeddings\");\n            for (double v : row) if (!Double.isFinite(v)) throw new IllegalArgumentException(\"nonfinite\");\n        }\n        return d;\n    }\n    private static double[][] normalized(double[][] a) {\n        double[][] result = new double[a.length][a[0].length];\n        for (int i = 0; i < a.length; i++) {\n            double scale = 0;\n            for (double v : a[i]) scale = Math.max(scale, Math.abs(v));\n            if (scale == 0) throw new IllegalArgumentException(\"zero vector has no cosine\");\n            double squared = 0;\n            for (int k = 0; k < a[i].length; k++) {\n                result[i][k] = a[i][k] / scale;\n                squared += result[i][k] * result[i][k];\n            }\n            double norm = Math.sqrt(squared);\n            for (int k = 0; k < a[i].length; k++) result[i][k] /= norm;\n        }\n        return result;\n    }\n    private static void near(double a, double b) {\n        if (!Double.isFinite(a) || Math.abs(a - b) > 1e-11)\n            throw new AssertionError(a + \" != \" + b);\n    }\n    private static void rejects(Runnable r) {\n        try { r.run(); } catch (IllegalArgumentException expected) { return; }\n        throw new AssertionError(\"expected rejection\");\n    }\n    public static void main(String[] args) {\n        double[][] a = {{3,4},{-3,-4}};\n        double[][] s = build(a,a,.5,true);\n        near(s[0][0],2); near(s[0][1],-2); near(a[0][0],3);\n        near(build(a,a,.5,false)[0][0],50);\n        near(build(new double[][]{{0}},new double[][]{{2}},1,false)[0][0],0);\n        double[][] extreme = {{Double.MAX_VALUE,Double.MAX_VALUE}};\n        near(build(extreme,extreme,1,true)[0][0],1);\n        near(build(new double[][]{{Double.MIN_VALUE}},new double[][]{{Double.MIN_VALUE}},1,true)[0][0],1);\n        Random rng = new Random(19);\n        for (int trial = 0; trial < 1000; trial++) {\n            int n = 1+rng.nextInt(5), d = 1+rng.nextInt(8);\n            double[][] x = new double[n][d], y = new double[n][d], scaled = new double[n][d];\n            for (int i = 0; i < n; i++) for (int k = 0; k < d; k++) {\n                x[i][k] = rng.nextDouble()*2-1;\n                y[i][k] = rng.nextDouble()*2-1;\n                scaled[i][k] = x[i][k]*1e200;\n            }\n            double[][] base = build(x,y,.25,true), other = build(scaled,y,.25,true);\n            double[][] transposed = build(y,x,.25,true);\n            for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {\n                near(base[i][j],other[i][j]); near(base[i][j],transposed[j][i]);\n            }\n            if (!Double.isFinite(ContrastiveLoss.loss(base))) throw new AssertionError(\"pipeline\");\n        }\n        rejects(() -> build(a,a,0,true));\n        rejects(() -> build(a,a,-1,true));\n        rejects(() -> build(a,a,Double.NaN,true));\n        rejects(() -> build(a,a,Double.POSITIVE_INFINITY,true));\n        rejects(() -> build(null,a,1,true));\n        rejects(() -> build(new double[0][0],a,1,true));\n        rejects(() -> build(new double[][]{{1},{1,2}},a,1,true));\n        rejects(() -> build(new double[][]{{1}},a,1,true));\n        rejects(() -> build(new double[][]{{Double.NaN}},new double[][]{{1}},1,true));\n        rejects(() -> build(new double[][]{{0}},new double[][]{{1}},1,true));\n        rejects(() -> build(extreme,extreme,1,false));\n        rejects(() -> build(new double[][]{{1}},new double[][]{{1}},Double.MIN_VALUE,true));\n        System.out.println(\"EmbeddingLogits OK; normalized/transpose/pipeline properties=1000\");\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "计算时间 O(N²D)，结果空间 O(N²)，余弦模式另需 O(ND) 归一化空间。main 中把随机生成的 logits 真正接入损失函数，验证前后两段接口一致；它只验证数学计算，不代表训练过视觉或文本编码器。"
+        }
+      ]
+    },
+    {
+      "id": "s-multimodal-1098",
+      "title": "28. 手写 MaxSim：为什么不能把最大值初始化为 0？",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "常见问法： 多向量检索怎样打分？ColBERT/ColPali 风格的后期交互如何实现？与平均向量有什么区别？"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 每个查询 token 单独寻找最匹配的文档 token，再汇总这些匹配分数，保留局部证据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对查询 Q 和文档 D，score(Q,D)=Σi maxj(Qi·Dj)。这是有方向的打分，交换查询与文档通常不会相同。一个文档 token 可以成为多个查询 token 的最佳匹配，不是一对一匹配问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面实现直接使用调用方提供的点积空间，不暗中归一化。目标模型要求单位向量时，调用前按其规定归一化；存在 padding 时，也要先去掉无效 token，或明确增加 mask。"
+        },
+        {
+          "type": "paragraph",
+          "text": "试把有效相似度都改成负数：如果 padding 仍以零向量参与，它反而会成为最大值。这个反例同时解释了为什么不能把无效 token 当普通数据，以及下一段代码为何从负无穷开始找最大值。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "multimodal/LateInteraction.java",
+          "value": "import java.util.Random;\n\n/** MaxSim on caller-provided dot-product embeddings; does not normalize vectors. */\npublic final class LateInteraction {\n    private LateInteraction() { }\n    public static double score(double[][] query, double[][] document) {\n        int d = dimensions(query);\n        if (dimensions(document) != d) throw new IllegalArgumentException(\"dimension mismatch\");\n        double total = 0;\n        for (double[] q : query) {\n            double best = Double.NEGATIVE_INFINITY;\n            for (double[] v : document) {\n                double dot = 0;\n                for (int k = 0; k < d; k++) dot += q[k] * v[k];\n                if (!Double.isFinite(dot)) throw new IllegalArgumentException(\"dot overflow\");\n                best = Math.max(best, dot);\n            }\n            total += best;\n        }\n        if (!Double.isFinite(total)) throw new IllegalArgumentException(\"score overflow\");\n        return total;\n    }\n    private static int dimensions(double[][] a) {\n        if (a == null || a.length == 0 || a[0] == null || a[0].length == 0)\n            throw new IllegalArgumentException(\"empty embeddings\");\n        int d = a[0].length;\n        for (double[] v : a) {\n            if (v == null || v.length != d) throw new IllegalArgumentException(\"ragged embeddings\");\n            for (double x : v) if (!Double.isFinite(x)) throw new IllegalArgumentException(\"nonfinite\");\n        }\n        return d;\n    }\n    private static void near(double a, double b) {\n        if (!Double.isFinite(a) || Math.abs(a - b) > 1e-10)\n            throw new AssertionError(a + \" != \" + b);\n    }\n    private static void rejects(Runnable r) {\n        try { r.run(); } catch (IllegalArgumentException expected) { return; }\n        throw new AssertionError(\"expected rejection\");\n    }\n    public static void main(String[] args) {\n        near(score(new double[][]{{1,0},{0,1}}, new double[][]{{1,0},{0,1}}), 2);\n        near(score(new double[][]{{1}}, new double[][]{{-3},{-2}}), -2);\n        Random rng = new Random(7);\n        for (int trial = 0; trial < 1000; trial++) {\n            int m = 1 + rng.nextInt(7), n = 1 + rng.nextInt(8), d = 1 + rng.nextInt(6);\n            double[][] q = new double[m][d], a = new double[n][d];\n            for (double[] v : q) for (int k = 0; k < d; k++) v[k] = rng.nextDouble() - .5;\n            for (double[] v : a) for (int k = 0; k < d; k++) v[k] = rng.nextDouble() - .5;\n            double[][] duplicate = new double[n+1][];\n            for (int i = 0; i < n; i++) duplicate[i] = a[n-1-i];\n            duplicate[n] = a[0];\n            near(score(q, a), score(q, duplicate));\n            double sum = 0;\n            for (double[] token : q) sum += score(new double[][]{token}, a);\n            near(score(q, a), sum);\n        }\n        rejects(() -> score(new double[0][0], new double[][]{{1}}));\n        rejects(() -> score(new double[][]{{1}}, new double[0][0]));\n        rejects(() -> score(new double[][]{{1}}, new double[][]{{1, 2}}));\n        rejects(() -> score(new double[][]{{Double.NaN}}, new double[][]{{1}}));\n        rejects(() -> score(new double[][]{{Double.MAX_VALUE}}, new double[][]{{2}}));\n        System.out.println(\"LateInteraction OK; property cases=1000\");\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "复杂度： 查询 m 个 token、文档 n 个 token、维度 d，直接实现为 O(mnd) 时间、O(1) 辅助空间。海量文档不能每次全部穷举，应通过索引与候选召回缩小范围，再按需要精排。"
+        },
+        {
+          "type": "paragraph",
+          "text": "关键边界： 最大值从负无穷开始，保留全负匹配的真实分数；空文档没有可取的最大值，本实现拒绝；向量维度不一致、NaN、Infinity 和计算溢出也拒绝。复制同一个文档 token 不应改变结果，打乱文档 token 顺序也不应改变结果；但重复查询 token 会重复贡献分数，因此查询长度与特殊 token 策略要与模型训练保持一致。"
+        }
+      ]
+    }
+  ]
+}

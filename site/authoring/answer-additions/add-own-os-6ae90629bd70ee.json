@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-6ae90629bd70ee",
+  "entryId": "own-java-io",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "9121d20d31c66cae5b312d12e26770542f33d089d3bffb83fd252935d7744f5b",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "同步异步IO 用户内核分工 Reactor与LT ET怎样串起来"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reactor等待就绪后由应用执行读写，Proactor围绕操作完成组织回调；同步异步、阻塞非阻塞必须按具体API分别判断。"
+    },
+    {
+      "type": "paragraph",
+      "text": "网络IO按具体API契约回答，异步函数名不证明底层采用内核异步机制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "两个维度与完成通知"
+    },
+    {
+      "type": "paragraph",
+      "text": "I/O 模型先分“暂时做不了时怎么办”和“结果怎样回来”。阻塞 read 没数据时可以等待，非阻塞 read 暂时不可读时返回 EAGAIN，调用者之后仍要实际读取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "select/poll/epoll 通知的是就绪，让应用去尝试读写，不保证完整消息已经到齐。异步 I/O 则先提交操作，随后通过完成队列、回调、信号或 future 等拿到结果；提交成功，也不等于操作已经成功完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“谁执行、谁通知”不能只选用户态或内核态一个词：应用在用户态提交，内核/驱动和设备参与实际I/O，完成状态经机制交回用户态，由运行时触发回调。glibc POSIX AIO可由用户态工作线程执行阻塞I/O；io_uring通过共享提交/完成队列与内核协作，操作可能立即完成、异步完成或交工作线程处理，不是所有操作都由硬件独立DMA完成。用户回调通常不直接运行在硬件中断上下文。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Reactor到multi-reactor的演进"
+    },
+    {
+      "type": "paragraph",
+      "text": "单Reactor事件循环等待就绪、分派accept/read/write事件，维护连接状态和半包/待写缓冲，业务处理器完成应用逻辑。单线程实现简单但长CPU或阻塞调用会拖住所有连接；可将耗时业务交有界工作池，再把结果投回连接所属循环。"
+    },
+    {
+      "type": "paragraph",
+      "text": "multi-reactor常用主Reactor接受连接，分配给多个子Reactor负责连接I/O；也有其他分配方式。每连接尽量有明确所有者，跨线程用安全队列与唤醒，处理关闭后迟到结果、任务顺序、负载不均和背压。它不是为每连接建一个线程，也不自动获得业务并行正确性。Proactor通常围绕完成事件组织，不能只改类名就从就绪变成完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LT ET的处理循环"
+    },
+    {
+      "type": "paragraph",
+      "text": "LT 和 ET 最重要的差别，是没处理完的数据以后怎样继续推进。LT 在条件持续满足时可以再次通知；ET 主要报告状态变化，通常配非阻塞 FD，把 accept/read/write 推进到 EAGAIN 等明确暂时做不了的状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只读一小块就等新边沿，剩余数据可能被搁置；但一个热连接一直读到底，也可能饿死其他连接。可以设每轮预算，把未排空连接留在应用就绪队列里轮转，不能把还可推进的状态丢掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可写通常经常成立，只在有待发数据时订阅写事件，写完取消，避免空转。部分读写、EINTR、EOF、错误和半关闭都要处理；读返回0的含义按API区分，POSIX socket read的0通常是EOF，Java非阻塞read的0是无进展，不能机械移植。ET不是保证更快，epoll也不是无限连接或全部O(1)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "muduo解决什么问题 为什么不是“网络库还是多线程”二选一"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：介绍muduo；为什么线上使用网络库；它与多线程是什么关系；重写库能证明什么价值？"
+    },
+    {
+      "type": "paragraph",
+      "text": "muduo把非阻塞网络I/O组织成可复用的事件循环和连接管理接口；以muduo 2.0.3为例，它面向Linux与C++，采用Reactor与one-loop-per-thread：一个EventLoop在所属线程中等待I/O就绪并分派事件，Channel组织文件描述符的关注事件和回调，Poller封装轮询机制；Acceptor接收连接，TcpServer管理服务与连接分配，TcpConnection维护连接状态以及输入输出缓冲。跨线程提交工作应进入对应EventLoop的任务队列并唤醒它，避免其他线程直接无同步修改连接状态。Channel负责事件分派而不拥有文件描述符；连接的socket及输入输出Buffer属于TcpConnection，不能把每个Channel都当作独立连接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "muduo与多线程不是互斥方案。它把就绪检测、连接生命周期、缓冲、跨线程唤醒等反复出现且容易出错的底层工作组织成可复用接口，应用可以用多个I/O循环线程，也可以把耗时业务交给有界工作池，再把结果交回连接所属循环。对大量等待中的连接，不需要为每个连接长期占一条阻塞线程；但长CPU任务或阻塞调用仍会拖住其所在事件循环，线程间共享业务数据仍需同步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选择库要比较协议需求、连接规模与活跃比例、业务耗时、团队熟悉度、维护与依赖成本及真实压测。仍要自行处理应用协议分帧、消息与缓冲上限、慢消费者、错误、超时和关闭后的迟到结果，使用网络库不自动获得无限容量或端到端可靠性。若现成框架已满足需求，重写不必然更好；学习项目可说明学到的事件循环和生命周期机制，但没有同一工作负载下的证据就不能声称胜过原库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问线程数为零怎么办：EventLoopThreadPool在没有额外I/O循环线程时使用baseLoop；配置多个循环后，TcpServer按轮转选择连接所属循环。I/O循环线程池与业务工作线程池是两种职责，CPU密集业务不要在I/O回调中一直运行。跨线程投递的任务队列也需要应用层容量和过载策略；仅有唤醒机制不代表队列天然有界。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Java和Go的IO如何实现 AIO在哪些场景值得采用"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java NIO提供通道、缓冲与选择器等接口，异步通道交付完成结果；运行时接口外观并不唯一决定底层使用epoll、线程池或内核异步I/O。"
+    },
+    {
+      "type": "paragraph",
+      "text": "NIO在Java可指整个java.nio API家族，不是所有NIO类都非阻塞；AIO同时可能指接口风格和具体OS机制，必须分层。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "阻塞 非阻塞 复用 完成模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "阻塞read暂时无结果时等待；非阻塞read立即报告无进展，应用以后重试。select/poll/epoll让线程等待多个FD的就绪，返回后仍需真实读写。异步完成模型提交一个操作，后续收到完成字节数/错误，调用者不必同步等该操作结束；返回Future的外观并不说明底层没有线程做阻塞IO。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java NIO的Buffer/Channel/Selector支持构建非阻塞网络状态机，SocketChannel需配置非阻塞才注册Selector；FileChannel不属于同样可注册的SelectableChannel。单Reactor、多Reactor、Reactor配业务池都能使用NIO，需处理半帧、部分写、连接所有权和背压。同步异步IO 用户内核分工 Reactor与LT ET怎样串起来 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn01Afp3SgnGgBlb3UGqSKyg)给出LT/ET与Reactor细节。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不同运行时与操作系统实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步接口把等待结果的方式改了，却不会替你管理缓冲的使用期限。Java 异步通道通过 Future 或 CompletionHandler 返回完成结果；AsynchronousFileChannel 可能用线程池执行 I/O，回调本身也要经过线程调度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "操作完成前，不得复用或并发改写它正在使用的 ByteBuffer。同一文件的多个操作可能并发，完成顺序未必等于提交顺序；显式 position 和业务排序仍要由协议保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go常规net接口呈同步调用风格，运行时网络轮询可在等待时挂起G，让其他G运行；不是每个net.Read都永久占一个OS线程。普通文件IO与不集成运行时的系统调用又可能占用M，不能把所有Go IO都说成epoll驱动或内核AIO。Linux POSIX AIO的glibc实现与io_uring不是同一机制，后者以提交/完成环协作，仍可能在内核工作线程执行部分操作。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么可能需要AIO 又为何不是必选"
+    },
+    {
+      "type": "paragraph",
+      "text": "大量并发文件/块IO、需要较深设备队列且能重叠计算与读取的流水线，适合评估异步完成；网络中也能减少每请求占用专门阻塞线程的编排负担。它的价值是资源使用和重叠等待，不是改变磁盘带宽或CPU上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "低并发、操作很短或业务已被数据库瓶颈限制时，同步接口加有界池/轻量线程可能更简单。成熟Reactor也能管理大量网络连接，无须因为追求高并发就强行换AIO。API支持、取消语义、错误收尾、缓冲生命周期、实现线程数与平台版本都要权衡，避免把“必要”说成所有应用必须有同一种AIO机制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取消和完成才是工程难点"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交异步 I/O 以后，资源要等完成或确定取消结果，不能因为“不再想等”就提前回收。否则迟到回调可能访问已关闭的共享资源，甚至写进复用给新请求的缓冲。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消存在竞态，已经落盘或发出的副作用，也不会被普通 Future 取消自动撤销。成功、错误、短读、EOF 和重试，都应进入明确状态机。"
+    },
+    {
+      "type": "paragraph",
+      "text": "比较方案时测端到端延迟、吞吐、线程/上下文切换、峰值缓冲与取消恢复，固定同一负载和持久化语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "部分写入的ByteBuffer状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "部分写入后，从当前位置继续，而不是重新开始。待发 100 字节，第一次 write 完成 40，就保留 position=40 和剩余 60 字节，等下次可写再继续；全写完后撤销不需要的 OP_WRITE。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里 Java read 返回正数表示本次字节数，0 是暂时无进展，-1 才是 EOF。半个消息头要保存解析状态，EOF 时正文不全要报截断。缓冲由连接所有者管理，跨线程结果通过安全队列投递并唤醒 Selector，不能同时随意修改同一个 position。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-java-io-models",
+  "targetOrigin": "authored"
+}

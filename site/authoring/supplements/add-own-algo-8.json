@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-8",
+  "entryId": "8",
+  "expectedOriginalHash": "8bb82a29e7bcc99ed3895f78fd9907982151f945b4f9d9229def9aecb50396f8",
+  "title": "算法练习补充：不用转换库函数把字符串转成 int",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不用转换库函数把字符串转成 int"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确定完整语法和错误策略，再用负数累计并在乘十、减下一位之前检查边界，这样能完整覆盖 -2147483648，也不会先溢出再试图补救。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "“字符串转 int，不允许使用库函数，考虑负数、非法字符、正负号。”",
+        "“为什么普通的 result = result * 10 + digit 还不够？”",
+        "“最小负数怎么处理？非法字符应截断、报错还是返回零？”"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "先确定解析契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "本例采用严格的 ASCII 十进制语法 [+-]?[0-9]+：可有一个前导符号，至少有一位数字；前导零允许，-0 返回 0；不接受空白、分隔符、小数点、指数、全角数字、十六进制前缀或中间符号。整个字符串必须被消费，非法输入与越界输入抛 NumberFormatException，null 也按非法输入处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目没有说明非法输入策略时，应明确问清楚或先提出自己的约定。常见替代版本至少有三种："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "严格解析：12x 整体失败，适合本例。",
+        "前缀解析：跳过指定的前导空白，读一个符号，连续读数字，遇到非数字停止；12x 可能得到 12，必须同时规定无数字时返回什么。",
+        "饱和转换：超出范围返回最大或最小值；不能一边把非法字符当截断，一边在其他输入上按严格报错而不说明。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "“不能用库函数”在这里指不能调用 Integer.parseInt 等转换器，不是禁止 charAt、length 或异常类型。生产实现只用 int 算术，不通过 long、BigInteger 或库解析绕过题目。测试中的 BigInteger 可以作为独立比较对象，因为它不参与待考算法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 标准库的整数解析具有自己的字符判定规则，不能因为本例与它在普通十进制数字上一致，就声称接收语言完全相同。限制为 ASCII 数字是本例的明确契约。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么在负数域累计"
+    },
+    {
+      "type": "paragraph",
+      "text": "32 位有符号整数范围为 [-2147483648, 2147483647]，负侧比正侧多一个值。若先求正的绝对值，2147483648 本身无法放入 int；最后再加负号已来不及。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以始终让累加值 result <= 0。读数字 d 后执行 result = result * 10 - d。根据最终符号选下界：负数允许到 Integer.MIN_VALUE，正数只允许到 -Integer.MAX_VALUE。最终负数直接返回 result，正数再取负号。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "两次预检查如何推导"
+    },
+    {
+      "type": "paragraph",
+      "text": "设 limit 是允许的最小负值。"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "乘十前检查 result < limit / 10。Java 整数除法向零截断；对这里的负边界，该阈值正好是仍可能安全乘十的最小整数值。若更小，乘十必然越过下界。",
+        "乘十后准备减 d，要求 result - d >= limit，等价于 result >= limit + d。因此若 result < limit + d，必须拒绝。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "limit + d 本身安全，因为 d 在 0 到 9 之间。通过两次检查以后，乘法与减法的实际执行结果都在目标 int 范围内，不依赖发生溢出后的回绕值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "循环不变量是：已处理的数字对应一个在允许范围内的非正值 result，且尚未使用最终正负号改变其绝对数值。当所有数字读完，取最终符号后就得到唯一的十进制解释。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Java 入口与代表输入"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整实现如下："
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "/** Strict ASCII [+-]?[0-9]+, with signed 32-bit overflow rejection. */\npublic final class SSAIntParser {\n    private SSAIntParser() {}\n    public static int parse(String text) {\n        if (text == null || text.isEmpty()) throw new NumberFormatException(\"digits required\");\n        int i = 0; boolean negative = false;\n        char first = text.charAt(0);\n        if (first == '-' || first == '+') { negative = first == '-'; i++; }\n        if (i == text.length()) throw new NumberFormatException(\"digits required\");\n        int limit = negative ? Integer.MIN_VALUE : -Integer.MAX_VALUE;\n        int multiplyLimit = limit / 10;\n        int result = 0;\n        for (; i < text.length(); i++) {\n            char c = text.charAt(i);\n            if (c < '0' || c > '9') throw new NumberFormatException(\"non-ASCII digit\");\n            int digit = c - '0';\n            if (result < multiplyLimit) throw new NumberFormatException(\"overflow\");\n            result *= 10;\n            if (result < limit + digit) throw new NumberFormatException(\"overflow\");\n            result -= digit;\n        }\n        return negative ? result : -result;\n    }\n}\n"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "int minimum = SSAIntParser.parse(\"-2147483648\");\nint padded = SSAIntParser.parse(\"+00042\");\n// SSAIntParser.parse(\"2147483648\") 抛出 NumberFormatException\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要主动展示的边界包括：空串、null、单独 +/-、+-1、--1、1-、前后空白、12x、合法最大最小值、两侧各越界一位、很长的全零前缀、全角 １ 和非 ASCII 数字。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只要逐位检查边界，任意长的零前缀也不会被错误拒绝；任意长的非零越界输入在确认越界时即可停止。时间最坏 O(n)，辅助空间 O(1)。如果改成返回“错误位置”，应明确是最先遇到的词法错误还是最先确认的数值越界，不能默认扫描后的另一个错误会覆盖已发生的错误。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

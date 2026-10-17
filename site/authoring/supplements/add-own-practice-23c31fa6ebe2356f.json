@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-23c31fa6ebe2356f",
+  "entryId": "handwrite-57",
+  "expectedOriginalHash": "1655bde04cdb5756b045caa8c75b50e1630b5ca81888ea5de11bd0c7ce051dfe",
+  "title": "跨册场景补充：一百个任务如何限制最大并发三",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一百个任务如何限制最大并发三"
+    },
+    {
+      "type": "paragraph",
+      "text": "最多三个执行线程负责实际同步操作，有限任务放入有界队列，并让整批共享一个截止预算。异步客户端则要让许可持有到真正完成。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "题意、契约与例子"
+    },
+    {
+      "type": "paragraph",
+      "text": "有不超过 100 个 Callable，同一时刻至多 3 个任务执行同步外部操作。成功返回所有结果，顺序采用完成顺序；任一任务失败或整个批次超过期限，则向调用方报告并取消其余任务。例子有 5 个任务时，前三个先获得执行线程；其中任意一个结束，第四个才可开始。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“方法返回一个异步请求句柄”不等于远程请求已经结束。如果任务只发起异步 HTTP 就立即返回，3 个工作线程并不能限制在途 HTTP 数量；这时 permit 必须一直持有到真正的异步完成回调。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "推导与不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定 3 个工作线程，所有实际同步调用只发生在这些线程内；没有 CallerRuns 这样的额外执行路径，所以运行中任务数≤3。为最多 100 个有限任务配置容量 100 的有界队列，可容纳整个批次，也不会变成无界在线入口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CompletionService 把已完成任务放进完成队列。主线程每拿到一个 Future 就 get，既能取得值，也能立即观察异常。CountDownLatch 只能告诉你“某些代码执行到了 countDown”，不会自动告诉你失败了哪个任务；只 await 后打印全部完成会遗漏错误。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L2675–2733（完整围栏，未执行）",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Batch size <= 100. Three synchronous tasks maximum, including failures. */\npublic final class TaskProcessor {\n    public static <T> List<T> run(List<? extends Callable<T>> tasks,\n                                  long timeout, TimeUnit unit) throws Exception {\n        Objects.requireNonNull(tasks); Objects.requireNonNull(unit);\n        if (tasks.size() > 100 || timeout <= 0)\n            throw new IllegalArgumentException(\"at most 100 tasks and positive timeout\");\n        for (Callable<T> task : tasks) Objects.requireNonNull(task);\n        ThreadPoolExecutor pool = new ThreadPoolExecutor(3, 3, 0, TimeUnit.MILLISECONDS,\n                new ArrayBlockingQueue<Runnable>(100), new ThreadPoolExecutor.AbortPolicy());\n        CompletionService<T> completed = new ExecutorCompletionService<>(pool);\n        List<Future<T>> futures = new ArrayList<>();\n        List<T> results = new ArrayList<>();\n        long budget = unit.toNanos(timeout), start = System.nanoTime();\n        Throwable primary = null;\n        try {\n            for (Callable<T> task : tasks) futures.add(completed.submit(task));\n            for (int i = 0; i < tasks.size(); i++) {\n                long left = budget - (System.nanoTime() - start);\n                if (left <= 0) throw new TimeoutException(\"batch deadline exceeded\");\n                Future<T> f = completed.poll(left, TimeUnit.NANOSECONDS);\n                if (f == null) throw new TimeoutException(\"batch deadline exceeded\");\n                results.add(f.get());     // Completion order; surface task failure immediately.\n            }\n            return results;\n        } catch (Exception | Error ex) {\n            primary = ex;\n            throw ex;\n        } finally {\n            for (Future<?> f : futures) if (!f.isDone()) f.cancel(true);\n            // Cancellation is a request, not proof the external operation stopped.\n            stop(pool, 2, TimeUnit.SECONDS, primary);\n        }\n    }\n    public static <T> T underPermit(Semaphore slots, Callable<T> operation) throws Exception {\n        slots.acquire();                 // If this throws, no permit was acquired.\n        try { return operation.call(); }\n        finally { slots.release(); }     // Release only after a successful acquire.\n    }\n    private static void stop(ExecutorService pool, long wait, TimeUnit unit, Throwable primary)\n            throws InterruptedException {\n        pool.shutdownNow();\n        try {\n            if (!pool.awaitTermination(wait, unit)) {\n                IllegalStateException cleanup = new IllegalStateException(\n                        \"workers remain alive after cancellation; inspect blocked operations\");\n                if (primary == null) throw cleanup;\n                primary.addSuppressed(cleanup);\n            }\n        } catch (InterruptedException cleanup) {\n            if (primary == null) throw cleanup;\n            primary.addSuppressed(cleanup);\n            Thread.currentThread().interrupt(); // Preserve a second interrupt during cleanup.\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "时间预算与取消演算"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设批次期限 2 秒，前几个结果共等待 1.5 秒，下一次 poll 只剩 0.5 秒。不能给每个 Future 都单独 get(2 秒)，否则 100 个任务的总等待可能远超 2 秒。预算采用 nanoTime 的相对经过时间，不受普通系统时钟校时直接影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "任务 A 失败后，get 抛 ExecutionException，finally 给其他 Future 发取消并关闭池；如果清理也超时，其异常保存在主错误的 suppressed 列表里。方法返回前最多额外等待 2 秒清理，因此“批次执行期限”并不是包含清理的硬性方法返回时限。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Semaphore 获取与释放的所有权"
+    },
+    {
+      "type": "paragraph",
+      "text": "许可释放必须由成功取得它的代码负责。示例 underPermit 先 acquire，成功后才进入带 release 的 try/finally。若等待许可时被中断，代码还没取得许可，也就没有释放责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "反过来，把 acquire 放进无条件执行 release 的同一 finally 结构，获取失败时也会释放，凭空增加许可，最终可能超过并发 3。沿这个中断分支演算一次，比只记“finally 必须释放”更准确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Semaphore 限制的是正在使用资源的数量，不是每秒请求数。不要为每个任务都 new Thread 再等 permit：虽然能限制远程调用数，却没有限制线程对象/栈和等待队列规模。也不要在任务失败后未经业务幂等设计就自动重试，因为远程操作可能已经成功，只是响应丢失。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "成本与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "N 个任务的提交与收集 O(N)，结果及 Future 存储 O(N)，工作线程固定 3。执行墙钟下界接近总任务耗时/3，但长尾、网络与调度可显著拉长，不等于严格的 N/3 批整齐同步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试用 AtomicInteger 记录当前活跃数，finally 中减回，并核对最大值始终≤3；测试空列表、100 个任务、任务异常、超时、等待线程被中断、任务忽略中断。还应给真实 HTTP/数据库配置连接、读取及整体调用超时：Future 的等待超时不会自动停止外部系统中的副作用。"
+    }
+  ]
+}

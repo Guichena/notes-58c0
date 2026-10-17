@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3037",
+  "entryId": "bg-rocketmq-4",
+  "expectedOriginalHash": "96820d8f2408260d2b77d3a93393ff37a94825525c136346cd21fffd5061b18b",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.11 不使用MQ怎样实现异步解耦并避免已受理任务丢失"
+    },
+    {
+      "type": "paragraph",
+      "text": "不用MQ也可以用持久任务账、条件领取、租约和扫描恢复异步责任，关键是受理提交后任务不会只留在内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：不用MQ怎样异步解耦；请求返回后起线程为什么会丢；数据库任务表怎样多实例消费。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库任务表可以承担一部分消息职责，但进程内异步线程和一张无恢复协议的表都不是可靠队列。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "本地事务保存责任，worker异步执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "不用 MQ 时，先用本地事务把“以后必须执行”存下来。业务状态与 task/outbox(taskId,payloadRef,status,nextAttempt,ownerEpoch) 一起提交，随后返回受理或查询 ID；独立 worker 按到期索引、小批条件领取执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使进程提交后、还没调线程池就退出，任务账仍在，重启或其他 worker 可以接手。这就是它与只放内存队列的关键区别。"
+    },
+    {
+      "type": "paragraph",
+      "text": "worker效果与task完成能同库事务就一起提交；不同库/外部API用稳定taskId幂等、状态查询和补偿。领取租约过期可能重复执行，需要资源端条件/版本，完成后确认前退出也不能重复生效。轮询间隔、索引和背压决定延迟/吞吐；同库表变成热点时要分片/归档而不是无限加扫描线程。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实现了哪些解耦，付出什么代价"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库任务表也能实现时间上的解耦：生产者只等持久受理，不必等下游执行。不同服务可以轮询自己的订阅任务，也可以由 dispatcher 用带重试的 HTTP 通知。"
+    },
+    {
+      "type": "paragraph",
+      "text": "但如果多个下游都必须收到，就要为每个下游保存独立进度或投递责任。不能一个消费者删了记录，其他服务就再也看不到。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库任务表复用了现有设施，但要自己建设订阅、重试/死信、保留/重放、顺序、权限、容量监控和故障恢复；高吞吐大量扇出可能不如成熟MQ合适。直接同步HTTP让调用方等待下游，不能达到同样的时间解耦；纯内存异步在进程退出时也不满足持久可靠受理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "保证的是在数据库持久承诺和恢复假设成立时任务责任不静默丢失，不承诺永久外部故障也必成功。测事务回滚、提交后退出、多worker竞态、效果成功响应丢失、旧epoch和数据库不可用；监控最老待办年龄和最终失败归宿。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "3"
+}

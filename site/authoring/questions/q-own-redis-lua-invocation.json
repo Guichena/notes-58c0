@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-lua-invocation",
+  "order": 129,
+  "question": "Java 怎样调用 Redis Lua，NOSCRIPT、运行错误与结果未知如何处理？",
+  "shortAnswer": "脚本、键和参数分别管理；只对确认未执行的 NOSCRIPT 做受控加载，运行错误和超时不能盲目重试。",
+  "commonPhrasings": [
+    "EVALSHA 缓存丢失怎么办？",
+    "Cluster 同槽与 Functions 有哪些边界？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis Lua 脚本怎么调用，NOSCRIPT 和 Cluster 怎么处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Lua 的用法是固定脚本源码，通过 KEYS 传键、ARGV 传普通参数，再用 EVAL 或 EVALSHA 调用；它能让 Redis 内的一组操作不被其他客户端命令穿插，但不能自动回滚已完成的写入，也不能一起提交数据库和 MQ。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“Lua 脚本怎么使用”先讲参数、加载和调用；“秒杀里怎样做到一人一单”要再讲检查与写入的原子范围；“超时后能不能重试”“切主或 Cluster 怎么办”则要区分请求结果、脚本缓存与数据可靠性。下面以 Redis 7.2 的 EVAL 调用为基础，Redis 7.0 起的 Functions 和 7.4 起的脚本淘汰分别说明。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一、把键、参数和完整脚本分开管理"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把脚本当作应用的版本化资源保存，同一逻辑使用固定源码。业务参数每次拼进源码，会造出大量不同脚本，后续加载和缓存也更难管理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调用时使用 EVAL script numkeys key... arg...：numkeys 指定后面多少个参数放进 KEYS，剩下的进入 ARGV，Lua 下标从 1 开始。脚本会访问哪些键，就把这些键全部显式传入；不要根据数据库内容临时拼出任意新键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以安全删除锁键为例：KEYS[1] 是锁 key，ARGV[1] 是本次加锁独有的随机 owner token。先检查键与参数数量，再 GET 比较，只有当前 owner 相同才 DEL；返回实际删除数，否则返回 0。比较和删除必须放在同一次脚本执行里，才能避免“比较后锁过期，新 owner 刚加锁，旧 owner 再把它删除”的竞态。"
+    },
+    {
+      "type": "code",
+      "language": "lua",
+      "value": "-- KEYS[1]: lock key. ARGV[1]: this acquisition's unique random owner token.\n-- This protects deletion only; it cannot fence writes to an external resource.\nif #KEYS ~= 1 or #ARGV ~= 1 then\n    return redis.error_reply('exactly one key and one owner token required')\nend\nif redis.call('GET', KEYS[1]) == ARGV[1] then\n    return redis.call('DEL', KEYS[1])\nend\nreturn 0\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这段脚本仅保证不会删掉不同 owner 的锁。锁已过期，或者当前值属于别人，都返回 0；键类型不对时 GET 会报 WRONGTYPE。它没有续租逻辑，也不能阻止一个租约已经过期的旧持有者继续写外部资源；需要这类保护时，还要由外部资源验证 fencing token 或采用自己的并发控制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把上述内容保存为 compare_delete.lua，在一个专用的本地测试 Redis 上，可以这样调用；示例 owner 仅用于演示，真实加锁必须生成本次持有者的独有 token。"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "value": "# 本地独立测试实例默认监听 127.0.0.1:6379。\nredis-cli SET 'demo:lock:{resource-1}' 'owner-demo' NX PX 30000\nredis-cli --eval compare_delete.lua 'demo:lock:{resource-1}' , 'owner-demo'\n\n# 再次持有同一测试锁，演示 SCRIPT LOAD 和 EVALSHA。\nredis-cli SET 'demo:lock:{resource-1}' 'owner-demo' NX PX 30000\nsha=$(redis-cli -x SCRIPT LOAD < compare_delete.lua)\nredis-cli EVALSHA \"$sha\" 1 'demo:lock:{resource-1}' 'owner-demo'\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "使用 Java 客户端时，脚本文本、keys 列表和普通参数列表要按 API 分开传，接收整型返回值。上例的 keys 和 args 各一个元素，不是把 Lua 代码当作 SET 的 value，也不是把 owner 错放进 key 列表。CLI 的 --eval 分隔逗号两边分别是键和普通参数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二、明确区分 NOSCRIPT、运行错误和结果未知"
+    },
+    {
+      "type": "paragraph",
+      "text": "SCRIPT LOAD 加载并编译脚本，返回 SHA1，不执行业务逻辑。EVALSHA 用 SHA 定位脚本，减少反复传送源码。明确收到 NOSCRIPT 时，表示目标节点没有这段脚本、该次业务脚本没有执行，可以在目标节点重新加载后再调用，或者回退到相同源码的 EVAL。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本缓存不属于业务数据持久层。重启、切主后连接到没有该脚本的节点，以及 SCRIPT FLUSH，都可能导致缺失。Redis 7.4 起，由 EVAL 或 EVAL_RO 加载的脚本还可能按 LRU 规则被淘汰；这一变化不能反推成 7.2 的行为，也不要把它笼统说成所有 SCRIPT LOAD 脚本都按同一规则淘汰。"
+    },
+    {
+      "type": "paragraph",
+      "text": "网络超时和 NOSCRIPT 是两回事。超时可能发生在脚本已经扣减成功、响应还没到客户端的时候，此时直接再 EVAL 会重复扣减。需要稳定的业务 request_id、调用者身份、参数指纹和结果状态，在对应业务原子边界内去重；同 ID 不同参数应拒绝，结果未知先查状态。只缓存 SHA 不能实现请求幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "pipeline 已经把多条命令发出后，无法在中间收到 NOSCRIPT 时立即插入加载步骤来修正后续执行。可以按客户端支持预装脚本，或在这类调用中使用固定源码 EVAL，并事先定义哪些命令可以重试、哪些需要先确认结果；不能把整批重发当成通用恢复方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "redis.call 出错会终止脚本；redis.pcall 把错误作为结果返回，让脚本决定怎么处理。两者都不会撤销之前已经成功的写入。因此参数数量、键类型、数量正负和范围等应尽量在写前校验，循环与返回结果也要有界；即便做了校验，仍需考虑运行错误或资源不足后的部分执行状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本运行占用 Redis 的主要命令执行路径，不能当后台线程做长循环，也不能任意访问网络或文件。Redis 具备 I/O 线程和后台任务，不代表 Lua 里的业务命令可以随意并行。脚本超过执行时间阈值并不会自动回滚或被自动终止；SCRIPT KILL 只能在尚未写数据等允许条件下中止脚本，不能作为通用事务撤销按钮。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Lua 使用 Lua 5.1 的数值模型，涉及整数时要限定可精确表示的范围。任意 64 位 ID 适合作为字符串传递和比较，不应随手 tonumber 后再声称无损；数量计算还要检查溢出、非法输入和取整规则。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三、Cluster 和 Functions 增加了哪些要求"
+    },
+    {
+      "type": "paragraph",
+      "text": "在 Redis Open Source Cluster 的常规多键脚本设计中，声明的 KEYS 必须落在同一槽，客户端先路由到目标节点。可以按单个资源使用 hash tag，例如 stock:{sku-1} 与 buyers:{sku-1}，而不是给全站所有键一个共同 tag。每个主节点有自己的脚本缓存，在 A 加载不代表 B 已有；拓扑变化还要处理 MOVED、ASK、迁槽期间可能的 TRYAGAIN 和 NOSCRIPT。"
+    },
+    {
+      "type": "paragraph",
+      "text": "版本细节也要讲准确：Redis 7.x 的脚本 flags 存在 allow-cross-slot-keys 等选项，但调用时声明的键仍有同槽约束，也不能因此跨服务器原子执行。跨槽访问不利于迁槽，面向可迁移的应用仍应设计为只访问显式声明的同槽键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果用 Lua 讲秒杀一人一单，同一次脚本应先校验输入，再检查库存和购买标记，满足条件才扣减并写入标记或预留状态；这些键需要位于可共同执行的范围，用户身份来自已认证的应用请求。一个调用传入一组 KEYS 和 ARGV，Lua 不会自动收集不同用户的命令，也不会自动识别谁有资格购买。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 扣减成功，只代表这一层操作完成。后面的订单事务可能失败，发 MQ 前应用也可能崩溃；Redis 异步复制和故障切换还可能丢失已经确认的写。若数据库是权威账本，可以让条件预留、订单或幂等记录、Outbox 在本地事务里提交；若 Redis 是承诺来源，就要另外证明其持久恢复与消息补偿协议，不能把单槽原子性扩展成端到端不丢不重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.0 起提供 Functions：通过 FUNCTION LOAD 部署函数库，注册入口后用 FCALL 调用，函数库随数据持久化并复制，部署管理方式与临时脚本缓存不同。应用仍要管理版本，并确保 Cluster 需要执行该函数的节点部署一致；函数执行仍阻塞相应执行路径，也没有通用回滚和外部事务能力。给普通 Lua 文件起一个函数名，不等于已经部署了 Redis Functions。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四、怎样验证并联系实际项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "这段解锁脚本应覆盖参数数量错误、正确与错误 owner、key 不存在、过期后由新 owner 持有、WRONGTYPE、响应丢失以及 SCRIPT FLUSH 后重新加载。Cluster 还要验证跨槽拒绝、路由变化和切主；实际权限需要检查 ACL。Java 单 JVM 或关系数据库事务测试，不能证明这些 Redis 行为已经正确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "我的实际 Redis Lua 使用场景是制造业通知链路的渠道出口令牌桶，配合 P0 预留配额和积压滞回降级。这个例子可以用来解释为什么补充令牌、检查余额和扣减要放在一次 Redis 状态更新里。上面的 owner 比较删除是另一种教学例子，解决的是解锁时不误删别人的键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果把渠道限流部署到 Cluster，我会先按渠道与额度范围划分键，确认哪些预算必须一起裁决，再设计 hash tag、脚本加载和故障后的结果查询。跨槽共享配额需要另外的协调方案，不能只把单机脚本换成 Cluster 地址就当作完成。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

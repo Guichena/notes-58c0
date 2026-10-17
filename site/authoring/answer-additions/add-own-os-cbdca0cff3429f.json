@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-cbdca0cff3429f",
+  "entryId": "q-own-jvm-diagnosis",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "07cc618abb35e090ad28f374b4bd77f32304b91a9817f51b6a9317f2dce982c5",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "栈与堆有什么区别 栈溢出 内存耗尽和泄漏怎样排查"
+    },
+    {
+      "type": "paragraph",
+      "text": "栈管理调用执行现场，堆管理独立于调用栈的动态生命周期；栈耗尽、分配失败和无用对象被保留是不同问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "区分操作系统地址映射、语言运行时分配和数据结构“栈/堆”；不声称所有平台布局方向相同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生命周期与访问方式"
+    },
+    {
+      "type": "paragraph",
+      "text": "调用栈保存函数调用帧、返回状态和部分局部数据，通常由调用/返回维护，每线程有自己的执行栈；局部变量也可在寄存器或被优化掉，栈中的指针可能指向共享对象。堆分配由分配器或运行时管理，生命周期不必与调用返回同步，C++常通过RAII释放，Java/Go等由GC管理可回收对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "堆和栈都是虚拟地址空间中的区域，最终依页表映射，并非“栈用缓存、堆用内存”。栈通常快速且局部性好但容量受限；堆支持灵活生命周期，代价包含分配元数据、碎片、同步或GC。不能绝对背栈向下、堆向上或所有对象一定上堆，具体语言、ABI和逃逸优化会改变实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三类问题分别解释"
+    },
+    {
+      "type": "paragraph",
+      "text": "先分清“栈空间用完”和“写坏栈上的缓冲区”。无终止递归、递归过深、大局部数组或栈预算太小，可能耗尽栈，触发保护页异常或语言特定错误；C/C++ 栈缓冲区越界则属于另一类内存破坏。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对栈耗尽，先修递归终止条件、限制输入深度，或改成迭代与显式有界栈；大对象移到有管理的存储中。盲目增大栈，只可能把问题推迟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“内存溢出”在面试通常指申请失败或OOM，也可能被用来指缓冲区越界，应先说明术语。内存泄漏指已不需要却未正确释放或仍被无意义引用保留的资源，能导致OOM，但正常活跃数据过大也会OOM而没有泄漏。GC不能回收仍被静态缓存、监听器、任务队列等引用的无用对象；FD或连接泄漏还会带来独立资源耗尽。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用证据定位并验证修复"
+    },
+    {
+      "type": "paragraph",
+      "text": "排内存问题先确定“怎么失败的”：语言异常、SIGSEGV、系统/cgroup OOM，还是其他终止。记录时间、输入规模、并发和资源限制，再比较虚拟大小、RSS/PSS、GC 后堆基线、线程数、原生分配及容器 memory.events。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RSS 不下降可能只是分配器保留或页缓存，不能单凭它宣布泄漏。按语言使用堆快照与保留链、分配剖析、sanitizer 或 Go pprof 等工具；不要在生产故意压到 OOM，转储也可能包含敏感数据，应最小化收集。"
+    },
+    {
+      "type": "paragraph",
+      "text": "修复要落到具体所有权和上限：RAII/智能指针、关闭连接/文件、取消任务与解除监听、有界缓存和队列、处理失败路径。复现同类负载并观察稳态资源是否回到可解释基线，不能只用“加内存后暂时没崩”宣称修复。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "怎样写代码测当前Java方法的栈溢出深度和栈预算"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java递归可达深度只能针对具体方法、JDK、执行模式和-Xss测量，不能用统一层数换算所有线程的剩余栈字节。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先定义要测的数"
+    },
+    {
+      "type": "paragraph",
+      "text": "-Xss设置Java线程栈大小，实际平台可能有最小值、对齐和保护页。递归能进入多少层取决于方法帧、局部变量、解释/JIT编译、内联、运行时版本及初始调用深度；因此N层×一个猜测帧大小不能得到精确全部可用字节。栈空间和Java堆预算-Xmx是不同维度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若要求是本机这段代码的实际深度，可在独立子JVM固定版本和参数，计数最后进入的层；若要生产线程剩余可用字节，没有可移植Java API保证给出精确值，应使用适当运行时/原生诊断并留保守余量。C++百万数组的字节与帧预算另见进程地址空间怎样分布 百万个局部元素会放在哪里 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn7vtxM8jEvSrLGWt4EbsQ3b)，不能套Java数组引用模型。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "探测代码为什么放到独立进程"
+    },
+    {
+      "type": "paragraph",
+      "text": "StackDepthProbe递归时写静态deepest计数，返回后还有计算，捕获StackOverflowError的位置在最外层，等递归帧展开后才打印，避免在几乎没栈空间时做复杂日志。设100000层上限，若未溢出就明确失败而不无限继续。这里只故意让自己的短命子JVM耗尽小线程栈，不在生产或主服务线程做试验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用-Xint让解释执行帧更便于重复比较，-Xmx32m限制堆，并由启动者给每个子进程设置外部时限；它不是对JIT实际服务深度的替代测量。若想找某有限递归目标需要的最小-Xss，可对子JVM参数二分并重复边界，但结果仍仅对该方法和构建成立。"
+    },
+    {
+      "type": "paragraph",
+      "text": "修复时先检查递归终止条件、限制输入深度，或改成迭代与显式有界栈；再按线程数和总内存预算考虑栈大小。调大-Xss会增加大量线程的资源压力，不能代替修复无界递归。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "StackDepthProbe.java 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "StackDepthProbe.java",
+      "value": "/** Run in a fresh, disposable JVM; reports this method's observed frame depth only. */\npublic final class StackDepthProbe {\n    private static int deepest;\n    private static volatile long sink;\n    private static long recurse(int depth) {\n        deepest = depth;\n        if (depth >= 100_000) return depth;\n        long result = recurse(depth + 1);\n        sink = result + depth; // Work after call avoids a tail-recursion form.\n        return sink;\n    }\n    public static void main(String[] args) {\n        boolean exhausted = false;\n        try { recurse(1); }\n        catch (StackOverflowError expected) { exhausted = true; }\n        // Print only after recursive frames have unwound.\n        System.out.println(\"exhausted=\" + exhausted + \" deepest=\" + deepest);\n        if (!exhausted) throw new AssertionError(\"bounded depth cap reached\");\n    }\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "进程隔离怎样影响OOM与故障传播 多进程并非自动省内存"
+    },
+    {
+      "type": "paragraph",
+      "text": "多进程可以缩小部分故障域，但私有堆、运行时和共享页计费仍消耗内存，容器组杀还可能扩大OOM影响。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "2. 为什么用多进程解决 OOM，而不是多线程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程崩溃会影响整个进程，你认为这样设计的原因是什么？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先验证OOM的含义与原方案改变了什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "先分清Java堆OutOfMemoryError、原生分配失败、进程地址空间限制、宿主或cgroup OOM杀进程。记录单批/单任务数据量、并发、输入输出缓冲、RSS/PSS、堆GC后基线和memory.events，才能判断是合法活跃集太大、无界排队、强引用泄漏、原生库保留还是碎片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多进程方案看起来解决了 OOM，先确认是不是同时改了批大小、并发和回收时机。不能把所有收益都归因于“进程比线程好”。多线程共享堆与全局缓存，线程结束不会自动释放仍被引用的对象，也不会保证分配器把所有页还回去。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程处理有限批次后退出，可以回收自身地址空间和原生资源，并切断进程内保留链。这对难以彻底收尾的第三方解析器等场景有用，但收益来自生命周期管理和故障隔离，不是多进程天然更省内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同一预算内多进程可能更容易OOM"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个进程可有重复解释器/JVM、缓存、页表与工作集，IPC序列化和复制也有峰值。fork的COW只在未写共享页时有收益，写入会产生独立页，spawn则重建运行时；启动方式依语言/平台/版本，不能把所有多进程都视为零拷贝。共享只读映射可以减少重复数据，但要明确所有权和同步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个子进程不等于多份独立、无限的内存预算。同一 cgroup 里的进程仍受共同上限约束，配置了相应 OOM 组杀策略时，还可能一起结束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "估峰值要算父进程、各 worker 峰值、队列与序列化缓冲、共享页计费及余量。只看单个 worker 变小不够；把各进程 RSS 直接相加，还可能重复计算共享页。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "更可靠的预处理方案和验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "优先流式读取、分块转换、及时写出、限制输入批次与任务队列、减少中间副本及全量拼接；线程模型也能靠这些措施降低峰值。确实需要进程时建有界池，按内存预算限制并发，规定worker处理多少任务后回收，监控失败并使输出通过临时文件/原子提交或幂等键发布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对同一数据与正确结果比较单线程、有界线程、同等并发进程，记录吞吐、尾延迟、整体峰值和回收曲线。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么致命线程错误常按进程故障处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "原生致命错误常终止整个进程，是因为 OS 很难保证剩下的共享状态仍然可信。同进程线程共享地址空间、分配器、锁和 FD，C++ 越界可能已破坏别的线程的数据或锁结构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只杀触发错误的线程，可能留下永远没人释放的锁和写到一半的不变量。因此原生致命信号默认以进程作为失败边界；这不意味着每一种普通语言异常也必须结束全进程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通线程return、Java线程未捕获业务异常、C++线程入口异常逃逸、exit_group和Go未恢复panic有不同规则，完整机制见进程线程生命周期 CPU占用与线程数量上限怎样回答 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn3besrH6uBj7GDgX87fnN2d)。需要硬隔离不可信/崩溃组件时用独立进程加受控IPC和恢复协议；进程仍会共享磁盘/数据库/系统配额，不能把进程隔离夸大成任何故障互不影响。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-jvm-oom",
+  "targetOrigin": "authored"
+}

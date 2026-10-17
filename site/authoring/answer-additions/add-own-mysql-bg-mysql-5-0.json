@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-5-0",
+  "entryId": "bg-mysql-5",
+  "expectedOriginalHash": "4ecededbb54185f4afee8c15810beb5afe09ea5e8bd78a956fb40ec3153bd031",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第14章 EXPLAIN、执行器与优化器选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "执行计划是访问方式和成本估计，EXPLAIN ANALYZE 才提供一次真实执行的迭代器观测；调优应比较估计与实际，而不是只盯着有没有 key。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：EXPLAIN 看哪些字段？type 怎么排序？Using filesort 是否落盘？A、B 两个索引选哪个？小表一定驱动大表吗？FORCE INDEX 怎么用？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试时先给观察顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "“我先看语义和最终输出，再从扫描端看访问表、索引、范围与候选行；接着看过滤、回表、连接循环、排序和临时结果。普通 EXPLAIN 的 rows、filtered 是估计，可能受统计和参数倾斜影响。安全的测试环境里，我用 EXPLAIN ANALYZE 对照实际 rows、loops 和耗时，再决定改 SQL、索引、统计还是数据组织。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 MySQL 8.4.0 为基线，TRADITIONAL 便于概览，JSON 展开条件和成本，TREE 显示执行器结构。EXPLAIN ANALYZE 会执行语句，使用 TREE；对会修改数据的受支持语句不能当成只读解释，生产大查询也可能耗资源。本章只在隔离的教学数据上运行 SELECT 分析。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "传统输出的十二个字段"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "id：查询块标识，不是“值越大必然先执行”的通用调度规则。",
+        "select_type：SIMPLE 是不含子查询或 UNION 的简单查询；PRIMARY 是最外层查询；SUBQUERY 标识子查询中的首个 SELECT；DERIVED 是派生表查询；UNION 是 UNION 的后续 SELECT，UNION RESULT 是其结果；MATERIALIZED 表示物化子查询。它们说明查询块形态，不是优劣等级。",
+        "table：当前访问的表、别名或派生结果。",
+        "partitions：访问分区；不适用时可为 NULL。",
+        "type：访问方法，描述如何取得候选，不能单独作性能分数。",
+        "possible_keys：可能帮助找行的候选索引，不等于最后采用。",
+        "key：实际选择的索引；非空仍可能是全索引扫描。",
+        "key_len：采用键前缀的字节长度；受类型、可空性、字符集等影响，应对照范围解释。",
+        "ref：索引比较使用的常量或列；函数形式要进一步检查。",
+        "rows：预计每次扫描/访问检查的行量，对 InnoDB 通常是估计。",
+        "filtered：预计由条件保留下来的百分比；结合 rows 才能估计下一层输入。",
+        "Extra：覆盖、条件下推、过滤、排序、临时表等补充信息。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "const 常见于主键/唯一非空等值至多一行，eq_ref 常见于对前面组合逐次唯一查找，ref 是非唯一匹配，ref_or_null 还包含 NULL 分支，range 是区间，index 是索引扫描，ALL 是表扫描。system 是表仅一行的特例；fulltext 使用全文索引；index_merge 合并多个索引访问；unique_subquery 可用唯一键查找替代特定 IN 子查询，index_subquery 则对应非唯一索引查找。大表上的 ref 扇出巨大可能比小表 ALL 更贵，不能拿一张 type 排名表结束分析。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Extra 中 Using index 是覆盖，Using index condition 是 ICP，Using where 表示还有条件判断；Using temporary 不等于一定磁盘临时表，Using filesort 不等于一定写磁盘。Using join buffer 也必须看具体版本和算法，不能把 MySQL 8.4 的所有无索引连接都说成旧 Block Nested Loop。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "估计与实测怎么对齐"
+    },
+    {
+      "type": "paragraph",
+      "text": "读 TREE 时，先把“一次调用”与“整个查询”分开。actual time=a..b 通常是迭代器到首行、到完成的平均毫秒数；rows 要与 loops 一起看，多次调用时不能把 rows 当成整条查询的总输出。父节点耗时还可能包含子节点，逐项相加会重复计算。EXPLAIN ANALYZE 自己也有观测开销，一次热缓存结果不是长期 P99。"
+    },
+    {
+      "type": "paragraph",
+      "text": "嵌套循环最适合用这个方法看：外侧过滤后若有 R 行，内侧 loops 可能接近 R。假设一次索引探测 0.1 毫秒，1000 次约 100 毫秒，1000000 次约 100 秒。这里只是忽略缓存、批处理和重叠的乘法示意，不是实测；它提醒我们每次便宜，也可能累计很贵。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此改进时先减少外侧合法候选，再检查连接键索引、类型转换和一对多扇出。不能为了少行，把需要保留未匹配行的 LEFT JOIN 改成 INNER JOIN，也不能随意互换 ON 与 WHERE。内侧“用了索引”，只是分析起点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hash Join 通常构建一侧的哈希表，再探测另一侧，内存不足可能分批/落盘。构建侧适合较小的过滤后输入，但“物理表行数小的一定驱动大表”过于粗糙。连接形态、选择率、可用索引、输出宽度和排序需求共同决定计划。MySQL 8.0.20 起原先适用 Block Nested Loop 的一些场景改由 Hash Join 处理，8.4 答案要按现行执行器理解。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "0"
+}

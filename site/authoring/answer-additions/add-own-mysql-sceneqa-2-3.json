@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-sceneqa-2-3",
+  "entryId": "sceneqa-2",
+  "expectedOriginalHash": "40221f2cdc35c8f278b70a3eec7250a20b9a19f8913cefe25e54248bbc111ca8",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10. 远端已创建但本地没收到响应，状态机如何收口？"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部意图以 (tenant_id,business_key) 唯一，稳定 requestId 与不可变 payload/hash 绑定。READY 表示尚待发起，CREATING 表示一次已认领发送，OPEN 只表示得到权威创建或受理证据，不表示通知已送达、用户已读或后续业务已结束。明确且可证明“没有产生效果”的拒绝可进入 REJECTED；超时、断连、非权威 NOT_FOUND 都进入 UNKNOWN。MANUAL 表示需要人工核对，不能把未知效果洗成失败，也不能因此释放仍受该效果影响的预占资源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下 SQL 展示精确 CAS 形状，:name 是需要 JDBC 绑定的参数记法，不是直接粘贴进 mysql 客户端的脚本；这是未执行的教学模板。租约使用数据库 UTC 时间，所有 epoch 增加都必须检查 BIGINT 范围。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch36/fence-158.sql",
+      "value": "UPDATE external_intent\nSET epoch=epoch+1, lease_until=UTC_TIMESTAMP(6)+INTERVAL 30 SECOND\nWHERE tenant_id=:tenant AND stable_request_id=:request\n  AND epoch=:expected_epoch AND epoch<9223372036854775807\n  AND state IN ('READY','CREATING','UNKNOWN','MANUAL')\n  AND (lease_until IS NULL OR lease_until<=UTC_TIMESTAMP(6));\n\nUPDATE external_intent SET state='CREATING'\nWHERE tenant_id=:tenant AND stable_request_id=:request\n  AND epoch=:owned_epoch AND state='READY' AND lease_until>UTC_TIMESTAMP(6);\n\nSTART TRANSACTION;\nUPDATE external_intent SET state='OPEN',remote_id=:authoritative_remote_id,lease_until=NULL\nWHERE tenant_id=:tenant AND stable_request_id=:request\n  AND epoch=:owned_epoch AND state IN ('CREATING','UNKNOWN','MANUAL')\n  AND lease_until>UTC_TIMESTAMP(6);\nSET @created=ROW_COUNT();\nINSERT INTO external_notice(tenant_id,stable_request_id,event_type,remote_id)\nSELECT :tenant,:request,'CREATED',:authoritative_remote_id WHERE @created=1;\nCOMMIT;\n\nUPDATE external_intent SET state='UNKNOWN',lease_until=NULL\nWHERE tenant_id=:tenant AND stable_request_id=:request\n  AND epoch=:owned_epoch AND state='CREATING' AND lease_until>UTC_TIMESTAMP(6);\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "OPEN 转移与 external_notice 必须在同一连接的同一短事务提交，失败一起回滚，成功后才让通知链路消费这条唯一事件。通知失败不能回退已经存在的工单，更不能再创建一次工单；“工单已创建”和“通知已受理/已送达”是独立状态。上面的认领、开始发送、成功记录和 UNKNOWN 记录分别是不同阶段的模板，不是要求依次无条件跑完一整段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次认领成功后，要读取本事务锁定的实际 state 和新 epoch，再提交认领事务。先读一个候选、过一会儿就假设自己更新成功，并不成立；每条 UPDATE 都检查影响行数，0 行只说明本次 CAS 没拿到权力。示例租约 30 秒，也不是未来最长暂停时间的保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若接手过期 CREATING 或 UNKNOWN，第一步沿原 requestId 查远端权威结果。远端明确提供长期幂等创建时，才可用同号同参数安全重发；若既没有幂等，又没有权威查询，结果未知后就无法同时保证“不重复创建”和“自动最终成功”，应保留不确定性并人工核对。换号重试会破坏原保证。远端幂等键保留期、远端查询期限、本地 Inbox/意图保留期与业务 deadline 也必须分别满足。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地 epoch 只能拦住旧 worker 改本地状态。旧 worker 暂停后恢复，仍可能向远端发 HTTP；真实效果只能由远端接受的稳定幂等键或 fencing 约束。调用前再查一次本地 epoch 能缩小窗口，但检查与发送之间仍有间隙，所以本地锁不能代替远端协议。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "3"
+}

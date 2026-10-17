@@ -1,0 +1,30 @@
+{
+  "path": "live-sources/own-core/mysql/MySQL与数据库系统设计面试手册.md",
+  "sha256": "56978a48f1c2c68017d0accddd7a08396d20bdbb5163cace2740dac30eb1d406",
+  "sections": [
+    {
+      "lines": [
+        2094,
+        2130
+      ],
+      "reason": "MDL initializer, owner-verified PENDING gate and A/B steps",
+      "text": "\nALTER 在等，未必是行锁挡住它。一个事务只 SELECT 过表，之后连接显示 Sleep，但尚未提交，仍可能持有保护表定义的 MDL；ALTER 的不兼容结构变更就要等它结束。\n\n先查对那一层：MDL 看 performance\\_schema\\.metadata\\_locks，InnoDB 数据锁等待看 data\\_locks/data\\_lock\\_waits，内部 mutex 竞争看相应等待事件。如果把 MDL 误判为慢查询，试图“加个索引解决”，这次建索引本身也可能排在同一个长事务后面。\n\n在已授权的独立练习库中，先由 A 初始化一次。若已执行后文 lock\\_ranges\\.sql，mdl\\_probe 已存在，跳过这两句而不是重复建表：\n\n```SQL\nCREATE TABLE mdl_probe(id INT PRIMARY KEY) ENGINE=InnoDB;\nINSERT INTO mdl_probe VALUES(1);\n```\n\n两个连接均选中同一练习库。A1 完成后保持事务；B1 是等待中的命令，不能把所有步骤发到同一窗口：\n\n```SQL\n-- A1\nSTART TRANSACTION;\nSELECT * FROM mdl_probe; -- 返回后不提交\n-- B1，在独立连接 B 发送：\n-- SET SESSION lock_wait_timeout=120;\n-- ALTER TABLE mdl_probe COMMENT='lab';\n```\n\nA 用下面查询确认 B 的元数据锁请求 PENDING，再执行 A2。需要元数据锁监测已启用及读取权限；缺少观察条件则停止这一轮验证，不用 sleep 代替闸门：\n\n```SQL\n-- A：观察；表名相同仍需用 OWNER_THREAD_ID 对上 B 的连接。\nSELECT OBJECT_SCHEMA,OBJECT_NAME,LOCK_TYPE,LOCK_STATUS,OWNER_THREAD_ID\nFROM performance_schema.metadata_locks\nWHERE OBJECT_SCHEMA=DATABASE() AND OBJECT_NAME='mdl_probe';\n-- A2：确认 B 的 PENDING 请求后\nROLLBACK;\n```\n\n随后确认 B 的 ALTER 返回成功，两侧均执行 ROLLBACK 清理会话。ALTER 属于 DDL，其隐式提交边界不能当普通业务回滚测试，表注释会保留。B 若先超时则这一轮中止；不要把超时当已完成 ALTER。这里只操作一次性表，不终止生产会话。\n\n## 两阶段锁协议不是两阶段提交"
+    },
+    {
+      "lines": [
+        2288,
+        2316
+      ],
+      "reason": "Both exact range predicates and all independent insertion probes",
+      "text": "## 实验三 现有键 1 到 10 查询 6 到 9\n\n“搜 6–9，锁住 \\[6,9\\)，那么 9–10 还能插吗？”没有足够信息给唯一答案。标准 next\\-key 的表示通常是左开右闭，不是天然 \\[6,9\\)。若键是唯一 INT，9 与 10 之间没有可表示的新整数；插入 9\\.5 必须先换成允许小数的域。若是普通索引，重复 9 又要同时给新主键，这与插 9\\.5 不同。\n\nrange\\_probe 因此明确采用 DECIMAL\\(4,1\\) 的非唯一索引，初始 k 恰为 1,2,…,10。下面两种条件必须分别进行，不能合并为一个“6–9”结论：\n\n```SQL\n-- A：每个条件分别开新事务。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT * FROM range_probe FORCE INDEX(ix_k) WHERE k>=6 AND k<9 FOR UPDATE;\n-- 本组结束 ROLLBACK 后再另开事务执行：\n-- SELECT * FROM range_probe FORCE INDEX(ix_k) WHERE k BETWEEN 6 AND 9 FOR UPDATE;\n```\n\nA 查询返回后保持锁。B 每次只试一个值，并独立 START TRANSACTION / ROLLBACK：\n\n```SQL\nINSERT INTO range_probe VALUES(100,5.5);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,6.5);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,8.5);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,9.0);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,9.5);\n```\n\n为避免某个被阻塞的探针影响下一次，每个值都完整重建 A 的事务；如果 B 等待则由 O 记录并释放 A，B 成功后回滚，接着重做 A 再测下一值。得到的实验表应包含完整 A SQL、B 完整元组、执行计划、INDEX\\_NAME、LOCK\\_MODE、LOCK\\_DATA、结果和 VERSION，空白处留待实际执行填写，不预填猜测值。\n\n如果确实观察到一把 `(8,9]`，它本身不覆盖 `(9,10)`；但全事务还可能持有 10 前 gap、其他 next\\-key 或聚簇索引锁，所以不能据“一把锁”证明 9\\.5 可插。比较唯一/普通索引、RR/RC、普通 SELECT/锁定读时，每次都改变一个明确条件。该推导方法能回答题目已有部分，也保留精确锁集合不可从口述恢复的边界。\n"
+    },
+    {
+      "lines": [
+        5179,
+        5184
+      ],
+      "reason": "surname sample identities",
+      "text": "```SQL\nCREATE TABLE users_probe(id INTEGER PRIMARY KEY,username VARCHAR(100),gender VARCHAR(12),age INTEGER);\nCREATE INDEX ix_gender_name ON users_probe(gender,username,id);\nINSERT INTO users_probe VALUES(1,'王小红','F',20),(2,'王明','M',21),\n (3,'李王','F',30),(4,'王','F',40),(5,'王莉','F',NULL),(6,NULL,'F',25);\nSELECT id FROM users_probe WHERE gender='F' AND username LIKE '王%' ORDER BY username,id;"
+    }
+  ]
+}

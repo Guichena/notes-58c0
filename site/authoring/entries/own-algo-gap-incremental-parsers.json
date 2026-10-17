@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-incremental-parsers",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "字符串边界与增量解析",
+  "questions": [
+    {
+      "id": "q-own-algo-incremental-parsers",
+      "question": "字符串边界与增量解析",
+      "shortAnswer": "字符串算法首先要确定“边界是什么、哪些信息必须保留、错误如何返回”，再选择扫描、栈或 Trie；一段看起来很短的代码，往往恰好会把题目最重要的语义省略掉。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "字符串边界与增量解析"
+        },
+        {
+          "type": "paragraph",
+          "text": "字符串算法首先要确定“边界是什么、哪些信息必须保留、错误如何返回”，再选择扫描、栈或 Trie；一段看起来很短的代码，往往恰好会把题目最重要的语义省略掉。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本章围绕六类问题展开：按句界分块、最长前缀意图路由、按前缀枚举单词、括号与字母的处理、路径规范化、整数和浮点数解析。Java 配套代码使用独立类，原生 Python 的逐字符浮点算法另行保留。代码中的输入约定是可执行的示例契约；题面未确定的地方会给出选择，面试时应先与面试官统一，不能把示例契约说成题目已经规定。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "按句子边界进行文本分块"
+        },
+        {
+          "type": "paragraph",
+          "text": "我会先把文本分成不可拆的句子片段，再按顺序贪心装块；如果单句已经超过上限，就必须在“允许单句超限、拒绝输入、允许降级截句”中明确选一种，不能承诺同时满足互相冲突的条件。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "可能的问法"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "“模拟一个简单的文本分块函数。给定文本和最大块大小，按句子边界分块，避免截断句子。”",
+            "“RAG 的文本切块怎么做？长规则页、商品详情和短问答能否采用同一套规则？”",
+            "“句子本身就比最大块大小长，怎么处理？标点、换行和空白会不会丢失？”"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "把四个约定说清楚"
+        },
+        {
+          "type": "paragraph",
+          "text": "第一，块大小的单位是什么？Java 的 String.length() 是 UTF-16 代码单元数量，不能直接等同于用户看到的字符数。一个补充平面字符通常占两个代码单元；由多个码点构成的字形也不等于一个码点。本例采用 Java 的 code-point 计数，不按字节、不按字形簇、更不按模型 token。若下游限制是 token，应调用对应 tokenizer 计数，并重新检查句片段合并后的 token 数，不能假定文本长度与 token 数线性等价。"
+        },
+        {
+          "type": "paragraph",
+          "text": "第二，什么算句界？简化扫描器遇到 . ! ? 。 ！ ？ 或换行就把该位置之后视为句尾，最后没有标点的尾部也构成一个片段。标点属于左侧片段，空格与其他字符完整保留，不调用 trim()，不补空格。这是一份明确的简化规则：Mr.、小数 1.2、引号后的闭合标点、!!! 连续标点都不自动理解。例如 a!!!b 在该规则下依次产生 a!、!、!、b 四个片段；若业务要求连续标点和闭引号跟在同一句后面，应修改句界检测器，而不是偷偷改变装块算法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "第三，超长句如何处理？ALLOW_SINGLE_SENTENCE 让超长句独立成块，最大值成为普通句子的装块上限；REJECT 直接报错，保持硬上限和不截句。若另外选择“按码点强行切开超长句”，那是允许截句的新契约，不能再把输出描述成完全按句界分块。"
+        },
+        {
+          "type": "paragraph",
+          "text": "第四，是否允许重叠、是否需要标题与 metadata？本题的基础实现不重叠、保持原顺序、拼接输出必须恰好还原输入。RAG 工程中可以增加 overlap、文档 ID、段落位置和来源偏移，但那会改变重复内容、长度预算以及回溯原文的规则，应在基础正确后分别说明。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "机制与状态不变量"
+        },
+        {
+          "type": "paragraph",
+          "text": "把检测出的句尾记为严格递增的 UTF-16 排他偏移 ends，最后一个必须是原文长度。偏移不能切开有效代理对。实际句界来自简单标点扫描器也好，来自业务分句器也好，装块函数都只消费这份边界列表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "扫描每个完整片段时，维护当前块的起点、终点和已占码点数 used："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "当前句长度不超过上限，而且 used + length 不超限，就把整句并入当前块。",
+            "当前句能单独放下但合并后超限，先输出当前块，再以这句开启新块。",
+            "当前句本身超限，按策略拒绝；或先输出已有块，再把超长句单独输出。",
+            "最后输出尚未为空的块。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "每轮结束后，已经输出的块和当前块恰好覆盖已处理的输入前缀；没有重复、遗漏或重排。当前块一定在句界开始和结束，普通块满足上限，只有明确采用允许超长句策略时才会产生超限单句块。检查容量写成 used > maximum - length，避免把两个正 int 相加作为边界判定。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么贪心成立"
+        },
+        {
+          "type": "paragraph",
+          "text": "在句子顺序固定、不可拆分、每句长度为正、容量统一、目标为最少块数时，贪心的第一块装入了能容纳的最长前缀。其他合法方案的第一块不可能装得更多。若其他方案装得更少，把后续块开头能装下的句子移入第一块，只会释放后续空间，不会增加块数；由此可把最优方案的第一块调整为贪心第一块，再对剩余句子归纳。允许超长句单独成块时，它既不能与其他句子合并，也不能被拆开，因此可以把它当作分段隔板，在两侧分别应用相同证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这份证明依赖于长度可加。本例按码点计数满足该条件；某些 tokenizer 在拼接边界会重新分词，此时直接套用“各句 token 数相加”的证明不成立。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Java 入口与示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整实现如下："
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.ArrayList;\nimport java.util.List;\nimport java.util.Objects;\n\n/** Lossless, sentence-atomic packing; limits count Unicode code points. */\npublic final class SSAChunker {\n    public enum Oversized { ALLOW_SINGLE_SENTENCE, REJECT }\n    private SSAChunker() {}\n    public static List<String> chunk(String text, int maximum, Oversized policy) {\n        Objects.requireNonNull(text);\n        List<Integer> ends = new ArrayList<>();\n        for (int i = 0; i < text.length();) {\n            int cp = text.codePointAt(i);\n            i += Character.charCount(cp);\n            if (cp == '.' || cp == '!' || cp == '?' || cp == '。' || cp == '！'\n                    || cp == '？' || cp == '\\n') ends.add(i);\n        }\n        if (!text.isEmpty() && (ends.isEmpty() || ends.get(ends.size() - 1) != text.length()))\n            ends.add(text.length());\n        return chunkAtEnds(text, ends, maximum, policy);\n    }\n    /** ends are strictly increasing UTF-16 exclusive offsets, ending at text.length(). */\n    public static List<String> chunkAtEnds(String text, List<Integer> ends,\n                                           int maximum, Oversized policy) {\n        Objects.requireNonNull(text); Objects.requireNonNull(ends); Objects.requireNonNull(policy);\n        if (maximum <= 0) throw new IllegalArgumentException(\"maximum must be positive\");\n        int previous = 0;\n        for (Integer boxed : ends) {\n            if (boxed == null) throw new IllegalArgumentException(\"null boundary\");\n            int end = boxed;\n            if (end <= previous || end > text.length()) throw new IllegalArgumentException(\"boundary order\");\n            if (end < text.length() && Character.isHighSurrogate(text.charAt(end - 1))\n                    && Character.isLowSurrogate(text.charAt(end)))\n                throw new IllegalArgumentException(\"boundary splits a surrogate pair\");\n            previous = end;\n        }\n        if (previous != text.length()) throw new IllegalArgumentException(\"missing final boundary\");\n        List<String> result = new ArrayList<>();\n        int sentenceStart = 0, chunkStart = 0, chunkEnd = 0, used = 0;\n        for (int end : ends) {\n            int length = text.codePointCount(sentenceStart, end);\n            if (length > maximum) {\n                if (policy == Oversized.REJECT) throw new IllegalArgumentException(\"oversized sentence\");\n                if (used > 0) result.add(text.substring(chunkStart, chunkEnd));\n                result.add(text.substring(sentenceStart, end));\n                used = 0; chunkStart = end; chunkEnd = end;\n            } else {\n                if (used > maximum - length) {\n                    result.add(text.substring(chunkStart, chunkEnd));\n                    chunkStart = sentenceStart; used = 0;\n                }\n                if (used == 0) chunkStart = sentenceStart;\n                chunkEnd = end; used += length;\n            }\n            sentenceStart = end;\n        }\n        if (used > 0) result.add(text.substring(chunkStart, chunkEnd));\n        return List.copyOf(result);\n    }\n}\n"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "List<String> blocks = SSAChunker.chunk(\n    \"你好。再见！末尾\", 5, SSAChunker.Oversized.REJECT);\n// [\"你好。\", \"再见！末尾\"]\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果句界已经由专门的分句器提供，调用 chunkAtEnds(text, ends, maximum, policy)，使自然语言分句与装块逻辑彼此独立。空文本输出空列表；非正上限、缺失末尾边界、乱序或重复边界、切开代理对均拒绝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "设原文 UTF-16 长度为 n，句子数为 s。逐句计数总共扫描 n 个代码单元，输出字符串总长也是 n，时间 O(n+s)，返回内容占 O(n+s) 空间。本实现先保存边界列表，额外工作空间 O(s)。如果改为流式句界扫描，边界列表可以省去，但必须缓存尚未完成的句子；允许任意长句时，缓存不可能仅由最大块大小约束。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "追问"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "“句号不是可靠句界，怎么办？”把分句器替换为领域规则或语言模型提供的边界，保留严格偏移校验与无损拼接不变量。",
+            "“块太短怎么办？”可在不超限的前提下向邻块合并，或者设置最小目标长度；同时满足最小值与最大值未必可行，不能把目标说成硬保证。",
+            "“短问答为什么不要硬拆？”问句与回答共同构成语义单位。是否合并、如何附带问题或标题是检索设计；本算法只保证既定片段的顺序、边界和大小契约，不保证召回质量。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "字符串家族完整自测"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.Collections;\nimport java.util.HashMap;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.Random;\nimport java.util.Set;\n\n/** Test-only independent brute-force/oracle implementations. */\npublic final class SSAPropertyTest {\n    private static final Random RANDOM = new Random(323280308253494L);\n    private static int checks;\n    private SSAPropertyTest() {}\n    private static void check(boolean ok, String detail) {\n        checks++;\n        if (!ok) throw new AssertionError(detail);\n    }\n    private static void equal(Object actual, Object expected) {\n        check(java.util.Objects.equals(actual, expected), \"actual=\" + actual + \", expected=\" + expected);\n    }\n    private static void rejects(Runnable operation) {\n        try { operation.run(); } catch (IllegalArgumentException expected) { checks++; return; }\n        throw new AssertionError(\"expected IllegalArgumentException\");\n    }\n    private static void closed(Runnable operation) {\n        try { operation.run(); } catch (IllegalStateException expected) { checks++; return; }\n        throw new AssertionError(\"expected IllegalStateException\");\n    }\n    private static int optimum(int[] lengths, int maximum) {\n        int[] dp = new int[lengths.length + 1]; Arrays.fill(dp, 100000); dp[0] = 0;\n        for (int end = 1; end <= lengths.length; end++) {\n            int sum = 0;\n            for (int start = end - 1; start >= 0; start--) {\n                sum += lengths[start];\n                if (sum <= maximum || start == end - 1)\n                    dp[end] = Math.min(dp[end], dp[start] + 1);\n            }\n        }\n        return dp[lengths.length];\n    }\n    private static void chunks() {\n        equal(SSAChunker.chunk(\"你好。再见！末尾\", 5, SSAChunker.Oversized.REJECT), List.of(\"你好。\", \"再见！末尾\"));\n        equal(SSAChunker.chunk(\"\", 1, SSAChunker.Oversized.REJECT), List.of());\n        equal(SSAChunker.chunk(\"甲😀。乙\", 3, SSAChunker.Oversized.REJECT), List.of(\"甲😀。\", \"乙\"));\n        equal(SSAChunker.chunk(\"a. b.\", 3, SSAChunker.Oversized.REJECT), List.of(\"a.\", \" b.\"));\n        equal(SSAChunker.chunk(\"a!!!b\", 3, SSAChunker.Oversized.REJECT), List.of(\"a!!\", \"!b\"));\n        rejects(() -> SSAChunker.chunk(\"abc\", 2, SSAChunker.Oversized.REJECT));\n        rejects(() -> SSAChunker.chunk(\"\", 0, SSAChunker.Oversized.REJECT));\n        rejects(() -> SSAChunker.chunkAtEnds(\"😀\", List.of(1, 2), 2, SSAChunker.Oversized.REJECT));\n        rejects(() -> SSAChunker.chunkAtEnds(\"abc\", List.of(2), 3, SSAChunker.Oversized.REJECT));\n        rejects(() -> SSAChunker.chunkAtEnds(\"abc\", List.of(2, 2, 3), 3, SSAChunker.Oversized.REJECT));\n        for (int trial = 0; trial < 10000; trial++) {\n            int n = RANDOM.nextInt(12), maximum = 1 + RANDOM.nextInt(20);\n            int[] lengths = new int[n]; List<Integer> ends = new ArrayList<>();\n            StringBuilder text = new StringBuilder(); Map<Integer, Integer> sentenceLengths = new HashMap<>();\n            for (int i = 0; i < n; i++) {\n                lengths[i] = 1 + RANDOM.nextInt(25);\n                sentenceLengths.put(text.length(), lengths[i]);\n                for (int j = 0; j < lengths[i]; j++) text.append(j % 3 == 0 ? \"😀\" : \"甲\");\n                ends.add(text.length());\n            }\n            List<String> result = SSAChunker.chunkAtEnds(text.toString(), ends, maximum,\n                    SSAChunker.Oversized.ALLOW_SINGLE_SENTENCE);\n            equal(String.join(\"\", result), text.toString());\n            equal(result.size(), optimum(lengths, maximum));\n            int offset = 0;\n            for (String chunk : result) {\n                check(!chunk.isEmpty(), \"empty chunk\");\n                int points = chunk.codePointCount(0, chunk.length());\n                if (points > maximum) equal(points, sentenceLengths.get(offset));\n                offset += chunk.length(); check(ends.contains(offset), \"not a sentence boundary\");\n            }\n            boolean oversized = Arrays.stream(lengths).anyMatch(length -> length > maximum);\n            if (oversized) rejects(() -> SSAChunker.chunkAtEnds(text.toString(), ends, maximum, SSAChunker.Oversized.REJECT));\n            else equal(result, SSAChunker.chunkAtEnds(text.toString(), ends, maximum, SSAChunker.Oversized.REJECT));\n        }\n    }\n    private static String word(int maximum) {\n        String[] letters = {\"a\", \"b\", \"c\", \"中\", \"😀\", \"\\uE000\"};\n        StringBuilder word = new StringBuilder();\n        for (int n = RANDOM.nextInt(maximum + 1); n > 0; n--) word.append(letters[RANDOM.nextInt(letters.length)]);\n        return word.toString();\n    }\n    private static int codePointCompare(String a, String b) {\n        int[] left = a.codePoints().toArray(), right = b.codePoints().toArray();\n        for (int i = 0; i < Math.min(left.length, right.length); i++)\n            if (left[i] != right[i]) return Integer.compare(left[i], right[i]);\n        return Integer.compare(left.length, right.length);\n    }\n    private static void tries() {\n        SSAPrefixTrie fixed = new SSAPrefixTrie();\n        for (String s : List.of(\"\", \"a\", \"app\", \"apple\", \"apply\", \"app\")) fixed.add(s);\n        equal(fixed.wordsWithPrefix(\"app\"), List.of(\"app\", \"apple\", \"apply\"));\n        equal(fixed.wordsWithPrefix(\"\"), List.of(\"\", \"a\", \"app\", \"apple\", \"apply\"));\n        equal(fixed.wordsWithPrefix(\"x\"), List.of());\n        SSAIntentTrie demo = new SSAIntentTrie(); demo.put(\"查\", \"lookup\"); demo.put(\"查订单\", \"order\");\n        equal(demo.route(\"查订单 42\").orElseThrow(), new SSAIntentTrie.Match(\"order\", \"查订单\", \" 42\"));\n        equal(demo.route(\"查未知\").orElseThrow().intent(), \"lookup\");\n        equal(demo.route(\"没匹配\"), Optional.empty());\n        rejects(() -> demo.put(\"\", \"default\")); rejects(() -> demo.put(\"查\", \"different\"));\n        equal(demo.route(\"查\").orElseThrow().intent(), \"lookup\");\n        for (int trial = 0; trial < 500; trial++) {\n            SSAPrefixTrie trie = new SSAPrefixTrie(); SSAIntentTrie intents = new SSAIntentTrie();\n            Set<String> words = new HashSet<>(); Map<String, String> routes = new HashMap<>();\n            for (int i = 0; i < 60; i++) {\n                String s = word(7); words.add(s); trie.add(s); trie.add(s);\n                if (!s.isEmpty()) { routes.put(s, \"intent:\" + s); intents.put(s, \"intent:\" + s); }\n            }\n            for (int i = 0; i < 30; i++) {\n                String prefix = word(3); List<String> expected = new ArrayList<>();\n                for (String s : words) if (s.startsWith(prefix)) expected.add(s);\n                expected.sort(SSAPropertyTest::codePointCompare); equal(trie.wordsWithPrefix(prefix), expected);\n                String text = word(10), longest = null;\n                for (String s : routes.keySet()) if (text.startsWith(s) && (longest == null || s.length() > longest.length())) longest = s;\n                Optional<SSAIntentTrie.Match> got = intents.route(text);\n                if (longest == null) equal(got, Optional.empty());\n                else equal(got.orElseThrow(), new SSAIntentTrie.Match(routes.get(longest), longest, text.substring(longest.length())));\n            }\n        }\n        String deep = \"a\".repeat(30000); SSAPrefixTrie deepTrie = new SSAPrefixTrie(); deepTrie.add(deep);\n        equal(deepTrie.wordsWithPrefix(\"\"), List.of(deep));\n    }\n    private static void parenthesesCase(String text) {\n        String projection = text.replace(\"a\", \"\");\n        String previous;\n        do { previous = projection; projection = projection.replace(\"()\", \"\"); } while (!projection.equals(previous));\n        boolean valid = projection.isEmpty(); SSAParentheses.Result result = SSAParentheses.analyze(text);\n        equal(result.valid(), valid);\n        if (!valid) { equal(result.outerContents(), List.of()); equal(result.stripped(), null); return; }\n        List<Integer> opens = new ArrayList<>(); List<String> contents = new ArrayList<>(); Set<Integer> remove = new HashSet<>();\n        for (int i = 0; i < text.length(); i++) {\n            char c = text.charAt(i);\n            if (c == '(') opens.add(i);\n            if (c == ')') {\n                int opening = opens.remove(opens.size() - 1);\n                if (opens.isEmpty()) { contents.add(text.substring(opening + 1, i)); remove.add(opening); remove.add(i); }\n            }\n        }\n        StringBuilder stripped = new StringBuilder();\n        for (int i = 0; i < text.length(); i++) if (!remove.contains(i)) stripped.append(text.charAt(i));\n        equal(result.outerContents(), contents); equal(result.stripped(), stripped.toString());\n    }\n    private static void parentheses() {\n        for (int size = 0; size <= 9; size++) {\n            int count = 1; for (int i = 0; i < size; i++) count *= 3;\n            for (int k = 0; k < count; k++) {\n                int v = k; StringBuilder text = new StringBuilder();\n                for (int i = 0; i < size; i++) { text.append(\"()a\".charAt(v % 3)); v /= 3; }\n                parenthesesCase(text.toString());\n            }\n        }\n        equal(SSAParentheses.analyze(\"x(a(b)c)y()z(d)\"),\n                new SSAParentheses.Result(true, List.of(\"a(b)c\", \"\", \"d\"), \"xa(b)cyzd\"));\n        equal(SSAParentheses.analyze(\"(😀)中\").outerContents(), List.of(\"😀\"));\n        equal(SSAParentheses.analyze(\"(\".repeat(100000) + \")\".repeat(100000)).valid(), true);\n    }\n    private static String slowPath(String path) {\n        boolean absolute = path.startsWith(\"/\");\n        List<String> tokens = new ArrayList<>(Arrays.asList(path.split(\"/\", -1)));\n        tokens.removeIf(s -> s.isEmpty() || s.equals(\".\"));\n        boolean changed;\n        do {\n            changed = false;\n            for (int i = 0; i + 1 < tokens.size(); i++) {\n                if (!tokens.get(i).equals(\"..\") && tokens.get(i + 1).equals(\"..\")) {\n                    tokens.remove(i + 1); tokens.remove(i); changed = true; break;\n                }\n            }\n        } while (changed);\n        if (absolute) while (!tokens.isEmpty() && tokens.get(0).equals(\"..\")) tokens.remove(0);\n        String joined = String.join(\"/\", tokens);\n        return absolute ? \"/\" + joined : joined.isEmpty() ? \".\" : joined;\n    }\n    private static void paths() {\n        check(SSAPathNormalizer.samePath(\"/home/a\", \"/home//./b/../a\"), \"original example\");\n        equal(SSAPathNormalizer.normalize(\"/../../a\"), \"/a\");\n        equal(SSAPathNormalizer.normalize(\"../../a/../b\"), \"../../b\");\n        equal(SSAPathNormalizer.normalize(\"a/../../b\"), \"../b\");\n        check(!SSAPathNormalizer.samePath(\"/a\", \"a\"), \"absolute/relative distinction\");\n        String[] segments = {\"a\", \"b\", \"\", \".\", \"..\", \"...\", \".a\", \"%2e\", \"😀\"};\n        for (int trial = 0; trial < 20000; trial++) {\n            StringBuilder text = new StringBuilder(RANDOM.nextBoolean() ? \"/\" : \"\");\n            for (int n = RANDOM.nextInt(25); n > 0; n--) text.append(segments[RANDOM.nextInt(segments.length)]).append('/');\n            String path = text.toString(), normalized = SSAPathNormalizer.normalize(path);\n            equal(normalized, slowPath(path)); equal(SSAPathNormalizer.normalize(normalized), normalized);\n            check(SSAPathNormalizer.samePath(path, normalized), \"normal form equality\");\n        }\n    }\n    private static void intCase(String text) {\n        boolean valid = text != null && text.matches(\"[+-]?[0-9]+\");\n        BigInteger number = valid ? new BigInteger(text) : BigInteger.ZERO;\n        valid &= number.compareTo(BigInteger.valueOf(Integer.MIN_VALUE)) >= 0\n                && number.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) <= 0;\n        if (valid) equal(SSAIntParser.parse(text), number.intValueExact());\n        else rejects(() -> SSAIntParser.parse(text));\n    }\n    private static void integers() {\n        for (String s : new String[]{null,\"\",\"+\",\"-\",\"+-1\",\"--1\",\"1-\",\"1x\",\" 1\",\"1 \",\"１\",\"١\",\"0\",\"-0\",\"+0001\",\n                \"2147483647\",\"2147483648\",\"-2147483648\",\"-2147483649\",\"0000000000000000000001\"}) intCase(s);\n        for (int i = 0; i < 30000; i++) {\n            int value = RANDOM.nextInt(); equal(SSAIntParser.parse(Integer.toString(value)), value);\n            intCase(BigInteger.valueOf(RANDOM.nextLong()).toString());\n            String alphabet = \"0123456789+-x. \\t\"; StringBuilder text = new StringBuilder();\n            for (int n = RANDOM.nextInt(30); n > 0; n--) text.append(alphabet.charAt(RANDOM.nextInt(alphabet.length())));\n            intCase(text.toString());\n        }\n        intCase(\"0\".repeat(20000) + \"2147483647\");\n    }\n    private static long bits(double value) { return Double.doubleToRawLongBits(value); }\n    private static void exactBits(String text, long expected) {\n        SSAExactDecimalStream parser = new SSAExactDecimalStream(text.length());\n        for (int i = 0; i < text.length(); i++) parser.accept(text.charAt(i));\n        equal(bits(parser.finish()), expected);\n    }\n    private static void decimals() {\n        SSAIncrementalDecimal parser = new SSAIncrementalDecimal();\n        equal(parser.current().isPresent(), false);\n        equal(parser.accept('1').orElseThrow(), 1.0); equal(parser.accept('.').orElseThrow(), 1.0);\n        equal(parser.accept('1').orElseThrow(), 1.1); equal(parser.accept('2').orElseThrow(), 1.12);\n        equal(parser.finish(), 1.12); equal(parser.finish(), 1.12); closed(() -> parser.accept('3'));\n        equal(bits(SSAIncrementalDecimal.parseApproximate(\"-0.000\")), bits(-0.0));\n        equal(SSAIncrementalDecimal.parseApproximate(\".5\"), 0.5);\n        equal(SSAIncrementalDecimal.parseApproximate(\"1.\"), 1.0);\n        for (String s : new String[]{\"\",\"+\",\"-\",\".\",\"+.\",\"1..2\",\"--1\",\" 1\",\"1 \",\"1e2\",\"NaN\",\"１\"})\n            rejects(() -> SSAIncrementalDecimal.parseApproximate(s));\n        SSAIncrementalDecimal recover = new SSAIncrementalDecimal(); recover.accept('1');\n        rejects(() -> recover.accept('x')); equal(recover.current().orElseThrow(), 1.0); equal(recover.accept('2').orElseThrow(), 12.0);\n        // Exact rational oracle for a deliberately bounded domain; no universal tolerance claim.\n        for (int trial = 0; trial < 10000; trial++) {\n            int numerator = RANDOM.nextInt(2000001) - 1000000, scale = RANDOM.nextInt(7);\n            java.math.BigDecimal exact = java.math.BigDecimal.valueOf(numerator, scale);\n            String text = exact.toPlainString(); double expected = exact.doubleValue();\n            double got = SSAIncrementalDecimal.parseApproximate(text);\n            check(Math.abs(got - expected) <= 16 * Math.ulp(expected), \"bounded-domain approximation \" + text);\n        }\n        // Required counterexample: approximate incremental state != correctly rounded final result.\n        check(bits(SSAIncrementalDecimal.parseApproximate(\"0.29\")) != bits(Double.parseDouble(\"0.29\")), \"rounding counterexample\");\n        equal(SSAIncrementalDecimal.parseApproximate(\"9\".repeat(400)), Double.POSITIVE_INFINITY);\n        equal(SSAIncrementalDecimal.parseApproximate(\"0.\" + \"0\".repeat(400) + \"1\"), 0.0);\n        for (String text : List.of(\"0.29\", \"-0.000\", \".5\", \"1.\", \"9\".repeat(400), \"0.\" + \"0\".repeat(400) + \"1\")) {\n            SSAExactDecimalStream exact = new SSAExactDecimalStream(text.length());\n            equal(exact.exactCurrent().isPresent(), false);\n            for (int i = 0; i < text.length(); i++) {\n                exact.accept(text.charAt(i));\n                String prefix = text.substring(0, i + 1);\n                if (prefix.matches(\"[+-]?(?:[0-9]+(?:\\\\.[0-9]*)?|\\\\.[0-9]+)\"))\n                    equal(bits(exact.exactCurrent().orElseThrow()), bits(Double.parseDouble(prefix)));\n            }\n            equal(bits(exact.finish()), bits(Double.parseDouble(text)));\n        }\n        // Golden bits derived from exact powers of two, rather than a second parser invocation.\n        java.math.BigDecimal halfOne = java.math.BigDecimal.ONE.add(\n                new java.math.BigDecimal(BigInteger.valueOf(5).pow(53), 53));\n        java.math.BigDecimal tiny = java.math.BigDecimal.ONE.scaleByPowerOfTen(-2000);\n        exactBits(halfOne.toPlainString(), 0x3ff0000000000000L);\n        exactBits(halfOne.add(tiny).toPlainString(), 0x3ff0000000000001L);\n        java.math.BigDecimal halfZero = new java.math.BigDecimal(BigInteger.valueOf(5).pow(1075), 1075);\n        exactBits(halfZero.toPlainString(), 0L);\n        exactBits(halfZero.add(tiny).toPlainString(), 1L);\n        exactBits(\"-\" + halfZero.toPlainString(), Long.MIN_VALUE);\n        BigInteger overflowHalf = BigInteger.ONE.shiftLeft(1024).subtract(BigInteger.ONE.shiftLeft(970));\n        exactBits(overflowHalf.toString(), 0x7ff0000000000000L);\n        exactBits(overflowHalf.subtract(BigInteger.ONE).toString(), 0x7fefffffffffffffL);\n        SSAExactDecimalStream limited = new SSAExactDecimalStream(1); limited.accept('1');\n        rejects(() -> limited.accept('2')); equal(limited.finish(), 1.0);\n    }\n    public static void main(String[] args) {\n        chunks(); tries(); parentheses(); paths(); integers(); decimals();\n        System.out.println(\"PASS SSAPropertyTest checks=\" + checks + \"; seed=323280308253494\");\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        },
+        {
+          "entryId": "p-array",
+          "label": "关联结构与共用实现"
+        }
+      ]
+    }
+  ]
+}

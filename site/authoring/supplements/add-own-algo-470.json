@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-470",
+  "entryId": "470",
+  "expectedOriginalHash": "859527f6d0bcda45e78bf9c72e877deea2dd6d0059688332afc73f015f210903",
+  "title": "算法练习补充：rand7 实现 rand10",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "rand7 实现 rand10"
+    },
+    {
+      "type": "paragraph",
+      "text": "连续调用两次独立均匀 rand7，得到 49 个等概率状态，只接受前 40 个，再对 10 取模即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接口端点是 1…7 到 1…10，组合状态为 (a-1)*7+(b-1)。40 个接受状态给每个结果恰好 4 份，所以条件分布均匀；尾部 9 个状态重新采样。期望调用次数是 2÷(40/49)=49/20，没有有限的最坏调用次数。它与后文 rand10→rand7 (https://my.feishu.cn/wiki/PU07w5G8zi0MqjkjGEecc33Mnxd#doxcnVBd5hrDOXPI6fqYWJU03cm)的缩域拒绝采样方向相反，不能把函数名改一下就当作同题。随机源仅有正确范围还不够，必须假设独立且均匀；次数上限后返回固定值会引入偏差。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "受限随机源的无偏扩域：random5到random7与公平抽奖"
+    },
+    {
+      "type": "paragraph",
+      "text": "先用独立抽样拼成更大的均匀整数空间，再拒绝不能整除目标大小的尾区，最后取模。random5→random7用x=5a+b∈[0,24]，只接受x<21并返回x%7。"
+    },
+    {
+      "type": "paragraph",
+      "text": "rand16抽奖版先得到均匀有界索引，再部分洗牌无放回。先用两次rand16拼成均匀32位无符号数，以拒绝采样得到0..bound−1无偏整数；接着做k轮部分Fisher–Yates，每轮从剩余员工中均匀选一个，输出后用末尾员工填其位置，再缩小范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "抽10万可用30万长度数组；只抽9999时，可用HashMap记录虚拟数组里换过的位置，省去全部员工的初始化。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "30 万名员工编号 1…300000，只能使用返回 0…65535 的 rand()，怎样公平抽出 10 万名且不重复？若只抽 9999 名呢？",
+        "已知 random5() 等概率返回 0…4，仅使用它怎样实现等概率返回 0…6 的 random7()？",
+        "随机调用还需满足哪些独立性条件，为什么直接取模可能有偏？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "员工 ID 为 1..n，互不重复，无放回抽 k 人，要求每个 k 元子集等概率。每次 rand16 必须独立且在 0..65535 均匀；仅有值域不足以证明公平，需要先确认这两个前提。生产入口只调用传入的 IntSupplier，不另取随机源；固定种子的 Random 只用于重放测试。random5→random7 的接口则以独立均匀的 0..4 为唯一随机源，构造均匀的 0..6。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "两次独立16位值a、b对应u=65536a+b，恰一一覆盖0..2³²−1。必须先转long再左移16位，否则Java有符号int溢出会让范围和取模错。不要rand16()%300000，原空间连所有员工都覆盖不了；即使用32位u，u%300000也会因2³²不是300000整数倍产生偏差。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设S=2³²，L=S−S%bound，只接受u<L并返回u%bound。接受区间中每个余数恰有L/bound个原像，所以条件于本轮接受是均匀；独立重复拒绝只乘同一几何级数，不改变各余数比例。bound=1直接返回0。循环无确定最坏调用次数，在理想独立源下以概率1终止且期望常数；源若永久落在拒绝区可能不终止，不能擅加次数上限后用取模回退破坏公平。"
+    },
+    {
+      "type": "paragraph",
+      "text": "全数组维护a[0..remaining)恰好是尚未选出的不同员工。随机索引j均匀，取a[j]后将a[remaining−1]搬到j；即使j等于末尾也正确。输出使用内部0基编号加1。部分洗牌只做k次，无需把剩余n−k全部洗完；也不需要每轮在HashSet里重复抽到新员工，后者接近全抽时重试严重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "稀疏版不实际创建初始数组a[i]=i，而用changed.getOrDefault(i,i)读取当前位置的值。选中j后，先读last的当前值并填到j，再删除last映射；范围缩小后，last不会再被访问。"
+    },
+    {
+      "type": "paragraph",
+      "text": "j=last时只删，不用写。顺序不能颠倒：先删last再读，可能丢掉它此前交换来的值。每轮最多新增一个映射，空间O(k)；接收相同随机选择序列时，它与全数组版输出完全一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "公平要证明整个集合而不只是每人边际概率相同。任何有序且互异的k人序列概率都是1/[n(n−1)…(n−k+1)]，任一固定k人集合恰有k!种排列，所以集合概率为1/C(n,k)。因此每人入选概率k/n；30万人抽10万是1/3，抽9999是9999/300000。若必须按工号排序，抽完排序不会改变入选集合，只多O(k log k)时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "样本量与总体规模决定工程取舍：全数组30万int原始数据约120万字节，不含对象/输出，通常很简单；9999人用稀疏映射减少初始化，但JavaHashMap对象开销可能使实际字节差异不能只按k与n下结论。n未知的员工流可用蓄水池抽样，但本题已知连续编号，无需扫描全部员工，不能把另一个输入合同强加过来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真实抽奖还需冻结参与名单、公开规则、禁止重复开奖挑结果、保存随机源与操作审计证据，关注随机源可预测性。这里数学证明针对理想源；未提供的企业抽奖制度、种子、审计日志都不能声称已实施或验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "random5的两次结果不能直接相加：a+b形成三角分布，5a+b才把25个有序等概率对一一映到0..24。接受0..20后，每个模7余数都有3个原像，拒绝概率4/25；独立重试时，任一输出概率为(3/25)×Σ(4/25)^j=1/7。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每轮调用2次random5，平均25/21轮、平均50/21次源调用，但没有确定最坏次数。直接%7也不行：25=3×7+4使0..3出现4次、4..6仅3次。重试耗时不能成为换用Math.random回退的理由，那会违反唯一随机源的限制。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "对较小的双字随机空间，枚举各个 bound 的接受区间，检查每个余数的原像数量相等。再用预定源强制先遇 0xffffffff 被拒绝、随后接受 12345，检查 32 位拼接与重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "30 万员工抽 10 万人时，检查输出范围、无重复和完整数组、稀疏 Fisher–Yates 两种实现；同样覆盖抽 9999 人、0 人和全部员工。固定种子用于重放，不替代均匀性证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "random5→7 的 21 个接受输入中，每个 0..6 都恰有 3 个原像。测试还应覆盖先拒绝再接受、连续多次拒绝后成功。生产方法只调用传入随机源，预定值序列可用于重放，不能在实现内部偷偷换用第二个随机生成器。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "均匀独立源下拒绝次数期望O(1)；全数组期望O(n+k)时间、O(n)工作空间与O(k)返回结果；稀疏HashMap期望O(k)时间、O(k)映射和输出。哈希操作/随机拒绝都不构成无条件最坏O(k)保证；数组分配仍受实际资源限制。 random5→7期望O(1)时间、O(1)空间，期望源调用50/21次，最坏重试无有限上界。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "k<0、k>n、n<0、非16位源输出拒绝；n=k=0空结果，n=k=1不需随机。"
+    },
+    {
+      "type": "paragraph",
+      "text": "原值域信息不足以保证均匀独立；例如函数始终返回0仍符合值域却不公平，答案不能隐去这一前提。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.function.IntSupplier;\n\npublic final class FairEmployeeLottery {\n    private static final long SPACE = 1L << 32;\n    private FairEmployeeLottery() {}\n    private static int word(IntSupplier rand16) {\n        int x = rand16.getAsInt();\n        if (x < 0 || x > 65535) throw new IllegalArgumentException(\"rand16 outside range\");\n        return x;\n    }\n    // Correct uniformity requires independent uniform source words, not merely in-range words.\n    public static int bounded(IntSupplier rand16, int bound) {\n        Objects.requireNonNull(rand16);\n        if (bound <= 0) throw new IllegalArgumentException(\"positive bound required\");\n        if (bound == 1) return 0;\n        long limit = SPACE - SPACE % bound;\n        while (true) {\n            long x = ((long) word(rand16) << 16) | word(rand16);\n            if (x < limit) return (int) (x % bound);\n        }\n    }\n    private static void check(int n, int k, IntSupplier source) {\n        Objects.requireNonNull(source);\n        if (n < 0 || k < 0 || k > n) throw new IllegalArgumentException(\"0 <= k <= n required\");\n    }\n    public static int[] fullArray(int n, int k, IntSupplier rand16) {\n        check(n, k, rand16);\n        int[] a = new int[n], result = new int[k];\n        for (int i = 0; i < n; i++) a[i] = i;\n        for (int i = 0; i < k; i++) {\n            int remaining = n - i, chosen = bounded(rand16, remaining);\n            result[i] = a[chosen] + 1;\n            a[chosen] = a[remaining - 1];\n        }\n        return result;\n    }\n    public static int[] sparse(int n, int k, IntSupplier rand16) {\n        check(n, k, rand16);\n        Map<Integer, Integer> changed = new HashMap<>();\n        int[] result = new int[k];\n        for (int i = 0; i < k; i++) {\n            int last = n - i - 1, chosen = bounded(rand16, last + 1);\n            result[i] = changed.getOrDefault(chosen, chosen) + 1;\n            int replacement = changed.getOrDefault(last, last);\n            if (chosen != last) changed.put(chosen, replacement);\n            changed.remove(last);\n        }\n        return result;\n    }\n    private static void require(boolean yes) { if (!yes) throw new AssertionError(); }\n    private static IntSupplier seeded(long seed) {\n        Random r = new Random(seed); // Test fixture only. The production methods use only rand16.\n        return () -> r.nextInt(65536);\n    }\n    private static IntSupplier choices(int... indexes) {\n        int[] cursor = {0};\n        return () -> {\n            int p = cursor[0]++;\n            if (p / 2 >= indexes.length) throw new AssertionError(\"unexpected random draw\");\n            return (p & 1) == 0 ? 0 : indexes[p / 2];\n        };\n    }\n    private static void unique(int[] a, int n) {\n        boolean[] seen = new boolean[n + 1];\n        for (int x : a) { require(x >= 1 && x <= n && !seen[x]); seen[x] = true; }\n    }\n    private static void invalid(Runnable action) {\n        try { action.run(); throw new AssertionError(\"exception expected\"); }\n        catch (IllegalArgumentException expected) { /* expected */ }\n    }\n    public static void main(String[] args) {\n        Map<String, Integer> subsets = new HashMap<>();\n        Set<String> ordered = new HashSet<>();\n        for (int a = 0; a < 5; a++) for (int b = 0; b < 4; b++) for (int c = 0; c < 3; c++) {\n            int[] x = fullArray(5, 3, choices(a, b, c));\n            require(Arrays.equals(x, sparse(5, 3, choices(a, b, c))));\n            unique(x, 5); require(ordered.add(Arrays.toString(x)));\n            Arrays.sort(x); subsets.merge(Arrays.toString(x), 1, Integer::sum);\n        }\n        require(ordered.size() == 60 && subsets.size() == 10);\n        for (int count : subsets.values()) require(count == 6);\n        int acceptedRegions = 0;\n        // Exhaust every accepted input of analogous small two-word spaces.\n        for (int bits = 1; bits <= 5; bits++) {\n            int space = 1 << (2 * bits);\n            for (int bound = 1; bound <= space; bound++) {\n                int[] counts = new int[bound]; int limit = space - space % bound;\n                for (int x = 0; x < limit; x++) counts[x % bound]++;\n                for (int count : counts) require(count == limit / bound);\n                acceptedRegions++;\n            }\n        }\n        int[] words = {65535, 65535, 0, 12345}, pos = {0};\n        require(bounded(() -> words[pos[0]++], 300000) == 12345 && pos[0] == 4);\n        for (int k : new int[]{100000, 9999, 0, 300000}) {\n            int[] a = fullArray(300000, k, seeded(2026));\n            int[] b = sparse(300000, k, seeded(2026));\n            require(a.length == k && Arrays.equals(a, b)); unique(a, 300000);\n            require(Arrays.equals(b, sparse(300000, k, seeded(2026))));\n        }\n        require(sparse(0, 0, seeded(1)).length == 0);\n        require(Arrays.equals(sparse(1, 1, () -> { throw new AssertionError(); }), new int[]{1}));\n        for (int b : new int[]{2, 65535, 65536, 300000, Integer.MAX_VALUE})\n            for (int i = 0; i < 1000; i++) { int x = bounded(seeded(i), b); require(x >= 0 && x < b); }\n        invalid(() -> bounded(() -> -1, 2)); invalid(() -> bounded(() -> 65536, 2));\n        invalid(() -> bounded(seeded(1), 0)); invalid(() -> sparse(3, 4, seeded(1)));\n        System.out.println(\"PASS: 60 exact ordered paths, 10 equal subsets; \" + acceptedRegions\n            + \" exhaustive small acceptance regions; actual 300000 choose 100000/9999/all; forced rejection and bounds\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "仅调用random5的完整Java与穷举验证"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.function.IntSupplier;\nimport java.util.Objects;\npublic final class Random5To7 {\n    private Random5To7() {}\n    private static int draw(IntSupplier random5) {\n        int x=random5.getAsInt();if(x<0||x>4)throw new IllegalArgumentException(\"random5 range\");return x;\n    }\n    public static int random7(IntSupplier random5) {\n        Objects.requireNonNull(random5);\n        while(true){int x=5*draw(random5)+draw(random5);if(x<21)return x%7;}\n    }\n    private static int run(int... words){int[] p={0};return random7(()->{if(p[0]>=words.length)throw new AssertionError();return words[p[0]++];});}\n    public static void main(String[] args){\n        int[] counts=new int[7];\n        for(int a=0;a<5;a++)for(int b=0;b<5;b++)if(5*a+b<21){int x=run(a,b);if(x!=(5*a+b)%7)throw new AssertionError();counts[x]++;}\n        for(int c:counts)if(c!=3)throw new AssertionError();\n        for(int reject=21;reject<25;reject++)for(int accept=0;accept<21;accept++)\n            if(run(reject/5,reject%5,accept/5,accept%5)!=accept%7)throw new AssertionError();\n        if(run(4,4,4,3,4,2,4,1,0,1)!=1)throw new AssertionError();\n        try{random7(()->5);throw new AssertionError();}catch(IllegalArgumentException expected){}\n        System.out.println(\"PASS: all 21 accepted outcomes, exactly 3 per result; all 84 rejected-then-accepted pairs; four consecutive rejections; source-only random calls\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "rand10实现rand7：缩域拒绝采样与两种端点约定"
+    },
+    {
+      "type": "paragraph",
+      "text": "1基版本每次取x，若1≤x≤7返回x，若8..10丢弃重试；0基版本接受0..6，拒绝7..9。接受概率7/10，期望10/7次源调用；每个合法输出概率都是1/7。这个是缩小范围，不需要把rand10误换成上一题random5→7的两次扩域。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "只用 rand10 怎样实现等概率 rand7？",
+        "返回端点未给定时，0 基和 1 基合同分别怎样写？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "rand10→rand7 先约定端点与随机源：独立均匀的 1..10 转为 1..7，或独立均匀的 0..9 转为 0..6。1 基版本遇到 8、9、10 就重试；0 基版本拒绝 7、8、9。公平性来自独立均匀前提，不能只从函数名推出。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "拒绝采样的证明可直接计算几何级数：目标 y∈1..7 恰在第 t 次返回的概率为 (3/10)^(t−1)×1/10，求和得到 (1/10)/(1−3/10)=1/7。拒绝区对全部接受值对称；0 基版本只改变标签。"
+    },
+    {
+      "type": "paragraph",
+      "text": "期望调用次数E满足E=1+(3/10)E，故E=10/7；至少一次，任意有限次数都有可能一直落入拒绝区，因此没有确定的最坏常数上界。在理想独立源下不终止的概率趋0，不能说“保证最多两次”，也不能固定重试次数之后直接%7作为回退，否则改变分布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "直接取模的问题，是各输出分到的源值数量不同。1基写法(x−1)%7+1会把源1、8都映到1，2、9都映到2，3、10都映到3，4..7却各只有一个原像；前三个概率2/10，后四个1/10。0基x%7同样让0..2更常出现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "换成浮点缩放floor((x−1)*7/10)+1也无济于事：它仍是把10个等概率点分到7格，无法让每格原像一样多。"
+    },
+    {
+      "type": "paragraph",
+      "text": "端点不能混淆。若源是0..9，只判断x>7重试就接受0..7共8个值，既不满足1..7也不满足0..6。先问清合同，或像本代码明确命名oneBased/zeroBased；不要通过测试看起来“差不多”去猜题面。输入源返回越界值立即抛异常，拒绝采样不是接受非法源数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有值域而不保证均匀时，拒绝采样输出的是源分布在接受集合上的条件分布，未必公平；各次边际均匀但彼此相关，也不能直接套独立几何级数。源始终返回 1 虽符合 1..10 值域，却只会输出 1。公平证明依赖源合同，固定测试序列只能检查分支。"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产入口唯一随机来源是传入IntSupplier，不另外调用Math.random/Random。测试枚举接受值与0/1/2次拒绝后接受的完整路径，并校验实际消耗次数；穷举验证实现的端点和重试行为，均匀性仍由源假设下的数学证明给出。固定测试序列没有随机性，使用它只是为了覆盖每一个分支。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "1基输入10,8,7时前两次拒绝，第三次返回7；0基9,7,6同理返回6。两个版本都不能无限制同时接受对方的端点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对两种端点合同，分别枚举直接接受、拒绝一次后接受、拒绝两次后接受的 7+3×7+3²×7=91 条序列，并检查 0、11 或 −1、10 等非法端点。这用于覆盖实现分支；公平性仍由独立均匀的源假设和拒绝采样证明保证。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "在独立均匀源条件下期望O(1)时间，具体期望10/7次调用，辅助O(1)；最坏拒绝次数无有限上界。源调用本身的时间另算。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "当随机源的端点、均匀性或调用独立性尚未确定时，先补齐这些条件，再讨论严格公平。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“拒绝大于 7 的值”适用于 1 基均匀独立源；0 基版本应拒绝 7、8、9，任意有偏源不能直接套用公平性结论。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.Objects;\nimport java.util.function.IntSupplier;\npublic final class Random10To7 {\n    private Random10To7() { }\n    // Requires independent uniform draws on 1..10. Returns 1..7.\n    public static int oneBased(IntSupplier rand10) {\n        Objects.requireNonNull(rand10);\n        while (true) {\n            int x = rand10.getAsInt();\n            if (x < 1 || x > 10) throw new IllegalArgumentException(\"expected 1..10\");\n            if (x <= 7) return x;\n        }\n    }\n    // Requires independent uniform draws on 0..9. Returns 0..6.\n    public static int zeroBased(IntSupplier rand10) {\n        Objects.requireNonNull(rand10);\n        while (true) {\n            int x = rand10.getAsInt();\n            if (x < 0 || x > 9) throw new IllegalArgumentException(\"expected 0..9\");\n            if (x < 7) return x;\n        }\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    },
+    {
+      "entryId": "p-math",
+      "label": "RandomAndRounding 完整共享源码与验证方法"
+    }
+  ]
+}

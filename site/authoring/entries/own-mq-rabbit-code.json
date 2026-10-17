@@ -1,0 +1,398 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mq-rabbit-code",
+  "kind": "doc",
+  "module": "code",
+  "part": "消息队列与异步系统",
+  "category": "教学参考与完整代码",
+  "title": "RabbitMQ 4.3.6 完整客户端与故障模型",
+  "tags": [
+    "消息队列",
+    "教学边界"
+  ],
+  "sections": [
+    {
+      "id": "s-5784",
+      "title": "实验的关闭为什么是协议的一部分",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "停止接收新工作、给已开始的工作有限时间、保留未确认责任并关闭连接，才是可恢复退出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正常退出可以先取消订阅再等待少量在途工作，但 cancel 不会自动处理全部已交付未确认消息；排序敏感路径还要考虑取消和重投次序。异常退出直接关闭旧 channel/connection，让 broker 重新负责未 ACK 的交付。已提交业务不回退，旧 generation 的异步结果不再提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "LabRuntime 在 20 秒触发传输 abort，消费者业务循环最多 12 秒或 12 次交付，外部命令再给 30 秒硬上限；客户端与 timer 线程为 daemon，并在 close 中有限等待清理。首次连接和 channel RPC 各有 2 秒预算。这个上限证明实验可结束，不证明任意生产服务或远端动作已被撤销。"
+        }
+      ]
+    },
+    {
+      "id": "s-6963",
+      "title": "自动恢复能恢复什么",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "自动恢复修复连接、部分 channel 状态和拓扑订阅，不能恢复进程丢失的业务意图、未持久结果或任意外部副作用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java client 的首次连接失败不会触发自动恢复，需要应用设置有限重试、退避和退出条件；建立连接后遇到网络故障，才进入相应恢复路径。手工关闭通常不应被自动重连抵消。channel 因协议错误关闭也不会自动恢复，应先修正错误原因。权限不对、队列类型不兼容和不存在资源，不是靠无穷重试就能恢复的网络抖动。"
+        },
+        {
+          "type": "paragraph",
+          "text": "恢复后应验证实际 channel、confirm 模式、QoS、必要 exchange/queue/binding 和消费者订阅，不能只看 TCP 已建立。客户端拓扑恢复记录有自身生命周期规则，声明后把 channel 关掉可能影响后续恢复。临时队列还存在已经删除的语义，重建拓扑不是恢复消息。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先提交数据库再发布，中间崩溃会留下有业务无消息；先发布再提交，数据库回滚时可能留下不存在业务的消息。本地 Outbox 将业务与发布意图同事务保存，broker Confirm 负责之后的一次责任移交，两者不能相互替代。Redis 预扣后再发 MQ 更新数据库也仍有双写窗口；数据库更新失败后回补 Redis 又超时，要按稳定预留身份查询事实并做合法状态迁移，不能无条件再加一次库存。Lua 和分布式锁均不会让 MQ 与数据库自动提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "生产者的持久 Outbox 要处理业务提交后尚未发送、broker 接受但未记录 confirm、结果回写失败等窗口。消费者要处理提交前失败、提交后未 ACK 和外部请求 UNKNOWN。恢复时继续同一 eventId，不因重建连接而重新创造一条业务。"
+        }
+      ]
+    },
+    {
+      "id": "s-6975",
+      "title": "保存 编译 运行与退出",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "下面逐个完整列出实验所需的九个 Java 文件和六个配置或脚本文件；保存到同一个新目录，Java 文件放在 src 子目录，其余文件放根目录。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实验固定 Java 21、RabbitMQ Java client 5.26.0、SLF4J API 2.0.17，可选 broker 是 RabbitMQ 4.3.6-management。编译此模块需要 Java 21 和固定版本的 amqp-client JAR；run-tests.sh 通过 JDK 的编译器入口运行，普通完整 JDK 也可用 javac --release 21 编译。本地 Mock/Proxy 测试验证客户端状态机，不能替代 broker、数据库和渠道联调；集成环境需按后面的步骤单独准备。"
+        },
+        {
+          "type": "paragraph",
+          "text": "EventEnvelope 在编码前检查合法 UTF-16，并分别限制标准 UTF-8 载荷为 16,000 字节、完整线格式为 32KiB。DataOutputStream.writeUTF 使用 modified UTF-8，NUL 和补充字符的长度与标准 UTF-8 不同，不能用一种编码的长度替另一种编码把关。解码遇到畸形文字、未知 schema、超大信封或多余尾字节会拒绝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "准备需要 JDK 21、POSIX shell、curl、sha256sum 和 GNU timeout；下载依赖需要能访问 Maven Central。用下面命令在新目录执行，只会下载两个固定 JAR、编译并跑无网络的 Mock 测试。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-052.txt",
+          "value": "sh prepare-deps.sh\nsh run-tests.sh\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "RabbitLabTest 的正常摘要包含 PASS 83 checks，并明确说明 local mock only 和 timers stopped；run-tests.sh 随后还会运行 RabbitFailureTests，补充失败清理与中断路径检查。断言数只统计对应测试，不是消息可靠率、并发压测规模或生产效果。若本机只有 JRE 且没有编译器模块，先准备完整 JDK 21。也可用已安装的 Maven 3.9.9 和 pom.xml 编译，再显式运行测试 main；mvn package 本身不自动运行这个 main。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-053.txt",
+          "value": "mvn -q -DskipTests package dependency:copy-dependencies\njava -ea -cp 'target/classes:target/dependency/*' RabbitLabTest\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "可选真实 broker 实验只针对全新的本机隔离 Docker 项目，不得指向已有业务 broker、复用生产 vhost 或带真实业务数据。需要已安装 Docker Engine 与 Compose v2，127.0.0.1:5672 空闲，并至少留出约 1GiB 可用内存与充足磁盘。配置允许默认本地测试身份跨 Docker bridge 访问，但只映射回环地址；这是一次性实验设置，不是生产认证建议。不要在已有远程服务修改认证策略。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下列命令仅用于上述全新的本机隔离实验。先启动，再确认健康、版本以及 stream_queue 已启用；任何检查失败都停止，不通过放宽持久或确认条件来绕过。需要人工升级 feature flag 时先核对本机实验节点，程序不会自动改集群配置。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-054.txt",
+          "value": "docker compose -p rabbit-interview-lab up -d --wait --wait-timeout 60\ndocker compose -p rabbit-interview-lab exec -T rabbit rabbitmq-diagnostics server_version\ndocker compose -p rabbit-interview-lab exec -T rabbit rabbitmqctl list_feature_flags\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "在终端 A 启动消费者，在 5 秒内于终端 B 启动生产者。程序只能连 127.0.0.1:5672，必须显式传入 --local-lab。两个进程各自有 20 秒总计时器，消费者最多处理 12 次交付；外层 timeout 再提供硬边界。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-055.txt",
+          "value": "# Terminal A\n timeout 30s java -cp 'build/classes:build/*' RabbitConsumerLab --local-lab\n# Terminal B\n timeout 30s java -cp 'build/classes:build/*' RabbitPublisherLab --local-lab\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "可选的真实 broker 演示会发送四条合成事件，再单独测试不可路由发布。可逐条核对预期："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "前两条 eventId 和内容都相同：正常情况下，重复 ok 只在本次消费者进程内计一次效果。",
+            "transient：模拟暂态失败，重试两次后完成。",
+            "permanent：模拟永久失败，进入 DLQ。",
+            "missing：故意使用不存在的绑定 key，并以 mandatory 发布，结果为 RETURNED。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "这些结果依赖启动时机及未过 deadline。事件 ID 固定、deadline 每次不同，所以重新演示前要清理这个实验 broker。单节点 quorum 仍不能证明三节点容错。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DLQ 不会自动消费或删除。退出后可以检查固定两条实验队列；ready/unacked 计数只用于验证路由责任，不能证明通知送达。验收时应采集实际 broker 输出，并与事件身份、确认结果及业务效果逐项核对。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-056.txt",
+          "value": "docker compose -p rabbit-interview-lab exec -T rabbit rabbitmqctl list_queues name messages_ready messages_unacknowledged\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "程序异常时让原交付保持未 ACK，并关闭旧连接；不要为了“跑通”而改成自动 ACK。结束整个一次性实验时执行下面命令，它会删除本实验容器及其匿名数据卷，必须先确认项目名确实是刚创建的 rabbit-interview-lab，而不是任何需要保留的服务。没有需要保留的真实数据才执行。Ctrl-C 或外层 timeout 终止 JVM 时，broker 的连接故障检测与重投仍需时间。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-057.txt",
+          "value": "docker compose -p rabbit-interview-lab down -v --timeout 5\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "这些程序没有持久 Outbox、生产数据库适配器、真实通知渠道或自动 DLQ 重放器。接入真实业务必须实现 EffectPort 的持久契约并对接本书 Q60 的完整 JDBC/SQL 实现，保留 trustedTenant、消费者命名空间、不可变载荷核对和 CommitUnknown 分支；不能只把 MockEffects 改名后宣称具备跨进程幂等。实验中服务调用是有界本地方法；自行替换的 HTTP/SQL 实现必须自行设置连接、读写、事务和总 deadline，否则 Java 主循环的时限不能强制取消任意阻塞代码。"
+        }
+      ]
+    },
+    {
+      "id": "s-7042",
+      "title": "保存与运行各独立模块",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "本书所有学习必需源码、SQL、POM、锁定依赖和脚本都直接打印在相应知识点；离线目录只是便于保存。按“完整文件”标题的相对路径保存。basics、kafka、rabbit、reliable、orchestration 是独立 classpath，不能把多份同名 FailureTools 一次全部交给 javac。"
+        },
+        {
+          "type": "paragraph",
+          "text": "基础模块在 JDK 21 下可以用以下方式准备编译与运行类路径，POM 保持 Java 17 语言基线。前五个程序和 JDBC 故障替身不连接 broker 或数据库；另外三个基础客户端程序需要专属外部实验环境。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-058.txt",
+          "value": "cd components/basics\nmvn -q -DskipTests package dependency:copy-dependencies\njava -ea -cp 'target/classes:target/dependency/*' CloseableRing\njava -ea -cp 'target/classes:target/dependency/*' OrderedCompletion\njava -ea -cp 'target/classes:target/dependency/*' RetryBudget\njava -ea -cp 'target/classes:target/dependency/*' FailureTools\njava -ea -cp 'target/classes:target/dependency/*' OutboxModel\njava -ea -cp 'target/classes:target/dependency/*' JdbcLocalEffectTests\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "Kafka 模块使用自己的 POM；Rabbit 的 prepare-deps 与 run-tests 脚本在本节全文，运行目录必须是 components/rabbit。orchestration 的完整运行脚本在 Q31；它校验固定依赖并只清除自己创建的临时构建目录。可靠业务模块只依赖 JDK，可在其目录编译三个 Java 文件再分别运行两个模型。原生 Go 和 JavaScript 是独立语言练习，不要求为了阅读本书安装新工具链。"
+        }
+      ]
+    },
+    {
+      "id": "s-7061",
+      "title": "Rabbit 实验的业务接口",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "基础 RabbitOnce 用 Q60 的 JdbcInbox 展示持久业务提交后 ACK。进阶 RabbitConsumerLab 默认故意使用进程内 MockEffects，以隔离 Confirm/Return、可靠移交、迟到回调、容量和中断；重启会丢其内存效果，不能用于真实业务防重。Q60 的 JdbcLocalEffect 提供完整持久适配，但接入时仍要定义消息字段到可信租户/账户的映射与授权。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进阶发布者的 eventId、attemptId、generation 和 channel sequence 各有独立职责。Ticket.failure() 只用于诊断该发布尝试的原始失败与可用的 suppressed 异常；结果仍由 ACK_ROUTED/RETURNED/NACK/UNKNOWN 等协议状态判断。发送或清理抛错不证明消息未到，连接关闭也不能代替业务 ACK。"
+        }
+      ]
+    },
+    {
+      "id": "s-7090",
+      "title": "完整文件：components/rabbit/compose.yaml",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "yaml",
+          "label": "components/rabbit/compose.yaml",
+          "value": "services:\n  rabbit:\n    image: rabbitmq:4.3.6-management\n    hostname: interview-rabbit\n    ports:\n      - \"127.0.0.1:5672:5672\"\n    volumes:\n      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro\n    mem_limit: 768m\n    cpus: 1.0\n    pids_limit: 128\n    stop_grace_period: 5s\n    healthcheck:\n      test: [\"CMD\", \"rabbitmq-diagnostics\", \"-q\", \"ping\"]\n      interval: 2s\n      timeout: 2s\n      retries: 15\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7112",
+      "title": "完整文件：components/rabbit/dependencies.sha256",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "plaintext",
+          "label": "components/rabbit/dependencies.sha256",
+          "value": "2e201b3f7fd26883c2845278aba1ecaaaf97be15d23d4cabf8e7e0b9a611b62e  build/amqp-client-5.26.0.jar\n7b751d952061954d5abfed7181c1f645d336091b679891591d63329c622eb832  build/slf4j-api-2.0.17.jar\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7119",
+      "title": "完整文件：components/rabbit/pom.xml",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "xml",
+          "label": "components/rabbit/pom.xml",
+          "value": "<project xmlns=\"http://maven.apache.org/POM/4.0.0\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion><groupId>interview.lab</groupId><artifactId>rabbit-protocol</artifactId><version>1.0.0</version>\n  <properties><maven.compiler.release>21</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>\n  <dependencies>\n    <dependency><groupId>com.rabbitmq</groupId><artifactId>amqp-client</artifactId><version>5.26.0</version></dependency>\n    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.17</version></dependency>\n  </dependencies>\n  <build><sourceDirectory>src</sourceDirectory><plugins>\n    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.0</version></plugin>\n    <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version></plugin>\n  </plugins></build>\n</project>\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7136",
+      "title": "完整文件：components/rabbit/prepare-deps.sh",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "components/rabbit/prepare-deps.sh",
+          "value": "#!/bin/sh\nset -eu\nmkdir -p build\ncurl -fL --max-time 30 https://repo.maven.apache.org/maven2/com/rabbitmq/amqp-client/5.26.0/amqp-client-5.26.0.jar -o build/amqp-client-5.26.0.jar\ncurl -fL --max-time 30 https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/2.0.17/slf4j-api-2.0.17.jar -o build/slf4j-api-2.0.17.jar\nsha256sum -c dependencies.sha256\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7147",
+      "title": "完整文件：components/rabbit/rabbitmq.conf",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "plaintext",
+          "label": "components/rabbit/rabbitmq.conf",
+          "value": "# Disposable localhost lab only. Port is bound to 127.0.0.1 by Compose.\n# Permits the client's default local test identity across the Docker bridge.\nloopback_users.guest = false\ndisk_free_limit.absolute = 50MB\nvm_memory_high_watermark.relative = 0.5\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7157",
+      "title": "完整文件：components/rabbit/run-tests.sh",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "components/rabbit/run-tests.sh",
+          "value": "#!/bin/sh\nset -eu\n# Run from the directory containing pom.xml. Needs a JDK 21 and the pinned JARs.\nmkdir -p build/classes\njava com.sun.tools.javac.Main -source 21 -target 21 -encoding UTF-8 -cp 'build/amqp-client-5.26.0.jar:build/slf4j-api-2.0.17.jar' -d build/classes src/*.java\ntimeout 15s java -ea -cp 'build/classes:build/*' RabbitLabTest\n\ntimeout 15s java -ea -cp 'build/classes:build/*' RabbitFailureTests\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7170",
+      "title": "完整文件：components/rabbit/src/EventEnvelope.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/EventEnvelope.java",
+          "value": "import java.io.*;\nimport java.security.MessageDigest;\nimport java.util.*;\n\n/** Teaching envelope; only synthetic payloads belong in this lab. */\npublic record EventEnvelope(String eventId, String payload, int attempt, long deadlineMillis) {\n    public static final int MAX_WIRE = 32768;\n    public static final int MAX_PAYLOAD_UTF8 = 16000;\n    public EventEnvelope {\n        if (eventId == null || !eventId.matches(\"[A-Za-z0-9_.:-]{1,80}\")\n                || payload == null || payload.length() > MAX_PAYLOAD_UTF8\n                || attempt < 0 || attempt > 2 || deadlineMillis <= 0)\n            throw new IllegalArgumentException(\"invalid envelope\");\n        wireSize(eventId, payload); // validate before allocating encoded byte arrays\n    }\n    private static int wireSize(String id, String text) {\n        int utf8 = 0, modifiedUtf8 = 0;\n        for (int i = 0; i < text.length(); i++) {\n            char c = text.charAt(i);\n            if (Character.isHighSurrogate(c)) {\n                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1)))\n                    throw new IllegalArgumentException(\"ill-formed UTF-16\");\n                i++; utf8 += 4; modifiedUtf8 += 6;\n            } else if (Character.isLowSurrogate(c)) {\n                throw new IllegalArgumentException(\"ill-formed UTF-16\");\n            } else {\n                utf8 += c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3;\n                modifiedUtf8 += c == 0 ? 2 : c <= 0x7f ? 1 : c <= 0x7ff ? 2 : 3;\n            }\n            if (utf8 > MAX_PAYLOAD_UTF8) throw new IllegalArgumentException(\"payload too large\");\n        }\n        // Version, two UTF length prefixes, attempt and deadline take 20 bytes.\n        int size = 20 + id.length() + modifiedUtf8; // eventId is bounded ASCII\n        if (size > MAX_WIRE) throw new IllegalArgumentException(\"envelope too large\");\n        return size;\n    }\n    public EventEnvelope retry() { return new EventEnvelope(eventId, payload, attempt + 1, deadlineMillis); }\n    public byte[] encode() throws IOException {\n        var bytes = new ByteArrayOutputStream(wireSize(eventId, payload));\n        try (var out = new DataOutputStream(bytes)) {\n            out.writeInt(1); out.writeUTF(eventId); out.writeUTF(payload);\n            out.writeInt(attempt); out.writeLong(deadlineMillis);\n        }\n        return bytes.toByteArray();\n    }\n    public static EventEnvelope decode(byte[] bytes) throws IOException {\n        if (bytes.length > MAX_WIRE) throw new IOException(\"oversized\");\n        try (var in = new DataInputStream(new ByteArrayInputStream(bytes))) {\n            if (in.readInt() != 1) throw new IOException(\"unknown schema\");\n            var e = new EventEnvelope(in.readUTF(), in.readUTF(), in.readInt(), in.readLong());\n            if (in.available() != 0) throw new IOException(\"trailing bytes\");\n            return e;\n        } catch (IllegalArgumentException e) { throw new IOException(\"invalid envelope\", e); }\n    }\n    public static String hash(byte[] bytes) {\n        try { return HexFormat.of().formatHex(MessageDigest.getInstance(\"SHA-256\").digest(bytes)); }\n        catch (Exception impossible) { throw new AssertionError(impossible); }\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7234",
+      "title": "完整文件：components/rabbit/src/LabRuntime.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/LabRuntime.java",
+          "value": "import com.rabbitmq.client.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Local-only, fixed-deadline connection owner. Never use production credentials. */\npublic final class LabRuntime implements AutoCloseable {\n    private final List<Connection> connections = new CopyOnWriteArrayList<>();\n    private final ScheduledExecutorService deadline = Executors.newSingleThreadScheduledExecutor(r -> {\n        Thread t = new Thread(r, \"rabbit-lab-wall-deadline\"); t.setDaemon(true); return t;\n    });\n    private volatile boolean closed;\n    public LabRuntime() { deadline.schedule(this::abortAll, 20, TimeUnit.SECONDS); }\n    public static void requireLocalOptIn(String[] args) {\n        if (args.length != 1 || !\"--local-lab\".equals(args[0]))\n            throw new IllegalArgumentException(\"explicit --local-lab required; local disposable broker only\");\n    }\n    public Connection connect() throws Exception {\n        if (closed) throw new IllegalStateException(\"deadline/closed\");\n        var f = new ConnectionFactory();\n        f.setHost(\"127.0.0.1\"); f.setPort(5672);\n        // Client defaults are usable only for a local disposable installation.\n        // No credential is printed or persisted by this program.\n        f.setAutomaticRecoveryEnabled(false); f.setTopologyRecoveryEnabled(false);\n        f.setConnectionTimeout(2000); f.setHandshakeTimeout(2000);\n        f.setChannelRpcTimeout(2000); f.setShutdownTimeout(1000);\n        f.setRequestedHeartbeat(5); f.setMaxInboundMessageBodySize(EventEnvelope.MAX_WIRE);\n        f.setThreadFactory(r -> { Thread t = new Thread(r, \"rabbit-lab-client\"); t.setDaemon(true); return t; });\n        Connection c = f.newConnection(\"bounded-interview-lab\");\n        connections.add(c);\n        if (closed) {\n            var failure = new IllegalStateException(\"deadline during connection\");\n            RabbitCleanup.after(failure, () -> c.abort(500));\n            throw failure;\n        }\n        return c;\n    }\n    private void abortAll() {\n        closed = true;\n        RuntimeException failure = null;\n        for (Connection c : connections) {\n            try { c.abort(500); }\n            catch (RuntimeException next) {\n                if (failure == null) failure = next; else RabbitCleanup.attach(failure, next);\n            }\n        }\n        connections.clear();\n        if (failure != null) throw failure;\n    }\n    @Override public void close() {\n        Throwable primary = null;\n        try { abortAll(); }\n        catch (RuntimeException | Error failure) { primary = failure; throw failure; }\n        finally {\n            Throwable original = primary;\n            RabbitCleanup.after(original, () -> {\n                deadline.shutdownNow();\n                try { if (!deadline.awaitTermination(2, TimeUnit.SECONDS)) throw new IllegalStateException(\"timer remains\"); }\n                catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }\n            });\n        }\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7301",
+      "title": "完整文件：components/rabbit/src/RabbitCleanup.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RabbitCleanup.java",
+          "value": "/** Narrow synchronous cleanup helper; actions must provide their own time bounds. */\npublic final class RabbitCleanup {\n    private RabbitCleanup() { }\n    public static void preserveInterrupt(Throwable failure) {\n        if (failure instanceof InterruptedException) Thread.currentThread().interrupt();\n    }\n    public static void attach(Throwable primary, Throwable secondary) {\n        preserveInterrupt(secondary);\n        if (primary != secondary) primary.addSuppressed(secondary);\n    }\n    public static void after(Throwable primary, Runnable cleanup) {\n        try { cleanup.run(); }\n        catch (RuntimeException | Error secondary) {\n            if (primary == null) throw secondary;\n            attach(primary, secondary);\n        }\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7324",
+      "title": "完整文件：components/rabbit/src/RabbitConsumerLab.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RabbitConsumerLab.java",
+          "value": "import com.rabbitmq.client.*;\nimport java.io.*;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicBoolean;\n\npublic final class RabbitConsumerLab {\n    public enum Effect { COMMITTED, RETRYABLE, PERMANENT, UNKNOWN }\n    /** COMMITTED means durable effect/receipt, or durable responsibility transfer in a real adapter.\n     * A production adapter must enforce its own I/O deadline and authoritative identity checks. */\n    public interface EffectPort { Effect apply(EventEnvelope e) throws Exception; }\n    public interface Handoff { RabbitPublisherLab.Outcome send(String route, String eventId, byte[] body) throws Exception; }\n    public interface AckPort { void ack(long tag) throws Exception; }\n    public record Delivery(UUID generation, long tag, String exchange, String route,\n                           String messageId, String publishAttempt, boolean redelivered, long redeliveryCount, byte[] body) {\n        public Delivery {\n            Objects.requireNonNull(generation); Objects.requireNonNull(body);\n            exchange = Objects.toString(exchange, \"\"); route = Objects.toString(route, \"\");\n            messageId = Objects.toString(messageId, \"\"); publishAttempt = Objects.toString(publishAttempt, \"\");\n            body = body.clone();\n        }\n        public Delivery(UUID g, long tag, String exchange, String route, byte[] body) {\n            this(g, tag, exchange, route, \"\", \"\", false, 0, body);\n        }\n        @Override public byte[] body() { return body.clone(); }\n    }\n    public enum Result { ACKED, STOP_UNACKED, STALE }\n    public static Result handle(UUID current, Delivery d, EffectPort service, Handoff handoff,\n                                AckPort acknowledger, long nowMillis) throws Exception {\n        if (!current.equals(d.generation())) return Result.STALE;\n        if (d.tag() <= 0) throw new IllegalArgumentException(\"positive channel delivery tag required\");\n        EventEnvelope e;\n        try { e = EventEnvelope.decode(d.body()); }\n        catch (IOException malformed) { return quarantine(d, \"malformed-schema\", handoff, acknowledger); }\n        Effect effect;\n        try { effect = service.apply(e); }\n        catch (InterruptedException interrupted) {\n            Thread.currentThread().interrupt();\n            return Result.STOP_UNACKED;\n        }\n        catch (Exception unknown) { return Result.STOP_UNACKED; } // DB unavailable / COMMIT ambiguous\n        if (effect == null || effect == Effect.UNKNOWN) return Result.STOP_UNACKED; // query same identity; no blind retry\n        if (effect == Effect.COMMITTED) {\n            acknowledger.ack(d.tag()); // kept outside business catch: ACK failure never rewinds effect\n            return Result.ACKED;\n        }\n        if (effect == Effect.PERMANENT || e.attempt() == 2 || nowMillis >= e.deadlineMillis())\n            return quarantine(d, effect == Effect.PERMANENT ? \"permanent\" : \"retry-budget-exhausted\", handoff, acknowledger);\n        long delay = (20L << e.attempt()) + Math.floorMod(e.eventId().hashCode(), 11);\n        if (e.deadlineMillis() - nowMillis <= delay + 1600)\n            return quarantine(d, \"deadline-insufficient\", handoff, acknowledger);\n        // Small bounded lab backoff while original stays unacked. A crash leaves broker responsibility.\n        // For long delays use durable dueAt/Outbox, not a sleeping worker.\n        Thread.sleep(delay);\n        RabbitPublisherLab.Outcome o = handoff.send(\"work\", e.eventId(), e.retry().encode());\n        if (o != RabbitPublisherLab.Outcome.ACK_ROUTED) return Result.STOP_UNACKED;\n        acknowledger.ack(d.tag()); // confirm-before-ACK: a crash here can duplicate, cannot erase both copies\n        return Result.ACKED;\n    }\n    private static Result quarantine(Delivery d, String reason, Handoff h, AckPort ack) throws Exception {\n        byte[] raw = d.body();\n        if (raw.length > EventEnvelope.MAX_WIRE - 1024) return Result.STOP_UNACKED;\n        String hash = EventEnvelope.hash(raw);\n        String id;\n        try { id = EventEnvelope.decode(raw).eventId(); } catch (IOException invalid) { id = \"raw-\" + hash; }\n        var bytes = new ByteArrayOutputStream();\n        try (var out = new DataOutputStream(bytes)) {\n            out.writeInt(2); out.writeUTF(id); out.writeUTF(reason);\n            out.writeUTF(d.exchange()); out.writeUTF(d.route());\n            out.writeUTF(d.generation().toString()); out.writeLong(d.tag());\n            out.writeLong(System.currentTimeMillis()); out.writeUTF(hash);\n            out.writeUTF(d.messageId()); out.writeUTF(d.publishAttempt());\n            out.writeBoolean(d.redelivered()); out.writeLong(d.redeliveryCount());\n            out.writeInt(raw.length); out.write(raw); // complete bytes; do not log private payloads\n        }\n        if (bytes.size() > EventEnvelope.MAX_WIRE) return Result.STOP_UNACKED;\n        if (h.send(\"dead\", id, bytes.toByteArray()) != RabbitPublisherLab.Outcome.ACK_ROUTED)\n            return Result.STOP_UNACKED;\n        ack.ack(d.tag());\n        return Result.ACKED;\n    }\n    /** Process-local mock ONLY: loss on restart is deliberate, not a durable inbox implementation. */\n    public static final class MockEffects implements EffectPort {\n        private final Map<String, String> completed = new HashMap<>();\n        private int count;\n        @Override public Effect apply(EventEnvelope e) {\n            String identityPayload = e.payload() + \"\\n\" + e.deadlineMillis();\n            String prior = completed.get(e.eventId());\n            if (prior != null) return prior.equals(identityPayload) ? Effect.COMMITTED : Effect.PERMANENT;\n            if (System.currentTimeMillis() >= e.deadlineMillis()) return Effect.PERMANENT;\n            if (e.payload().equals(\"unknown\")) return Effect.UNKNOWN;\n            if (e.payload().equals(\"permanent\")) return Effect.PERMANENT;\n            if (e.payload().equals(\"transient\") && e.attempt() < 2) return Effect.RETRYABLE;\n            if (completed.size() == 32) return Effect.UNKNOWN;\n            completed.put(e.eventId(), identityPayload); count++;\n            return Effect.COMMITTED;\n        }\n        public int count() { return count; }\n    }\n    public static void main(String[] args) throws Exception {\n        LabRuntime.requireLocalOptIn(args);\n        UUID generation = UUID.randomUUID();\n        var inbox = new ArrayBlockingQueue<Delivery>(RabbitTopology.PREFETCH);\n        var stopped = new AtomicBoolean();\n        var mock = new MockEffects();\n        try (var runtime = new LabRuntime();\n             var publisher = new RabbitPublisherLab(new RealRabbitWire(runtime), 4)) {\n            Connection connection = runtime.connect();\n            Channel ch = connection.createChannel();\n            RabbitTopology.declare(ch); ch.basicQos(RabbitTopology.PREFETCH, false);\n            ch.addShutdownListener(s -> stopped.set(true));\n            String consumer = ch.basicConsume(RabbitTopology.WORK, false,\n                    (tag, message) -> {\n                        var env = message.getEnvelope();\n                        var props = message.getProperties();\n                        Object count = props.getHeaders() == null ? null : props.getHeaders().get(\"x-delivery-count\");\n                        var d = new Delivery(generation, env.getDeliveryTag(), env.getExchange(), env.getRoutingKey(),\n                                props.getMessageId(), props.getCorrelationId(), env.isRedeliver(),\n                                count instanceof Number n ? n.longValue() : 0, message.getBody());\n                        if (!inbox.offer(d)) { stopped.set(true); connection.abort(500); }\n                    }, tag -> stopped.set(true));\n            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);\n            int deliveries = 0;\n            Throwable processingFailure = null;\n            try {\n                while (!stopped.get() && System.nanoTime() < until && deliveries < 12) {\n                    Delivery d = inbox.poll(100, TimeUnit.MILLISECONDS);\n                    if (d == null) continue;\n                    deliveries++;\n                    Result result = handle(generation, d, mock,\n                            (route, event, body) -> publisher.publish(route, event, body, 1500).await(1800),\n                            tag -> ch.basicAck(tag, false), System.currentTimeMillis());\n                    if (result != Result.ACKED) { stopped.set(true); break; }\n                }\n            } catch (Exception | Error failure) {\n                processingFailure = failure;\n                RabbitCleanup.preserveInterrupt(failure);\n                throw failure;\n            } finally {\n                // No ACK for unprocessed queued work. Cleanup cannot replace processing failure.\n                try { RabbitCleanup.after(processingFailure, () -> connection.abort(500)); }\n                finally { inbox.clear(); }\n            }\n            System.out.println(\"Mock effects=\" + mock.count() + \", deliveries=\" + deliveries\n                    + \"; no database, no provider, no restart-persistent effects\");\n        }\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7477",
+      "title": "完整文件：components/rabbit/src/RabbitFailureTests.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RabbitFailureTests.java",
+          "value": "import com.rabbitmq.client.Connection;\nimport java.lang.reflect.Proxy;\nimport java.util.UUID;\n\n/** Bounded fault doubles: no sockets, credentials, broker or database. */\npublic final class RabbitFailureTests {\n    static int checks;\n    static void check(boolean ok) { checks++; if (!ok) throw new AssertionError(\"check \" + checks); }\n    static final class NoSuppression extends RuntimeException {\n        private static final long serialVersionUID = 1L;\n        NoSuppression() { super(\"primary\", null, false, true); }\n    }\n    static final class Wire implements RabbitPublisherLab.Wire {\n        Exception sendFailure; RuntimeException abortFailure; boolean aborted;\n        public void listen(UUID generation, RabbitPublisherLab.Listener listener) { }\n        public long nextSequence() { return 1; }\n        public void send(String route, String id, String attempt, byte[] body) throws Exception { throw sendFailure; }\n        public void abort() { aborted = true; if (abortFailure != null) throw abortFailure; }\n    }\n    static Connection connection(RuntimeException primary, RuntimeException cleanup) {\n        return (Connection) Proxy.newProxyInstance(RabbitFailureTests.class.getClassLoader(),\n                new Class<?>[]{Connection.class}, (proxy, method, args) -> {\n                    if (method.getName().equals(\"createChannel\")) throw primary;\n                    if (method.getName().equals(\"abort\")) throw cleanup;\n                    throw new UnsupportedOperationException(method.getName());\n                });\n    }\n    static java.util.concurrent.ScheduledThreadPoolExecutor timer(RabbitPublisherLab publisher)\n            throws ReflectiveOperationException {\n        java.lang.reflect.Field field = RabbitPublisherLab.class.getDeclaredField(\"watchdog\");\n        field.setAccessible(true);\n        return (java.util.concurrent.ScheduledThreadPoolExecutor) field.get(publisher);\n    }\n\n    static void alreadyTerminated() throws Exception {\n        Wire wire = new Wire();\n        wire.abortFailure = new IllegalStateException(\"abort failed\");\n        RabbitPublisherLab publisher = new RabbitPublisherLab(wire, 1);\n        try {\n            var timer = timer(publisher);\n            timer.shutdownNow();\n            check(timer.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));\n            Thread.currentThread().interrupt();\n            try {\n                publisher.close();\n                throw new AssertionError(\"close should preserve abort failure\");\n            } catch (RuntimeException actual) {\n                check(actual == wire.abortFailure);\n                check(actual.getSuppressed().length == 0);\n                check(Thread.currentThread().isInterrupted());\n            }\n        } finally {\n            Thread.interrupted();\n            publisher.close();\n        }\n    }\n\n    static void stillRunning() throws Exception {\n        Wire wire = new Wire();\n        wire.abortFailure = new IllegalStateException(\"abort failed\");\n        RabbitPublisherLab publisher = new RabbitPublisherLab(wire, 1);\n        var started = new java.util.concurrent.CountDownLatch(1);\n        var release = new java.util.concurrent.CountDownLatch(1);\n        try {\n            var timer = timer(publisher);\n            timer.execute(() -> {\n                started.countDown();\n                while (release.getCount() > 0) {\n                    try {\n                        release.await();\n                    } catch (InterruptedException ignored) {\n                        // Keep the test worker alive until the outer cleanup releases it.\n                    }\n                }\n            });\n            check(started.await(2, java.util.concurrent.TimeUnit.SECONDS));\n            Thread.currentThread().interrupt();\n            try {\n                publisher.close();\n                throw new AssertionError(\"close should preserve abort failure\");\n            } catch (RuntimeException actual) {\n                check(actual == wire.abortFailure);\n                check(actual.getSuppressed().length == 1);\n                check(actual.getSuppressed()[0].getCause() instanceof InterruptedException);\n                check(Thread.currentThread().isInterrupted());\n            }\n        } finally {\n            Thread.interrupted();\n            release.countDown();\n            publisher.close();\n        }\n    }\n\n    public static void main(String[] args) throws Exception {\n        alreadyTerminated();\n        stillRunning();\n        RuntimeException same = new IllegalStateException(\"same\");\n        try { new RealRabbitWire(connection(same, same)); throw new AssertionError(); }\n        catch (RuntimeException actual) { check(actual == same && actual.getSuppressed().length == 0); }\n        RuntimeException first = new IllegalStateException(\"first\"), second = new IllegalStateException(\"second\");\n        try { new RealRabbitWire(connection(first, second)); throw new AssertionError(); }\n        catch (RuntimeException actual) { check(actual == first && actual.getSuppressed()[0] == second); }\n        NoSuppression disabled = new NoSuppression();\n        try { new RealRabbitWire(connection(disabled, second)); throw new AssertionError(); }\n        catch (RuntimeException actual) { check(actual == disabled && actual.getSuppressed().length == 0); }\n        Wire invalid = new Wire(); invalid.abortFailure = second;\n        try { new RabbitPublisherLab(invalid, 0); throw new AssertionError(); }\n        catch (IllegalArgumentException actual) { check(invalid.aborted && actual.getSuppressed()[0] == second); }\n        Wire interrupted = new Wire(); interrupted.sendFailure = new InterruptedException(\"send interrupted\"); interrupted.abortFailure = second;\n        RabbitPublisherLab publisher = new RabbitPublisherLab(interrupted, 1);\n        try {\n            var ticket = publisher.publish(\"work\", \"e\", new byte[]{1}, 1000);\n            check(ticket.outcome() == RabbitPublisherLab.Outcome.UNKNOWN);\n            check(ticket.failure() == interrupted.sendFailure && ticket.failure().getSuppressed()[0] == second);\n            check(Thread.interrupted());\n        } finally { publisher.close(); }\n        Wire aliased = new Wire(); aliased.sendFailure = same; aliased.abortFailure = same;\n        try (var p = new RabbitPublisherLab(aliased, 1)) {\n            var ticket = p.publish(\"work\", \"e\", new byte[]{1}, 1000);\n            check(ticket.failure() == same && same.getSuppressed().length == 0);\n        }\n        UUID generation = UUID.randomUUID();\n        var delivery = new RabbitConsumerLab.Delivery(generation, 1, \"x\", \"work\",\n                new EventEnvelope(\"e\", \"x\", 0, 10).encode());\n        boolean[] acked = {false};\n        var result = RabbitConsumerLab.handle(generation, delivery,\n                event -> { throw new InterruptedException(\"adapter interrupted\"); },\n                (route, id, body) -> { throw new AssertionError(\"must not hand off\"); },\n                tag -> acked[0] = true, 1);\n        check(result == RabbitConsumerLab.Result.STOP_UNACKED && !acked[0] && Thread.interrupted());\n        RabbitCleanup.after(same, () -> { throw same; }); check(same.getSuppressed().length == 0);\n        RabbitCleanup.after(disabled, () -> { throw second; }); check(disabled.getSuppressed().length == 0);\n        System.out.println(\"RabbitFailureTests OK: \" + checks + \"; fault doubles only\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7617",
+      "title": "完整文件：components/rabbit/src/RabbitLabTest.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RabbitLabTest.java",
+          "value": "import java.io.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Deterministic callback/fault tests: no socket, broker, SQL or real external action. */\npublic final class RabbitLabTest {\n    static int checks;\n    static void check(boolean b) { checks++; if (!b) throw new AssertionError(\"check \" + checks); }\n    static final class FakeWire implements RabbitPublisherLab.Wire {\n        UUID generation; RabbitPublisherLab.Listener listener;\n        long seq = 1; String lastAttempt; boolean aborted, failListen, failAbort;\n        String behavior = \"silent\";\n        public void listen(UUID g, RabbitPublisherLab.Listener l) throws IOException {\n            generation = g; listener = l; if (failListen) throw new IOException(\"listen setup failed\");\n        }\n        public long nextSequence() { return seq; }\n        public void send(String route, String event, String attempt, byte[] bytes) throws Exception {\n            lastAttempt = attempt; long sent = seq++;\n            if (behavior.equals(\"throw\")) throw new IOException(\"partial socket write\");\n            if (behavior.equals(\"return\")) listener.returned(generation, attempt);\n            if (!behavior.equals(\"silent\")) listener.confirm(generation, sent, false, !behavior.equals(\"nack\"));\n        }\n        public void abort() { aborted = true; if (failAbort) throw new IllegalStateException(\"abort failed\"); }\n    }\n    static RabbitConsumerLab.Delivery delivery(UUID g, long tag, EventEnvelope e) throws IOException {\n        return new RabbitConsumerLab.Delivery(g, tag, RabbitTopology.EXCHANGE, \"work\", e.encode());\n    }\n    public static void main(String[] args) throws Exception {\n        long threadsBefore = Thread.getAllStackTraces().keySet().stream()\n                .filter(t -> t.isAlive() && t.getName().startsWith(\"rabbit-\")).count();\n        // Standard UTF-8 payload budget and modified UTF-8 wire budget are distinct.\n        for (String payload : List.of(\"\", \"a\".repeat(16000), \"\\0\".repeat(16000),\n                \"\\uD83D\\uDE00\".repeat(4000), \"界\".repeat(5333))) {\n            var valid = new EventEnvelope(\"e\".repeat(80), payload, 0, 1);\n            byte[] encoded = valid.encode();\n            check(encoded.length <= EventEnvelope.MAX_WIRE);\n            check(EventEnvelope.decode(encoded).equals(valid));\n        }\n        for (String payload : List.of(\"\\uD800\".repeat(16000), \"\\uDC00\".repeat(16000),\n                \"\\uD800\", \"\\uDC00\", \"\\uD800a\", \"a\\uDC00\", \"a\".repeat(16001),\n                \"\\uD83D\\uDE00\".repeat(4001), \"界\".repeat(5334))) {\n            try { new EventEnvelope(\"bad\", payload, 0, 1); throw new AssertionError(\"accepted invalid payload\"); }\n            catch (IllegalArgumentException expected) { check(true); }\n        }\n        var malformedText = new ByteArrayOutputStream();\n        try (var out = new DataOutputStream(malformedText)) {\n            out.writeInt(1); out.writeUTF(\"bad\"); out.writeUTF(\"\\uD800\"); out.writeInt(0); out.writeLong(1);\n        }\n        try { EventEnvelope.decode(malformedText.toByteArray()); throw new AssertionError(\"decoded ill-formed text\"); }\n        catch (IOException expected) { check(expected.getCause() instanceof IllegalArgumentException); }\n        var sameFailure = new IllegalStateException(\"listen and abort share one failure\");\n        var aliasAborted = new java.util.concurrent.atomic.AtomicBoolean();\n        var aliasWire = new RabbitPublisherLab.Wire() {\n            public void listen(UUID id, RabbitPublisherLab.Listener listener) { throw sameFailure; }\n            public long nextSequence() { return 1; }\n            public void send(String route, String event, String attempt, byte[] body) { }\n            public void abort() { aliasAborted.set(true); throw sameFailure; }\n        };\n        try { new RabbitPublisherLab(aliasWire, 1); throw new AssertionError(\"expected setup failure\"); }\n        catch (IllegalStateException expected) { check(expected == sameFailure && aliasAborted.get()); }\n        var distinctFailure = new FakeWire(); distinctFailure.failListen = true; distinctFailure.failAbort = true;\n        try { new RabbitPublisherLab(distinctFailure, 1); throw new AssertionError(\"expected setup failure\"); }\n        catch (IOException expected) {\n            check(distinctFailure.aborted && expected.getSuppressed().length == 1\n                    && expected.getSuppressed()[0] instanceof IllegalStateException);\n        }\n        var wire = new FakeWire();\n        try (var p = new RabbitPublisherLab(wire, 2)) {\n            var a = p.publish(\"work\", \"same\", new byte[]{1}, 1000);\n            var b = p.publish(\"work\", \"same\", new byte[]{1}, 1000);\n            check(!a.attemptId.equals(b.attemptId)); check(a.key.sequence() == 1 && b.key.sequence() == 2);\n            check(p.publish(\"work\", \"full\", new byte[]{1}, 1000).outcome() == RabbitPublisherLab.Outcome.REJECTED);\n            wire.listener.returned(wire.generation, a.attemptId);\n            wire.listener.confirm(UUID.randomUUID(), 2, true, true); check(p.inflight() == 2);\n            wire.listener.confirm(wire.generation, 2, true, true);\n            check(a.outcome() == RabbitPublisherLab.Outcome.RETURNED);\n            check(b.outcome() == RabbitPublisherLab.Outcome.ACK_ROUTED); check(p.inflight() == 0);\n            wire.behavior = \"nack\";\n            check(p.publish(\"work\", \"nacked\", new byte[]{2}, 1000).outcome() == RabbitPublisherLab.Outcome.NACK);\n            wire.behavior = \"throw\";\n            var unknown = p.publish(\"work\", \"part-written\", new byte[]{3}, 1000);\n            check(unknown.outcome() == RabbitPublisherLab.Outcome.UNKNOWN); check(p.inflight() == 0 && wire.aborted);\n            wire.listener.confirm(wire.generation, unknown.key.sequence(), false, true);\n            check(unknown.outcome() == RabbitPublisherLab.Outcome.UNKNOWN);\n        }\n        wire = new FakeWire();\n        try (var p = new RabbitPublisherLab(wire, 2)) {\n            var t = p.publish(\"work\", \"timeout\", new byte[]{1}, 25);\n            check(t.await(1000) == RabbitPublisherLab.Outcome.UNKNOWN);\n            check(p.inflight() == 0);\n        }\n        check(wire.aborted);\n        wire = new FakeWire();\n        var p = new RabbitPublisherLab(wire, 2);\n        var pending = p.publish(\"work\", \"closing\", new byte[]{1}, 1000);\n        p.close(); p.close(); check(pending.outcome() == RabbitPublisherLab.Outcome.UNKNOWN && p.inflight() == 0);\n        UUID g = UUID.randomUUID(); long deadline = System.currentTimeMillis() + 10000;\n        var service = new RabbitConsumerLab.MockEffects(); var acks = new ArrayList<Long>();\n        RabbitConsumerLab.Handoff success = (route,id,body) -> RabbitPublisherLab.Outcome.ACK_ROUTED;\n        var first = new EventEnvelope(\"effect\", \"ok\", 0, deadline);\n        check(EventEnvelope.decode(first.encode()).equals(first));\n        for (int i = 1; i <= 2; i++) check(RabbitConsumerLab.handle(g, delivery(g,i,first), service, success, acks::add,\n                System.currentTimeMillis()) == RabbitConsumerLab.Result.ACKED);\n        check(service.count() == 1 && acks.equals(List.of(1L,2L)));\n        check(RabbitConsumerLab.handle(UUID.randomUUID(), delivery(g,3,first), service, success, acks::add,\n                System.currentTimeMillis()) == RabbitConsumerLab.Result.STALE); check(acks.size() == 2);\n        try {\n            RabbitConsumerLab.handle(g, delivery(g,4,first), service, success,\n                    tag -> { throw new IOException(\"lost ACK\"); }, System.currentTimeMillis());\n            throw new AssertionError();\n        } catch (IOException expected) { check(service.count() == 1); }\n        var unknown = new EventEnvelope(\"unknown\", \"unknown\", 0, deadline);\n        check(RabbitConsumerLab.handle(g, delivery(g,5,unknown), service, success, acks::add,\n                System.currentTimeMillis()) == RabbitConsumerLab.Result.STOP_UNACKED);\n        check(RabbitConsumerLab.handle(g, delivery(g,6,first), e -> { throw new IOException(\"DB unavailable\"); },\n                success, acks::add, System.currentTimeMillis()) == RabbitConsumerLab.Result.STOP_UNACKED);\n        var retry = new EventEnvelope(\"retry\", \"transient\", 0, deadline);\n        var sent = new ArrayList<byte[]>(); var routes = new ArrayList<String>();\n        RabbitConsumerLab.Handoff capture = (route,id,body) -> { routes.add(route); sent.add(body); return RabbitPublisherLab.Outcome.ACK_ROUTED; };\n        for (int i=0;i<3;i++) {\n            check(RabbitConsumerLab.handle(g,delivery(g,7+i,retry),service,capture,acks::add,System.currentTimeMillis())\n                    == RabbitConsumerLab.Result.ACKED);\n            if (i<2) retry = EventEnvelope.decode(sent.getLast());\n        }\n        check(sent.size() == 2 && retry.eventId().equals(\"retry\") && retry.attempt() == 2 && service.count() == 2);\n        var poison = new EventEnvelope(\"poison\", \"permanent\", 0, deadline);\n        int ackBefore=acks.size();\n        for (var outcome : List.of(RabbitPublisherLab.Outcome.RETURNED, RabbitPublisherLab.Outcome.NACK,\n                RabbitPublisherLab.Outcome.UNKNOWN, RabbitPublisherLab.Outcome.REJECTED)) {\n            check(RabbitConsumerLab.handle(g,delivery(g,20,poison),service,(route,id,body)->outcome,\n                    acks::add,System.currentTimeMillis()) == RabbitConsumerLab.Result.STOP_UNACKED);\n        }\n        check(acks.size() == ackBefore);\n        check(RabbitConsumerLab.handle(g,delivery(g,21,poison),service,capture,acks::add,System.currentTimeMillis())\n                == RabbitConsumerLab.Result.ACKED);\n        check(routes.getLast().equals(\"dead\"));\n        byte[] malformed={0,1,2};\n        check(RabbitConsumerLab.handle(g,new RabbitConsumerLab.Delivery(g,22,\"x\",\"key\",malformed),service,\n                capture,acks::add,System.currentTimeMillis()) == RabbitConsumerLab.Result.ACKED);\n        try(var in=new DataInputStream(new ByteArrayInputStream(sent.getLast()))) {\n            check(in.readInt()==2); in.readUTF();check(in.readUTF().equals(\"malformed-schema\"));\n            in.readUTF();in.readUTF();in.readUTF();in.readLong();in.readLong();in.readUTF();\n            in.readUTF();in.readUTF();in.readBoolean();in.readLong();\n            int n=in.readInt();check(Arrays.equals(in.readNBytes(n),malformed));\n        }\n        var exhausted = new EventEnvelope(\"exhausted\",\"transient\",2,deadline);\n        check(RabbitConsumerLab.handle(g,delivery(g,23,exhausted),e->RabbitConsumerLab.Effect.RETRYABLE,\n                capture,acks::add,System.currentTimeMillis()) == RabbitConsumerLab.Result.ACKED);\n        check(routes.getLast().equals(\"dead\"));\n        var expired = new EventEnvelope(\"expired\",\"transient\",0,1);\n        check(RabbitConsumerLab.handle(g,delivery(g,24,expired),service,capture,acks::add,System.currentTimeMillis())\n                == RabbitConsumerLab.Result.ACKED); check(routes.getLast().equals(\"dead\"));\n        // Identity conflict must not repeat the local effect.\n        var conflict = new EventEnvelope(\"effect\", \"different\", 0, deadline);\n        check(RabbitConsumerLab.handle(g,delivery(g,25,conflict),service,capture,acks::add,System.currentTimeMillis())\n                == RabbitConsumerLab.Result.ACKED); check(service.count() == 2 && routes.getLast().equals(\"dead\"));\n        int beforeException = acks.size();\n        try { RabbitConsumerLab.handle(g,delivery(g,26,poison),service,\n                (route,id,body)->{throw new IOException(\"handoff transport failure\");},acks::add,System.currentTimeMillis());\n            throw new AssertionError();\n        } catch (IOException expected) { check(acks.size() == beforeException); }\n        byte[] oversized = new byte[EventEnvelope.MAX_WIRE];\n        check(RabbitConsumerLab.handle(g,new RabbitConsumerLab.Delivery(g,27,\"x\",\"key\",oversized),service,\n                capture,acks::add,System.currentTimeMillis()) == RabbitConsumerLab.Result.STOP_UNACKED);\n        wire = new FakeWire();\n        try (var pub = new RabbitPublisherLab(wire, 2)) {\n            var t = pub.publish(\"work\",\"uncorrelated-return\",new byte[]{1},1000);\n            wire.listener.returned(wire.generation,\"not-a-live-attempt\");\n            check(t.outcome() == RabbitPublisherLab.Outcome.UNKNOWN && pub.inflight() == 0);\n        }\n        var setupFailed = new FakeWire(); setupFailed.failListen = true;\n        try { new RabbitPublisherLab(setupFailed,2); throw new AssertionError(); }\n        catch (IOException expected) { check(setupFailed.aborted); }\n        var abortFailed = new FakeWire(); abortFailed.failAbort = true;\n        var closing = new RabbitPublisherLab(abortFailed,2);\n        var closingTicket = closing.publish(\"work\",\"abort-failure\",new byte[]{1},1000);\n        try { closing.close(); throw new AssertionError(); }\n        catch (IllegalStateException expected) { check(closingTicket.outcome() == RabbitPublisherLab.Outcome.UNKNOWN); }\n        var owned = new FakeWire();\n        try(var single = new RabbitPublisherLab(owned,2)) {\n            var denied = new java.util.concurrent.atomic.AtomicBoolean();\n            Thread other = new Thread(() -> {\n                try { single.publish(\"work\",\"other-thread\",new byte[]{1},1000); }\n                catch (IllegalStateException expected) { denied.set(true); }\n            });\n            other.start(); other.join(1000); check(!other.isAlive() && denied.get()); check(single.inflight()==0);\n        }\n        var declarations = new ArrayList<Object[]>();\n        var channel = (com.rabbitmq.client.Channel) java.lang.reflect.Proxy.newProxyInstance(\n                RabbitLabTest.class.getClassLoader(), new Class<?>[]{com.rabbitmq.client.Channel.class},\n                (proxy,method,arguments) -> { declarations.add(arguments); return null; });\n        RabbitTopology.declare(channel);\n        check(declarations.size() == 5);\n        check(declarations.get(1)[0].equals(RabbitTopology.DLQ));\n        check(declarations.get(3)[0].equals(RabbitTopology.WORK));\n        @SuppressWarnings(\"unchecked\") var workArgs = (Map<String,Object>) declarations.get(3)[4];\n        check(workArgs.get(\"x-dead-letter-strategy\").equals(\"at-least-once\"));\n        check(workArgs.get(\"x-overflow\").equals(\"reject-publish\") && workArgs.get(\"x-delivery-limit\").equals(5));\n        // Interrupted cleanup must not replace a transport-abort failure.\n        var interruptedAbort = new FakeWire(); interruptedAbort.failAbort = true;\n        var interruptedPublisher = new RabbitPublisherLab(interruptedAbort, 1);\n        RuntimeException closeFailure = null;\n        boolean interruptPreserved;\n        Thread.currentThread().interrupt();\n        try { interruptedPublisher.close(); }\n        catch (RuntimeException expected) { closeFailure = expected; }\n        finally { interruptPreserved = Thread.interrupted(); } // clear this test's injected flag\n        interruptedPublisher.close(); // now await actual timer termination without interruption\n        check(closeFailure != null && closeFailure.getMessage().equals(\"abort failed\") && interruptedAbort.aborted);\n        // A timer already terminated before awaitTermination need not throw.\n        // The interrupt flag must survive either legal branch; deterministic branch tests\n        // in RabbitFailureTests separately hold a worker open to force interrupted waiting.\n        check(closeFailure.getSuppressed().length == 0\n                || (closeFailure.getSuppressed().length == 1\n                && closeFailure.getSuppressed()[0].getCause() instanceof InterruptedException));\n        check(interruptPreserved);\n        long threadsAfter = Thread.getAllStackTraces().keySet().stream()\n                .filter(t -> t.isAlive() && t.getName().startsWith(\"rabbit-\")).count();\n        check(threadsBefore == threadsAfter);\n        System.out.println(\"PASS \" + checks + \" checks; local mock only; no broker, SQL or provider calls; timers stopped\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-7844",
+      "title": "完整文件：components/rabbit/src/RabbitPublisherLab.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RabbitPublisherLab.java",
+          "value": "import java.io.IOException;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** One publisher object owns exactly one non-recovering channel generation. */\npublic final class RabbitPublisherLab implements AutoCloseable {\n    public enum Outcome { ACK_ROUTED, RETURNED, NACK, UNKNOWN, REJECTED }\n    public record Key(UUID generation, long sequence) {}\n    public interface Listener {\n        void returned(UUID generation, String attemptId);\n        void confirm(UUID generation, long sequence, boolean multiple, boolean ack);\n        void lost(UUID generation);\n    }\n    public interface Wire {\n        void listen(UUID generation, Listener listener) throws Exception;\n        long nextSequence(); // local client counter, no network call\n        void send(String route, String eventId, String attemptId, byte[] body) throws Exception;\n        void abort(); // bounded transport abort, may be invoked by watchdog\n    }\n    public static final class Ticket {\n        public final Key key;\n        public final String eventId, attemptId;\n        final long expiresNanos;\n        final CountDownLatch completed = new CountDownLatch(1);\n        private volatile Outcome outcome;\n        private volatile Throwable failure;\n        public Throwable failure() { return failure; }\n        boolean returned;\n        Ticket(Key key, String id, long expires) {\n            this.key = key; eventId = id; attemptId = UUID.randomUUID().toString(); expiresNanos = expires;\n        }\n        public Outcome outcome() { return outcome; }\n        public Outcome await(long millis) throws InterruptedException {\n            if (!completed.await(millis, TimeUnit.MILLISECONDS)) return Outcome.UNKNOWN;\n            return outcome;\n        }\n        void finish(Outcome o) { outcome = o; completed.countDown(); }\n    }\n    private final Wire wire;\n    private final UUID generation = UUID.randomUUID();\n    private final long owner = Thread.currentThread().threadId();\n    private final int capacity;\n    private final NavigableMap<Long, Ticket> pending = new TreeMap<>();\n    private final Map<String, Ticket> correlations = new HashMap<>();\n    private final ScheduledThreadPoolExecutor watchdog;\n    private boolean stopped;\n    public RabbitPublisherLab(Wire wire, int capacity) throws Exception {\n        if (capacity < 1 || capacity > 64) {\n            var failure = new IllegalArgumentException(\"capacity 1..64\");\n            if (wire != null) RabbitCleanup.after(failure, wire::abort);\n            throw failure;\n        }\n        this.wire = Objects.requireNonNull(wire); this.capacity = capacity;\n        watchdog = new ScheduledThreadPoolExecutor(1, r -> {\n            Thread t = new Thread(r, \"rabbit-publish-deadline\"); t.setDaemon(true); return t;\n        });\n        watchdog.setRemoveOnCancelPolicy(true);\n        try {\n            wire.listen(generation, new Listener() {\n                public void returned(UUID g, String id) { onReturn(g, id); }\n                public void confirm(UUID g, long seq, boolean multi, boolean ack) { onConfirm(g, seq, multi, ack); }\n                public void lost(UUID g) { if (generation.equals(g)) failGeneration(); }\n            });\n            watchdog.scheduleAtFixedRate(this::expire, 5, 5, TimeUnit.MILLISECONDS);\n        } catch (Exception | Error e) {\n            RabbitCleanup.preserveInterrupt(e);\n            RabbitCleanup.after(e, watchdog::shutdownNow);\n            RabbitCleanup.after(e, wire::abort);\n            throw e;\n        }\n    }\n    public Ticket publish(String route, String eventId, byte[] body, long timeoutMillis) {\n        if (Thread.currentThread().threadId() != owner) throw new IllegalStateException(\"channel owner only\");\n        if (eventId == null || !eventId.matches(\"[A-Za-z0-9_.:-]{1,80}\") || body == null\n                || body.length > EventEnvelope.MAX_WIRE || timeoutMillis < 10 || timeoutMillis > 5000\n                || !Set.of(\"work\", \"dead\", \"missing\").contains(route)) throw new IllegalArgumentException();\n        byte[] immutable = body.clone();\n        Ticket t;\n        synchronized (this) {\n            if (stopped || pending.size() >= capacity) {\n                t = new Ticket(new Key(generation, -1), eventId, 0); t.finish(Outcome.REJECTED); return t;\n            }\n            long seq = wire.nextSequence();\n            if (seq <= 0 || pending.containsKey(seq)) throw new IllegalStateException(\"sequence collision\");\n            t = new Ticket(new Key(generation, seq), eventId,\n                    System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis));\n            pending.put(seq, t); correlations.put(t.attemptId, t);\n        }\n        // Register correlation before any bytes may leave. Do not hold state lock over socket I/O.\n        try { if (t.outcome() == null) wire.send(route, eventId, t.attemptId, immutable); }\n        catch (Exception e) {\n            RabbitCleanup.preserveInterrupt(e);\n            // Preserve the send failure even if bounded transport cleanup also fails.\n            RabbitCleanup.after(e, () -> failGeneration(e));\n        } // partial write is UNKNOWN, never definite failure\n        return t;\n    }\n    private void onReturn(UUID g, String attempt) {\n        boolean unmatched;\n        synchronized (this) {\n            if (!generation.equals(g) || stopped) return;\n            Ticket t = correlations.get(attempt);\n            unmatched = t == null;\n            if (t != null) t.returned = true;\n        }\n        if (unmatched) failGeneration(); // broken correlation must not turn into false ACK success\n    }\n    private synchronized void onConfirm(UUID g, long seq, boolean multiple, boolean ack) {\n        if (!generation.equals(g)) return;\n        var selected = multiple ? new ArrayList<>(pending.headMap(seq, true).values())\n                : pending.containsKey(seq) ? List.of(pending.get(seq)) : List.<Ticket>of();\n        for (Ticket t : selected) finish(t, t.returned ? Outcome.RETURNED : ack ? Outcome.ACK_ROUTED : Outcome.NACK);\n    }\n    private void finish(Ticket t, Outcome o) { // called with this monitor\n        if (pending.remove(t.key.sequence(), t)) {\n            correlations.remove(t.attemptId, t); t.finish(o);\n        }\n    }\n    private void expire() {\n        boolean expired;\n        synchronized (this) {\n            long now = System.nanoTime();\n            expired = pending.values().stream().anyMatch(t -> now - t.expiresNanos >= 0);\n        }\n        if (expired) failGeneration(); // retire whole generation; never recycle timed-out channel\n    }\n    private void failGeneration() { failGeneration(null); }\n    private void failGeneration(Throwable cause) {\n        synchronized (this) {\n            if (stopped) return;\n            stopped = true;\n            for (Ticket t : new ArrayList<>(pending.values())) {\n                t.failure = cause;\n                finish(t, Outcome.UNKNOWN);\n            }\n        }\n        wire.abort();\n    }\n    public synchronized int inflight() { return pending.size(); }\n    public UUID generation() { return generation; }\n    @Override public void close() {\n        Throwable primary = null;\n        try { failGeneration(); }\n        catch (RuntimeException | Error failure) { primary = failure; throw failure; }\n        finally {\n            try {\n                watchdog.shutdownNow();\n                try {\n                    if (!watchdog.awaitTermination(2, TimeUnit.SECONDS))\n                        throw new IllegalStateException(\"watchdog remains\");\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                    throw new IllegalStateException(\"interrupted while stopping watchdog\", e);\n                }\n            } catch (RuntimeException | Error cleanup) {\n                if (primary == null) throw cleanup;\n                if (cleanup != primary) primary.addSuppressed(cleanup);\n            }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        LabRuntime.requireLocalOptIn(args);\n        try (var runtime = new LabRuntime();\n             var publisher = new RabbitPublisherLab(new RealRabbitWire(runtime), 4)) {\n            long deadline = System.currentTimeMillis() + 15000;\n            for (String payload : List.of(\"ok\", \"ok\", \"transient\", \"permanent\")) {\n                String id = payload.equals(\"ok\") ? \"same-event\" : \"event-\" + payload;\n                var e = new EventEnvelope(id, payload, 0, deadline);\n                var t = publisher.publish(\"work\", id, e.encode(), 1500);\n                System.out.println(id + \" \" + t.await(2000));\n            }\n            var t = publisher.publish(\"missing\", \"unroutable\", new byte[]{1}, 1500);\n            System.out.println(\"mandatory missing route \" + t.await(2000));\n        }\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-8025",
+      "title": "完整文件：components/rabbit/src/RabbitTopology.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RabbitTopology.java",
+          "value": "import com.rabbitmq.client.Channel;\nimport java.io.IOException;\nimport java.util.*;\n\npublic final class RabbitTopology {\n    public static final String EXCHANGE = \"mq-interview.lab.exchange\";\n    public static final String WORK = \"mq-interview.lab.work\";\n    public static final String DLQ = \"mq-interview.lab.dlq\";\n    public static final int PREFETCH = 4;\n    private RabbitTopology() {}\n    public static void declare(Channel ch) throws IOException {\n        ch.exchangeDeclare(EXCHANGE, \"direct\", true);\n        Map<String,Object> base = Map.of(\"x-queue-type\", \"quorum\", \"x-max-length\", 128,\n                \"x-max-length-bytes\", 1048576, \"x-overflow\", \"reject-publish\");\n        ch.queueDeclare(DLQ, true, false, false, base);\n        ch.queueBind(DLQ, EXCHANGE, \"dead\");\n        var work = new HashMap<>(base);\n        work.put(\"x-delivery-limit\", 5);\n        work.put(\"x-dead-letter-exchange\", EXCHANGE);\n        work.put(\"x-dead-letter-routing-key\", \"dead\");\n        work.put(\"x-dead-letter-strategy\", \"at-least-once\");\n        ch.queueDeclare(WORK, true, false, false, work);\n        ch.queueBind(WORK, EXCHANGE, \"work\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-8055",
+      "title": "完整文件：components/rabbit/src/RealRabbitWire.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/rabbit/src/RealRabbitWire.java",
+          "value": "import com.rabbitmq.client.*;\nimport java.util.UUID;\n\npublic final class RealRabbitWire implements RabbitPublisherLab.Wire {\n    private final Connection connection;\n    private final Channel channel;\n    public RealRabbitWire(LabRuntime runtime) throws Exception {\n        this(runtime.connect());\n    }\n    RealRabbitWire(Connection connection) throws Exception {\n        this.connection = connection;\n        try { channel = connection.createChannel(); RabbitTopology.declare(channel); channel.confirmSelect(); }\n        catch (Exception | Error e) {\n            RabbitCleanup.preserveInterrupt(e);\n            RabbitCleanup.after(e, () -> connection.abort(500));\n            throw e;\n        }\n    }\n    public void listen(UUID generation, RabbitPublisherLab.Listener l) {\n        channel.addReturnListener(r -> l.returned(generation, r.getProperties().getCorrelationId()));\n        channel.addConfirmListener((tag, multiple) -> l.confirm(generation, tag, multiple, true),\n                (tag, multiple) -> l.confirm(generation, tag, multiple, false));\n        channel.addShutdownListener(signal -> l.lost(generation));\n    }\n    public long nextSequence() { return channel.getNextPublishSeqNo(); }\n    public void send(String route, String event, String attempt, byte[] body) throws Exception {\n        var props = new AMQP.BasicProperties.Builder().messageId(event).correlationId(attempt)\n                .deliveryMode(2).contentType(\"application/octet-stream\").build();\n        channel.basicPublish(RabbitTopology.EXCHANGE, route, true, props, body);\n    }\n    public void abort() { connection.abort(500); }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-static-review-7334",
+      "title": "静态复核补充：源行 7334",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "校正说明（源码保持原样）：RabbitConsumerLab 在自身 deadline 检查前调用 EffectPort，后续判断还使用调用前时间。真实适配器必须在权威效果处区分旧结果重放与过期后新效果，并在 I/O 后刷新剩余时间；dispatcher 不自动提供外部硬超时。attempt 只限制单条重试信封谱系，不是跨重投的全局次数账本。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "运行边界与未执行声明"
+    }
+  ]
+}

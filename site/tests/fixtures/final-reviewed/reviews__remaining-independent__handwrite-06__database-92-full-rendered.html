@@ -1,0 +1,40 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">订单表数据量快速增长，单表达到数亿。如何设计分库分表？按 user_id 还是 order_id 分？如何查询和分页？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">分库分表是高频架构题。关键不是“数据大就分”，而是先说明为什么单库单表扛不住，再按核心查询路径选择分片键。</p>
+<p class="md-p">分片键一旦选错，后续跨分片查询、扩容、事务都会复杂。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>垂直拆分：按业务域拆库、按冷热字段拆表。</li><li>水平拆分：按分片键把同结构数据分散到多库多表。</li><li>分片键：高频查询条件、分布均匀、尽量避免跨分片。</li><li>路由算法：取模、范围、一致性哈希。</li><li>全局唯一 ID：雪花、号段。</li><li>跨分片查询：广播、聚合、二级索引表、ES。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">订单表常见选择：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li>C 端用户订单列表以 <code class="tok-inline">user_id</code> 查询为主：按 <code class="tok-inline">user_id</code> 分片，用户订单聚集，列表查询高效。</li><li>后台按 <code class="tok-inline">order_id/order_no</code> 查详情：需要全局订单号能路由，或者建立 <code class="tok-inline">order_no -&gt; shard</code> 映射表。</li></ul></div>
+<p class="md-p">示例路由：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="text">dbIndex = user_id % dbCount
+tableIndex = user_id / dbCount % tableCount</pre></div></section>
+<p class="md-p">表设计：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE orders_00 (
+    id BIGINT PRIMARY KEY,
+    order_no VARCHAR(64) NOT NULL,
+    user_id BIGINT NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_order_no (order_no),
+    KEY idx_user_created (user_id, created_at DESC, id DESC)
+);</pre></div></section>
+<p class="md-p">分页：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li>用户订单列表：路由到单个分片后按 <code class="tok-inline">(user_id, created_at, id)</code> 游标分页。</li><li>全站订单列表：跨分片查询每个分片 TopN，再在应用层归并排序。</li><li>后台复杂搜索：同步到 ES。</li></ul></div><p class="md-p">分片参数必须为正数，user_id 约定正数；每个分片内 uk_order_no 仅局部唯一，全局唯一需可证明的 ID/路由协议。全站 TopN 要用一致的唯一顺序(created_at,id,shard)，每分片取同一游标后的 N 条再 k 路归并；offset 跳页需每片至少 offset+N，且并发写下不自动得到全局快照。按新模数直接路由会漏旧数据，扩容要双读/迁移水位/版本路由协议。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：按 user_id 分片，商家查订单怎么办？</strong></p>
+<p class="md-p">问题分析：商家维度查询会跨很多分片。</p>
+<p class="md-p">知识点：查询模式冲突。</p>
+<p class="md-p">答案：建立商家订单索引表、ES 搜索索引或数据同步到商家维度宽表。分片键只能优先满足主路径。</p>
+<p class="md-p"><strong>变体 2：如何扩容？</strong></p>
+<p class="md-p">问题分析：取模分片扩容会大量迁移数据。</p>
+<p class="md-p">知识点：一致性哈希、逻辑分片。</p>
+<p class="md-p">答案：引入逻辑分片，例如先分 1024 个逻辑 shard，再映射到物理库表。扩容时迁移部分逻辑 shard。</p>
+<p class="md-p"><strong>变体 3：分库分表后事务怎么办？</strong></p>
+<p class="md-p">问题分析：跨库事务复杂且性能差。</p>
+<p class="md-p">知识点：本地事务、最终一致、Saga/TCC。</p>
+<p class="md-p">答案：尽量让单个业务事务落在一个分片；跨分片流程用最终一致、事务消息、Saga 或 TCC，避免大范围 XA。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

@@ -1,0 +1,112 @@
+{
+  "entries": [
+    {
+      "id": "hwqa-1",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · 场景手撕",
+      "title": "分布式限流手撕",
+      "number": "4 问",
+      "items": [
+        {
+          "q": "如果让你现场设计一个分布式限流系统，会怎么展开？",
+          "a": "<p class=\"md-p\">我从目标、算法、原子实现、工程配套四层讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>四个目标</b>：分布式下规则口径一致；主链路延迟要低；规则能动态调整；限流组件自己不能成为单点。常见于秒杀、登录、短信发送、支付防刷、第三方模型 API 调用。</li><li><b>算法取舍</b>：固定窗口简单，窗口边界会突刺；滑动窗口更平滑，状态更复杂；令牌桶允许一定突发，工程上很常用；漏桶更适合严格控速。题目没强调严格匀速时，我优先讲滑动窗口或令牌桶，再落到 Redis + Lua。</li><li><b>Lua 原子窗口</b>：把删旧数据、统计窗口内请求数、判断是否放行、记录本次请求做成 Redis 内部原子操作。</li><li><b>粒度与兜底</b>：粒度按接口、用户、IP、租户、资源 ID；规则由配置中心动态下发；触发后统一错误码、埋点和告警；Redis 异常时做本地兜底或降级。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">Main.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import org.springframework.core.io.ClassPathResource;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.scripting.support.ResourceScriptSource;\n\nimport java.util.Arrays;\n\npublic class DistributedRateLimiter {\n    private final StringRedisTemplate redisTemplate;\n    private final DefaultRedisScript&lt;Long&gt; script;\n\n    public DistributedRateLimiter(StringRedisTemplate redisTemplate) {\n        this.redisTemplate = redisTemplate;\n        this.script = new DefaultRedisScript&lt;&gt;();\n        this.script.setResultType(Long.class);\n        this.script.setScriptSource(\n                new ResourceScriptSource(new ClassPathResource(\"limit.lua\"))\n        );\n    }\n\n    public boolean allow(String key, long windowMs, int maxCount) {\n        long now = System.currentTimeMillis();\n        Long result = redisTemplate.execute(\n                script,\n                Arrays.asList(key, key + \":seq\"),\n                String.valueOf(now),\n                String.valueOf(windowMs),\n                String.valueOf(maxCount)\n        );\n        return result != null &amp;&amp; result == 1L;\n    }\n}</pre></div></section>\n<p class=\"md-p\">对应 <code class=\"tok-inline\">limit.lua</code> 用 <code class=\"tok-inline\">ZSet</code> 做滑动窗口：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">lua</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"lua\">local rateKey = KEYS[1]\nlocal seqKey = KEYS[2]\nlocal now = tonumber(ARGV[1])\nlocal window = tonumber(ARGV[2])\nlocal maxCount = tonumber(ARGV[3])\n\nredis.call('ZREMRANGEBYSCORE', rateKey, 0, now - window)\n\nlocal current = redis.call('ZCARD', rateKey)\nif current &gt;= maxCount then\n    return 0\nend\n\nlocal seq = redis.call('INCR', seqKey)\nlocal member = tostring(now) .. '-' .. tostring(seq)\n\nredis.call('ZADD', rateKey, now, member)\nredis.call('PEXPIRE', rateKey, window)\nredis.call('PEXPIRE', seqKey, window)\n\nreturn 1</pre></div></section><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>先把问题模型和四个目标说清楚，再落到 Redis + Lua，避免只报中间件。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>口径一致、低延迟、规则可调、组件非单点，再加上原子窗口和异常兜底。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分布式限流的本质是入口大于下游承载：口径一致、延迟低、规则可调，且组件本身不能成单点。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>四个目标 / 算法取舍 / Lua原子窗口 / 粒度与兜底</p>",
+          "leadType": "v9:场景/方案"
+        },
+        {
+          "q": "除了滑动窗口，你还知道哪些限流算法？分别适合什么场景？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>算法</th><th>特点</th><th>适合场景</th></tr></thead><tbody><tr><td>固定窗口</td><td>实现最简单，窗口边界容易突刺</td><td>成本敏感、精度要求没那么高</td></tr><tr><td>滑动窗口</td><td>统计更平滑，要保证任意连续时间段都不超</td><td>接口级 QPS、登录、短信、第三方 API 调用</td></tr><tr><td>令牌桶</td><td>允许一定突发流量，工程上很常见</td><td>平时稳态、偶尔有短时突发</td></tr><tr><td>漏桶</td><td>更像强控速，输出速率比较稳定</td><td>希望输出速率稳定的链路</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>把平滑程度、实现复杂度、突发容忍度和资源成本这些 trade-off 讲出来。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>四种限流算法的差别在平滑程度、实现复杂度、突发容忍度和资源成本，没有绝对更高级的一种。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>固定窗口 / 滑动窗口 / 令牌桶 / 漏桶</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "为什么这次限流会优先选滑动窗口？它的缺点是什么？",
+          "a": "<p class=\"md-p\">目标是严格控制最近一段时间内的请求数。规则若是 1 秒最多 100 次，固定窗口可能在上一秒最后一瞬和下一秒开头连续放接近 200 次；滑动窗口更接近任意连续 1 秒内都不超过 100 次。接口限流、登录限流、短信限流这类场景约束感更强。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>状态成本更高</b>：按时间戳精确记录时，Redis 内存和命令开销都比固定窗口大。</li><li><b>并发越密越贵</b>：窗口内数据越密，清理旧数据和统计窗口请求数的成本也会上来。</li><li><b>突发改令牌桶</b>：业务其实允许一定突发时，令牌桶有时更合适。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>把它讲成更平滑、更严格但状态成本更高的方案，不要默认适合所有场景。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>滑动窗口的本质是卡住任意连续时段的请求数，比固定窗口更平滑更严，但状态成本更高。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>避免边界突刺 / 状态成本更高 / 并发越密越贵 / 突发改令牌桶</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "这套 Redis + Lua 滑动窗口限流，一次请求会访问几次 Redis？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>网络往返一次</b>：删旧数据、统计、判断、写入、设过期都放在同一个 Lua 脚本里。应用层只发一次脚本执行，原子性和网络开销都比较好。</li><li><b>内部多条命令</b>：从 Redis 服务器内部看不止一条，这里会做 <code class=\"tok-inline\">ZREMRANGEBYSCORE</code>、<code class=\"tok-inline\">ZCARD</code>、<code class=\"tok-inline\">INCR</code>、<code class=\"tok-inline\">ZADD</code>、<code class=\"tok-inline\">PEXPIRE</code>。网络层是一趟，内部是多条命令原子串行执行。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>网络层一趟，不等于 Redis 内部只有一条命令，这个区别要主动讲出来。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>应用看 Redis 通常只往返一次：整段判断在同一个 Lua 里；服务器内部仍是多条命令原子串行。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>网络往返一次 / 内部多条命令 / 原子且省开销</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · 场景手撕"
+    },
+    {
+      "id": "hwqa-2",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · 场景手撕",
+      "title": "交易链路与一致性手撕",
+      "number": "3 问",
+      "items": [
+        {
+          "q": "订单支付和超时关单并发冲突，怎么设计？",
+          "a": "<p class=\"md-p\"><code class=\"tok-inline\">UNPAID -&gt; PAID</code> 和 <code class=\"tok-inline\">UNPAID -&gt; CLOSED</code> 互斥，任何时候都不允许已经支付的订单再被关单。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>条件更新</b>：把当前状态写进 <code class=\"tok-inline\">where</code>。支付回调和关单任务并发时，谁先把状态从 <code class=\"tok-inline\">UNPAID</code> 更新走谁成功；另一个影响行数为 0，自动失败。这是一种轻量乐观锁。</li><li><b>幂等</b>：支付回调可能重复到达，重复通知不能重复处理业务；关单任务也可能重复扫描，同样按状态机约束。</li><li><b>少用悲观锁</b>：这里通常不是高频长事务竞争，悲观锁会把数据库锁竞争放大。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">Main.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public class OrderStatusService {\n    public boolean paySuccess(long orderId) {\n        String sql = \"update orders set status='PAID', pay_time=now() \" +\n                \"where order_id=? and status='UNPAID'\";\n        return execute(sql, orderId) == 1;\n    }\n\n    public boolean closeTimeoutOrder(long orderId) {\n        String sql = \"update orders set status='CLOSED', close_time=now() \" +\n                \"where order_id=? and status='UNPAID'\";\n        return execute(sql, orderId) == 1;\n    }\n\n    private int execute(String sql, long orderId) {\n        return 1;\n    }\n}</pre></div></section><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>状态流转、条件更新、幂等和异常边界一起讲。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么这里不用悲观锁？</b></p><p class=\"md-p\">通常不是高频长事务竞争场景，悲观锁会把数据库锁竞争放大。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>支付和关单是 UNPAID 上两条互斥路径：条件更新谁先成功谁赢，已支付订单绝不能再被关单。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>互斥状态机 / 条件更新 / 回调与关单幂等 / 少用悲观锁</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "本地消息表或事务消息，这类题的手撕主线是什么？",
+          "a": "<p class=\"md-p\">我优先讲本地消息表，回答的是：本地事务成功了，但消息没发出去怎么办。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>同事务写消息表</b>：把业务数据变更和一条待发送消息记录放在同一个数据库事务里提交。业务成功时，消息记录一定存在。</li><li><b>异步扫描再投递</b>：后台任务或异步线程扫描消息表，把未发送消息投递到 MQ，投递成功后再把消息状态更新掉。</li><li><b>半消息提交回查</b>：RocketMQ 事务消息先发半消息，再执行本地事务；成功则提交消息，失败则回滚。中间状态不明确时，Broker 再回查事务状态。</li><li><b>消费端幂等兜底</b>：两种方案都要在消费端自己做幂等，否则重试和回查会把重复执行放大。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">Main.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public class LocalMessageService {\n    public void createOrderAndRecordMessage(Order order) {\n        saveOrder(order);\n        saveOutboxMessage(order.getOrderId(), \"ORDER_CREATED\");\n    }\n\n    public void dispatchPendingMessages() {\n        for (OutboxMessage message : queryPendingMessages()) {\n            boolean sent = sendToMq(message);\n            if (sent) {\n                markMessageSent(message.getId());\n            }\n        }\n    }\n\n    private void saveOrder(Order order) {\n    }\n\n    private void saveOutboxMessage(long orderId, String eventType) {\n    }\n\n    private Iterable&lt;OutboxMessage&gt; queryPendingMessages() {\n        return java.util.Collections.emptyList();\n    }\n\n    private boolean sendToMq(OutboxMessage message) {\n        return true;\n    }\n\n    private void markMessageSent(long messageId) {\n    }\n\n    static class Order {\n        long getOrderId() {\n            return 0L;\n        }\n    }\n\n    static class OutboxMessage {\n        long getId() {\n            return 0L;\n        }\n    }\n}</pre></div></section><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>消费端幂等不自己兜底时，重试和回查会把重复执行问题放大。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>同事务落记录只保证消息有据可投，重复执行仍靠消费端幂等收住。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>本地事务成功但消息未发出时，待发记录与业务同事务提交再异步投递；事务消息用半消息加 Broker 回查。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>同事务写消息表 / 异步扫描再投递 / 半消息提交回查 / 消费端幂等兜底</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "秒杀异步下单链路怎么设计，才能兼顾高并发和一致性？",
+          "a": "<p class=\"md-p\">我从入口到落库五个层面讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>防刷和资格校验</b>：验证码、令牌、限购和网关限流，先挡无效请求。</li><li><b>库存预判</b>：可售库存前置到 Redis，原子预扣，快速判断还有没有资格进入后续链路。</li><li><b>异步削峰</b>：通过预扣的请求写入 MQ，由订单服务异步消费并落库。</li><li><b>最终一致性</b>：订单状态机、库存冻结、业务唯一键和幂等约束，避免重复下单和超卖。</li><li><b>补偿闭环</b>：消费失败重试、死信处理、超时未支付回补库存。</li></ol></div>\n<p class=\"md-p\">库存不直接打 MySQL，是为了不让数据库直面洪峰；最后仍落回 MySQL，因为订单、支付、库存要有可信持久化状态。异步化让主链路快返回，把耗时动作移到可重试、可扩容的后链路。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">Main.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public class SeckillService {\n    public String seckill(long userId, long skuId) {\n        if (!checkToken(userId, skuId)) {\n            return \"REJECT\";\n        }\n\n        if (!redisPreDeduct(skuId)) {\n            return \"SOLD_OUT\";\n        }\n\n        sendOrderMessage(userId, skuId);\n        return \"QUEUED\";\n    }\n\n    private boolean checkToken(long userId, long skuId) {\n        return true;\n    }\n\n    private boolean redisPreDeduct(long skuId) {\n        return true;\n    }\n\n    private void sendOrderMessage(long userId, long skuId) {\n    }\n}</pre></div></section><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只说 Redis + MQ + MySQL 而链路讲不通，答案就只是中间件堆砌。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>主链路快返回，耗时动作放到可重试、可扩容的后链路，最终状态仍落在 MySQL。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>秒杀异步下单我按入口到落库五层讲：挡无效流量、Redis 预扣、MQ 削峰、状态机落库、失败补偿。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>防刷资格校验 / Redis库存预扣 / MQ异步削峰 / 状态机与幂等 / 补偿闭环</p>",
+          "leadType": "v9:场景"
+        }
+      ],
+      "source": "八股面经整理 · 场景手撕"
+    },
+    {
+      "id": "hwqa-3",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · 场景手撕",
+      "title": "并发容器与线程安全手撕",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "设计一个线程安全的“批量删除 Map 中某类 value”的功能，怎么做？",
+          "a": "<p class=\"md-p\"><code class=\"tok-inline\">HashMap</code> 本身不是线程安全的，我不会在它上面硬做批量删除。</p>\n<p class=\"md-p\">语义是：并发下安全地批量删除满足条件的键值对。我优先用 <code class=\"tok-inline\">ConcurrentHashMap</code>，删除用 <code class=\"tok-inline\">remove(key, expectedValue)</code>。别的线程在遍历期间把某个 key 的 value 改了，也不会把已经变成新值的数据误删。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单条安全</b>：单次 <code class=\"tok-inline\">remove(key, value)</code> 是线程安全的。</li><li><b>弱一致遍历</b>：允许弱一致遍历，适合高并发下的批量清理。</li><li><b>没有整批原子</b>：它不提供“整批删除像一个大事务那样瞬间生效”的全局原子语义。题目要求强一致批处理时，再加外层锁或分段锁。工程上更常见的是优先保证高并发和单条删除语义正确。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">Main.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.Set;\nimport java.util.concurrent.ConcurrentHashMap;\nimport java.util.concurrent.atomic.AtomicInteger;\n\npublic class ConcurrentValueRemover&lt;K, V&gt; {\n    private final ConcurrentHashMap&lt;K, V&gt; map = new ConcurrentHashMap&lt;&gt;();\n\n    public int removeValues(Set&lt;V&gt; valuesToDelete) {\n        AtomicInteger removed = new AtomicInteger();\n        map.forEach((key, value) -&gt; {\n            if (valuesToDelete.contains(value) &amp;&amp; map.remove(key, value)) {\n                removed.incrementAndGet();\n            }\n        });\n        return removed.get();\n    }\n\n    public void put(K key, V value) {\n        map.put(key, value);\n    }\n}</pre></div></section><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>单次条件删除线程安全，不等于整批删除具备大事务那样的全局原子语义。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>如果题目要求强一致批处理呢？</b></p><p class=\"md-p\">再加外层锁或分段锁。工程上更常见的仍是优先保证高并发和单条删除语义正确。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>批量删某类 value 用 ConcurrentHashMap 的条件删除：单条安全、遍历弱一致，整批没有大事务原子性。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>不用 HashMap / 条件删除 / 弱一致遍历 / 强一致再加锁</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "为什么这里不用先遍历 key，再统一删？",
+          "a": "<p class=\"md-p\">并发里先把 key 和 value 读出来、再晚点删，中间有时间窗。刚读到的 value，下一瞬间可能已被别的线程改掉；这时还按旧判断直接删，就会误删本来不该删的新值。</p>\n<p class=\"md-p\">所以判断和删除最好尽量绑成一个原子条件动作。<code class=\"tok-inline\">remove(key, expectedValue)</code> 的价值就在这里：它不是简单少写一行代码，而是并发语义上更可靠。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>并发下判断和删除的本质，是收成一次原子条件动作，避免时间窗里按旧值误删。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>时间窗会变值 / 原子条件删除 / 条件 remove</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · 场景手撕"
+    }
+  ]
+}

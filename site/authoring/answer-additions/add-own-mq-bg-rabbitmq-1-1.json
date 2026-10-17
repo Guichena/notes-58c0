@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-rabbitmq-1-1",
+  "entryId": "bg-rabbitmq-1",
+  "expectedOriginalHash": "48fd38d7919b217c70583d00efb1ef99d3c74c6b09e0f0724cedb9409d0cc99c",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q21 RabbitMQ 有哪些组件 消息怎样路由"
+    },
+    {
+      "type": "paragraph",
+      "text": "Producer 把消息发布到 Exchange，Exchange 根据 binding 和 routing key 路由到 Queue，Consumer 从 Queue 接收消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Connection 通常是一条 TCP 连接；Channel 是连接上的逻辑通道，承载发布、订阅和确认。Virtual host 划分资源命名与权限范围。Exchange 主要做路由，Queue 承担消息存放和交付；“消息已经到 Exchange”不能单独证明它进入了目标队列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "四类 Exchange 可以按“拿什么来匹配”记："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Direct：routing key 与绑定键精确匹配。",
+        "Fanout：广播到所有绑定队列。",
+        "Topic：按点分词匹配模式，* 匹配一个词，# 匹配零个或多个词。",
+        "Headers：按头字段匹配。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "默认 exchange 是名字为空的 direct exchange，队列以自己的名字建立隐式路由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "竞争消费者订阅同一个队列时分担该队列的消息。若多个系统都应看到同一事件，应各自有队列并绑定到合适 exchange，而不是把所有系统都塞进一个工作队列，误以为每个都会收到。绑定和权限也属于可用性配置，目标队列不存在、routing key 错误都可能造成业务漏通知。"
+    },
+    {
+      "type": "paragraph",
+      "text": "性能从路由成本、队列 leader、消息体大小、持久与复制、确认批量、prefetch 和消费者工作量分析。Exchange 多、复杂通配、热队列和单队列串行瓶颈都会影响吞吐。多队列可分片并行，但同时增加拓扑和运维复杂度。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RabbitMQ 的核心模型怎样介绍"
+    },
+    {
+      "type": "paragraph",
+      "text": "RabbitMQ 让生产者把消息交给交换机，再由绑定规则分发到队列，由消费者订阅队列并确认处理进度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AMQP 0-9-1 的 connection 通常承载一条长连接，channel 是其上的逻辑会话。vhost 隔离交换机、队列、绑定和访问权限；相同队列名在不同 vhost 中不是同一个对象。生产者指定 exchange 和 routing key，交换机只决定路由，消息真正等待消费的位置是 queue。一个 exchange 可以把消息交给零个、一个或多个队列；“publish 没抛异常”不能证明目标业务队列已经接收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "四种常见交换机可以从匹配规则记忆。direct 使用精确 routing key；topic 用点分词模式，星号匹配一个词，井号匹配零个或多个词；fanout 将消息分到所有绑定队列，忽略 routing key；headers 根据消息头和匹配规则判断。默认交换机的名字是空字符串，队列自动用自己的名字绑定到它，因此可以用队列名作为 routing key。它仍然是交换机路由，不是客户端跳过 broker 直接写队列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个队列上的多个消费者通常竞争工作，每条交付选择一个消费者；通知服务和审计服务都要收到同一事件时，各自拥有队列，绑定到事件交换机。如果误让两个业务共用一条队列，它们会分食事件，而不是每方得到完整副本。重试与 redelivery 使一个业务可能收到多次，不能把“每次只选一个消费者”理解成只执行一次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "负载均衡是不是多加消费者就够了"
+    },
+    {
+      "type": "paragraph",
+      "text": "负载均衡要分别看客户端连接、队列 leader 分布和消费者工作分配，增加其中一层不能自动消除另外两层的热点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端可连接不同入口节点，操作需要时由集群转给队列所在 leader，入口均匀并不证明磁盘写入均匀。将不同业务键稳定映射到多个队列，有助于把队列 leader 和处理负载分散，但热点实体仍可能集中，拆分也要保留顺序边界。多个合格消费者竞争同一工作队列时，prefetch、ACK 速度、消费者优先级和单活设置影响分配，不能只画一个平均轮询箭头。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以广告推送为设计场景，还要先定义受众筛选、任务有效期、撤回条件、每用户限频、租户隔离和最终送达证据。消息队列负责削峰与工作分配，不决定用户资格，也不允许历史积压在活动结束后无条件发送。大流量入口、存储、队列、工作池和渠道限额应逐层背压；不同用户耗时接近需要隔离慢租户、限制单任务成本并看尾延迟，平均吞吐均衡不等于用户体验均衡。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "拓扑为什么是应用协议的一部分"
+    },
+    {
+      "type": "paragraph",
+      "text": "拓扑约定必须把交换机、队列、绑定、队列类型和生命周期一起固定，声明成功只是这份契约的起点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "durable 保留队列或交换机定义，exclusive 队列归属于创建它的连接，连接关闭后会被删除；auto-delete 队列在至少有过消费者之后，最后一个消费者退出时会删除。它们不是同义词。临时 RPC 回复队列与持久通知队列应采用不同生命周期。临时队列删除后，即使重连声明同名对象，也不等于找回原消息；静态名字还可能在删除与重声明之间竞争。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同名队列如果已存在但 durable、类型或不可变参数不匹配，声明可能触发 channel 级协议错误。不能把它当暂时网络问题无限重连，更不能在线上为了让声明通过而随意删队列。生产中适合动态调整的参数优先用 policy 管理；教学实验把小型隔离拓扑集中写在 RabbitTopology，方便逐项看清。生产者和消费者都引用它，避免“发到一个名字、监听另一个名字”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同 vhost 的 exchange 与 queue 不能直接跨域绑定。若分析完成事件要转给另一 vhost 的通知服务，需要明确的双连接桥接或其他经验证的转移组件：从源消费、向目标可靠发布并得到确认，再结束源交付。目标发布 UNKNOWN 时保留源责任；确认后源 ACK 前退出会产生重复，桥两侧沿用稳定事件身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "vhost 是逻辑权限和资源分组，不自动隔离机器 CPU、磁盘和网络。给分析旁路换 vhost，有助于控制访问和运维范围；要保证基础告警不被分析挤压，还要隔离工作池、连接池和容量预算。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "1"
+}

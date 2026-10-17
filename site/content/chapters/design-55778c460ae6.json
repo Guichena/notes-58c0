@@ -1,0 +1,352 @@
+{
+  "entries": [
+    {
+      "id": "sceneqa-1",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "高并发与交易链路设计",
+      "number": "6 问",
+      "items": [
+        {
+          "q": "秒杀系统怎么设计，才能同时扛高并发、控制超卖？",
+          "a": "<p class=\"md-p\">我从五个层面讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>入口防护</b>：验证码、风控、接口签名、限购、黑白名单、令牌校验和网关限流，先挡掉无效流量。</li><li><b>热点与库存预判</b>：可售库存前置到 Redis，用原子预扣判断还有没有资格进下游，避免请求直接打爆数据库。</li><li><b>异步削峰</b>：预扣成功的请求写入 MQ，由订单服务异步消费并落库。</li><li><b>最终一致性</b>：订单、库存、支付状态最终落在 MySQL，用事务、状态机和幂等约束防止超卖和重复下单。</li><li><b>补偿与治理</b>：失败重试、死信处理、超时未支付回补库存，再加上压测和监控告警。</li></ol></div>\n<p class=\"md-p\">请求先过入口，Redis 预扣成功才进 MQ，消费时在 MySQL 落事务，失败和超时再走补偿。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>三件中间件职责不同：Redis 扛瞬时热点，却不是最终真相；MQ 能削峰和解耦，却不会天然保证业务幂等；MySQL 擅长事务和持久化，却不适合直面最外层洪峰。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>每一层都要说清为什么存在，这才是能扛并发、又能控超卖的交易链路。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>展开时你会补哪些指标和边界？</b></p><p class=\"md-p\">我会看 QPS、RT、P99、库存超卖率、Redis 命中率、MQ 积压、DB 慢查询，以及热点用户和热点商品怎么保护。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>秒杀按五层链路做：入口挡无效流量，Redis预扣资格，MQ削峰落库，MySQL用事务和幂等防超卖。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>入口防护 / 热点与库存预判 / 异步削峰 / 最终一致性 / 补偿与治理</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "如果订单系统压力过大，导致经常超时，你会如何优化？",
+          "a": "<p class=\"md-p\">订单超时通常是高并发、慢 SQL、锁竞争、下游依赖和线程池堆积一起作用的结果。我先看调用链，确认卡在数据库、缓存、库存服务、支付服务、MQ 发送，还是线程池队列。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>写链路收缩</b>：积分、通知、埋点、风控补充这些非核心逻辑异步化。</li><li><b>数据访问优化</b>：热点缓存、SQL 收敛、批量写、合理索引、拆大事务、缩短锁持有时间。</li><li><b>资源治理</b>：线程池隔离、超时控制、熔断降级、连接池参数调整。</li><li><b>架构优化</b>：消息削峰、库存预扣、订单状态机和支付回调幂等化。</li></ol></div>\n<p class=\"md-p\">高压下我优先保证下单受理成功和最终状态正确；推荐、优惠展示、非关键统计可以暂时降级。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不知道瓶颈在哪一层就动手，优化会变成拍脑袋。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会把链路分层、数据访问、异步化和隔离降级一起落到方案里。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>订单超时是多因素叠出来的，我先顺着调用链定位瓶颈，再按先保核心、再优体验来优化。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定位调用链 / 写链路收缩 / 数据访问优化 / 资源治理 / 架构优化</p>",
+          "leadType": "v9:排障/方案"
+        },
+        {
+          "q": "一个电商系统，在保证库存不超卖、每人限购数量的前提下，怎么设计？",
+          "a": "<p class=\"md-p\">我会把库存正确性和限购都放进高并发链路。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>入口验资格限购</b>：先校验用户资格和限购次数。</li><li><b>Redis预扣拦截</b>：用 Redis 预扣或库存令牌做第一层拦截，挡住没资格的请求。</li><li><b>落库条件更新</b>：真正下单时，用数据库状态条件更新、乐观锁或行锁，保证最终不超卖。限购次数也要在最终可信状态里再校验。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：秒杀让 Redis 扛流量，数据库负责最终一致性。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>限购不能只靠前端或缓存；只说加锁防超卖、把所有判断都压在数据库上，也会把秒杀做成泛泛的加锁。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>库存正确性和每人限购都要前置：入口验资格，Redis预扣拦截，落库用条件更新兜住不超卖。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>入口验资格限购 / Redis预扣拦截 / 落库条件更新</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "秒杀业务可以直接丢弃一部分请求；如果现在是普通下单业务，不能简单丢请求，该怎么办？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>场景</th><th>用户预期</th><th>过载时怎么处理</th></tr></thead><tbody><tr><td>秒杀</td><td>本来就可能抢不到</td><td>直接限流、快速返回，比较容易接受</td></tr><tr><td>普通下单</td><td>已经做完选购</td><td>直接丢请求，体验和业务损失都比较大</td></tr></tbody></table></div>\n<p class=\"md-p\">普通下单我会做成有语义的过载保护：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>可靠接入排队</b>：入口先做轻量校验和幂等去重，再写入可靠队列或订单创建缓冲层，返回“已受理 / 排队中”。</li><li><b>限速推进状态机</b>：后端按系统承载能力限速消费，库存、优惠、支付预占按状态机推进，避免所有请求同时打数据库。</li><li><b>幂等与补偿</b>：还要保证幂等、状态可见、取消能力、超时补偿和失败通知。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>排队不等于万事大吉，少了幂等、状态可见、取消、超时补偿和失败通知，队列只是把请求堆住。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>不能丢请求的业务，要可靠接入、有限排队、状态透明、最终可追踪。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>普通下单的过载保护，是把瞬时洪峰变成可控队列：可靠接入、有限排队、状态透明、最终可追踪。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>秒杀可快速失败 / 可靠接入排队 / 限速推进状态机 / 幂等与补偿</p>",
+          "leadType": "v9:方案/对比"
+        },
+        {
+          "q": "秒杀里的热点行更新具体怎么做？",
+          "a": "<p class=\"md-p\">所有请求如果都直接更新同一条库存记录，数据库会卡在行锁竞争、日志刷盘和线程堆积上，瓶颈就在那一条热点记录上。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>入口削峰</b>：先不让最外层流量直接打到这条热点行。</li><li><b>缓存层拦截</b>：库存判断前置到 Redis 或库存令牌层，只有拿到资格的请求才进入下游。</li><li><b>库内原子扣减</b>：落库用条件更新、乐观锁，或 <code class=\"tok-inline\">stock &gt; 0</code> 这类原子扣减，保证最终不超卖。</li><li><b>分桶再合并</b>：数据库这层竞争仍然很高时，继续做库存分桶、分段扣减、异步串行化消费，或把热点商品拆成多个逻辑库存片，先分散写竞争，再在最终层合并结果。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>一上来就给库存那一行加锁，最外层流量仍会打在同一条热点记录上。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>入口削峰、缓存拦截、数据库只保最终一致，三层边界一起做。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>热点行更新分三层一起做：入口削峰，缓存拦截，数据库只保最终一致，别让流量直打同一行。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>入口削峰 / 缓存层拦截 / 库内原子扣减 / 分桶再合并</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "用 Redis 预扣库存防超卖时，为什么最终还是要落数据库？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>组件</th><th>解决什么</th><th>靠什么</th></tr></thead><tbody><tr><td>Redis</td><td>高并发门禁和瞬时流量拦截，快速判断还有没有资格继续往下走</td><td>先预扣或发令牌</td></tr><tr><td>数据库</td><td>订单创建、库存扣减结果、支付状态、售后和审计这些最终真相</td><td>事务、唯一约束、状态机、条件更新</td></tr></tbody></table></div>\n<p class=\"md-p\">Redis 解决的是别让数据库先被洪峰打死；数据库解决的是最终不能真超卖、真少账、真乱账。数据库扣减失败时，要把 Redis 里的预扣资格补回去，或通过消息补偿把两边状态重新对齐。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>成熟做法是 Redis 先预扣或发令牌，数据库条件更新兜最终一致，失败再回补或用消息对齐。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Redis做高并发门禁挡住洪峰，订单库存支付的最终真相要落数据库，靠事务和状态机收稳。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Redis做门禁 / 数据库做真相 / 失败要回补</p>",
+          "leadType": "v9:原理/对比"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    },
+    {
+      "id": "sceneqa-2",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "幂等、锁与一致性",
+      "number": "4 问",
+      "items": [
+        {
+          "q": "在分布式系统中，如何保证接口的幂等性，防止用户重复下单？",
+          "a": "<p class=\"md-p\">下单重复通常来自用户连点、前端重试、网关超时重试、消息重复投递和支付回调重复通知。前端禁按钮挡不住这些来源，服务端要建立可校验的唯一约束。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>token或请求号</b>：用幂等 token 或唯一请求号，服务端先校验这个 token 是否已经被消费。</li><li><b>唯一索引</b>：比如“用户 ID + 业务单号 + 场景”组成数据库唯一约束。</li><li><b>状态机约束</b>：只有在 <code class=\"tok-inline\">UNPAID</code> 状态才能支付成功，只有在 <code class=\"tok-inline\">CREATED</code> 状态才能取消。</li><li><b>Redis只做门禁</b>：Redis 幂等 key 用来挡短时间内的重复请求，适合作为第一层门禁。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>幂等不能只靠 Redis 锁。锁更多是互斥手段，长期稳定的幂等应落在唯一键、状态条件更新和业务去重记录上。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>幂等的本质是同一请求重复提交多次，结果与一次相同；下单要在服务端用唯一约束拦住。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>认清重复来源 / token或请求号 / 唯一索引 / 状态机约束 / Redis只做门禁</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "业务幂等一般怎么设计？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>重复来源</b>：用户连点、前端重试、网关重试、MQ 重复投递、支付回调重复，都会制造重复请求。</li><li><b>门禁拦截</b>：Redis 幂等 key 或分布式锁做第一层门禁，挡短时间重复流量。</li><li><b>落库唯一约束</b>：长期稳定的幂等落在业务唯一键、状态机条件更新、去重记录表或唯一索引上。</li><li><b>补偿重试</b>：门禁和落库约束之后，失败还要能补偿重试，把状态重新对齐。</li></ol></div>\n<p class=\"md-p\">我会按“重复来源 → 门禁拦截 → 最终落库约束 → 补偿重试”把这条闭环讲完。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Redis 幂等 key 或分布式锁适合挡短时间重复，不适合当最终真相。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>业务幂等是一条闭环：先认重复来源，门禁拦截短时重复，最终靠唯一键和状态机，失败再补偿。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>重复来源 / 门禁拦截 / 落库唯一约束 / 补偿重试</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如何设计一个分布式锁？基于 Redis 的实现有哪些需要注意的点？",
+          "a": "<p class=\"md-p\">多个进程或多个服务实例访问共享资源时要互斥。常见实现有 Redis、数据库和 ZooKeeper / etcd。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>Redis加锁写法</b>：经典命令是 <code class=\"tok-inline\">SET key value NX PX ttl</code>。<code class=\"tok-inline\">NX</code> 保证只有不存在时才能加锁，<code class=\"tok-inline\">PX</code> 设置过期时间防止死锁，唯一 value 标识锁持有者。</li><li><b>Lua校验解锁</b>：解锁必须校验 value，只能删除自己持有的锁，通常用 Lua 脚本做 compare-and-delete。</li><li><b>续期与故障边界</b>：业务执行时间可能超过 TTL，还要处理锁续期、锁粒度、网络抖动、主从切换和误删他人锁。</li><li><b>何时不该用锁</b>：很多场景下，状态条件更新、幂等记录或消息串行化比一把粗粒度分布式锁更合适。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：确实存在共享资源竞争，且无法通过状态机或去重机制自然化解。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只保证加锁成功不够；解锁不校验 value，或忽略 TTL、续期和主从切换，就会误删他人锁或锁提前失效。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>加锁、释放、故障边界、不适用场景要一起讲。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分布式锁的本质是多进程或多服务实例访问共享资源时形成互斥，关键在正确解锁和锁边界。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Redis加锁写法 / Lua校验解锁 / 续期与故障边界 / 何时不该用锁</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "像外卖交易、支付这类场景里，调用第三方比如微信时如果网络超时了，怎么保证数据一致性？",
+          "a": "<p class=\"md-p\">本地线程超时不能直接把支付判失败。超时只说明这边没及时拿到结果，不代表第三方一定没扣款。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先记中间态</b>：订单先进入 <code class=\"tok-inline\">PAYING</code> 或 <code class=\"tok-inline\">UNKNOWN</code>，不急着改成成功或失败。</li><li><b>幂等</b>：支付请求号、商户单号、回调处理都必须幂等，否则重试和重复通知会把状态打乱。</li><li><b>主动查询补偿</b>：调用超时后，按商户单号去第三方查最终状态，不靠人工猜。</li><li><b>异步通知和对账</b>：回调到了就按状态机推进；回调丢了、查询也一时没收口，就靠日终或准实时对账，把漏单、短款、状态不一致的订单捞出来再修。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：外卖交易、支付这类调用第三方、结果可能超时的链路。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>超时不等于第三方没扣款，本地一超时就判失败，会把可能已扣款的单写成失败。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>支付链路靠中间态、幂等、查询补偿和对账闭环，不是靠一次 RPC 成功。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>支付超时的本质是结果未知，本地先记中间态，再用幂等、查询补偿和对账收口。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先记中间态 / 幂等 / 主动查询补偿 / 异步通知和对账</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    },
+    {
+      "id": "sceneqa-3",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "数据访问、分页与分布式 ID",
+      "number": "3 问",
+      "items": [
+        {
+          "q": "千万级数据量的用户表，如何进行深分页查询优化？",
+          "a": "<p class=\"md-p\"><code class=\"tok-inline\">limit offset, size</code> 在 offset 很大时会扫描并跳过大量记录，成本很高。比如跳过 100 万条再取 10 条，即使走索引，数据库也可能先遍历前面那一大段；如果还要回表，代价更大。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>游标主键翻页</b>：拿上一页最后一条记录的 <code class=\"tok-inline\">id</code> 或时间戳，下一页改成 <code class=\"tok-inline\">where id &gt; ? order by id limit 10</code>。</li><li><b>覆盖索引回表</b>：先走覆盖索引找主键，再回表取详情，减少大范围回表开销。</li><li><b>业务改交互</b>：只允许顺序翻页、不支持无限跳页，导出场景改成异步任务。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：第 1 种适合按主键或时间顺序往后翻；第 3 种适合业务并不需要任意跳页。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>深分页优化不只是数据库问题，要先确认业务是否真的需要任意跳页。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>很多时候改产品交互，比强行压榨数据库更合理。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>深分页的本质是大 offset 要扫描并跳过大量记录，应改游标、覆盖索引或交互。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>offset成本 / 游标主键翻页 / 覆盖索引回表 / 业务改交互</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如果要设计一个全局唯一的 ID 生成器，你会怎么设计？什么是雪花算法？",
+          "a": "<p class=\"md-p\">目标一般是四个：全局唯一、性能高、趋势有序、可水平扩展。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方案</th><th>特点</th></tr></thead><tbody><tr><td>数据库自增</td><td>简单但中心化严重</td></tr><tr><td>UUID</td><td>唯一性强但太长且无序</td></tr><tr><td>号段模式</td><td>依赖中心服务分配号段</td></tr><tr><td>雪花算法</td><td>很多互联网系统里常见的折中</td></tr></tbody></table></div>\n<p class=\"md-p\">我会优先考虑类雪花，也就是“时间戳 + 机器标识 + 序列号”。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>三段式发号</b>：时间戳提供趋势递增，机器标识保证多节点不冲突，序列号保证同一毫秒内的并发发号。机器标识唯一时，多节点可以同时发号，不需要全局锁或中心数据库。</li><li><b>风险与处理</b>：常见风险是时钟回拨、机器 ID 冲突、单毫秒内序列号耗尽、跨机房部署时 bit 位不够用。时钟回拨做阻塞等待或报警；机器 ID 通过配置中心或注册中心统一分配；序列号打满就等待下一毫秒；并按业务规模重新规划 bit 位。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只背雪花这个名字不够，时钟回拨、机器 ID、序列耗尽和 bit 位都要有处理办法。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>机器标识唯一就能并行发号，不必依赖全局锁或中心数据库。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分布式 ID 要同时做到全局唯一、高性能、趋势有序、可水平扩展；类雪花靠时间戳、机器标识和序列号。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>四个目标 / 方案对比 / 三段式发号 / 风险与处理</p>",
+          "leadType": "v9:方案/对比"
+        },
+        {
+          "q": "如果设计用户订单的分库分表，同时支持根据用户 ID 查询和根据订单 ID 查询，核心思路是什么？",
+          "a": "<p class=\"md-p\">关键是先明确主要访问路径。最常见两类查询：按用户查订单列表，按订单号查订单详情。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>分片键</th><th>顺的查询</th><th>难的查询</th></tr></thead><tbody><tr><td>用户 ID</td><td>用户维度列表</td><td>按订单号可能不知道路由到哪张表</td></tr><tr><td>订单号</td><td>订单详情</td><td>用户列表可能变成跨分片扫描</td></tr></tbody></table></div>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>用户ID主分片</b>：主表按用户 ID 水平分片，因为“用户查看自己的订单列表”通常是更高频、更核心的路径。</li><li><b>订单ID辅助路由</b>：订单 ID 全局唯一，且可携带路由信息，比如带分片位的 ID，或额外维护一张“订单号 -&gt; 分片路由”映射表。按订单 ID 查详情时，先通过路由信息定位分片，再查具体数据。</li><li><b>代价与增强</b>：跨分片统计、按时间维度聚合、支付与售后的跨域查询都更复杂；热点用户会导致用户维度分片倾斜；路由表本身要考虑一致性和高可用。补充手段包括订单详情缓存、ES 检索索引、分析库同步、冷热订单拆分和分片扩容迁移。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：同时要用户列表和订单详情两条路径。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只按一种键分片，另一条路径就会变成未知路由或跨分片扫描。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>主路由按用户，辅助路由解决订单号，再用缓存和检索补复杂查询。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>订单分片的本质是先定主路径：用户列表按用户 ID 分片，订单详情靠带路由的订单 ID 定位。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>两条访问路径 / 用户ID主分片 / 订单ID辅助路由 / 代价与增强</p>",
+          "leadType": "v9:方案/对比"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    },
+    {
+      "id": "sceneqa-4",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "系统设计与高并发治理",
+      "number": "9 问",
+      "items": [
+        {
+          "q": "如果要把系统吞吐提升十倍，通常怎么拆解和优化？",
+          "a": "<p class=\"md-p\">先把口径说清楚：是网关总吞吐、某个核心接口吞吐，还是压测峰值。再按整条链路拆开看瓶颈：入口层、应用层、缓存层、数据库层、消息层、下游依赖层。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>容量画像</b>：确认短板在 CPU、线程池、连接池、缓存命中率、数据库锁冲突，还是某个下游接口。</li><li><b>扩容削峰</b>：静态资源下沉、网关限流、热点缓存、多级缓存、本地缓存、读写分离、MQ 异步化、批处理和并行化。</li><li><b>结构性优化</b>：拆热点表、分库分表、接口幂等、预计算、旁路缓存和服务隔离。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：已经知道短板后，再决定横向扩容、缓存前移、异步削峰，还是重构数据访问路径。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>QPS 提升十倍不是把机器翻十倍，要先识别短板再选手段。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先识别短板，再在横向扩容、缓存前移、异步削峰和重构数据访问路径里选择。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>吞吐翻十倍的本质是先统一口径，再沿入口到下游找短板，然后扩容削峰或改数据路径。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>口径与拆层 / 容量画像 / 扩容削峰 / 结构性优化</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "上万流量场景下，高并发系统怎么设计？",
+          "a": "<p class=\"md-p\">我从五个层面讲，把原有六层收成一条主线：入口挡、链路削、热点扛、资源隔、状态准、失败兜。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>入口治理</b>：限流、鉴权、风控、降级、静态化和缓存前置，先挡掉无效流量。</li><li><b>链路削峰</b>：能异步的动作异步化，用 MQ 或任务队列把瞬时洪峰摊平。</li><li><b>热点治理</b>：多级缓存、本地缓存、Redis、热点 key 保护和预热，用来扛高频读。</li><li><b>资源隔离</b>：线程池隔离、连接池隔离、不同业务分队列，避免一个慢点把全系统拖垮。</li><li><b>状态与兜底</b>：写链路用幂等、状态机、唯一键和最终一致性；失败要可发现、可重试、可回放。</li></ol></div>\n<p class=\"md-p\">串起来就是：入口先挡无效流量，异步把洪峰摊平，缓存扛热点读，隔离避免慢点拖垮全站，状态机兜住写，监控负责发现和补偿。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能一上来就堆中间件。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>要在吞吐、时延、一致性、成本和复杂度之间取舍，做不到永远不丢、永远实时、永远强一致同时成立。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>上万并发的本质是六层治理：入口挡、链路削、热点扛、资源隔、状态准、失败兜，并做一致性取舍。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>入口治理 / 链路削峰 / 热点治理 / 资源隔离 / 状态与兜底</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "百万用户场景、高并发、瞬时大流量、服务不可用这些问题怎么一起答？",
+          "a": "<p class=\"md-p\">我从四个层面讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>分层与异步</b>：先做分层拆分和异步化，把非核心链路移出主路径。</li><li><b>削峰限流隔离</b>：再做缓存、削峰、限流和隔离，避免所有压力直冲数据库。</li><li><b>失败兜底</b>：补监控、熔断、重试和降级，系统不能只有 happy path。</li><li><b>资源观测</b>：资源消耗要看 CPU、内存，也要看线程池、队列、缓存命中率、数据库连接、下游 RT 和错误率。</li></ol></div>\n<p class=\"md-p\">任务流是：非核心先离开主路径，剩下的压力用缓存、削峰、限流和隔离挡住，失败再由监控、熔断、重试和降级接住。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>资源消耗不能只说 CPU 和内存。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>高并发不是单点优化，容量、稳定性和可观测性要一起设计。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>高并发场景要容量、稳定性和可观测性一起设计：分层异步、削峰隔离，并补上非 happy path。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>分层与异步 / 削峰限流隔离 / 失败兜底 / 资源观测</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "服务怎么拆分？要不要网关、微服务框架、模块化设计和部署体系？",
+          "a": "<p class=\"md-p\">我会按这个顺序判断，而不是默认拆微服务。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>业务边界</b>：模块间职责清晰、演进速度不同、扩缩容需求不同，拆服务才有意义。</li><li><b>模块化优先</b>：还在早期，先做清晰模块化，通常比一开始就全拆成微服务更合适。</li><li><b>网关价值</b>：统一入口、鉴权、限流、灰度和观测；多一个组件本身没有价值。</li><li><b>部署一起看</b>：配置、环境隔离、日志、监控和发布流程要一起考虑。</li></ol></div>\n<p class=\"md-p\">更自然的顺序是：先模块化，必要时再服务化，再看是否真的需要统一网关和更复杂的部署治理体系。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能把“微服务就是高级”当成拆分理由，要先看业务边界和团队复杂度。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>服务拆分的本质是看边界和团队复杂度：先模块化，再服务化，最后才考虑网关和部署治理。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>业务边界 / 模块化优先 / 网关价值 / 部署一起看</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "一个接口要聚合很多远程服务调用，怎么用 Java 并发类把接口延迟压下来？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>按依赖拆分</b>：先按依赖独立性拆调用，把彼此无强依赖的 RPC 或 HTTP 请求并行化。</li><li><b>CompletableFuture</b>：配合自定义业务线程池，把多个远程调用并发发起，再在主线程统一汇总结果。</li><li><b>治理手段</b>：每个依赖都要有超时、降级、熔断、隔离线程池或舱壁。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：无强依赖的调用重叠执行，接口总延迟下来。<i>缺点</i>：慢依赖若绑在同一接口、同一池上，会把聚合接口拖死。<i>适用场景</i>：一个接口要打多路远程服务，且这些调用可以并行。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能只说开线程池并行调。并发聚合的核心，不是把所有请求同时打出去，而是在总 RT、下游稳定性和资源占用之间做平衡。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>聚合降延迟的本质是并行无强依赖的远程调用，并用超时、降级、熔断和隔离在 RT 与稳定性间平衡。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按依赖拆分 / CompletableFuture / 超时降级熔断 / 隔离或舱壁</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如果要做一个开放平台，对外提供 API 和能力，核心模块一般怎么拆？",
+          "a": "<p class=\"md-p\">我从三个层面讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>接入层</b>：开发者门户、应用注册、文档和 SDK、沙箱环境、API 网关。</li><li><b>能力层</b>：具体业务服务、鉴权授权、回调 / 事件中心、任务调度、数据访问层。</li><li><b>治理层</b>：配额限流、监控告警、日志审计、计费结算、风控、版本管理和灰度发布。</li></ol></div>\n<p class=\"md-p\">对外协作要串起来：接入方从门户注册、看文档和 SDK、进沙箱，经 API 网关打到业务服务；鉴权授权、回调和任务调度承接调用；配额、审计、计费、风控、版本和灰度保证能管、能追、能升级。</p>\n<p class=\"md-p\"><b>两个边界</b>：平台同时服务内部研发和外部接入方，统一错误码、签名规范、版本兼容、回调重试和文档清晰度非常重要。难点常常不在业务实现，而在治理：谁能接、接多少、出了问题怎么追、升级怎么不中断。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>开放平台不是把接口暴露出去就结束，接入、能力和治理要一起做完整。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>开放平台的本质是按接入、能力、治理三层，把对外协作需要的整套能力做完整。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>接入层 / 能力层 / 治理层 / 两个边界</p>",
+          "leadType": "v9:场景设计"
+        },
+        {
+          "q": "设计一个会议室预定系统，你会怎么展开？",
+          "a": "<p class=\"md-p\">我从对象约束、服务、数据和主链路四个层面讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>对象与约束</b>：核心对象有会议室、时间段、预定单、用户、审批状态和设备信息。同一会议室同一时间不能重复预定；查询要快；取消和改期要可追踪；必要时支持审批、容量、位置、设备和组织权限。</li><li><b>服务拆分</b>：预定服务、会议室资源服务、搜索推荐服务、通知服务和审计日志。</li><li><b>数据层</b>：会议室基础信息和预定记录都落 MySQL，预定记录是最终真相。热点可用性查询用 Redis 做短期缓存，最终冲突判断回到数据库事务或条件约束。</li><li><b>主链路</b>：查可用 → 提交预定 → 冲突校验 → 落单 → 通知。查可用按楼层、容量、设备、时间段筛候选；提交时做幂等校验、权限校验和时间合法性校验；写入要保证同一会议室同一时段不会并发成功两单，可以用数据库唯一约束、悲观锁、乐观锁或分布式锁配合状态机；成功后再发通知、写日历、更新缓存。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>热点可用性可以走 Redis，但冲突判断不能只信缓存，必须回到数据库事务或条件约束。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>同一会议室同一时段只能成功一单，缓存服务查询，数据库约束守住冲突。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>主链路之外还要补什么？</b></p><p class=\"md-p\">取消预定、改期、超时释放、管理员封禁会议室、审计追踪，以及高并发下的一致性边界。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>会议室预定的本质是同一会议室同一时间不能重复预定，主链路从查可用走到通知。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>对象与约束 / 服务拆分 / MySQL 与 Redis / 主链路落单</p>",
+          "leadType": "v9:场景设计"
+        },
+        {
+          "q": "怎么实现分时间段预定会议室功能？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>区间模型</th><th>时间槽</th></tr></thead><tbody><tr><td>建模</td><td>直接存 <code class=\"tok-inline\">start_time</code>、<code class=\"tok-inline\">end_time</code></td><td>一天切成固定粒度，比如 15 分钟或 30 分钟一格，预定占连续槽</td></tr><tr><td>冲突</td><td>新预定与已有区间不能满足 <code class=\"tok-inline\">start &lt; existing_end &amp;&amp; end &gt; existing_start</code></td><td>一个预定映射成若干槽位，保证这些槽位没人占</td></tr><tr><td>特点</td><td>更灵活，适合任意时长会议</td><td>更适合高频查询和规则统一，比如办公系统默认按半小时预定</td></tr><tr><td>适用场景</td><td>更自然，库表更简单；高并发冲突校验要设计好索引和锁策略</td><td>更容易做可视化日历和快速筛选，但会放大存储量</td></tr></tbody></table></div>\n<p class=\"md-p\">工程上怎么选，取决于业务粒度和查询压力。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只存一个开始时间和结束时间并不等于把时间段建模清楚，还要定冲突怎么判。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分时段预定的本质是建模时间段：区间用重叠规则判冲突，时间槽则占住连续固定粒度槽位。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>区间模型 / 时间槽模型 / 冲突条件 / 按粒度选型</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "输入要预定的时间段，怎么推荐可行会议室给用户？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>硬过滤</b>：时间段不冲突、容量够、楼栋或园区符合范围、设备满足要求、权限可用、会议室状态正常。先找能用的。</li><li><b>软排序</b>：距离、楼层、设备丰富度、历史偏好、当前热度、价格或优先级。再从能用里挑更合适的。</li><li><b>落地顺序</b>：先按容量、位置、设备筛出候选会议室 ID，再排除该时间段已被占用的会议室，最后按评分函数排序。评分可以很简单，比如距离近、容量刚好够、设备最匹配得分更高；以后复杂了再引入推荐特征。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：可用性先判对，排序规则可解释。<i>缺点</i>：规则表达不了很复杂的偏好，复杂后再加特征。<i>适用场景</i>：输入预定时间段，要推荐可行会议室。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>会议室推荐通常不是典型 AI 推荐系统，很多时候规则排序就够；先保证可用性判断绝对正确，再谈个性化排序。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>推荐会议室先硬过滤找出能用的，再软排序挑更合适的，可用性判断要绝对正确。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>硬过滤 / 软排序 / 候选再评分 / 规则排序够用</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    },
+    {
+      "id": "sceneqa-5",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "热点、防刷与缓存治理",
+      "number": "3 问",
+      "items": [
+        {
+          "q": "某明星突然官宣，导致关于他的微博详情页 QPS 暴涨，Redis 和数据库濒临崩溃。作为后端开发，你会采取哪些措施应对热点 Key？",
+          "a": "<p class=\"md-p\">这是热点 key 防护，我会按三阶段处理。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先止血</b>：多级缓存，比如本地缓存 + Redis；请求合并或 singleflight，避免所有线程同时回源；非核心字段静态化、异步化；必要时限流和降级，先保住主链路可用。</li><li><b>压力分摊</b>：热点 key 副本，把一个热点内容复制成多个逻辑 key，分散到不同节点；详情页拆成基础信息、统计信息、互动信息等多个子 key，不同维度独立缓存。特别极端的热点直接推静态页或 CDN，下沉最热数据，减少 Redis 和数据库直连流量。</li><li><b>恢复和治理</b>：热点探测、热点预热、运营后台预案、开关系统、监控告警、限流分级和自动扩缩容。</li></ol></div>\n<p class=\"md-p\">热点对象、热点页面、热点事件要提前识别并形成预案，不等流量来了再救火。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>把它当成普通缓存问题不够，单点热点不拆开，本地缓存和 Redis 仍会被同一 key 打穿。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>热点 Key 要分三阶段：先止血保主链路，再把单点压力拆成分摊，最后用探测预热和预案治理。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先止血 / 副本与子 Key / 静态页或 CDN / 探测与预案</p>",
+          "leadType": "v9:排障/方案"
+        },
+        {
+          "q": "点赞功能怎么设计？",
+          "a": "<p class=\"md-p\">我会按三层讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>写入一致性</b>：用户点赞关系表或集合，保证同一用户对同一对象不会重复点赞。</li><li><b>计数性能</b>：Redis 计数或异步聚合，避免每次都直接打数据库。</li><li><b>幂等</b>：重复点击不会把数字刷乱。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：关系、计数、重复点击分开处理，高频写入不压在一次同步库更新上。<i>缺点</i>：计数和关系可能短暂不一致，要靠对账拉齐。<i>适用场景</i>：点赞这类高频交互，要同时保住不重复、计数快、重复点击不乱。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>点赞要按真实高频系统设计：关系不重复、计数不打满库、重复点击不刷乱。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>三层之外还可以补什么？</b></p><p class=\"md-p\">取消点赞怎么处理、热点内容怎么扛、点赞列表怎么分页查、最终怎么和数据库对账。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>点赞设计分三层：写入保证同一用户不重复点赞，计数避开直打数据库，幂等防止重复点击刷乱。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>写入一致性 / 计数性能 / 幂等 / 对账与列表</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "十万人实时多因素排行榜怎么做？如果 Redis ZSet 方案受限，还有什么替代思路？",
+          "a": "<p class=\"md-p\">我会先定义排序因子和更新频率，再判断要的是实时强一致排序，还是准实时可接受。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>ZSet</b>：适合轻量多因素，主因子权重大、次因子数量有限。</li><li><b>移出 Redis</b>：因子很多、排序规则常变、score 无法稳定编码时，把多维计算从 Redis 里拿出来，改成预计算、分层筛选、搜索型系统排序，离线和实时链路也可以结合。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>单结构方案有边界，系统会随着规则复杂度升级。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>关键是判断什么时候该从 Redis 方案升级到排序系统。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>排行榜的本质是先定排序因子和更新频率，轻量用 ZSet，复杂就把多维计算移出 Redis。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定因子与频率 / ZSet 适用边界 / 多维计算移出 Redis</p>",
+          "leadType": "v9:场景/方案"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    },
+    {
+      "id": "sceneqa-6",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "稳定性与可用性治理",
+      "number": "6 问",
+      "items": [
+        {
+          "q": "你觉得系统可用性和复杂度之间是什么关系？哪个更重要？",
+          "a": "<p class=\"md-p\">更高可用性本身就会带来更高复杂度。多活、异地容灾、自动切流、分级降级、链路隔离都会引入更多状态、更多治理和更多测试成本。复杂度要服务于目标可用性。</p>\n<p class=\"md-p\">哪个更重要，我先看业务目标：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>核心链路</b>：支付、交易、核心生产链路，可用性优先级明显更高，同时控制实现复杂度。</li><li><b>早期业务</b>：流量不大时，过度设计只会把系统做脆。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我追求的是在目标 SLA 下的最小足够复杂度。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>可用性的本质是用复杂度换目标，追求的是目标 SLA 下的最小足够复杂度。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>复杂度服务可用性 / 先看业务目标 / 核心链路 / 早期别过度设计</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "“系统越简单越好，在保证高可用的前提下尽量简单”，这个观点你认同吗？",
+          "a": "<p class=\"md-p\">我认同这个观点。简单是能不用三层就别上五层。系统复杂度本身就是风险源，复杂链路越多，故障点、协同成本和排障难度都会上升。当前业务目标能靠更简单的方案达成，我就不优先选更炫的架构。</p>\n<p class=\"md-p\">边界是：不能把简单理解成什么都不做，该有的隔离、限流、熔断、监控、备份不能省。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>高可用是目标，简单是手段和约束。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>简单不是简陋：能用更简单方案达成目标就别上更炫架构，高可用是目标，简单是约束。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>能简则简 / 复杂度是风险源 / 该有的不能省</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "出现异常时你用过熔断吗？三态熔断怎么设计？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>状态</th><th>行为</th><th>何时切换</th></tr></thead><tbody><tr><td>Closed</td><td>正常放行，同时统计错误率、超时率、慢调用比例</td><td>超过阈值 → Open</td></tr><tr><td>Open</td><td>快速失败或走降级，不再把流量打到不健康下游</td><td>冷却一段时间 → Half-Open</td></tr><tr><td>Half-Open</td><td>放少量探测请求</td><td>恢复 → Closed；仍不行 → Open</td></tr></tbody></table></div>\n<p class=\"md-p\">设计时我还会补三点：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>触发条件</b>不能只看异常数，要结合错误比例、慢调用和最小样本数。</li><li><b>分依赖配置</b>：核心链路和边缘链路的阈值分开。</li><li><b>必须配降级</b>，否则只是更早报错。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>三态、触发条件、恢复策略和降级要一起落到设计里。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>熔断的本质是下游不健康时快速失败并降级，按 Closed、Open、Half-Open 三态探测恢复。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>三态流转 / 触发条件 / 分依赖阈值 / 必须配降级</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "稳定性监控一般看哪些指标？链路监控 / 链路追踪解决了什么问题？",
+          "a": "<p class=\"md-p\">我不会只盯 CPU 和内存，更看链路有没有真的健康，常见分四层：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>入口层</b>：接口 QPS、成功率、错误率、超时率，以及 P95、P99 RT。</li><li><b>异步链路</b>：消息积压、重试次数、死信量、消费延迟、队列长度。</li><li><b>资源层</b>：线程池活跃度、连接池使用率、缓存命中率、数据库慢查询、下游依赖 RT。</li><li><b>业务层</b>：投递成功率、回执延迟、任务完成率、补偿成功率。</li></ol></div>\n<p class=\"md-p\">链路追踪把网关、服务、缓存、数据库、MQ、模型调用、工具调用串成一条完整路径。只有普通日志时，看到的是一堆离散点；有了追踪，延迟高是卡在检索、卡在下游模型，还是卡在某个工具，会清楚很多。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>监控告诉你系统有没有病，链路追踪告诉你病灶在哪。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>稳定性监控的本质是分四层看链路是否真健康，追踪则定位卡在哪、错在哪、花钱花在哪。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>入口层 / 异步链路 / 资源层 / 业务层 / 链路追踪</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "有 100000 个数据要调用外部 API 处理，但对方 QPS 不固定，发少了太慢，发多了又可能打垮下游，怎么设计更稳？",
+          "a": "<p class=\"md-p\">我会做成带反馈的限速系统。先把 100000 条数据落到任务队列或分片任务表，再由 worker 按批次拉取；入口用令牌桶、漏桶或并发信号量控制同一时刻在飞请求数；运行时持续看对方的成功率、RT、429、超时率和错误率，再动态调整发放速率。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>自适应节流</b>：成功率高、RT 稳时缓慢加速；一旦 429、超时或错误率上升就快速降速，类似 AIMD 或分级回退。</li><li><b>批次和重试治理</b>：任务拆批，失败重试带退避和抖动，避免雪崩式瞬时重放。</li><li><b>幂等和断点续跑</b>：每条数据有状态位和结果记录，中断后从未完成部分继续，避免整批重打。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把并发调成一个固定 QPS，也不要单纯开大线程池。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>这类调用的本质是队列削峰、动态限流、健康反馈和幂等恢复，按下游健康度收放速率。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>队列分批拉取 / 入口限在飞数 / 自适应节流 / 重试与断点续跑</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如果让你构建一个“天气问答智能体”，你会拆哪些类和功能模块？",
+          "a": "<p class=\"md-p\">我从五个层面讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>接入层</b>：<code class=\"tok-inline\">ChatController</code> 或对话入口，负责接请求、会话标识和流式返回。</li><li><b>决策层</b>：<code class=\"tok-inline\">WeatherAgent</code> 或 <code class=\"tok-inline\">Planner</code>，判断当前问题是直接回答、补城市信息，还是调用天气工具。</li><li><b>工具层</b>：<code class=\"tok-inline\">WeatherTool</code> / <code class=\"tok-inline\">WeatherApiClient</code> 请求第三方天气 API，并可再拆城市解析、地理编码、空气质量、生活指数。</li><li><b>状态层</b>：会话状态或 <code class=\"tok-inline\">MemoryService</code>，保存当前城市、哪一天、上一轮追问有没有补全。</li><li><b>治理层</b>：参数校验、限流、缓存、重试、超时、日志和监控。</li></ol></div>\n<p class=\"md-p\">落到类上：<code class=\"tok-inline\">CityResolver</code> 把“杭州明天”这类口语转成结构化地点和时间；<code class=\"tok-inline\">WeatherQuery</code> 做统一入参；<code class=\"tok-inline\">WeatherApiClient</code> 封装外部接口；<code class=\"tok-inline\">WeatherService</code> 聚合天气、温度、降水、空气质量；<code class=\"tok-inline\">AnswerComposer</code> 把结构化结果整理成自然语言；<code class=\"tok-inline\">SessionStore</code> 或 <code class=\"tok-inline\">MemoryStore</code> 存短期上下文；再用 <code class=\"tok-inline\">RateLimiter</code> 和 <code class=\"tok-inline\">CacheService</code> 兜住第三方接口成本。</p>\n<p class=\"md-p\">任务流是入口接问，决策层决定补参或调工具，工具层取数，状态层记住城市和日期，治理层做限流、缓存和超时，再组织成回答。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>一个小 Agent 也要同时考虑工具调用、缺参追问、状态保存和稳定性治理。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>天气问答智能体我按接入、决策、工具、状态、治理五层拆，同时覆盖缺参、状态和稳定性。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>接入与决策 / 天气工具 / 会话状态 / 治理与类拆分</p>",
+          "leadType": "v9:场景"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    },
+    {
+      "id": "sceneqa-7",
+      "kind": "qa",
+      "mod": "design",
+      "part": "面经场景问答",
+      "cat": "面经场景问答",
+      "title": "认证与安全设计",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "设计一个登录系统时，怎么同时保证通信安全和数据安全？",
+          "a": "<p class=\"md-p\">通信安全先解决传输过程别被窃听和篡改。基础是全链路 HTTPS / TLS，禁止明文传输账号口令、验证码和 token。内部服务之间，我还会看是否需要 mTLS、网关鉴权、时间戳和签名，防止请求被伪造或重放。</p>\n<p class=\"md-p\">数据安全管到了服务端以后怎么存、怎么控、怎么防扩散：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>凭证存储</b>：密码绝不能明文存，也不建议单纯做一次 MD5，走带盐的慢哈希，比如 bcrypt、scrypt、Argon2。</li><li><b>会话安全</b>：短期 access token 配合 refresh token，或者走服务端 session，并结合 HttpOnly、Secure、SameSite，降低被前端脚本窃取和 CSRF 利用的风险。</li><li><b>风控审计</b>：登录失败次数限制、验证码、异地登录提醒、设备指纹、操作审计、敏感操作二次验证。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会把传输安全、凭证存储、会话安全、风控审计四层一起设计。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>登录安全分两层：通信安全防窃听、篡改和重放，数据安全管存储、会话和风控审计。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>全链路 TLS / 带盐慢哈希 / 会话属性 / 风控审计</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "为什么说 MD5 不安全？如果线上还在用，应该怎么替代或增强？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>为什么不安全</b>：碰撞风险高、计算太快，攻击者可以用彩虹表、字典和 GPU 暴力快速撞库。用户密码直接做 MD5，哪怕再加一层简单盐值，也很难算现代安全方案。</li><li><b>密码存储</b>：优先换成 bcrypt、scrypt、Argon2 这类专门为密码学设计的慢哈希。</li><li><b>消息完整性</b>：不拿 MD5 硬扛，看是用 SHA-256 / SHA-3，还是直接上 HMAC。</li><li><b>接口签名</b>：还要带时间戳、nonce、过期时间和密钥轮换，避免重放。</li><li><b>渐进升级</b>：短期内没法一次性替换时，新密码按新算法存，老密码在用户下一次成功登录后透明迁移。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：比一刀切重置所有密码温和，也能逐步把风险收下来。<i>适用场景</i>：老系统还在用 MD5、又不能立刻全量切换。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>再加一层简单盐值，也很难把 MD5 存密码算成现代安全方案。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>密码走慢哈希，完整性走更强摘要或 HMAC，签名还要防重放；换不掉就在下次成功登录后透明迁移。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MD5 的本质问题不是不能做摘要，而是不适合做密码存储和完整性信任锚。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>碰撞快易撞库 / 密码换慢哈希 / 完整性换强摘要 / 签名防重放 / 登录后透明迁移</p>",
+          "leadType": "v9:原理/方案"
+        }
+      ],
+      "source": "八股面经整理 · 场景题"
+    }
+  ]
+}

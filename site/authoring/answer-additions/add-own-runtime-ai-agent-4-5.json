@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-4-5",
+  "entryId": "ai-agent-4",
+  "questionId": "5",
+  "expectedOriginalHash": "6726da6f4f8fc79eba47c341a7d6d989f4b7ad6f19495d29323f571c70804529",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "04 状态机怎样设计 会话与 Run 如何隔离"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 我先区分“在聊什么”和“这次具体做什么”：Conversation 是对话容器，Run 是一次目标及其约束快照。Run 再拆成可调度的 Task；一个 Task 重试时会产生新的 Attempt，但同一笔业务副作用仍用同一个 Operation 标识。状态只按白名单转换，转换和版本号一起持久化，再用 CAS 或事务避免并发覆盖。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "会话表和消息表具体存什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话表可以包含 tenant_id、conversation_id、owner_id、title、status、version、next_message_seq、created_at、updated_at；多人共享时另建成员/ACL 表，不能把一个 owner 字段当作所有授权规则。消息表包含 tenant_id、conversation_id、message_id、client_message_id、seq、role、run_id、parent_message_id、status、content_ref/content_json、content_version、created_at、updated_at。role 来自受控枚举，发送者身份由服务端确定，客户端不能提交一个 role=system 就获得系统权限。大附件与完整产物放对象存储，表中保留版本、摘要与授权引用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消息主键和外键带上租户边界；为 (tenant_id, conversation_id, seq) 建唯一约束和顺序分页索引，为 (tenant_id, conversation_id, client_message_id) 建请求去重约束。client_message_id 由客户端为一次发送稳定生成，网络重试沿用；重复请求返回原 message_id，并核对内容摘要，不能悄悄覆盖另一条消息。在同一事务中锁定或 CAS 更新会话的序号/版本、追加消息、创建所需 Run 与 Outbox；并发冲突重试这段事务，不重发已完成的外部操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "seq 表示已提交展示顺序，时间戳只辅助展示，不足以唯一排序。重生成和编辑保留消息版本或父子分支，明确“当前分支”如何选取，不能让新回答覆盖历史审计记录。Run 绑定本次输入消息和权限快照；流式 delta 存 run_event，按批更新消息投影，完成时提交最终正文与状态，不能每个 token 都竞争会话行锁。读取历史和产物引用都重新检查租户及 ACL；删除、留存和敏感内容清理按同一会话边界执行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一组可解释的状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "PENDING → RUNNING → WAITING_INPUT / WAITING_APPROVAL → READY → RUNNING，完成分为 SUCCEEDED、FAILED、CANCELLED。对已经发出的写操作另外保留 DISPATCHED 与 UNKNOWN；超时不是一个万能的业务终态。生产中可以把 Run 生命周期、授权状态和操作状态分成正交字段，避免把所有组合编码成几十个枚举。"
+    },
+    {
+      "type": "paragraph",
+      "text": "FSM 包括状态集合、事件集合、迁移函数、守卫条件和动作。比如 APPROVAL_RECEIVED 仅能推进对应 approval_id 的等待任务；守卫检查审批人、操作摘要、资源版本和有效期。迁移动作写入事件并调度后续节点。未知事件、旧版本事件与不合法跳转要返回冲突，不是静默忽略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态多了如何维护"
+    },
+    {
+      "type": "paragraph",
+      "text": "维护状态机时，先把不同问题放回各自领域：Run 判断整个目标的生命周期，Task 管节点调度，Operation 管外部提交，Approval 管决策等待。这样，“任务还在运行、某次提交结果未知、另一项操作正在等审批”不必挤成一个超长枚举。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为每个领域分别画转移表，每条边写明前置状态、触发事件、权限、事务范围和输出事件。再用纯 reducer 做属性测试，检查终态不再发新动作、取消后不再派发、成功必有验收证据、剩余预算不为负。新增状态还要迁移旧快照，并明确旧代码能否读取新版本，不能只改当前枚举。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用户又发来一句话怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "先判断新增消息是补充当前目标、修改约束、取消，还是独立问题。补充当前任务以事件写入 mailbox，在安全决策边界合并；新目标可创建独立 Run，不能让两个执行者无锁写同一个 Run。用户把“限额 20”改成“限额 30”，旧审批即失效；已提交动作无法凭修改 Prompt 撤销，应显示确定的业务状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "首次生成建立输入快照与计划；后续补充引用当前 Run、消息版本和已验收产物，仅失效受影响依赖。Session ID 只是定位符，绝不能把“知道 ID”当授权。存储主键或查询必须包含租户、用户权限与业务边界；thread_id 映射同样如此。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：内存 State、Checkpoint 和 Memory 有何区别？ 内存 State 是当前运行视图；Checkpoint 是某个持久恢复边界；Memory 是跨任务复用的数据。它们可以关联，但只保存对话摘要不能恢复正在等待的外部操作。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 消息队列（MQ）在 AI Agent 系统中的作用是什么？为什么不直接通过数据库通信？（异步解耦、削峰填谷、Agent 任务状态流转）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 中的 state 保存了哪些字段？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 首次生成和多轮补充的链路路由怎么区分和实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的 Session 和对话状态一般存在哪里？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 多个请求同时操作同一个 Session 时，怎么保证状态不会冲突？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们当时这个 state 是存在哪儿的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- AI Coding：实现 AI 流式问答的前端会话状态管理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 关于 Agent 这里的 State 状态，它的内存以及我们常说的 Checkpoint，它们有什么区别呢？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果 Agent 正在处理一个长任务，用户又输入了新的问题，系统会发生什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Claude Code 在任务执行过程中收到用户新增要求时，会如何处理和注入这条指令？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 的 checkpoint 怎么存？thread_id 和租户如何映射？服务重启后任务怎么续跑？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Redis 在 Agent 系统里存什么，例如 session、state、semantic cache？缓存击穿和雪崩怎么防？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对于像 ChatGPT 这种对话 Agent，你会怎么设计会话表和消息表的字段？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent是否支持多轮问答？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果让你从零设计一个对话 Agent 的流程，核心状态有哪些"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 加入对话能力和追问功能的逻辑是什么？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

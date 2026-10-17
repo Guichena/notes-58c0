@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s5422",
+  "entryId": "database-94",
+  "expectedOriginalHash": "96ffb8545776234ed6112900d43362858bf96da2f86f180333ddaa7b504fb04f",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "7.5 Spring Task怎样扫描订单一致性，数据变多会怎样"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring Task只能触发扫描，可靠性来自持久到期索引、分页领取、条件状态转移和对账，而不是某个固定扫描频率。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Spring Task如何检查订单一致性；数据多了怎样扫描；取消后库存与资格怎样恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "订单扫描涵盖Redis预扣、发布失败、支付超时和库存资格恢复，扫描周期应由数据量与业务窗口确定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Spring只提供触发和执行管理"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring 的触发方式不同，不能把 fixedRate 背成必定重叠，或永不重叠。在 Bean 上用 @EnableScheduling/@Scheduled 或 TaskScheduler 注册任务后，fixedDelay 是上一次同步调用结束，再等一个间隔；fixedRate 按计划频率调度，执行慢时会滞后。"
+    },
+    {
+      "type": "paragraph",
+      "text": "是否并发重叠，还取决于 scheduler 和有没有另行异步提交。cron 则按表达式和时区计算时刻。"
+    },
+    {
+      "type": "paragraph",
+      "text": "显式配置调度线程与业务执行资源，扫描入口短小，把执行交给有界池时必须有背压/运行标记，不能每个tick无限submit。记录异常与连续失败；周期任务异常语义由实际调度器/ErrorHandler决定，不能吞掉后默默停止。每个应用实例默认都可注册同一任务，多实例唯一归属/幂等另做。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "扫描权威到期索引，不扫全表所有历史订单"
+    },
+    {
+      "type": "paragraph",
+      "text": "订单保存status、expireAt、version及请求/预留ID，以(status,expireAt,id)索引按未支付且到期范围读取；分片时加shard维度。keyset分页根据(expireAt,id)续读，短事务小批量，不能OFFSET越来越深或一事务锁几百万行。领取可用条件状态/租约，消息和扫描共用同一关单业务事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分页游标前面，也可能后来插入到期任务。扫描过程中新出现的较早到期记录，可能落到已扫游标之前，因此需要固定扫描快照或高水位，并配重叠回看，或定期重扫到期未完成范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等允许重复查，不允许只记“扫到最大 ID”就永远跳过迟到或改期数据。所有任务挂掉后，应从持久 due 补查；内存游标丢失最多增加重复，不该丢责任。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "间隔由发现延迟和容量预算推出"
+    },
+    {
+      "type": "paragraph",
+      "text": "轮询间隔Δ只是正常无积压下发现延迟的一部分，还加扫描耗时、排队、调度抖动和业务执行时间。若每秒到期λ单、净处理μ单，长期λ≥μ会积压，不管把Δ设多小也无法追上；过小反而增加空查询与锁/连接压力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "规模变大可按到期桶/业务shard分配扫描器、批量取ID并限制下游并发，或延迟MQ负责及时触发、数据库扫描作较低频查漏。MQ投递需订单+outbox可靠衔接；Redis ZSet可作加速索引，不能是唯一易丢的恢复依据。具体延迟要求和成本决定是否适合Spring Task，名字本身不限制或保证规模。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "订单超时处理与恢复资格"
+    },
+    {
+      "type": "paragraph",
+      "text": "执行时再次核对权威时间、WAIT_PAY状态与预留HELD，只有合法状态转换成功才释放库存并写outbox。"
+    },
+    {
+      "type": "paragraph",
+      "text": "关单后还要分清，恢复库存不等于恢复购买资格。一人一单或再次购买的规则由活动定义；若允许再次买，就在权威事务解除对应旧订单资格，再用带 orderId 和版本的事件更新 Redis。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能无条件 DEL user-product 键，否则可能删掉新订单资格。DB 已成功、缓存更新失败，要保留可靠修复或失效事件；用户再次下单，仍由权威约束裁决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试扫描重入/多实例、长任务、异常、数据插入游标之前、消息全失联、付款取消交错、旧补偿晚到、恢复后追赶及权威状态已变。观测最老到期未处理年龄、每批耗时、扫描/有效处理比、锁等待和outbox积压。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-elasticsearch-5",
+  "id": "q-own-es-distributed-topk",
+  "order": 38,
+  "question": "为什么每个分片的 TopK 可以合并成全局 TopK，哪些条件下不成立？",
+  "shortAnswer": "只有各分片使用同一确定全序、文档身份不重复且相关分片齐全，局部 TopK 的并集才包含全局 TopK；返回少量结果不代表只检查少量候选。",
+  "commonPhrasings": [
+    "千万文档取 Top100 经过哪些步骤？",
+    "TopK 的堆、归并与提前终止成本是什么？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.1 千万文档取 Top100 的完整路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "协调节点解析请求、确定目标逻辑分片，为每个复制组选一个可用分片副本执行查询。一般不会把主副本同时当两份逻辑数据计入命中。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先做 query：各分片在 segment 上通过倒排、过滤和适用索引结构找候选，对需要的候选评分或读取排序字段，保留本片前100，并返回定位信息和排序键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "协调节点再把各片候选合并为全局前100，随后做 fetch，向相关分片取回这些最终命中的 _source、字段或高亮。这样可以少传正文，但只取回100篇，不等于前面的 query 只检查了100篇。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“千万文档”是语料总量，M_i 才是某片实际访问并评分的候选数。一个罕见型号词可能命中几十篇，宽泛词、大范围过滤或脚本可能处理很大一部分数据；返回100篇并不能推出固定毫秒数。尾延迟还取决于最慢分片、队列、页缓存、磁盘、网络、并发写入与取回字段大小。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.2 为什么每片前 K 足够"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设统一排序为 score 降序、唯一 ID 升序。若一篇文档 d 不在它所在分片的前 K，那个分片至少有 K 篇严格排在 d 前面；这些文档在全局也排在 d 前面，所以 d 不可能进入全局前 K。于是各片局部前 K 的并集一定包含全局前 K。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个证明包含三个重要前提：比较规则相同且分数已按合同确定；排序形成全序，并列有稳定唯一键；每篇文档属于一个逻辑分片，且所有相关分片都参与。默认片内 BM25 统计得到的分数，可以作为本次已产生数值来归并，但不等于已经用全局词频重新计算的理想 BM25。若之后换统计口径、全局重新打分，先前截断可能已丢掉新规则的赢家。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取 from=100、size=20 时，需要全局前120后丢掉前100，因此每片应提供前120，而非只给20。若做父文档折叠、跨索引业务去重、配额多样性选择或在协调层改变分数，普通文档 TopK 证明也不够：局部候选可能全来自同一个父文档，去重后不足 K，必须重新定义候选数量和算法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "失败分片里可能恰好藏着最高分文档。把它当空分片会返回看起来排序正确的列表，却不是全库 TopK。请求设置 allow_partial_search_results=false 后仍要检查实际响应与 timed_out；允许部分结果的产品也必须标明范围和完整性，不能继续对外保证“全局前100”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.3 堆复杂度与真正的提前终止"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把成本分到分片和协调节点。某片用朴素有界堆处理 M_i 个候选，花 O(M_i log K) 时间和 O(K) 堆空间；S 片最多返回 SK 个候选。"
+    },
+    {
+      "type": "paragraph",
+      "text": "协调端如果再用堆筛选，约需 O(SK log K)。如果每路结果已有序，则可多路归并，建堆后输出 K 项约需 O(S+K log S)。这些只是候选收集和归并成本，还没有算倒排读取、解码、评分、网络与 fetch。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lucene 可以利用跳跃、评分上界和 WAND/Block-Max 一类机制，跳过不可能超过当前阈值的候选块。关键是上界合法，而不是“只求前100所以随便少看”。准确统计所有命中、附带聚合、脚本评分和复杂查询会改变可跳过的工作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "预设 index sort 与请求排序相匹配时，某些 TopN 收集可以对 segment 提前终止；索引排序本身增加写入和合并工作，也只服务特定排序方向。即使命中列表提前收齐，准确总命中数或聚合仍可能需要遍历更多文档。track_total_hits=false 不取消搜索匹配，也不等于所有查询 O(K)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "terminate_after 限制收集量并可能使结果提前终止，不是任意 score 排序仍然精确的证明。近似 kNN 则还有图搜索漏召回、量化误差等独立误差来源；对已经召回的候选精确排序，无法找回从未进入候选的文档。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.4 一个完整的分片 TopK 模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面模型只演示“各片选候选，再合并成一页”，分数由输入预先给定，不包含 Lucene、网络或 BM25。使用前要满足几项合同："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "预期逻辑分片必须齐全；失败或缺失分片直接拒绝。",
+        "ID 可取任意 long，但必须在所有分片中全局唯一。分数必须有限，允许负分，正负零都按零处理；同分按 ID 升序。",
+        "from 和 size 非负，用 long 求和，并受十万候选窗口的教学安全上限约束。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "空片是合法成功片，整个数据集可以为空。size=0 返回空，但仍验证分片完整性、ID 与输入；不能用零返回量绕过合同。record 会复制输入列表，返回列表不可修改。调用方仍应保证复制期间原列表不被并发改动。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为使重复 ID 的错误能在演示中被发现，模型保存所有已见 ID，校验空间为 O(N)；局部堆 O(K)、累计候选 O(SK) 之外必须加上这项成本。实际 ES 依靠分片分区规则维护身份，不是每次查询都在协调节点保存全库 ID。这个校验选择不能被包装成真实集群内存布局。"
+    },
+    {
+      "type": "paragraph",
+      "text": "将以下两个文件保存到同一目录，使用 JDK 21，不需要第三方库或外部数据。测试用独立选择排序当 oracle，覆盖随机分片、同分、空片、偏移、K>N、k=0、非法分数、重复/缺失分片、重复 ID、long 极值和输入复制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5.5 完整实现与验证程序"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "ShardTopK.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\n\n/** Exact teaching model. Inputs are a stable snapshot with globally comparable scores. */\npublic final class ShardTopK {\n    public static final int MAX_WINDOW = 100_000;\n    public record Hit(long id, double score) {\n        public Hit {\n            if (!Double.isFinite(score)) throw new IllegalArgumentException(\"finite score required\");\n            if (score == 0.0) score = 0.0; // Treat -0.0 and +0.0 as the same score.\n        }\n    }\n    public record Shard(String name, boolean successful, List<Hit> hits) {\n        public Shard {\n            Objects.requireNonNull(name, \"shard name\");\n            if (name.isBlank()) throw new IllegalArgumentException(\"blank shard name\");\n            hits = List.copyOf(Objects.requireNonNull(hits, \"hits\"));\n            if (!successful && !hits.isEmpty())\n                throw new IllegalArgumentException(\"failed shard cannot contribute partial hits\");\n        }\n    }\n    public static final class IncompleteSearch extends IllegalStateException {\n        public IncompleteSearch(String message) { super(message); }\n    }\n    public static final Comparator<Hit> BEST =\n            Comparator.comparingDouble(Hit::score).reversed().thenComparingLong(Hit::id);\n    private ShardTopK() {}\n    private static int window(int from, int size) {\n        if (from < 0 || size < 0) throw new IllegalArgumentException(\"negative from/size\");\n        long window = (long) from + size;\n        if (window > MAX_WINDOW) throw new IllegalArgumentException(\"teaching window limit\");\n        return (int) window;\n    }\n    private static List<Hit> select(Iterable<Hit> input, int k) {\n        if (k == 0) return List.of();\n        PriorityQueue<Hit> heap = new PriorityQueue<>(BEST.reversed());\n        for (Hit hit : input) {\n            if (heap.size() < k) heap.add(hit);\n            else if (BEST.compare(hit, heap.peek()) < 0) {\n                heap.remove();\n                heap.add(hit);\n            }\n        }\n        List<Hit> result = new ArrayList<>(heap);\n        result.sort(BEST);\n        return List.copyOf(result);\n    }\n    public static List<Hit> top(List<Hit> input, int k) {\n        window(0, k);\n        List<Hit> copy = List.copyOf(Objects.requireNonNull(input, \"input\"));\n        Set<Long> ids = new HashSet<>();\n        for (Hit hit : copy) if (!ids.add(hit.id()))\n            throw new IllegalArgumentException(\"duplicate document ID\");\n        return select(copy, k);\n    }\n    /** All expected logical shards must be represented exactly once, even for size=0. */\n    public static List<Hit> page(Set<String> expectedShards, List<Shard> shards,\n                                 int from, int size) {\n        int k = window(from, size);\n        Set<String> expected = Set.copyOf(Objects.requireNonNull(expectedShards));\n        for (String name : expected) if (name.isBlank())\n            throw new IllegalArgumentException(\"blank expected shard\");\n        List<Shard> copy = List.copyOf(Objects.requireNonNull(shards));\n        Set<String> seen = new HashSet<>();\n        Set<Long> ids = new HashSet<>();\n        for (Shard shard : copy) {\n            if (!expected.contains(shard.name()) || !seen.add(shard.name()))\n                throw new IllegalArgumentException(\"unexpected or duplicate shard\");\n            if (!shard.successful()) throw new IncompleteSearch(\"failed shard: \" + shard.name());\n            for (Hit hit : shard.hits()) if (!ids.add(hit.id()))\n                throw new IllegalArgumentException(\"IDs must be globally unique\");\n        }\n        if (!seen.equals(expected)) throw new IncompleteSearch(\"missing logical shard\");\n        if (size == 0) return List.of();\n        List<Hit> candidates = new ArrayList<>();\n        for (Shard shard : copy) candidates.addAll(select(shard.hits(), k));\n        List<Hit> prefix = select(candidates, k);\n        return List.copyOf(prefix.subList(Math.min(from, prefix.size()), prefix.size()));\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "ShardTopKChecks.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\n\npublic final class ShardTopKChecks {\n    private static void check(boolean value, String message) {\n        if (!value) throw new AssertionError(message);\n    }\n    private static void rejects(Class<? extends Throwable> type, Runnable action) {\n        try { action.run(); }\n        catch (Throwable error) {\n            if (type.isInstance(error)) return;\n            throw new AssertionError(\"wrong exception\", error);\n        }\n        throw new AssertionError(\"expected \" + type.getSimpleName());\n    }\n    private static ShardTopK.Hit h(long id, double score) { return new ShardTopK.Hit(id, score); }\n    private static ShardTopK.Shard s(String name, ShardTopK.Hit... hits) {\n        return new ShardTopK.Shard(name, true, List.of(hits));\n    }\n    // Independent selection-sort oracle: does not call the implementation comparator.\n    private static List<ShardTopK.Hit> oracle(List<ShardTopK.Hit> input, int from, int size) {\n        List<ShardTopK.Hit> sorted = new ArrayList<>(input);\n        for (int i = 0; i < sorted.size(); i++) {\n            int best = i;\n            for (int j = i + 1; j < sorted.size(); j++) {\n                var a = sorted.get(j); var b = sorted.get(best);\n                if (a.score() > b.score() || (a.score() == b.score() && a.id() < b.id())) best = j;\n            }\n            Collections.swap(sorted, i, best);\n        }\n        int lo = Math.min(from, sorted.size());\n        int hi = Math.min(from + size, sorted.size());\n        return List.copyOf(sorted.subList(lo, hi));\n    }\n    public static void main(String[] args) {\n        Set<String> names = Set.of(\"a\", \"b\", \"c\");\n        List<ShardTopK.Shard> shards = List.of(s(\"a\", h(3, 9), h(1, 9)),\n                s(\"b\", h(4, -2), h(2, 9)), s(\"c\"));\n        check(ShardTopK.page(names, shards, 1, 2).equals(List.of(h(2, 9), h(3, 9))), \"offset and tie\");\n        check(ShardTopK.page(names, shards, 9, 3).isEmpty(), \"from past end\");\n        check(ShardTopK.page(names, shards, 0, 0).isEmpty(), \"zero size\");\n        check(ShardTopK.page(Set.of(), List.of(), 0, 4).isEmpty(), \"empty corpus\");\n        check(ShardTopK.top(List.of(h(Long.MAX_VALUE, 0.0), h(Long.MIN_VALUE, -0.0)), 9)\n                .equals(List.of(h(Long.MIN_VALUE, 0), h(Long.MAX_VALUE, 0))), \"long IDs and signed zero\");\n        rejects(IllegalArgumentException.class, () -> h(1, Double.NaN));\n        rejects(IllegalArgumentException.class, () -> h(1, Double.POSITIVE_INFINITY));\n        rejects(IllegalArgumentException.class, () -> h(1, Double.NEGATIVE_INFINITY));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.top(List.of(h(1, 1), h(1, 0)), 0));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.page(Set.of(\"a\", \"b\"),\n                List.of(s(\"a\", h(1, 9)), s(\"b\", h(1, 2))), 0, 1));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.page(names, shards, -1, 1));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.page(names, shards, 0, -1));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.page(names, shards, Integer.MAX_VALUE, 2));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.page(Set.of(\"a\"), List.of(s(\"x\")), 0, 1));\n        rejects(IllegalArgumentException.class, () -> ShardTopK.page(Set.of(\"a\"), List.of(s(\"a\"), s(\"a\")), 0, 1));\n        rejects(NullPointerException.class, () -> ShardTopK.top(null, 0));\n        rejects(NullPointerException.class, () -> ShardTopK.top(Arrays.asList(h(1, 2), null), 0));\n        rejects(ShardTopK.IncompleteSearch.class, () -> ShardTopK.page(names, List.of(s(\"a\")), 0, 0));\n        rejects(ShardTopK.IncompleteSearch.class, () -> ShardTopK.page(Set.of(\"a\"),\n                List.of(new ShardTopK.Shard(\"a\", false, List.of())), 0, 0));\n        List<ShardTopK.Hit> mutable = new ArrayList<>(List.of(h(1, 4)));\n        var copied = new ShardTopK.Shard(\"a\", true, mutable);\n        mutable.clear();\n        check(copied.hits().size() == 1, \"defensive copy\");\n        rejects(UnsupportedOperationException.class, () -> copied.hits().clear());\n        Random random = new Random(153);\n        for (int trial = 0; trial < 2000; trial++) {\n            int count = 1 + random.nextInt(8), n = random.nextInt(90);\n            List<List<ShardTopK.Hit>> data = new ArrayList<>();\n            for (int i = 0; i < count; i++) data.add(new ArrayList<>());\n            List<ShardTopK.Hit> all = new ArrayList<>();\n            for (int id = 0; id < n; id++) {\n                var hit = h(id - 50L, random.nextInt(9) - 4);\n                all.add(hit); data.get(random.nextInt(count)).add(hit);\n            }\n            List<ShardTopK.Shard> parts = new ArrayList<>(); Set<String> expected = new HashSet<>();\n            for (int i = 0; i < count; i++) {\n                expected.add(\"s\" + i); parts.add(new ShardTopK.Shard(\"s\" + i, true, data.get(i)));\n            }\n            int from = random.nextInt(110), size = random.nextInt(110);\n            var result = ShardTopK.page(expected, parts, from, size);\n            check(result.equals(oracle(all, from, size)), \"oracle \" + trial);\n            Collections.shuffle(parts, random);\n            check(result.equals(ShardTopK.page(expected, parts, from, size)), \"shard order \" + trial);\n        }\n        System.out.println(\"PASS fixed contracts and 2000 independent distributed-page oracle cases\");\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "在这两个文件所在目录执行："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "value": "mkdir -p classes\njava -Xmx128m -m jdk.compiler/com.sun.tools.javac.Main -source 21 -target 21 -d classes ShardTopK.java ShardTopKChecks.java\njava -Xmx128m -cp classes ShardTopKChecks\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "出现 AssertionError 表示合同或 oracle 对照失败，正常结束输出 PASS 摘要。这只是有限数据上的算法检验，不是 ES 千万文档性能、故障选主或真实搜索质量测试。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    },
+    {
+      "entryId": "bg-elasticsearch-5",
+      "questionId": "0",
+      "label": "性能测量与容量边界"
+    }
+  ]
+}

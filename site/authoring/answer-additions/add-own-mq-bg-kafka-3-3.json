@@ -1,0 +1,260 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-kafka-3-3",
+  "entryId": "bg-kafka-3",
+  "expectedOriginalHash": "fde7f5eda3b9f2720a7416b01b76632f32a3d875f6fe87bf787825df1fabaf5b",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q05 为什么会重复 怎样实现幂等"
+    },
+    {
+      "type": "paragraph",
+      "text": "允许消息再次到达，用稳定业务身份和原子业务提交保证同一操作只生效一次，比试图让网络只传一次更可靠。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复来自三层：producer 确认丢失后的重发；业务完成但消费进度没保存后的重投；上游重复点击、超时重试或重新生成消息。幂等生产者只能覆盖其中一部分协议级重复，不能识别“重新创建 producer 后独立调用 send 的同一订单”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以一次余额变更为例，Inbox 的做法是：在同一个本地事务中，先用 subscriber + eventId 的唯一键登记事件，再更新业务，最后一起提交。两个消费者同时处理同一事件时，由数据库唯一约束裁决；“先 SELECT 不存在，再 UPDATE”挡不住并发。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复分支只接受明确的 Inbox 唯一键冲突。磁盘满、死锁或权限错误说明处理出了问题，不能被当作“以前已经做过”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "相同 eventId 还应绑定规范化负载摘要或关键业务字段。相同 ID 对应不同金额、不同订单时应报身份冲突。一个用户想买两件商品，是两次合法下单；“userId 唯一”会错误吞掉第二次。幂等键应在逻辑请求第一次发起时确定，超时重试复用；新业务请求使用新键。若没有稳定外部流水号，需要先建立请求凭据/业务唯一约束，而不是在每次重试中随机生成 UUID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁只能约束一段时间内的并发。锁过期后相同请求再次到达，仍会重复执行；拿到锁也不代表历史未执行。Redis SETNX 后写 MySQL 若跨两次提交，可能留下“已去重但业务未做”，或业务已做而去重记录丢失。资金、库存这类核心效果优先依赖权威存储中的唯一流水和事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等证据的保留期至少覆盖允许的重试、DLQ 重放、历史回放、备份恢复窗口。Bloom filter 有假阳性，不能直接把“可能存在”的关键事件丢弃；它只能帮助快速筛选，最终仍需权威查证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费幂等为什么要本地原子提交？"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库更新成功、offset 提交前崩溃时，重放是正常恢复路径。为 subscriber/操作名、租户和 eventId 建唯一约束，让同一事件的去重证据与本地业务更新同成同败，并校验载荷摘要。两个并发消费者都先 SELECT 再扣款会竞态；先单独插入“已处理”再做业务，失败后反而会永久跳过未完成效果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有明确的 inbox 唯一冲突可以进入重复分支，连接异常、磁盘满或另一张业务表的约束错误不能全吞为成功。同 ID 不同金额或内容是身份冲突，应报警而不是去重吞掉。幂等记录保留一天、上游允许回放七天，旧事件在第七天可能重新生效；无限回放要依赖永久业务唯一性、版本语义或独立回放协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部支付、通知和 HTTP 接口不能被本地 inbox 包成一个事务。需要稳定渠道请求号、查询或对账能力；请求超时进入结果未知，具体协议见 Q29 的稳定请求号与结果未知分析，以及 Q61 的完整协议模型。把去重标记放 Redis SETNX 或加一把本地锁，不会消除跨系统提交窗口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "业务身份与传输身份为什么要分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "eventId 表示稳定事件，发布尝试号表示某次发送，channel 序号和 delivery tag 只表示本次连接会话内的协议位置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务重放保留 eventId 和不可变业务载荷；同一事件再次发往 broker，会产生新的 publishAttemptId。生产相关键还需要 channelGeneration 与 publishSequence，因为重建 channel 后发布序号可从头计数。消费 delivery tag 也不能跨 channel 使用，更不能拿来建长期幂等唯一键。traceId 用于观测，不应承担业务唯一性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实际通知协议通常还需要 tenant、subscriber、taskId、处理轮次、业务实体版本、schemaVersion 和 deadline。消费者去重空间应覆盖租户与订阅者；相同 ID 对应不同不可变载荷必须报冲突，不能默默当重复成功。告警重新触发是新的业务轮次；旧事件网络重投仍是旧事件。两者不能只靠生成一个新 UUID 混过去。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "“幂等”为什么不是加锁、限流或生成唯一 ID？"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等必须识别同一次业务意图，并把已完成事实与业务效果一起持久化。锁只让两次调用不同时执行，限流只限制频率，发号器只让不同号码不碰撞。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 A 持锁扣款后释放，B 随后持锁再次扣款，两次完全串行却仍重复。每分钟最多十次也不会阻止同一请求执行两次。UUID、Snowflake 或批量主键只能生成身份，不能回答某个 eventId 是否已经生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复有三种常见来源：发送已被接收但响应丢失；消费者效果已提交而消费进度未提交；上游把同一意图再次发布为新的消息。Kafka 的生产幂等识别协议范围内的重试，不能替代应用独立 send 的业务去重，更不能保护外部扣款。所谓“消费者只消费一次”，通常应回答为“允许再次读取，定义好的业务效果只提交一次”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "requestId、eventId、版本、代次和 traceId 分别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些身份回答的是不同问题："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "requestId / operationId：这是不是同一次业务意图？",
+        "eventId：这是不是同一个不可变事件？",
+        "aggregateVersion：业务实体到了哪个版本？",
+        "retryGeneration：这是哪一代获准的重试调度？",
+        "processingEpoch：当前处理权属于哪次领取？",
+        "publishAttemptId：这是哪次发布尝试？",
+        "traceId：怎样把观测记录串起来？它不参与业务唯一性裁决。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "一次用户下单超时重试，必须沿用原 operationId，命中原订单并返回原 orderId。服务重新执行发号器生成候选号并非一定错误，但竞争失败后必须丢弃候选号、读取已提交结果，不能拿新号再创建一单。每次 HTTP 可以使用新的 traceId，不改变业务意图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一用户确实想再次购买，就产生新 operationId；买两件可以是一单 quantity=2，也可以两次购买，取决于产品规则。userId 或 userId+商品不能作为所有购买的永久幂等键。一人一单是独立的活动资格约束，例如 activityId+userId，不应与网络重试防重混为一谈。退出登录不会删除已经受理的意图，也不会重置领取资格。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务重试生成新 eventId，是“调度事件”更新，不必产生新的外部操作。对同一个已授权通知或退款动作，稳定 channelRequestId 仍不变。若收件人、金额、模板内容或业务目的改变，那是需要重新授权的新动作，不能偷偷复用旧请求号，也不能仅靠增加 retryGeneration 绕过去重。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis Set、Token 和 Bloom 能做最终去重吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Set 的 SADD 能原子判断成员是否首次加入，但不能让 Redis 标记与 MySQL 业务效果原子提交。先 SADD 后写库，崩溃会留下标记而漏效果；先写库后 SADD，崩溃会让重放重复效果。SETNX 外再包分布式锁也不消除这两个窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "防重 Token 可表示一次提交意图，但消费 Token 与业务提交仍需协调；删 Token 后还没有落库不能当成功。更稳妥的是将 Token 映射到持久 operationId，重试沿用身份、查询已受理结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom 阳性只是“可能存在”，不能直接丢弃新事件；阴性也不能替代并发唯一约束。过滤器漏更新、恢复旧快照或过早清理时，它更不是权威。缓存只能优化精确判定，除非具备严格可证明的持久终态映射，否则缓存命中不能单独授权 ACK。普通 Bloom 也不支持任意安全删除单元素。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "PID、epoch、sequence 分别解决哪一层问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产者获得 producer ID，使用 epoch 区分某个身份的代次，对每个目标分区维护 sequence。Broker 在批次中识别身份和序列，区分按协议重试的已有批次、后续批次和失效身份。序列不是全业务消息的唯一号；同 eventId 被应用再次调用 send 是新记录，不能期待 broker 解析 value 识别它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "非事务幂等生产者重建会话后，不能拿旧应用事件和新会话序列自动做无限历史去重。事务生产者通过 transactional.id 关联恢复身份并 fencing 旧实例，但也不会替应用判断两笔新事务是否对应同一个业务请求。交易幂等键仍然必须稳定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 4.0 基线下，启用幂等要求 acks=all、retries 大于零、max.in.flight.requests.per.connection 不超过 5。显式启用却配了冲突参数会报配置错误；不要依靠默认是否被关闭来判断。幂等开启且参数兼容时可保留协议内顺序，不必一律把 in-flight 降到 1。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 事务可以把 Kafka 输出记录与输入消费组位移原子提交，配合 read_committed 实现 Kafka 内部的读—处理—写边界，外部数据库或索引不在这个事务里。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q60 Inbox 与余额更新怎样同事务"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一 Inbox 键裁决并发重复，负载摘要检测身份冲突，余额变更与 Inbox 在同一 MySQL 事务内提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个示例只演示一个订阅者处理扣减事件，金额使用整数单位。subscriber+eventId 是唯一键，摘要覆盖事件版本、账户和金额。"
+    },
+    {
+      "type": "paragraph",
+      "text": "身份输入也属于合同：subscriber、eventId 均为 1–80 个 ASCII 字母、数字或 ._:-，拒绝空白，不静默 trim 或折叠大小写。这样才与本例 utf8mb4_bin 唯一键的比较一致；它会忽略尾部空格，所以不能直接接受任意 Unicode/空白标识。若扩展格式，要另选精确字节键或明确定义比较规则，并在实际 MySQL 中验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复分支只识别 Inbox 插入的 MySQL 1062/23000。进入后先显式回滚，再核验已提交记录；其他 SQL 错误不是重复成功。rollback 失败就保留并抛出主错误，不能凭 suppressed 数量猜是否回滚成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "commit/close 异常即使发生在业务可能已成功之后，也不让消费者提前确认；重投时用同一 ID 核对。表保留期和账户/订阅者权限由应用负责。这个本地事务没有包住远端支付。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "本地 inbox 怎样证明一次效果？"
+    },
+    {
+      "type": "paragraph",
+      "text": "在同一权威数据库事务中，先以唯一 inbox 身份登记，再完成业务更新、必要结果和下游 Outbox，最后提交。业务失败必须让 inbox 一起回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一键的命名空间至少区分租户与消费者。通知服务处理过一个事件，不应阻止记账服务独立处理同一个事件。并发相同事件由唯一索引裁决；失败的插入只能在明确属于目标 inbox 唯一约束冲突时进入重放分支。连接超时、磁盘满、语法错误或其他业务唯一约束冲突都不能当成“已处理成功”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地 SQL 的完整实现采用 JdbcLocalEffect.applyDebit(DataSource ds, long trustedTenant, String consumer, String eventId, long accountId, long cents, String currency)，返回 APPLIED 或 REPLAYED。inbox 身份为 tenant、consumer、eventId，重放还比对 accountId、cents、currency；inbox、受余额保护的扣款和效果 Outbox 同事务。MySQL 的目标插入重复判断要同时匹配 1062 与 SQLState 23000，再在回滚后的新事务中核实已提交记录。本节下方“完整业务适配：租户、币种、原结果与 Outbox”提供该接口的完整 schema、JDBC 实现和故障测试。若扩展为充值或双腿记账，同一事务还须保存原请求结果、平衡的借贷流水与 Outbox；任何一腿、余额或事件写入失败都回滚整笔本地操作。充值依据必须是经核实的支付事实；余额不足是否保存为稳定拒绝结果需要事先选定，不能在重试中悄悄改变合同。更多完整账本代码位于另一本《MySQL与数据库系统设计面试手册》（https://my.feishu.cn/wiki/PuaTwf5rbihpbKk56CLcAPJLnCe）第36章：“完整的充值、扣款与双腿教学账本”提供 AccountLedger，“‘失败可重试’与‘保存拒绝’是两种不同契约”提供 IdempotentEffect。这两个补充示例采用 H2 2.3.232，未包含在本书离线代码包中；不能用其 23505 代替 MySQL 错误码，也不能把教学模型当成真实支付系统。"
+    },
+    {
+      "type": "paragraph",
+      "text": "COMMIT 抛异常不总能证明事务没提交。恢复应查询原身份；必要时重试同一幂等操作，接受查到原结果。已经提交后，客户端再调用 rollback 不会撤销那个提交。消费 ACK 或安全 offset 只能发生在本地事实已确定、或者恢复责任已持久转交之后。"
+    },
+    {
+      "type": "paragraph",
+      "text": "余额与流水也是相同原则。先改余额还是先插流水，不如“是否同一事务”重要；流水写失败要回滚本地余额更新。扣款用条件更新或明确锁协议守住余额不负，多账户同库转账要固定锁序。金额禁止浮点数、负值偷换和算术溢出，充值入账必须依据校验过的真实支付事实，不能信任前端成功页。"
+    },
+    {
+      "type": "paragraph",
+      "text": "余额不足是否持久保存为原请求的终态结果，是接口选择：保存则同键之后即使余额增加也返回原拒绝，新意图用新键；不保存则必须明确允许同键以后重新执行。不能让实现偶然决定语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整业务适配：租户、币种、原结果与 Outbox"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 JdbcLocalEffect 将可信租户、消费者、eventId 组成去重主键，并把账户、整数金额、币种作为不可变输入核对。同一事务内完成 Inbox 插入、余额条件扣减、原结果记录和一条 Outbox。重投返回当次原余额，而非当前账户余额；后续合法扣减不能改变过去请求的响应。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调用方先验证用户对 tenant/account 的权限，并使用受信身份提供 tenant，不能直接信任消息 body 的租户。DataSource 由应用注入，使用独立 MySQL 8.4 实验库与下面 SQL；代码不读取或展示任何真实凭据。该适配只证明一个本地扣减效果，不是完整转账或银行卡支付接口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复分支只识别该 Inbox 单主键 INSERT 的 MySQL 1062/23000，先回滚当前事务，再读已提交回执并核对全部业务字段。回滚失败时停止，不凭空判定重复成功。账户缺失、币种不符或余额不足会回滚，失败身份不会在本例中被永久冻结；如果产品要求“首次拒绝结果也幂等”，需把拒绝回执单独作为受理结果持久化，再明确何时允许创建新请求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "COMMIT 抛错封装为 CommitUnknown，不 ACK，不换新 eventId；随后即使 rollback 返回也不能证明此前 COMMIT 未生效。用同一身份读取权威回执，或重新进入这套原子去重协议恢复。模型测试通过代理模拟“提交已生效但应答丢失”，不能证明实际 MySQL 驱动、隔离级别和网络故障已覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "将它接到 Rabbit EffectPort 时，APPLIED 与已核对的 REPLAYED 才映射为 COMMITTED；CommitUnknown 与无法确定的数据库错误保持 UNKNOWN/STOP_UNACKED。已授权输入冲突可隔离，瞬时数据库错误需按 SQL 错误类有界重试，不能所有 SQLException 都当成功或永久失败。接到 Kafka 时，完成记录进入安全前缀后才能提交 offset。"
+    },
+    {
+      "type": "paragraph",
+      "text": "校正说明（保留原文）：原答案将 Redis 幂等 key 列为一种做法，需补上跨存储边界：Redis 标记不能与 MySQL 效果自动原子提交；核心效果以唯一流水/Inbox 与业务同事务裁决，Bloom 也不能作为最终丢弃依据。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    },
+    {
+      "entryId": "own-mq-basics-code",
+      "label": "Java 基础模块完整源码与事务示例"
+    }
+  ],
+  "questionId": "3"
+}

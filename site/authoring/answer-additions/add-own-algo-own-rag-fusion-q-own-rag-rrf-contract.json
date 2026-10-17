@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-own-rag-fusion-q-own-rag-rrf-contract",
+  "entryId": "own-rag-fusion",
+  "expectedOriginalHash": "a65de1600d4e3df918cd5dfee45a0fa63d04f2ba96bf01841756f38eead17c25",
+  "title": "算法练习补充：Rerank、RRF与截断",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Rerank、RRF与截断"
+    },
+    {
+      "type": "paragraph",
+      "text": "rerank 负责把已经召回的候选排得更准，不能补回根本没召回的证据。先用可预编码的双塔或倒排控制全库检索成本，再对有限的 query–候选对细评。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Cross-Encoder 把 query 和文本共同送入模型，用词级交互得到相关性分数，可能更好地区分否定、实体条件，以及“相关但不能回答”的内容。最后还要综合得分、去重、多样性、阈值和 token 预算选择，不能指望一个万能 K 解决所有问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RRF 参数与手写接口：排名融合的效果、截断与容器成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "RRF把每路排名r从1开始转成1/(c+r)后对同一候选求和，加权版为Σw/(c+r)。它只依赖相对名次，无需直接把BM25与余弦分数相加；多个通道都排名靠前的项往往得分高，但不能据此保证真实相关性。核心用迭代器遍历各路排名，直接支持 ArrayList 和 LinkedList；适配器额外复制输入列表和权重，提供调用内独立副本，但复制期间仍须由调用者保证输入不被并发修改。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "排名融合核心"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "RRF 为什么能融合量纲不同的检索结果？",
+        "排名常数、权重、窗口、去重和 TopK 怎样影响分数与实现代价？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "加权 RRF 按每路首次出现的排名累加 w/(c+rank)，最后对全部候选排序并截取 TopK。下面完整核心使用迭代器，直接支持 ArrayList 与 LinkedList。候选身份应包含必要的文档、块版本与权限信息；rank 参数、浮点比较、重复项和零权重都须明确。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心 RankFusion.rrf 的外层和内层都使用增强 for，ArrayList 与 LinkedList 都只遍历一次；聚合 M 个排名槽位的期望成本为 O(M)。RankFusionIndexed 额外复制列表和权重，提供调用内独立数据快照，但复制过程本身仍要求调用者不并发修改输入。复制不是消除当前核心中某种下标退化的必要步骤。"
+    },
+    {
+      "type": "paragraph",
+      "text": "复制只改存储形式，不改变候选次序、重复槽位、字符串身份或浮点相加顺序，所以适配结果与在等内容ArrayList上执行原核心相同。输入在调用期间不能被另一线程修改；本方法没有给任意共享可变List提供一致性事务。当前核心已经使用迭代器，复制的作用是隔离调用内使用的数据，输出也不会改动输入；线程协调、一致快照与权限控制仍由调用层处理。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "自测可让外层与内层均使用 LinkedList，逐 ID 查找首次排名并以 BigDecimal 公式作独立参考，再检查 TopK、输入不变、精确同分、重复项占位、零权重候选和非法参数。接近的浮点数按容差检查公式，实际排序仍按 double 的计算结果；它不是有理数精确排序。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "C路共M个条目、U个不同ID：防御复制O(C+M)时间和空间，核心哈希累计期望O(C+M)、全量排序O(U log U)，总期望O(C+M+U log U)、额外O(C+M+U)；ID hash/比较按单位成本，长字符串另计。直接调用当前核心时，ArrayList 和 LinkedList 都由迭代器遍历，累计仍为期望 O(C+M)，不要求常数时间下标访问。topK只限制返回条数，原核心仍对全部U项排序，未实现小顶堆优化。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "RankFusionIndexed 依赖上方完整 RankFusion 类；两者放在同一默认包中编译即可。适配器额外占 O(M) 复制空间，直接核心无需这份副本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "此处实现的是排名融合；搜索服务、embedding 与神经重排是调用链上的其他步骤，其参数和质量须分别验证。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ],
+  "questionId": "q-own-rag-rrf-contract",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-e59096a4f6660db7",
+  "entryId": "handwrite-56",
+  "expectedOriginalHash": "452d3d4107639b3dff425bc0d9aaf96faaaaae4474c4447902d156fce61e8413",
+  "title": "跨册场景补充：有界阻塞队列怎样写才正确",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "有界阻塞队列怎样写才正确"
+    },
+    {
+      "type": "paragraph",
+      "text": "一把锁保护完整队列不变量，两个条件队列分别等非空与非满；所有等待用 while 重查，关闭唤醒所有等待者。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "题意与契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现多生产者、多消费者共用的有界 FIFO。满时 put 阻塞，空时 take 阻塞；获取锁和条件等待均可被中断。容量须为正，禁止 null。close 后拒绝新的写入，但读者可排空已有元素，之后 take 返回 null。增加带总超时的 offer，超时返回 false；关闭时抛出 IllegalStateException，不把关闭混成“暂时满了”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例子：容量 2，put A、put B 后 put C 等待；消费者 take A 后 C 才能入队。关闭且尚有 B、C 时仍依次返回 B、C，最后返回 null。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "状态、不变量与条件队列"
+    },
+    {
+      "type": "paragraph",
+      "text": "用固定 Object[] 环形数组，head 是下一次取的位置，tail 是下一次放的位置，count 区分 head==tail 时究竟空还是满。不变量为 0≤count≤capacity，数组中从 head 起的 count 个位置按 FIFO 保存有效元素。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有下标、计数和关闭标记由同一把 ReentrantLock 保护。生产者等 notFull，消费者等 notEmpty：一次入队只增加一个可消费元素，signal 一个消费者即可；一次出队只增加一个空位，signal 一个生产者即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "close 改变了所有等待者的终止条件，因此两组都要 signalAll。练习时让生产者等满队列、消费者等空队列，再分别发生出队、入队和关闭，说明谁应该醒来。醒来后仍须用 while 重查条件，因为 Condition 没有消除虚假唤醒。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L2567–2639（完整围栏，未执行）",
+      "value": "import java.util.Objects;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.locks.Condition;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic final class CloseableBoundedQueue<E> {\n    private final Object[] elements;\n    private int head, tail, count;\n    private boolean closed;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notEmpty = lock.newCondition();\n    private final Condition notFull = lock.newCondition();\n    public CloseableBoundedQueue(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"capacity > 0 required\");\n        elements = new Object[capacity];\n    }\n    public void put(E value) throws InterruptedException {\n        Objects.requireNonNull(value, \"null is the end-of-stream marker\");\n        lock.lockInterruptibly();\n        try {\n            while (!closed && count == elements.length) notFull.await();\n            checkOpen(); enqueue(value);\n        } finally { lock.unlock(); }\n    }\n    public E take() throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while (!closed && count == 0) notEmpty.await();\n            return count == 0 ? null : dequeue();\n        } finally { lock.unlock(); }\n    }\n    /** Timeout includes acquiring the lock; false means capacity was unavailable. */\n    public boolean offer(E value, long timeout, TimeUnit unit) throws InterruptedException {\n        Objects.requireNonNull(value); Objects.requireNonNull(unit);\n        if (timeout < 0) throw new IllegalArgumentException(\"negative timeout\");\n        long budget = unit.toNanos(timeout), start = System.nanoTime();\n        if (!lock.tryLock(budget, TimeUnit.NANOSECONDS)) return false;\n        try {\n            long left = budget - (System.nanoTime() - start);\n            while (!closed && count == elements.length) {\n                if (left <= 0) return false;\n                notFull.awaitNanos(left);\n                left = budget - (System.nanoTime() - start);\n            }\n            checkOpen(); enqueue(value); return true;\n        } finally { lock.unlock(); }\n    }\n    public void close() {\n        lock.lock();\n        try { closed = true; notEmpty.signalAll(); notFull.signalAll(); }\n        finally { lock.unlock(); }\n    }\n    public int size() {\n        lock.lock();\n        try { return count; } finally { lock.unlock(); }\n    }\n    private void checkOpen() {\n        if (closed) throw new IllegalStateException(\"queue closed\");\n    }\n    private void enqueue(E value) {\n        elements[tail] = value;\n        tail = (tail + 1) % elements.length; count++;\n        notEmpty.signal();\n    }\n    @SuppressWarnings(\"unchecked\")\n    private E dequeue() {\n        E value = (E) elements[head];\n        elements[head] = null;            // Do not retain removed objects.\n        head = (head + 1) % elements.length; count--;\n        notFull.signal();\n        return value;\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "环形数组演算"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量 3，初始 head=tail=count=0。放 A、B 后 tail=2、count=2；取 A 后 head=1、count=1，并把原数组位置清成 null；再放 C、D 后 tail 回绕到 1，count=3。此时 head==tail 但队列满，内容依次是 B、C、D，因此不能只凭两个下标判断空满。"
+    },
+    {
+      "type": "paragraph",
+      "text": "超时 offer 用 System.nanoTime 测经过时间，整个锁获取加条件等待共享一个预算。每次被唤醒后重新计算剩余值，不能每次重新给完整 timeout，否则反复唤醒可以把总等待无限拉长。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "成本与边界测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "入/出队的状态操作最坏 O(1)，数组存储 O(C)，等待时间不包含在算法计算复杂度里。close 和 size 也需要获取锁，不是无等待操作。普通操作使用非公平锁，不保证每个等待者严格 FIFO 获得机会。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试容量 1、非法容量、环绕、满队列 offer 超时、获取锁时中断、await 中断、关闭时同时存在生产者/消费者、排空后返回 null、关闭后写入失败、移除后引用清理。业务回调不能在队列锁里运行；消费者先 take，再在锁外调用慢服务，避免一次慢请求阻塞所有人。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个生产者结束时不能由第一个结束者直接 close。应由拥有整个流水线的协调者等待所有生产者结束再关闭，或维护生产者剩余计数，最后一个结束者关闭；若任何生产者失败，还要决定整体取消还是允许消费已有数据。这是任务生命周期问题，队列本身无法推测业务含义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "多线程 FIFO 如何说明线性化"
+    },
+    {
+      "type": "paragraph",
+      "text": "先约定不等数据的无界 FIFO 契约，再用一把锁保护哑元头、尾和计数，解释每次操作的线性化点。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "FIFO 的契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "只说“线程安全队列”不足以决定实现。这里先做无界 FIFO：offer 放入非 null 元素，poll 在当前为空时返回 null，不因“没有元素”而等待；size 返回持锁时的精确瞬时长度。多个生产者、消费者并发安全。此队列内部用了互斥锁，获取锁仍可能阻塞，所以“poll 不等数据”不能误叫作 lock-free 或 wait-free。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求容量、背压、超时、关闭，直接采用本章的阻塞队列的有界环形队列；如果是常见无界并发队列需求，优先评估 JDK ConcurrentLinkedQueue。不要没有需求就强行手写复杂 CAS 队列。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "从单线程链表到并发不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "使用一个哑元节点 head，真实首元素是 head.next，tail 指向末节点。空队列时 head==tail 且 head.next==null。入队必须把旧 tail.next 与 tail 的修改放在同一个锁保护范围；出队把首节点提升为新哑元，并清空其 item，避免长期保留已经消费的对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一锁保护 head、tail、count，所有消费者一次只能删除一个真实首节点，所以不会重复消费；所有生产者原子地接到当前尾部，不会覆盖另一生产者的 next。offer 的线性化点可选锁内接链完成时；poll 的线性化点是 head 向前推进时。非重叠操作满足真实先后，重叠操作则由锁内生效顺序决定。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L2883–2919（完整围栏，未执行）",
+      "value": "import java.util.Objects;\nimport java.util.concurrent.locks.ReentrantLock;\n\n/** Non-waiting-for-data FIFO. Lock acquisition can still block. */\npublic final class LockedFifo<E> {\n    private static final class Node<E> {\n        E item; Node<E> next;\n        Node(E item) { this.item = item; }\n    }\n    private final ReentrantLock lock = new ReentrantLock();\n    private Node<E> head = new Node<>(null); // Dummy node, never returned as an element.\n    private Node<E> tail = head;\n    private long count;\n    public void offer(E value) {\n        Objects.requireNonNull(value);\n        Node<E> node = new Node<>(value);\n        lock.lock();\n        try {\n            tail.next = node; tail = node; count++;\n        } finally { lock.unlock(); }\n    }\n    public E poll() {\n        lock.lock();\n        try {\n            Node<E> first = head.next;\n            if (first == null) return null;\n            E value = first.item;\n            head = first;              // New dummy; when empty head and tail are identical.\n            first.item = null; count--;\n            return value;\n        } finally { lock.unlock(); }\n    }\n    public long size() {\n        lock.lock();\n        try { return count; } finally { lock.unlock(); }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "哑元节点演算"
+    },
+    {
+      "type": "paragraph",
+      "text": "开始 H 为哑元，head=tail=H。offer A 后 H→A 且 tail=A；offer B 后 H→A→B。poll 返回 A，把 head 移到 A 并清空 A.item；下一次 poll 返回 B，head=tail=B，重新为空。再 offer C 连接在 B 后面，所以排空后仍可复用，不需要特殊重置旧哑元。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "成本与语义陷阱"
+    },
+    {
+      "type": "paragraph",
+      "text": "不计锁等待，offer/poll/size 都是 O(1)，N 个待消费元素占 O(N) 节点空间。无界只是没有人为容量上限，内存仍然有限；生产速度长期高于消费速度会持续增长并可能 OOM。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使刚刚看到 size()>0，poll 仍可能返回 null：两次调用之间，另一个消费者可能已经取走元素。因此 if(size()>0) poll() 不能作为一个原子判断，调用者必须处理 null。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本手写版本的 O(1) size 来自锁内计数；ConcurrentLinkedQueue 的 size 则不能被当作廉价、强一致的实时计数器。比较实现时要核对各自合同，不能把这个锁实现的性质推广到所有并发队列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "无锁追问需要真正解释 CAS 修改 head/tail、尾指针落后时的帮助推进、线性化点和内存回收。普通 AtomicReference 包装 head、tail 再做多步修改不自动得到正确队列；“用了 CAS”也不自动证明没有丢元素或满足 lock-free 进度保证。面试允许使用标准库时，说明采用成熟实现通常比现场写一个未经验证的 Michael–Scott 变体更可靠。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "测试与完整验证记录"
+    },
+    {
+      "type": "paragraph",
+      "text": "针对队列，测试空 poll、拒绝 null、顺序入队顺序出队、排空再入队、多个生产者唯一 ID 不丢不重、多消费者竞争、size 只作为快照使用。验证 FIFO 应按每个生产者内部已经发生的先后关系或记录线性化顺序，不能武断要求不同线程的数字 ID 全局升序。"
+    }
+  ]
+}

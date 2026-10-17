@@ -1,0 +1,554 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch08",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 历史版本 报表与物化读模型",
+  "title": "历史版本 报表与物化读模型",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s8728",
+      "order": 8728,
+      "question": "拉链表 SCD2 怎样保留历史并处理迟到、重复与并发更新？",
+      "shortAnswer": "为同一业务实体保存不重叠的半开有效区间，关旧版与开新版原子提交；迟到更正可能要求重建历史，系统时间与有效时间不能混淆。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第08章 历史版本 报表与物化读模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史表回答“某个时点是什么”，物化读模型回答“按某个口径怎样更快读取”；二者都必须保留可解释版本和重建依据，不能用最新一行覆盖所有历史。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：拉链表怎么设计？重复和迟到事件怎样处理？为什么不能平均各分片平均值？报表该实时算还是预聚合？全量回填会不会覆盖新数据？"
+        },
+        {
+          "type": "paragraph",
+          "text": "先区分三种时间：事件实际发生时间、业务生效时间和系统接收时间。再区分三种版本：实体更新序列、指标/schema 口径版本和发布代。时间相近不代表同一事务，同一发布代也不意味着所有实体拥有同一个更新序号。读取结果应能说明所用口径及覆盖水位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一次 SQL 的条件聚合仍读取权威明细；预聚合则保存长期派生状态，需要处理重复、修正、删除和重建。本章的增量模型保留完整 after-image 与历史版本内容，专门展示这些不同失败窗口。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "拉链表SCD2怎样保留历史，怎样处理时间边界、重复事件、迟到数据和并发更新？"
+        },
+        {
+          "type": "paragraph",
+          "text": "SCD2 为同一业务实体保存不重叠的有效时间区间，关旧版与开新版必须原子，迟到事件还可能要求重建历史区间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：拉链表SCD2怎样保留历史，怎样处理时间边界、重复事件、迟到数据和并发更新？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "模型与查询先定义清楚"
+        },
+        {
+          "type": "paragraph",
+          "text": "拉链表先回答一个具体问题：客户在时点 20 属于哪座城市？若历史为北京 [10,20)、上海 [20,30)、杭州 [30,∞)，答案只能是上海。因此有效区间取左闭右开，不能在两段都使用 BETWEEN 的闭区间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每次有效变化为同一业务键新增一版，保留 version 或代理主键、业务属性、valid_from、valid_to 和当前标记，当前版的 valid_to 为空。查当前值用 current_marker=1 或 valid_to IS NULL；查时点 t，用 valid_from<=t AND (valid_to>t OR valid_to IS NULL)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "事实表可以保存当时的维度代理键，也可以按业务键加事实发生时间做区间连接。只按业务键连接所有版本，会把一条事实放大成多行。若问题再变成“当时系统已经知道什么”，还要区分业务生效与系统接收时间，增加记录时间，形成双时间模型。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "关闭旧版和开启新版必须原子"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一个数据库事务内锁定该业务键的稳定守卫行/当前版，检查事件版本与生效时间，关闭旧当前版并插新当前版。所有写路径遵守同一协议；若业务键首次出现没有可锁当前行，可先建稳定主记录，不能靠SELECT空结果就在所有隔离级别获得互斥。"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例用UNIQUE(customer_id,current_marker)：当前标记1，历史标记NULL，利用允许多个NULL的唯一语义约束至多一个当前版本，并以CHECK限定标记与结束时间关系。CHECK需MySQL 8.0.16+才真正执行。该唯一约束不保证历史区间不重叠，后者仍由事务更新规则、重建校验或支持相应约束的数据库负责。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相同与迟到事件不能一律追加"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一事件ID/版本重放且内容相同应幂等返回；同版本内容冲突需告警；属性没有业务变化可只记录摄取位置，不必无意义地新开一版。迟到事件的生效时间落在历史区间中时，可能需要切分那段、重新连接边界并修正受影响事实，不能直接关闭当前版导致时间倒流。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除可关闭现有版本或新增is_deleted墓碑版本，取决于是否需要表达“此时已删除”；重现则新开区间。日期精度不足、同时刻多变化、时区转换、NULL业务属性、字段新增和批量回填都需约定。各业务键独立并行，单键按序处理；查询可建(business_key,valid_from)索引，历史量增长和区间JOIN是主要成本。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "练习边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "并发验证还需同一业务键两写者、首版创建竞态、断线未知提交、事实区间连接无多匹配与全量区间无重叠；只验证当前表记录数相同不能证明历史正确。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 history_model.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/history_model.sql",
+          "value": "-- Time is a logical integer in one fixed unit; intervals are [from,to).\nCREATE TABLE customer_history (\n  customer_id BIGINT NOT NULL, version BIGINT NOT NULL,\n  city VARCHAR(40) NOT NULL, valid_from BIGINT NOT NULL, valid_to BIGINT,\n  current_marker INTEGER,\n  PRIMARY KEY(customer_id,version),\n  UNIQUE(customer_id,current_marker),\n  CHECK(valid_to IS NULL OR valid_to>valid_from),\n  CHECK((valid_to IS NULL AND current_marker IS NOT NULL AND current_marker=1) OR\n        (valid_to IS NOT NULL AND current_marker IS NULL))\n);\n-- NULL historical markers permit several history rows, current_marker=1\n-- permits at most one open row per customer. All writers must still enforce\n-- nonoverlap and version order; the unique constraint alone does not do that.\n-- Point-in-time query, with t bound twice:\n-- SELECT * FROM customer_history\n-- WHERE customer_id=? AND valid_from<=? AND (valid_to>? OR valid_to IS NULL);\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "SCD2 写入应检查有效区间端点、重复输入、关旧版后开新版前失败、第二个当前版、倒序事件和非法标记。若采用只接收单调生效事件的简化写入协议，应显式拒绝迟到历史修正；DDL 本身不判断事件新旧，必须由持有实体守卫的写入者检查。若允许补历史，必须增加受同一实体守卫保护的区间拆分、重建与重叠校验，拒绝旧事件本身不等于支持时间旅行更正。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-73",
+          "label": "第三范式 3NF 判断与反范式设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s8788",
+      "order": 8788,
+      "question": "数据平台的特征数据用什么形式存，离线历史与在线最新值怎样保持一致？",
+      "shortAnswer": "特征数据应区分定义、离线历史和在线最新值，并用事件时间、可获得时间和版本保证时点查询不会偷看未来。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "数据平台的特征数据用什么形式存，离线历史与在线最新值怎样保持一致？"
+        },
+        {
+          "type": "paragraph",
+          "text": "特征数据应区分定义、离线历史和在线最新值，并用事件时间、可获得时间和版本保证时点查询不会偷看未来。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：数据平台的特征数据用什么形式存，离线历史与在线最新值怎样保持一致？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "元数据、历史值、在线值分层"
+        },
+        {
+          "type": "paragraph",
+          "text": "特征定义包含feature_name/version、实体键、类型、计算口径、来源、事件时间、更新时间、有效期和访问权限；定义元数据可放事务库/注册表，具体值按访问模式存。离线历史常用列式表/对象存储便于大扫描与回填，在线按entity_id+feature_view/version取最新值，常用低延迟KV或关系宽表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定稳定字段可用宽表减少在线多次查询；稀疏、快速演进属性可用受类型约束的map/JSON或长表，但需要处理类型校验、schema演进与索引成本。大向量需记录维度、模型版本和dtype；是否需要向量近邻索引取决于查询，不是名字叫feature就全部存向量库。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "时间正确性比只存最新值更重要"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史样本在事件时间t取特征时，只能使用当时可获得/生效的特征版本，不能取今天最新值造成未来信息泄漏。point-in-time join需按实体、事件时间与允许的新鲜度窗口匹配；event_time和processing_time区分，迟到数据是否回写历史也要明确定义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在线值物化从离线/流式变化投影而来，携带单实体版本/事件时间做条件更新，避免迟到老值覆盖新值；删除/撤权同样有版本和墓碑。双写两套数据库不自动一致，应有可靠事件、幂等消费、水位和对账，必要时按版本取权威状态。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "schema与验收示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如(entity_id,feature_version,event_time)标识一份历史值，另有available_at说明系统何时收到；在线键(entity_id,view_version)存values、as_of与expires_at。查询返回缺失/过期标记并按业务定义默认值，不把NULL、0、未知和未计算混为一类。"
+        },
+        {
+          "type": "paragraph",
+          "text": "检查离线/在线相同水位的值、时间边界、迟到/重复事件、同名字段类型变化、空实体、维度不匹配、TTL与权限收紧。监控新鲜度、缺失率、物化延迟与查询p99。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-rag-ingestion",
+          "label": "动态知识库怎样实现快照一致检索、时间旅行与不停服更新？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s8812",
+      "order": 8812,
+      "question": "大表报表预聚合怎样实现，怎样防止重复事件、迟到更新和分片汇总算错？",
+      "shortAnswer": "预聚合把明细读取成本移到写入维护，正确性依赖事实粒度、幂等版本、减旧加新、删除墓碑和可解释水位。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "大表报表预聚合怎样实现，怎样防止重复事件、迟到更新和分片汇总算错？"
+        },
+        {
+          "type": "paragraph",
+          "text": "预聚合把明细读取成本移到写入维护，正确性依赖事实粒度、幂等版本、减旧加新、删除墓碑和可解释水位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：大表报表预聚合怎样实现，怎样防止重复事件、迟到更新和分片汇总算错？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "确定粒度和可合并统计量"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如按UTC业务日×商家保存已完成订单数及金额分，每次查询从明细N行扫描变成较少分组G行读取，代价是写入维护、存储和新鲜度。需要固定事件时间还是处理时间、状态/退款/币种、维度版本和迟到窗口；不同币种不能直接求和，跨日与跨店更正需迁出旧组并迁入新组。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SUM/COUNT可相加；AVG必须保存sum与count再相除，不能平均各片平均值。精确COUNT DISTINCT不能相加片内去重数，需跨片集合/可合并去重结构或明确近似误差；分位数也不能直接平均。MIN/MAX删除当前极值时要重算/维护辅助结构，不能套SUM减法。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "事务内维护还是异步物化"
+        },
+        {
+          "type": "paragraph",
+          "text": "低写量且强读新鲜可在业务事务内同时改明细和汇总，但热门组争锁与死锁风险变高，按固定组键顺序更新并有界重试。异步通过事务outbox/CDC传已提交变更，物化任务要记录源位点、幂等事件与版本，发布报表水位说明截至何时，而不是单靠MQ“最终一致”口号。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确定事件给的是完整 after-image，还是一个增量。完整 after-image 表示这笔订单在该版本的全部状态，可以保存每订单最新版本、归组和金额，在同一事务里“减旧贡献、加新贡献、推进版本”。低版本到达时，不再改当前聚合；删除也留下墓碑版本，阻止旧值复活。"
+        },
+        {
+          "type": "paragraph",
+          "text": "去重之外，还要识别同版本矛盾：保存已观察过的每个 (id,version) 的完整内容指纹，哪怕它已被新版本取代，后来收到同号异内容也要报错。对于从未观察过的旧版本，只能登记本次内容并跳过聚合，不能凭空验证已经缺失的历史原值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果事件只有不带前值的 delta，跳过中间版本却可能漏算。此时必须连续回放或回源重建，不能把完整状态事件的“跳旧版”规则照搬到所有消息。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "回填、补数和查询时效"
+        },
+        {
+          "type": "paragraph",
+          "text": "首次用固定快照/水位全量聚合，再接上对应增量避免缝隙和双算；离线回算写新一代汇总表，核对行数/金额/抽样明细和水位后切换，旧代留恢复窗口。迟到数据按原业务日修正，时间分区被归档后也要有补数策略。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要比汇总更新的实时查询，可合并同一可证明水位之后的明细增量，明确不重叠区间；不能用“汇总截止大概一分钟前”加最近一分钟明细，否则钟差和乱序会重漏。若强一致查询是少数，可能直接走权威明细更简单。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整增量聚合模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "preaggregate.py 用 SQLite 实现这条本地投影路径：接收订单完整 after-image、version 与活跃/删除状态，在同一事务维护 seen_fact 历史版本账本、当前 fact 和日报 count/sum。已观察版本出现矛盾重放就拒绝；汇总写入失败，指纹登记也一起回滚。它是单租户教学模型，单事件金额限 ±10 亿最小单位，版本为正的有符号 64 位整数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "计算累计值前，先用 Python 整数求结果，再检查计数和金额是否仍在有符号 64 位范围内。超界就整笔回滚，避免 SQLite 将超界整数运算转成浮点；生产同样需要总量上界，或采用足够精度 DECIMAL。"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史账本随已观察版本数增长，清理要匹配允许的重放窗口。删了旧指纹，就不能仍承诺无限历史冲突检测；升级旧数据库也只能回填现存版本，无法从当前一行还原已丢失的历史内容。"
+        },
+        {
+          "type": "paragraph",
+          "text": "调用方必须提供专用、无活动事务的连接。本例采用 sqlite3 默认旧式事务控制，明确拒绝 Python 3.12 的 autocommit=True；进入 with 连接上下文前检查模式和事务状态，既防止显式 BEGIN 悬而未决，也避免失败时回滚调用方原有事务。接入 CDC、消息队列或 MySQL，还需另外实现连接器进度、重复投递与故障恢复，不能把本地算法视作完整接入。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 preaggregate.py。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "components/data/code/preaggregate.py",
+          "value": "\"\"\"SQLite reference: versioned complete after-images, not a CDC connector.\"\"\"\nimport sqlite3\n\ndef init(c):\n    c.executescript('''\n      CREATE TABLE fact(id TEXT PRIMARY KEY NOT NULL, version INTEGER NOT NULL,\n        day TEXT NOT NULL, shop TEXT NOT NULL, cents INTEGER NOT NULL,\n        active INTEGER NOT NULL CHECK(active IN (0,1)));\n      CREATE TABLE seen_fact(id TEXT NOT NULL, version INTEGER NOT NULL,\n        day TEXT NOT NULL, shop TEXT NOT NULL, cents INTEGER NOT NULL,\n        active INTEGER NOT NULL CHECK(active IN (0,1)), PRIMARY KEY(id,version));\n      CREATE TABLE daily(day TEXT NOT NULL, shop TEXT NOT NULL,\n        n INTEGER NOT NULL, cents INTEGER NOT NULL, PRIMARY KEY(day,shop));\n    ''')\n\ndef apply(c, key, version, day, shop, cents, active):\n    if type(version) is not int or not 1 <= version <= 2**63-1 or type(cents) is not int:\n        raise ValueError(\"bad version/amount\")\n    if abs(cents) > 10**9 or type(active) is not bool:\n        raise ValueError(\"reference amount domain or active flag\")\n    # This reference uses sqlite3 legacy transaction control and owns its transaction.\n    if getattr(c, \"autocommit\", None) is True or c.in_transaction:\n        raise ValueError(\"requires dedicated idle legacy-mode connection\")\n    new = (version, day, shop, cents, int(active))\n    with c:\n        c.execute(\"BEGIN IMMEDIATE\")\n        seen = c.execute(\"SELECT day,shop,cents,active FROM seen_fact WHERE id=? AND version=?\", (key, version)).fetchone()\n        if seen is not None:\n            if seen != new[1:]:\n                raise ValueError(\"same observed version has different content\")\n        else:\n            c.execute(\"INSERT INTO seen_fact VALUES(?,?,?,?,?,?)\", (key,) + new)\n        old = c.execute(\"SELECT version,day,shop,cents,active FROM fact WHERE id=?\", (key,)).fetchone()\n        if old and version <= old[0]:\n            if version == old[0] and old != new:\n                raise ValueError(\"same version has different content\")\n            return False\n        for row, sign in ((old, -1), (new, 1)):\n            if row and row[4]:\n                total = c.execute(\"SELECT n,cents FROM daily WHERE day=? AND shop=?\", row[1:3]).fetchone()\n                count, amount = total if total is not None else (0, 0)\n                if type(count) is not int or type(amount) is not int:\n                    raise ValueError(\"noninteger aggregate state\")\n                count += sign\n                amount += sign * row[3]\n                if not 0 <= count <= 2**63-1 or not -(2**63) <= amount <= 2**63-1:\n                    raise OverflowError(\"aggregate exceeds signed 64-bit domain\")\n                c.execute('''INSERT INTO daily VALUES(?,?,?,?)\n                  ON CONFLICT(day,shop) DO UPDATE SET n=excluded.n,cents=excluded.cents''',\n                  (row[1], row[2], count, amount))\n        c.execute(\"DELETE FROM daily WHERE n=0 AND cents=0\")\n        c.execute('''INSERT INTO fact VALUES(?,?,?,?,?,?) ON CONFLICT(id)\n          DO UPDATE SET version=excluded.version,day=excluded.day,shop=excluded.shop,\n          cents=excluded.cents,active=excluded.active''', (key,) + new)\n    return True\n\ndef reconcile(c):\n    actual = c.execute(\"SELECT day,shop,n,cents FROM daily ORDER BY day,shop\").fetchall()\n    expect = c.execute('''SELECT day,shop,COUNT(*),SUM(cents) FROM fact\n      WHERE active=1 GROUP BY day,shop ORDER BY day,shop''').fetchall()\n    return actual == expect\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "预聚合的恢复检查包括同版本重放、未知旧版本、已观察旧版本内容冲突、日期或商家变更、删除后旧事件重放，以及汇总更新失败时指纹与事实一起回滚。持久化后重开数据库应能从账本继续；每步以当前事实全量 GROUP BY 对照增量结果，可以区分投影算法错误与下游传输错误。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "预聚合的完整失败推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设订单 k 的 v1 属于日 D1、商家 A，金额 100；v2 改为日 D2、商家 B，金额 120。消费者先收到 v2 后收到 v1，如果事件是完整 after-image，权威最新状态应保持 v2，不能把 100 再加到 D1。若事件却是“金额加 20”，跳过前序增量就可能失去初始 100，这两种事件不能共用同一跳版本策略。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再设 v3 是删除。投影事务先减去 v2 的贡献，再保存 v3 墓碑；晚到的 v2 不能重建旧贡献。相同 (id,version) 如果出现不同内容，应隔离冲突；只保存最新版本不足以发现已经被 v3 取代的 v1 内容冲突，所以教学模型保留 seen_fact。对从未观察过的旧版本，只能记录本次内容，不能验证不存在的历史证据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "预聚合代码使用 Python 标准库 sqlite3，展示本地算法事务，不实现 MySQL CDC。总金额必须落在声明的累计范围内。迁移到 MySQL 应使用充分精度的 DECIMAL、实体守卫和事务内多组更新，统一锁顺序，并单独验证死锁重试；不要把 SQLite 的 BEGIN IMMEDIATE 机械改名后声称完成移植。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mq-operations",
+          "label": "广告与用户两流怎样按 servingId Join，并处理重复和迟到？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s8922",
+      "order": 8922,
+      "question": "广告报表系统怎样设计数据入库、查询读取和责任边界？",
+      "shortAnswer": "广告报表先固定指标、时间、权限和数据水位，再设计可恢复摄取与原子发布，不能让查询读到半个导入批次。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "广告报表系统怎样设计数据入库、查询读取和责任边界？"
+        },
+        {
+          "type": "paragraph",
+          "text": "广告报表先固定指标、时间、权限和数据水位，再设计可恢复摄取与原子发布，不能让查询读到半个导入批次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：广告报表系统怎样设计数据入库、查询读取和责任边界？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先定义报表口径和服务契约"
+        },
+        {
+          "type": "paragraph",
+          "text": "确认报表读者/租户、广告主/活动/日期维度、曝光/点击/消耗/转化等指标，按事件时间还是处理时间、业务时区/日界、币种、去重和撤销/迟到口径。CTR应为总点击除总曝光，不平均各行CTR；分母0按契约显示NULL/不适用。货币用最小单位整数或足够精度DECIMAL，并定义总和上界与舍入，不用浮点累加财务金额。"
+        },
+        {
+          "type": "paragraph",
+          "text": "将交易操作库、原始摄取层、校验/明细层、聚合服务层区分。小规模明确索引的MySQL足够；大范围多维聚合可评估分析型存储或预聚合，但不凭“报表”一词就上分库。新鲜度SLO、查询范围上限、并发/导出限制、数据授权和可追溯来源先定，再选组件。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "文件和增量两条入口都要能恢复"
+        },
+        {
+          "type": "paragraph",
+          "text": "若源是Excel，按行/事件流读取，验证列名/类型、日期/币种、必填/范围与业务键，将坏行及原因单独隔离。按batch_id+文件hash记录导入任务、Sheet与行号；限制在途批次/线程/连接，批量PreparedStatement写staging，单批事务控制日志和回滚体积。多Sheet只有互不依赖时才并行；不能无界任务队列或全文件进内存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "重传相同批次先核对hash和已提交进度，行身份唯一约束/版本防重复；发生部分失败按批次恢复或重建新代，不能先推进文件进度再落库。来自在线业务的增量优先捕获已提交outbox/CDC事件，记录主键、操作、schema版本和源位置；全量快照必须与增量水位衔接。摄取端还要保留能够继续重放的日志与位置。若以完整after-image增量维护汇总，保存每实体当前归组/贡献，新版本在同一事务减旧贡献加新贡献并推进源水位；以(entity,version)持久记录payload指纹可检测历史同版本矛盾，不能只对比最新版本。删除保留墓碑防旧事件复活。只有delta且缺前值时不能随意跳过中间版本，需连续回放或重建。这里的 DDL 演示固定批次全量发布。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "查询不能读一半导入的数据"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例report_batch从loading到validated再published。新报表批次写独立batch_id的完整数据，校验行数/金额/重复与源水位后在权威目录原子切换已发布批次；一次页面/导出固定batch_id及口径版本，避免第一页旧代、第二页新代。旧代保留可回滚窗口，切回要明确是否允许旧数据及如何处理新增增量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "report_schema.sql演示tenant、批次、广告主、日期半开区间过滤后按campaign和currency分组，读取公开投影前仍需授权和published状态校验。金额不同币种分组；时区应在入库时按口径得到business_day，不在每次WHERE列上套不匹配索引的转换函数。索引匹配主要过滤路径，宽表/大字段不要SELECT *。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "性能和一致性一起验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见报表按天预聚合count/sum，AVG保存分子分母，精确去重数和分位数不能简单相加；迟到/退款更正必须减旧贡献加新贡献。缓存key包含租户、权限/口径版本、参数和数据水位，返回as_of。大导出走异步任务、流式写和有界分页，不能让网页请求持有无限连接和长事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "查询超时先看扫描/返回行、连接放大、临时表/排序、统计信息、锁与IO；适当限流/资源隔离，避免分析扫描拖垮交易。验收重传、重复/乱序、删除更正、导入中读、跨租户、零分母、空日期、跨日/跨币种与故障恢复，而不只看有一张图。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 report_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/report_schema.sql",
+          "value": "-- Complete after-image staging; money stored in integer minor units.\nCREATE TABLE report_batch (\n tenant_id BIGINT NOT NULL, batch_id VARCHAR(100) NOT NULL, source_hash VARCHAR(64) NOT NULL,\n state VARCHAR(16) NOT NULL CHECK(state IN ('loading','validated','published','failed')),\n source_watermark VARCHAR(200) NOT NULL, PRIMARY KEY(tenant_id,batch_id)\n);\nCREATE TABLE ad_fact (\n tenant_id BIGINT NOT NULL, batch_id VARCHAR(100) NOT NULL, event_id VARCHAR(100) NOT NULL,\n event_version BIGINT NOT NULL CHECK(event_version>0), business_day CHAR(10) NOT NULL,\n advertiser_id BIGINT NOT NULL, campaign_id BIGINT NOT NULL, currency CHAR(3) NOT NULL,\n impressions BIGINT NOT NULL CHECK(impressions>=0), clicks BIGINT NOT NULL CHECK(clicks>=0),\n spend_minor BIGINT NOT NULL CHECK(spend_minor>=0), PRIMARY KEY(tenant_id,batch_id,event_id),\n FOREIGN KEY(tenant_id,batch_id) REFERENCES report_batch(tenant_id,batch_id)\n);\nCREATE INDEX ix_ad_report ON ad_fact(tenant_id,batch_id,advertiser_id,business_day,campaign_id);\n-- The service resolves one published immutable batch and binds it for the entire report.\nSELECT campaign_id,currency,SUM(impressions) AS impressions,SUM(clicks) AS clicks,\n SUM(spend_minor) AS spend_minor,\n CASE WHEN SUM(impressions)=0 THEN NULL ELSE 1.0*SUM(clicks)/SUM(impressions) END AS ctr\n FROM ad_fact WHERE tenant_id=? AND batch_id=? AND advertiser_id=?\n AND business_day>=? AND business_day<? GROUP BY campaign_id,currency\n ORDER BY campaign_id,currency;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mq-operations",
+          "label": "广告与用户两流怎样按 servingId Join，并处理重复和迟到？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s8981",
+      "order": 8981,
+      "question": "报表该实时还是离线，为什么暂不采用大数据方案，增长后如何演进？",
+      "shortAnswer": "实时与离线应分别描述数据新鲜度和查询方式，是否引入分析系统取决于扫描成本、并发、重算与运维预算。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "报表该实时还是离线，为什么暂不采用大数据方案，增长后如何演进？"
+        },
+        {
+          "type": "paragraph",
+          "text": "实时与离线应分别描述数据新鲜度和查询方式，是否引入分析系统取决于扫描成本、并发、重算与运维预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：报表该实时还是离线，为什么暂不采用大数据方案，增长后如何演进？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先说清“实时”和“离线”的两条轴"
+        },
+        {
+          "type": "paragraph",
+          "text": "实时查询是请求到来时计算，数据本身仍可能来自延迟CDC；离线预计算的表也可被实时接口快速读取。还可按秒/分钟增量聚合近实时更新，再按日重算校对。分别报告源事件时间、摄取/处理水位、刷新周期与查询延迟，不能把接口100ms就说数据毫秒新鲜。"
+        },
+        {
+          "type": "paragraph",
+          "text": "当天运营看板可能要秒级新鲜且允许后续更正，昨日结算可固定批次/截止水位重算以保证可追溯。查询库可用线上只读视图、副本、隔离报表库或OLAP；副本隔离负载却有延迟，多页/总额明细需固定批次或一致快照。入库、批次发布与查询读取必须围绕同一水位定义。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么可能先不用离线/大数据"
+        },
+        {
+          "type": "paragraph",
+          "text": "合理的条件化理由是现有数据量/保留期、主要查询过滤范围和并发仍能在预算内达到p95/p99与新鲜度目标，索引/预聚合/有界导出已够用；引入独立计算集群会增加摄取、调度、重复/迟到更正、双口径对账与运维成本。若要求秒级更新，纯每日离线不能满足，但流式/微批系统可以，不能说所有大数据只能离线。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果查询本身扫描跨月巨大明细、多维高基数聚合拖累交易，或者重算/留存成本已经失控，就不应以“架构简单”为由坚持单库。是否暂不采用应给真实容量模型、压测/生产观测和阈值；没有这些输入，无法确定当前业务究竟该采用实时、微批还是离线方案。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "增长时分阶段演进"
+        },
+        {
+          "type": "paragraph",
+          "text": "先记录日增行/字节、保留期、热工作集、扫描字节、聚合基数、CPU/IO、连接、慢查询分位和复制滞后。优化口径与查询、覆盖索引、限制时间范围、异步流式导出、按业务允许做预聚合与冷热保留；归档后历史查询仍需明确路由和一致口径。容量预警以测量的余量/增长预测触发，不凭固定一千万行必分库。"
+        },
+        {
+          "type": "paragraph",
+          "text": "随后把OLTP变更经可靠outbox/CDC复制到隔离分析层；全量快照衔接增量水位，源主键+版本处理重复/更正/删除。列式OLAP适合大范围少列聚合，批/流计算维护指标，原始明细保留以重放；结果附水位，不能用滞后的库存分析表裁决交易。"
+        },
+        {
+          "type": "paragraph",
+          "text": "上线新路径先双读影子比对同一数据水位的总额/明细/抽样，核对迟到、退款、时区、币种、去重口径。灰度路由并保留可回退旧路径，监控积压/重复/缺失和存储预算；扩成多分片后全局聚合/分页与热点仍有成本。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

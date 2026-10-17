@@ -1,0 +1,616 @@
+{
+  "entries": [
+    {
+      "id": "scenario-distributed-scheduler",
+      "number": "场景 5",
+      "title": "分布式任务调度平台设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "本批场景题",
+      "scenario": true,
+      "idea": "控制面保存任务定义，调度面只负责“到期触发”，执行面通过队列领取任务；用分片/租约横向扩容，用幂等、重试、超时与对账保证至少一次语义下的正确性。",
+      "description": "设计一个分布式任务调度平台，支持一次性任务、延时任务和 Cron 周期任务。需要在多调度节点、多执行 Worker、机器故障与网络重试下保证任务不会永久丢失，并控制重复执行。",
+      "metrics": "百万级任务；秒级或更细调度精度；水平扩展；故障自动恢复",
+      "components": "Job DB / Scheduler Shards / Time Wheel or Delay Queue / MQ / Worker / Lease / Retry & DLQ",
+      "requirements": [
+        "支持创建、修改、暂停、删除任务以及查询执行历史。",
+        "调度节点和 Worker 都可横向扩容，任一节点宕机后任务能够被其他节点接管。",
+        "网络重试不可避免，因此平台至少按“至少一次触发 + 业务幂等”设计；如果业务要求恰好一次，要说明成本和边界。",
+        "支持超时、重试、退避、最大重试次数、死信队列和人工补偿。"
+      ],
+      "architecture": [
+        "任务定义落库：job_id、schedule、next_fire_time、payload、状态、版本号。数据库是控制面的事实来源。",
+        "Scheduler 按 job_id/hash 或时间桶分片，每个分片由一个持租约的 owner 负责扫描近未来任务；可用时间轮、DelayQueue 或 Redis ZSet 维护短期到期集合。",
+        "到期时不直接执行，而是生成 execution_id 并写 MQ；Worker 消费后执行，成功写 execution record，失败按策略重试。",
+        "用租约/心跳处理 Worker 宕机：任务进入 RUNNING 后带 lease_expire_at，超过租约未完成即可重新投递。",
+        "后台 Reconciler 周期扫描“已到期但未触发”“执行中但租约过期”等异常状态，做补偿和对账。"
+      ],
+      "dataFlow": [
+        "用户创建任务 → Job DB 计算 next_fire_time。",
+        "对应 Scheduler shard 把近未来任务加载到内存时间轮/延时队列。",
+        "时间到 → 原子更新触发状态并发布 execution_id 到 MQ。",
+        "Worker 领取 → 获取 lease → 执行业务 → ACK/记录结果。",
+        "周期任务成功触发后计算下一次 next_fire_time；失败任务按退避策略重试，最终进入 DLQ。"
+      ],
+      "keyPoints": [
+        "不要依赖“只投递一次”。真正可落地的常见语义是 at-least-once + execution_id 幂等。",
+        "扫描数据库全表找到期任务不可扩展；要按时间范围索引、分片并只加载近未来窗口。",
+        "调度节点不能靠永久分布式锁占有任务；租约能在节点失联后自动过期并转移所有权。",
+        "修改 Cron 时要用 version/乐观锁，避免旧调度器把过期版本再次触发。"
+      ],
+      "followups": [
+        "如何避免 Scheduler 写 DB 成功但 MQ 发布失败造成任务丢失？可以用 Outbox/事务消息。",
+        "一个任务执行 2 小时，lease 多长合适？如何续租？",
+        "百万 Cron 在同一秒触发形成尖峰，如何打散或限流？",
+        "跨机房部署时是保证全局唯一触发，还是允许双活后由幂等层去重？"
+      ],
+      "code": "// 调度节点\nscanNearFutureJobs(shard):\n    jobs = db.query(next_fire_time <= now + window)\n    timingWheel.add(jobs)\n\nonDue(job):\n    executionId = uuid()\n    if db.tryCreateExecution(job.id, executionId, job.version):\n        outbox.append(executionId, job.payload)\n\n// Worker\nonMessage(execution):\n    if !idempotency.tryStart(execution.id):\n        return\n\n    lease = acquireLease(execution.id)\n    try:\n        runBusiness(execution.payload)\n        markSuccess(execution.id)\n    catch e:\n        scheduleRetryOrDLQ(execution.id)\n    finally:\n        releaseLease(lease)\n\n// 对账器周期修复漏触发、租约过期和发布失败状态。",
+      "capacityPlan": [
+        "估算任务总量、到期触发 TPS、平均执行时长和重试率；Scheduler 只负责触发，Worker 容量按执行吞吐单独扩容。",
+        "近未来任务只加载一个时间窗口，避免每个调度节点扫描全表。"
+      ],
+      "consistency": [
+        "通常采用 at-least-once + execution_id 幂等；把“绝不重复执行”当默认目标会极大提高复杂度且很多外部副作用无法真正做到。",
+        "任务定义更新用 version/乐观锁；触发记录与消息发布用 Outbox/事务消息保证可恢复。"
+      ],
+      "failureModes": [
+        "Scheduler owner 用 lease 而不是永久锁，节点失联后租约到期自动接管。",
+        "Worker 超时/宕机由 execution lease + Reconciler 重新投递；超过重试上限进入 DLQ。"
+      ],
+      "observability": [
+        "监控 schedule lag（计划时间到实际触发）、执行成功率、重试/DLQ、lease 过期、队列积压和分片倾斜。"
+      ],
+      "interviewAnswer": "我会把控制面、触发面和执行面拆开：DB 保存任务定义，Scheduler 只扫描近未来窗口并生成 execution_id，MQ 把执行解耦给 Worker。系统按至少一次设计，用幂等、租约、重试、DLQ 和对账保证故障恢复。",
+      "tradeoffs": [
+        "调度中心只负责触发、Worker 负责执行，扩展性更好；但异步执行意味着必须处理至少一次投递、幂等和任务状态机。",
+        "强依赖数据库轮询实现简单但高规模下扫描压力大；时间轮/延迟队列吞吐高，却要额外解决持久化和故障恢复。"
+      ],
+      "security": [
+        "多租户任务要 RBAC、资源配额、secret 隔离；Worker 执行任意任务时尤其要沙箱/权限最小化和审计。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-rpc-framework",
+      "number": "场景 14",
+      "title": "如何设计一个 RPC 框架",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "RPC 的核心链路是服务注册发现 → 客户端代理 → 序列化/协议 → 连接池与负载均衡 → 服务端路由与线程模型 → 超时重试/熔断 → 可观测性；设计时先把调用语义和失败语义讲清楚。",
+      "description": "从零设计一个类似 Dubbo/gRPC 的 RPC 框架，要求支持服务注册发现、负载均衡、连接管理、编解码、超时重试、服务端调用以及治理能力。",
+      "metrics": "低延迟；高吞吐；可扩展协议；故障隔离；可观测",
+      "components": "Proxy / Codec / Protocol / Transport / Connection Pool / Registry / Load Balancer / Server Dispatcher",
+      "requirements": [
+        "调用方可以像调用本地接口一样调用远程服务，但必须保留 timeout/deadline 语义。",
+        "协议包含 requestId、service、method、deadline、headers 与 body，并支持协议版本。",
+        "连接应复用并支持多路复用或连接池，不能每次请求新建 TCP。",
+        "服务发现变化、负载均衡、重试、熔断、限流和 tracing 都要有扩展点。"
+      ],
+      "architecture": [
+        "客户端动态代理把方法调用编码为 Request；从 Registry/本地服务目录选择实例。",
+        "Load Balancer 根据权重、健康度、EWMA latency 或一致性哈希选择节点。",
+        "Transport 复用长连接，使用 requestId 关联异步响应；Codec 支持 Protobuf/JSON 等可插拔序列化。",
+        "服务端 EventLoop 解码后把业务调用投递到隔离业务线程池，通过 MethodInvoker 反射/生成代码执行。",
+        "治理层统一处理 deadline、重试、熔断、鉴权、Tracing、Metrics。"
+      ],
+      "dataFlow": [
+        "Proxy → Request Encode → LB → Connection。",
+        "Server Decode → Dispatcher → Service Method。",
+        "Response Encode → Client Future/Promise 完成。"
+      ],
+      "keyPoints": [
+        "“网络超时”不等于“服务端没执行”，因此重试必须考虑幂等性与 requestId 去重。",
+        "客户端 deadline 应透传到服务端，排队超过 deadline 的请求没必要继续执行。",
+        "注册中心不应处于每次 RPC 热路径，本地应缓存服务列表并通过 watch 增量更新。",
+        "协议兼容性很重要：字段编号/可选字段/版本协商决定能否平滑升级。"
+      ],
+      "followups": [
+        "如何做连接多路复用并解决 head-of-line blocking？",
+        "服务发现瞬间推送大量节点变更，客户端如何避免惊群重连？",
+        "如何做跨语言？",
+        "如果服务端已经执行成功但响应丢了，客户端重试怎么避免重复副作用？"
+      ],
+      "code": "clientProxy.invoke(method, args):\n    deadline = context.deadline\n    endpoint = loadBalancer.pick(serviceDirectory)\n    req = encode(requestId, method, args, deadline)\n    return connectionPool(endpoint).send(req).await(deadline)\n\nserver.onFrame(frame):\n    req = decode(frame)\n    if req.deadlineExpired(): reject()\n    workerPool.submit(() -> {\n        result = dispatcher.invoke(req.service, req.method, req.args)\n        sendResponse(req.requestId, result)\n    })",
+      "capacityPlan": [
+        "估算单连接并发流、平均 payload、QPS、P99 和最大在途请求数；连接池/HTTP2 stream 上限与服务端 worker 队列必须匹配。",
+        "序列化和压缩只有在 payload 足够大时才值得，需用 benchmark 决定。"
+      ],
+      "consistency": [
+        "RPC 本身只能保证传输语义，业务“恰好一次”通常做不到；请求超时可能已经在服务端执行。重试必须结合幂等方法或 requestId/fencing。",
+        "deadline 应从入口向下游传播，避免上游已超时而下游继续浪费资源。"
+      ],
+      "failureModes": [
+        "客户端做连接健康检查、有限重试、熔断和 outlier ejection；服务发现缓存本地并处理注册中心暂时不可用。",
+        "服务端队列满要拒绝/背压，不能无限排队；连接断开后在途请求按幂等语义决定是否重试。"
+      ],
+      "observability": [
+        "每 method 监控 QPS、P99、status code、retry、deadline exceeded、连接数、队列时长，并贯穿 traceId。"
+      ],
+      "interviewAnswer": "我会从调用链路拆：代理→协议/序列化→服务发现/LB→长连接传输→服务端 dispatcher，再横切 deadline、重试、熔断、鉴权和 tracing。重点主动讲清“超时≠没执行”，所以 retry 必须和幂等语义绑定。",
+      "tradeoffs": [
+        "自研协议/序列化可极致优化，但兼容性和生态成本高；标准 HTTP/2 + Protobuf 更通用。",
+        "透明重试改善短故障成功率，却可能放大流量并重复副作用；必须受 deadline、幂等和 retry budget 约束。"
+      ],
+      "security": [
+        "mTLS/服务身份、method 级授权、deadline、消息大小上限、防重放/审计应成为框架治理能力，而不只是“能调用”。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-message-queue",
+      "number": "场景 23",
+      "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+      "idea": "Kafka 高吞吐但功能简单；RocketMQ 功能全（事务、延迟、顺序）；RabbitMQ 生态好但性能一般。日志用 Kafka，业务用 RocketMQ，简单场景用 RabbitMQ。",
+      "description": "设计消息队列：高吞吐、低延迟、高可用、支持事务、支持延迟消息、支持顺序消息。",
+      "metrics": "QPS 100w+；延迟 < 10ms；消息不丢失",
+      "components": "Kafka / RocketMQ / RabbitMQ / ZooKeeper / NameServer",
+      "requirements": [
+        "高吞吐 QPS 100w+",
+        "低延迟 < 10ms",
+        "消息不丢失",
+        "支持事务消息",
+        "支持延迟消息",
+        "支持顺序消息"
+      ],
+      "capacityPlan": [
+        "QPS = 业务峰值 × 消息倍数",
+        "存储 = 消息大小 × 保留时间 × 副本数",
+        "带宽 = QPS × 消息大小"
+      ],
+      "architecture": [
+        "Kafka：分区 + 副本 + ISR",
+        "RocketMQ：NameServer + Broker + CommitLog + ConsumeQueue",
+        "RabbitMQ：Exchange + Queue + Binding",
+        "事务消息：RocketMQ 半消息 + 回查",
+        "延迟消息：RocketMQ 18 个级别，Kafka 用时间轮"
+      ],
+      "dataFlow": [
+        "Producer → Broker → CommitLog → ConsumeQueue → Consumer",
+        "事务消息：Producer → 半消息 → 本地事务 → 提交/回滚",
+        "延迟消息：Producer → Broker → 延迟队列 → 定时投递"
+      ],
+      "consistency": [
+        "消息不丢失：Producer 确认 + Broker 持久化 + Consumer ACK",
+        "顺序消息：同一 key 发到同一分区"
+      ],
+      "failureModes": [
+        "Broker 宕机 → 副本切换",
+        "Consumer 宕机 → 消息重试进死信",
+        "Producer 失败 → 重试 + 本地消息表"
+      ],
+      "keyPoints": [
+        "Kafka 高吞吐来自顺序写 + 零拷贝 + 批量",
+        "RocketMQ 事务消息用半消息 + 回查",
+        "RabbitMQ Exchange 支持 direct/topic/fanout/headers",
+        "消息不丢失需要三环节配合",
+        "顺序消息需要同一 key 到同一分区"
+      ],
+      "observability": [
+        "监控 QPS、延迟、堆积量、消费成功率",
+        "告警：堆积量 > 100w"
+      ],
+      "tradeoffs": [
+        "Kafka vs RocketMQ：Kafka 高吞吐但功能简单",
+        "RabbitMQ vs Kafka：RabbitMQ 生态好但性能一般"
+      ],
+      "security": [
+        "消息 TLS 加密传输",
+        "敏感消息加密存储",
+        "Topic 级别权限"
+      ],
+      "followups": [
+        "Kafka 为什么快？",
+        "RocketMQ 事务消息怎么实现？",
+        "RabbitMQ 和 Kafka 性能差异？",
+        "如何保证消息不丢失？",
+        "如何实现顺序消息？"
+      ],
+      "code": "// RocketMQ 事务消息核心代码\nTransactionMQProducer producer = new TransactionMQProducer(\"group\");\nproducer.setTransactionListener(new TransactionListener() {\n    public LocalTransactionState executeLocalTransaction(Message msg, Object arg) {\n        boolean success = doLocalTransaction(msg);\n        return success ? LocalTransactionState.COMMIT_MESSAGE : LocalTransactionState.ROLLBACK_MESSAGE;\n    }\n    public LocalTransactionState checkLocalTransaction(MessageExt msg) {\n        return checkStatus(msg) ? LocalTransactionState.COMMIT_MESSAGE : LocalTransactionState.ROLLBACK_MESSAGE;\n    }\n});\nproducer.sendMessageInTransaction(new Message(topic, body.getBytes()), null);",
+      "interviewAnswer": "我会先明确 MQ 的核心是削峰、解耦、异步。然后给出选型：日志用 Kafka（高吞吐），业务用 RocketMQ（功能全），简单场景用 RabbitMQ（生态好）。最后讨论消息不丢失的三个环节和顺序消息的实现。关键要能说出 Kafka 的高吞吐原理和 RocketMQ 的事务消息机制。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "消息队列",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-log-system",
+      "number": "场景 26",
+      "title": "海量日志收集与分析系统设计",
+      "idea": "采集用 Filebeat/Fluentd；传输用 Kafka；存储用 Elasticsearch/ClickHouse；分析用 Kibana/Grafana。难点在高吞吐、实时性和成本控制。",
+      "description": "设计海量日志收集与分析系统：支持 1000+ 应用的日志采集、实时分析、告警。要求高吞吐（100w EPS）、低延迟（秒级）、高可用。",
+      "metrics": "EPS 100w+；延迟 < 5s；存储成本可控",
+      "components": "Filebeat / Kafka / Elasticsearch / ClickHouse / Kibana / Grafana",
+      "requirements": [
+        "高吞吐：EPS 100w+",
+        "低延迟：秒级可查",
+        "高可用：不丢日志",
+        "实时分析：支持聚合、过滤、告警",
+        "成本控制：存储成本可控"
+      ],
+      "capacityPlan": [
+        "EPS = 应用数 × 单应用日志量",
+        "存储 = EPS × 单条大小 × 保留时间",
+        "带宽 = EPS × 单条大小"
+      ],
+      "architecture": [
+        "采集：Filebeat 轻量级，Fluentd 功能全",
+        "传输：Kafka 高吞吐，削峰填谷",
+        "存储：Elasticsearch 全文检索，ClickHouse 分析查询，HDFS 冷存储",
+        "分析：Kibana 可视化，Grafana 监控告警",
+        "告警：ElastAlert / Prometheus Alertmanager"
+      ],
+      "dataFlow": [
+        "应用 → Filebeat → Kafka → Logstash → Elasticsearch → Kibana",
+        "应用 → Filebeat → Kafka → Flink → ClickHouse → Grafana",
+        "Kafka → 冷数据 → HDFS → 离线分析"
+      ],
+      "consistency": [
+        "日志不丢失：Filebeat ACK + Kafka 副本",
+        "索引按天分割，便于过期删除"
+      ],
+      "failureModes": [
+        "Kafka 宕机 → 副本切换",
+        "ES 宕机 → 主从切换",
+        "Filebeat 宕机 → 重启续传"
+      ],
+      "keyPoints": [
+        "Filebeat 比 Logstash 轻量，适合边缘节点",
+        "Kafka 的分区数决定并发度",
+        "ES 的索引按天分割，便于过期删除",
+        "ClickHouse 的物化视图可以预聚合",
+        "日志采样可以减少 90% 的存储成本"
+      ],
+      "observability": [
+        "监控 EPS、延迟、存储使用率",
+        "告警：存储使用率 > 80%"
+      ],
+      "tradeoffs": [
+        "Filebeat vs Fluentd：Filebeat 轻量但功能简单",
+        "ES vs ClickHouse：ES 全文检索强，ClickHouse 分析强"
+      ],
+      "security": [
+        "日志加密传输（TLS）",
+        "敏感日志脱敏"
+      ],
+      "followups": [
+        "Filebeat 和 Fluentd 的区别？",
+        "Kafka 的分区数怎么选？",
+        "ES 的索引怎么设计？",
+        "ClickHouse 和 ES 的性能差异？",
+        "如何设计日志告警？"
+      ],
+      "code": "// Filebeat 配置示例\nfilebeat.inputs:\n- type: log\n  paths:\n    - /var/log/app/*.log\n  fields:\n    app: myapp\n    env: prod\noutput.kafka:\n  hosts: [\"kafka1:9092\"]\n  topic: app-logs",
+      "interviewAnswer": "我会先明确日志系统的核心是采集、传输、存储、分析。然后给出方案：Filebeat 采集，Kafka 传输，ES 全文检索，ClickHouse 分析查询。最后讨论成本控制和告警设计。关键要能说出 Filebeat 和 Logstash 的区别，以及 ES 索引的设计。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "日志系统",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-gray-release",
+      "number": "场景 33",
+      "title": "灰度发布设计（Canary / Blue-Green）",
+      "idea": "灰度发布核心是流量染色、分批发布、快速回滚。Canary 用少量用户验证，Blue-Green 用两套环境切换。难点在流量控制和数据兼容。",
+      "description": "设计灰度发布系统：支持 Canary、Blue-Green、Feature Flag。要求流量控制精确、数据兼容、快速回滚。",
+      "metrics": "发布成功率 > 99%；回滚时间 < 1min",
+      "components": "Canary / Blue-Green / Feature Flag / Gateway / Service Mesh",
+      "requirements": [
+        "流量染色：按用户/设备/地域分批",
+        "分批发布：5% → 20% → 50% → 100%",
+        "快速回滚：一键回滚",
+        "数据兼容：新旧版本数据兼容"
+      ],
+      "capacityPlan": [
+        "流量 = 业务峰值 × 灰度比例",
+        "存储 = 配置数 × 配置大小"
+      ],
+      "architecture": [
+        "Canary：少量用户验证",
+        "Blue-Green：两套环境切换",
+        "Feature Flag：功能开关",
+        "Gateway：流量染色",
+        "Service Mesh：Istio 流量管理"
+      ],
+      "dataFlow": [
+        "用户 → Gateway → 流量染色 → 灰度版本",
+        "用户 → Gateway → 流量染色 → 正式版本"
+      ],
+      "consistency": [
+        "数据兼容：新旧版本数据兼容"
+      ],
+      "failureModes": [
+        "灰度版本异常 → 快速回滚",
+        "数据不兼容 → 数据迁移"
+      ],
+      "keyPoints": [
+        "Canary 用少量用户验证，Blue-Green 用两套环境切换",
+        "Feature Flag 可以动态开关功能",
+        "流量染色可以按用户/设备/地域",
+        "数据兼容是关键"
+      ],
+      "observability": [
+        "监控发布成功率、回滚率",
+        "告警：发布成功率 < 99%"
+      ],
+      "tradeoffs": [
+        "Canary vs Blue-Green：Canary 节省资源但风险高，Blue-Green 资源多但风险低"
+      ],
+      "security": [
+        "灰度版本要做安全测试"
+      ],
+      "followups": [
+        "Canary 和 Blue-Green 的区别？",
+        "如何设计流量染色？",
+        "如何设计数据兼容？",
+        "如何设计快速回滚？",
+        "如何设计 Feature Flag？"
+      ],
+      "code": "// 灰度发布核心代码\npublic String getVersion(String userId) {\n    int hash = userId.hashCode() % 100;\n    if (hash < 5) return \"gray\";\n    return \"stable\";\n}",
+      "interviewAnswer": "我会先明确灰度发布的核心是流量染色、分批发布、快速回滚。然后给出方案：Canary 用少量用户验证，Blue-Green 用两套环境切换，Feature Flag 动态开关功能。最后讨论数据兼容和快速回滚。关键要能说出流量染色的方法和数据兼容的设计。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "灰度发布",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-service-prewarm",
+      "number": "场景 6",
+      "title": "服务启动时的数据预热设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题补充 · 服务预热",
+      "scenario": true,
+      "idea": "把“进程可启动”和“缓存已完全预热”解耦：小而关键的数据同步加载，大体量数据后台并行分批预热；使用版本/快照保证一致性，用超时、限速、重试和降级保证预热失败不拖垮启动。",
+      "description": "设计一个场景：服务启动时需要把一批数据预热到内存中。需要同时考虑启动速度、预热期间的数据一致性、数据库或远程服务不可用时的容错，以及多实例同时启动造成的惊群。",
+      "metrics": "启动时间可控；预热命中率可观测；数据版本明确；预热失败不阻塞服务恢复",
+      "components": "Snapshot/DB / Warmup Loader / Local Cache / Version or CDC / Readiness Probe / Metrics",
+      "requirements": [
+        "先把数据分成“没有它就不能正确服务的强依赖数据”和“只是提升命中率的优化数据”，两类不能用同一种启动策略。",
+        "启动过程中不能因为一次全量扫描把数据库打满，尤其是发布或故障恢复时多个实例会同时重启。",
+        "预热快照必须有版本边界，避免加载到一半时数据变化导致内存中出现前后两个版本的混合状态。",
+        "远端数据源超时、部分分片失败或预热任务自身异常时，服务需要有明确的 readiness 与降级策略。"
+      ],
+      "architecture": [
+        "关键小数据在启动主流程中同步加载，并设置严格超时；只有加载成功后才允许实例进入 Ready。",
+        "大数据使用后台线程池分片加载，限制并发 QPS 和批大小；实例可以先以低容量/回源模式对外，再逐步提高流量权重。",
+        "一致性采用“快照版本 + 增量追赶”：先读取一个 snapshotVersion，对应数据全量加载完成后，再消费该版本之后的 CDC/变更日志，最后原子切换 activeCache。",
+        "为避免重启惊群，实例随机抖动启动、通过协调器领取不同预热分片，或复用 Redis/对象存储中的共享快照，而不是每个实例都扫主库。",
+        "缓存采用双缓冲：newCache 构建完成并通过校验后一次性替换引用；不要边加载边覆盖正在服务的旧缓存。"
+      ],
+      "dataFlow": [
+        "进程启动 → 读取配置与上一次可用快照元数据。",
+        "同步加载最小必需数据 → 成功后进入 WARMING；失败则保持 NotReady 或按业务策略使用旧快照。",
+        "后台按分片并行加载 snapshotVersion 对应数据，同时记录成功率、耗时和缺失分片。",
+        "全量完成 → 消费 snapshotVersion 之后的增量变更 → 校验数量/校验和。",
+        "原子切换 activeCache → readiness 提升 → 流量权重逐步恢复到 100%。"
+      ],
+      "keyPoints": [
+        "启动速度：不要“全量预热完成后才监听端口”。更实用的是分层预热 + readiness/流量权重控制。",
+        "一致性：直接一页页扫实时库可能读到不同时间点的数据。更稳的是 MVCC 快照、带版本导出、binlog/CDC offset 或业务版本号。",
+        "容错：预热失败时优先保留上一版本可用缓存；如果旧数据不可接受，则实例保持 NotReady，而不是带着半份缓存接全量流量。",
+        "防惊群：发布 100 个实例时，如果每个实例都在启动阶段做相同全量 SQL，会把数据库当成压测工具。必须有抖动、限流、共享快照或分片领取。",
+        "内存安全：新旧两份缓存并存会瞬间翻倍内存，应提前做容量预算；超大缓存可按 segment 滚动替换。"
+      ],
+      "followups": [
+        "如果预热需要 10 分钟，但发布要求 1 分钟内扩容成功，怎样设计？",
+        "数据库没有一致性快照能力时，如何用 version/updated_at + CDC 尽量构造一致视图？",
+        "某个分片预热失败，是全局回滚还是允许局部回源？怎样定义 readiness？",
+        "多个机房如何预热？共享一个中心快照还是每个机房独立构建？"
+      ],
+      "code": "// 伪代码：双缓冲 + 快照版本\nstart():\n    old = loadLastGoodSnapshotIfAny()\n    activeCache.set(old)\n\n    critical = loadCriticalData(timeout = 3s)\n    if critical.failed():\n        markNotReady()\n        return\n\n    markWarming()\n    async warmup()\n\nwarmup():\n    version = source.createSnapshot()\n    next = new Cache()\n\n    parallelFor(partitions, maxConcurrency = 4):\n        rows = source.loadPartition(partition, version)\n        next.putAll(rows)\n\n    replayChanges(from = version, into = next)\n    validate(next)\n\n    activeCache.set(next)   // 原子切换\n    markReady()",
+      "capacityPlan": [
+        "先估算缓存总字节、对象膨胀系数、加载 QPS、数据库可承受预热带宽和目标 Ready 时间；双缓冲意味着峰值内存可能接近 2×。",
+        "发布/扩容时按实例批次、随机抖动和全局 warmup QPS budget 控制，不能让 100 个实例同时扫主库。"
+      ],
+      "consistency": [
+        "关键是建立 snapshotVersion：全量读取同一快照，再从该版本后的 CDC/变更日志追平，最后原子切 activeCache。",
+        "如果数据源不能提供快照，就用 version/updated_at + 二次扫描/CDC 尽量收敛，并明确只能做到哪一级一致性。"
+      ],
+      "failureModes": [
+        "关键数据加载失败则保持 NotReady；优化型缓存失败可继续以旧快照/受控回源服务。",
+        "新缓存校验失败不能覆盖 last-known-good；恢复后可重试单个分片，而不是每次全部重来。"
+      ],
+      "observability": [
+        "监控 warmup duration、loaded/expected records、snapshot lag、失败分片、回源 QPS、峰值内存与 Ready 时间。"
+      ],
+      "interviewAnswer": "我会把预热分层：小而关键的数据同步加载，大数据后台分片限速；一致性用快照版本+CDC 追平，构建新缓存后原子切换。失败时保留 last-known-good 或保持 NotReady，同时用抖动/共享快照避免多实例重启惊群。",
+      "tradeoffs": [
+        "全量同步预热后再 Ready 一致性最直观，但启动慢、扩容慢；分阶段预热能快速接流量，但必须定义未命中 fallback 和最大陈旧时间。",
+        "双缓冲快照能原子切换且读路径简单，但切换期会同时占两份内存，需要容量预算。"
+      ],
+      "security": [
+        "快照/配置来源必须认证并校验 checksum/version；不要把敏感缓存通过调试接口暴露，预热日志也避免输出密钥/PII。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-external-dependency-isolation",
+      "number": "场景 7",
+      "title": "外部合作方服务不可用时如何避免拖垮自己",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "所有外部依赖都按“不可靠”设计：连接/读取超时、有限重试、熔断、隔离舱、并发上限和降级；把同步调用的故障域限制在一个小资源池里，避免线程、连接和队列被耗尽。",
+      "description": "系统需要调用第三方/合作方接口。对方可能高延迟、超时、返回错误甚至长时间不可用，要求保证自身核心服务不会因为外部依赖故障产生级联雪崩。",
+      "metrics": "核心接口延迟受控；故障域隔离；可降级；恢复后自动探测",
+      "components": "Timeout / Retry Budget / Circuit Breaker / Bulkhead / Rate Limit / Fallback / Metrics",
+      "requirements": [
+        "所有远程调用必须有连接超时、请求超时和总体 deadline，不能无限等待。",
+        "重试只用于幂等且可能瞬时恢复的错误，并采用指数退避 + jitter；重试次数属于统一 retry budget。",
+        "不同外部合作方使用独立线程池、连接池与并发信号量，避免一家挂掉耗尽全局资源。",
+        "非核心能力要准备缓存值、默认值、异步补偿或直接关闭功能等降级路径。"
+      ],
+      "architecture": [
+        "入口请求先计算剩余 deadline，再调用 Dependency Client。",
+        "Client 内部有 Bulkhead 并发上限；请求超时/错误率超过阈值后 Circuit Breaker 打开，快速失败。",
+        "熔断期间少量 half-open 探针测试恢复，不让所有请求同时回流。",
+        "成功结果可按业务语义缓存；需要可靠送达的写请求使用本地 Outbox/MQ 异步重试，而不是在线请求无限重试。"
+      ],
+      "dataFlow": [
+        "请求进入 → 判断功能是否可降级。",
+        "获取外部依赖并发许可 → 带 deadline 调用。",
+        "可重试错误在预算内退避重试；不可重试错误立即失败。",
+        "连续失败达到阈值 → 熔断 → 后续请求走 fallback。",
+        "恢复探针成功 → 逐步关闭熔断并限制恢复流量。"
+      ],
+      "keyPoints": [
+        "超时是第一道防线，没有超时，熔断器都可能等不到失败统计。",
+        "重试会放大下游压力，三个服务每层重试 3 次可能形成指数级调用风暴，所以通常只在一层重试。",
+        "Bulkhead 的目标是资源隔离：外部 A 卡死时，不能占满外部 B 和核心请求共用的线程池。",
+        "降级必须区分读写：读可以返回缓存/旧值，写要考虑是否允许异步接受、拒绝或补偿。"
+      ],
+      "followups": [
+        "如何设置超时时间？根据固定值还是下游 P99/P999 与上游 deadline 动态计算？",
+        "如果第三方接口不是幂等的，网络超时后你不知道对方是否已经执行，如何重试？",
+        "熔断器部署在每个实例本地还是全局共享？",
+        "依赖恢复后如何防止瞬间流量把对方再次打挂？"
+      ],
+      "code": "callPartner(req, deadline):\n    if breaker.isOpen():\n        return fallback(req)\n\n    if !bulkhead.tryAcquire():\n        return degradeOrReject()\n\n    try:\n        return retryWithBackoff(\n            maxAttempts = 2,\n            onlyIdempotent = true,\n            deadline = deadline,\n            action = () -> partner.call(req)\n        )\n    catch e:\n        breaker.recordFailure(e)\n        return fallback(req)\n    finally:\n        bulkhead.release()",
+      "capacityPlan": [
+        "为每个第三方依赖设置独立连接池、并发上限和 timeout budget；上限应小于本服务线程/连接总资源，避免一个依赖吃光全部容量。",
+        "重试会放大流量，容量估算必须把 retry rate 算进去，并设置 retry budget。"
+      ],
+      "consistency": [
+        "对有副作用的第三方调用使用幂等键/requestId；超时只表示“响应未知”，不代表对方一定没执行。",
+        "需要补偿的业务保存调用状态机，后续查询/对账确认最终状态。"
+      ],
+      "failureModes": [
+        "短超时 + 有界重试 + 指数退避抖动 + 熔断 + bulkhead；熔断后按业务选择缓存、默认值、异步补偿或失败返回。",
+        "第三方恢复时 half-open 少量探测，避免所有实例同时放量。"
+      ],
+      "observability": [
+        "按合作方维度监控成功率、P95/P99、timeout、breaker state、重试倍数和线程/连接池占用。"
+      ],
+      "interviewAnswer": "核心是隔离和快速失败：第三方必须有独立资源池、严格 timeout、有限重试和熔断，不能占满本服务线程。带副作用调用用幂等键，超时进入状态机/对账；恢复时 half-open 渐进放量。",
+      "tradeoffs": [
+        "短 timeout/少重试可保护自己但可能降低第三方成功率；更长等待能提高单请求成功率，却会吞噬线程和延迟预算。",
+        "Fail-open 提高可用性但可能违反业务/安全规则；Fail-close 更安全但会放大依赖故障影响。"
+      ],
+      "security": [
+        "第三方凭据放 secret manager，出站域名白名单、TLS 校验、响应大小限制；重试不能绕过权限和风控。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    },
+    {
+      "id": "scenario-lan-distribute-500gb",
+      "number": "场景 3",
+      "title": "30 台同局域网设备最快下载 500GB 应用",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "本批场景题",
+      "scenario": true,
+      "idea": "把 500GB 文件切块，外网只拉尽量少的副本；30 台设备在局域网内用 P2P/分块交换扩散数据，让 WAN 不成为 30 倍重复下载瓶颈。",
+      "description": "服务端有约 500GB 的应用，30 台设备处于同一局域网并共享一台路由器，目标是让 30 台尽快全部下载完成。核心不是让 30 台各自从公网重复拉 500GB，而是区分 WAN 和 LAN 两种带宽，尽量让每个字节只跨 WAN 一次，再在局域网内扩散。",
+      "metrics": "总完成时间最短；WAN 传输接近 500GB；可断点续传与校验",
+      "components": "Chunk Server / Piece Hash / P2P Swarm / LAN Discovery / Local Cache",
+      "requirements": [
+        "先测公网下行总带宽、局域网交换能力和每台设备网卡速度，明确真正瓶颈。",
+        "所有设备最终必须得到完整 500GB，允许边下载边给其他设备上传。",
+        "设备可能中途掉线，因此需要分块校验、断点续传和重新调度。"
+      ],
+      "architecture": [
+        "把大文件切成固定大小块（例如 4~64MB），每块带 content hash；服务端暴露 manifest 和 chunk 下载接口。",
+        "30 台设备组成局域网 swarm。初始阶段让不同设备从公网优先下载不同 chunk，而不是 30 台都下载相同前缀。",
+        "设备拿到并校验一个 chunk 后立刻成为该 chunk 的局域网 seed；其他设备优先从 LAN peer 获取缺失块。",
+        "调度使用 rarest-first/带宽感知策略，避免某些块只有一个副本；若 LAN 支持高效组播，也可让本地分发节点对公共块做 multicast。",
+        "完成后按 manifest 校验整文件；失败块仅重传对应 chunk。"
+      ],
+      "dataFlow": [
+        "设备先拉 manifest，发现同网段 peers。",
+        "Coordinator 把不同 chunk 的首份公网下载分散给不同设备。",
+        "每个 chunk 下载完成并校验后，立即通过 LAN 向其他设备提供。",
+        "所有设备持续从“公网 + 多个局域网 peer”并行拉缺失块，直到块集合完整。"
+      ],
+      "keyPoints": [
+        "理论下界受最慢资源约束。如果公网出口最慢，理想情况是整个局域网只需跨 WAN 传约 500GB，而不是 30×500GB。",
+        "如果只让一台机器完整下完再分发，会浪费“下载期间”的 LAN 上传能力；分块 swarm 可以边下边传。",
+        "P2P 会增加路由器/交换机内部流量，要限制每台 peer 的并发上传，避免 LAN 自己被打满导致抖动。",
+        "安全上要校验 chunk hash / 签名，不能信任任意 peer 提供的数据。"
+      ],
+      "followups": [
+        "如果公网带宽 10Gbps、LAN 只有 1Gbps，方案还应该以 P2P 为主吗？",
+        "如果 30 台设备的磁盘写入速度差异很大，怎么做带宽调度？",
+        "如果其中 10 台设备不断掉线，怎样避免某些 chunk 只存在于掉线节点？",
+        "如果同一办公网有多个房间/交换机，是否需要分层 seed 或本地缓存节点？"
+      ],
+      "code": "manifest = fetchManifest()\npeers = discoverLanPeers()\n\nwhile missingChunks not empty:\n    chunk = chooseRarestMissingChunk()\n    source = chooseBestSource(chunk, peers, origin)\n    data = source.download(chunk)\n\n    if hash(data) == manifest.hash(chunk):\n        store(chunk, data)\n        advertiseToPeers(chunk)\n    else:\n        retryFromAnotherSource(chunk)\n\nassembleAndVerifyAllChunks()",
+      "capacityPlan": [
+        "先测 WAN、LAN、单机磁盘和网卡吞吐，完成时间下界由最慢瓶颈决定。理想情况下公网只需要传约 500GB 一份，而不是 30 份。",
+        "chunk 大小要平衡调度开销与并行度；LAN 并发上传要限速，避免交换机/无线 AP 被打满。"
+      ],
+      "consistency": [
+        "manifest 固定文件版本，每个 chunk 带 cryptographic hash；只有校验通过的块才能向其他 peer 宣告。",
+        "最终按整体 hash/签名校验，防止版本混用和恶意 peer 注入。"
+      ],
+      "failureModes": [
+        "peer 离线后调度器重新选择 source；稀有块要保证多个副本，避免最后卡在单一失联 peer。",
+        "支持断点续传，origin 作为最终兜底源；P2P 失效时退化为中心分发。"
+      ],
+      "observability": [
+        "监控 WAN/LAN 吞吐、chunk availability、peer 上传/下载率、校验失败率和整体完成时间分布。"
+      ],
+      "interviewAnswer": "我会做 BitTorrent 类似的分块 swarm：不同设备先从公网拿不同 chunk，拿到后立即在局域网互传；manifest+hash 保证正确，rarest-first 防止尾部缺块。这样 WAN 只承担接近一份文件的数据量，LAN 承担扩散。",
+      "tradeoffs": [
+        "中心服务器逐台下发最简单，但 WAN 重复流量巨大；P2P 省公网带宽，却要处理 peer 发现、块可用性与可信校验。",
+        "块越小并行度越高但元数据/调度开销越大；块越大开销小但慢节点与尾部效应更明显。"
+      ],
+      "security": [
+        "manifest 与安装包使用签名/hash；peer 只接受授权设备，避免局域网中的恶意节点投毒。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "平台与基础设施"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3295",
+  "entryId": "bg-kafka-1",
+  "expectedOriginalHash": "fcf7ea2ed6dcfb360c7a4f666dbebdd47b9ea0f575bd5bf0cfaa70426d6218f0",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.19 消息队列负载均衡与集群设计有哪些不同层次"
+    },
+    {
+      "type": "paragraph",
+      "text": "MQ负载均衡需要分别解释消息分片位置、Broker副本职责和消费者工作归属，不能用一种选主机制包办。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：MQ怎样负载均衡；Broker集群和消费组有什么区别；消费者扩容为何可能没效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "具体对照Kafka 4.0普通消费组、RabbitMQ 4.3及RocketMQ 5.x，生产路由、Broker复制和消费分配是不同层次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生产负载、消费负载和副本布局要分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "生产路由决定一条消息进哪个partition/queue：无顺序要求可轮询/批量粘性等均摊，按实体有序则对key稳定映射；消息数均匀未必字节/处理成本均匀，热key可能集中。客户端获取版本化路由后直达leader或经代理，连接到某Broker不等于消息一定存它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费分配决定谁处理：Kafka常规组内partition单owner、不同组各有独立进度；Rabbit同一队列可竞争消费者，prefetch/单活动消费者影响分发；RocketMQ需按客户端版本和message/queue-based负载均衡语义说明。副本与leader布局再把磁盘、CPU、复制带宽分到节点，单纯加消费者不会迁移Broker日志。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "控制面和数据面"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制面维护集群成员、topic/queue定义、分区/副本/leader、策略/配额/ACL和版本，安全选主与成员变更需要可解释一致性；数据面处理发布、复制、存储、拉取/推送与确认。客户端缓存元数据并在过期/NOT_LEADER时刷新，不必每条消息都同步查全局控制器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务日志和控制面共识，要分开解释。数据按分区或队列追加存储，包含段文件、索引、恢复 checkpoint，以及保留、裁剪或压缩策略；副本需要跨故障域，并验证确认点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Rabbit Quorum 每队列用 Raft 复制，普通 classic 不会自动复制。Kafka KRaft 管 controller 元数据共识，业务 partition 的 leader/follower、ISR/acks 则是另一套复制机制，不能说每条消息都经过 controller Raft 日志。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "再平衡要保护进度与业务顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费者离开/加入或订阅变化会重分配，停止旧派发、提交安全完成前缀、给新分配epoch；旧线程可能仍向DB提交，需要inbox/资源fencing。Kafka分区数增加可能改变key映射，需旧积压清理/版本化路由或明确迁移，不然同订单落不同分区并行打乱顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Broker副本扩缩先复制追平/核验再切leader或下线旧副本，限迁移流量避免抢占正常服务；不要一次替换所有多数成员。控制面短故障是否影响已有读写取决于产品和变更需求，不能普遍说“注册中心挂了全部消息立刻停止”或“永远没影响”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "容量与运维"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量估算含输入字节率×保留期×副本数及索引/压缩余量，网络还有复制与消费fan-out；消费者处理μ需覆盖λ并留追积压余量。资源配额按租户/topic隔离，消息大小、连接、unacked、线程/池均有界，超额策略明确拒绝/积压/死信，不能静默丢核心业务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "监控leader倾斜、分区热点、复制落后/多数不可达、磁盘余量、publish confirm延迟、consumer lag/最老年龄、重试/死信和最终业务差异。测试扩节点、热key、旧元数据、重平衡慢任务、复制中断与保留期边界；容量和故障合同要结合选定MQ产品、配置和真实压测验收。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "1"
+}

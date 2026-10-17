@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-own-rag-ingestion-q-own-rag-chunk-intervals",
+  "entryId": "own-rag-ingestion",
+  "expectedOriginalHash": "77e855e19f6068d344e6bda12800c7dade5d5482e6dd2621ecc9d3948fb0770b",
+  "title": "算法练习补充：父子索引与Markdown分块",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "父子索引与Markdown分块"
+    },
+    {
+      "type": "paragraph",
+      "text": "父子索引要解决的是：适合“找到答案”的小片段，不一定足够“把答案讲完整”。先用较小子块匹配问题，减少无关内容稀释；命中后通过 parentID 回取需要的较大上下文，补上定义、适用条件、表头和前后论证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这样把检索粒度与回答上下文粒度分开，但它只是需要验证的策略，不能预先保证比所有分块方案都好。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "父子索引：小块召回、带版本回取上下文"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "RAG 为什么引入 Parent-Child Retriever，如何串起切分、召回与重排？",
+        "BM25 与向量检索怎样融合权重？命中多个子块后如何回取父块？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "父块保留较完整的语义区段，不必是整篇论文；子块提供较细的检索粒度。chunk 长度与扩展预算应由分词器、上下文窗口和评测确定；本章 RankFusion 可用于合并各路候选。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "离线先解析标题层级、段落、表格/公式、页码与来源，去掉重复页眉页脚；按结构形成父块，再在父块内切子块，必要时有限重叠。每个child保存tenant、documentID、version、parentID、childID、offset及ACL字段，父块正文进入文档存储，子块进入向量和/或全文索引。表格不能切丢列名，代码不能随意切断语法；不要把脱离上下文的图片/OCR噪声当正常文字。"
+    },
+    {
+      "type": "paragraph",
+      "text": "混合召回先统一候选身份，再谈怎么合分。鉴权后，BM25 和向量检索分别产生有界子块候选，用 (childID,version) 去重并集，再用 RRF 或校准分数融合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能把两个原始分数机械地七三相加：BM25 通常不是 0..1，余弦也不是同一量纲。加权 RRF 使用各路 rank；若采用分数融合，应在保留集校准后学习或调优权重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个 child 命中同一个 parent 时，可以取最高子块分数，也可以用限定的聚合规则排序。直接相加会偏爱子块多的长文，究竟哪种规则合适仍要评估。"
+    },
+    {
+      "type": "paragraph",
+      "text": "随后按parentID批量回取，核对同版本与当前权限、去重父块、保留命中offset做定位，再进入token预算控制。可先对子块rerank再扩展父块，计算较省但模型未看到全部上下文；也可对父块/局部窗口rerank，语义更完整但受模型长度限制。应说明选哪一种以及超长时怎么截断，不能无声丢掉关键限定词。"
+    },
+    {
+      "type": "paragraph",
+      "text": "父子索引更新时，要保证一次查询能解释“自己读的是哪一版”。父块更新会牵动 child 映射、embedding、全文索引和缓存，这些都要一起失效或替换；新旧并存时按版本隔离，父块删除后不能继续返回孤儿 child。"
+    },
+    {
+      "type": "paragraph",
+      "text": "权限也要检查两次：召回时检查，回取上下文时再检查。特别是同一个父块包含不同权限区域时，不能因为某个子块可见，就把整块受限文字一并交给模型。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "“退款仅限未拆封且7天内”若分散在两个子块，命中“7天”时父块可补齐“未拆封”的条件；直接回答所有7天内可退就是错误。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个命中 child 属于同一 parent 时只回取一个父块。若父块过长，按命中位置扩展相邻窗口并保留限制，比无限扩大上下文更可控。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "构建成本与解析文本总量、embedding计算及索引实现有关，不能只报O(n)。在线增加O(C)映射/去重及P个父块批量读取（C候选、P不同父块），网络与正文长度另计；全文/向量检索、rerank成本应分别trace。父块回取不等于给每个父块重新全量embedding。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "缺少完整文档结构、小文档或问答对本身已完整时，简单分块可能更稳；父子索引增加映射、存储、一致性与噪声成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "评测以证据可回答性、证据覆盖与最终引用支持度为准，比较固定块、结构块、父子块，固定查询集与相同预算，避免只比较召回条数。介绍时应把切分、召回和重排作为相互影响的整体说明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Markdown结构分块与父子聚合：精确处理1000/400/200"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先按Markdown标题层级建父模块，再将模块正文按token预算拆成可检索子chunk，保存document/version/parent/headingPath及原文区间。召回子块后按预算扩展父模块或相邻区间，并按原文坐标合并重叠。1000个token、size400且不重叠时是[0,400)、[400,800)、[800,1000)；尾200可原样保留，也可向前补成[600,1000)，后者与前块重叠200，不是凭空填充。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Markdown 是否先按标题形成父模块，再切子 chunk，召回后补父模块？",
+        "块与前文的聚合怎样做，相邻块是否重叠？1000 token 按 400 切分，尾部 200 是保留还是向前补到 400？",
+        "怎样统计 chunk 大小分布与向前补齐触发率？分块和聚合的大小分别如何确定？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "结构分块要回答父子层级、长正文、块大小、短尾处理与召回后的聚合。1000 token、块大小 400 的例子用于演示边界，不是通用推荐参数。TokenChunkPlan 接收已经解析和分词的父模块 token 数，只实现区间规划与去重，不包含 Markdown 解析器或模型 tokenizer。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "“分块后与前面聚合”也有不同发生阶段：索引前可把同父下的小段按顺序合包；召回后可把命中chunk与前后邻段扩成证据区间；父文档召回可用child找到parent再取父正文。保存坐标后对同document/version/parent的区间按start排序，对相交或相邻段取并集，只输出原文一次。不同父模块/不同版本不得仅因数字坐标重合就合并；如果选择整父扩展，同父多次命中只取一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实际分块大小与聚合预算应根据模型 token 限制、文档结构和固定任务集比较确定。题目未提供参数时，应先说明选择方法，不能把 400/800 等示例数字当成通用最优值；chunk 大小分布与补齐触发率需要从真实数据统计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代码输入是已完成结构解析和分词的父模块 token 数，输出精确半开 token 区间，不按字符切 Markdown。回取正文需要 token 到字节或字符边界的映射，并避免切开有效 Unicode 字节序列；调整文本边界后还须重新核算长度与重叠。区间规划与 tokenizer、Markdown 解析器是独立的接口层。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "总长 1000、块长 400、无重叠时尾块为 200。保留尾块：0..400、400..800、800..1000；补尾：0..400、400..800、600..1000。第二、三块聚合并集是400..1000，共600独有token，不是简单拼接800token。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可枚举小范围 N、容量 C、overlap 为 0、半容量或 C−1，以及两种补尾策略，检查完整覆盖、每个 core 恰归属一次、块长度上限、坐标单调前进和父模块边界。合并全部子块的并集应恰为 [0,N)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "区间自测覆盖 1000/400/200 的两种尾块策略、重叠并集、非相邻段、不同行文档版本与非法 overlap。实际 Markdown 解析、tokenizer 边界和召回质量仍需各自的测试。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "分块参数、尾块触发比例和检索效果属于需要实际数据测量的项目事实。面试可以解释如何测量和选择，不应编造个人配置或统计结果。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ],
+  "questionId": "q-own-rag-chunk-intervals",
+  "targetOrigin": "authored"
+}

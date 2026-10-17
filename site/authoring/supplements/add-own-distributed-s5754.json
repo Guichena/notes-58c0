@@ -1,0 +1,542 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s5754",
+  "entryId": "scenario-seckill-system",
+  "expectedOriginalHash": "2949ed1fa441bc1563ab745930bc60c00919057637d071672a2f26f5bae98d55",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.3 秒杀场景怎样用领域模型表达资格、预留与并发安全"
+    },
+    {
+      "type": "paragraph",
+      "text": "秒杀领域模型应明确资格、库存预留、订单和支付状态，由聚合内条件提交维护不超卖和一次生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：秒杀怎样做领域建模；资格和库存是不是一回事；聚合对象能否独自解决多实例并发。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下采用可解释的库存与资格模型，不预设项目已上线或已采用某种DDD框架。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先列不变量与领域对象"
+    },
+    {
+      "type": "paragraph",
+      "text": "活动定义开始/结束、参与规则和每人购买额度；资格记录约束(activityId,userId)等真实范围；库存账记录总量、可用、预留、已消费；订单记录WAIT_PAY、PAID、CLOSED；预留记录HELD、CONSUMED、RELEASED；支付事实记录渠道实际扣款，不能被订单关闭抹掉。对象边界从这些规则推出，而不是把数据库表逐个改名Aggregate。"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存守恒要跟业务范围一起说。在固定库存、无补货的教学模型中，available+held+consumed=initial，三者都非负；一次有效资格最多关联一个允许的订单，同一 HELD 预留只能确认或释放一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一旦加入补货、售后或多件购买，不变量就需要调整，并增加对应业务事件，不能把所有库存增加都解释成取消。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "命令与状态转换"
+    },
+    {
+      "type": "paragraph",
+      "text": "ReserveForSeckill接收稳定requestId，校验活动/资格，在权威事务里条件扣可用、增预留、创建订单及outbox；库存不足或资格冲突是业务拒绝，事务异常是失败待核实，两者不同。ConfirmPayment核验真实支付事实后把合法预留转CONSUMED；ExpireOrder仅对过期WAIT_PAY/HELD转CLOSED/RELEASED。"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付与取消竞争通过相同锁顺序/条件版本裁决，0行状态更新不能仍执行返库存。若订单已释放但支付晚到，按事先定义的渠道关单/退款方案处理，不复活可能已卖给别人的资源。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "热点和服务拆分"
+    },
+    {
+      "type": "paragraph",
+      "text": "入口Redis可做近似预筛，但最终库存和资格由权威约束裁决；局部Lua原子不覆盖跨库订单。单SKU高热点可以按预分配库存桶减少争抢，必须维护桶额度总和不超过权威可售量，并处理回收/调拨的原子性，不能给每个分片各放一份全部库存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "领域模型能讲清规则，但不会替你解决跨库提交。如果订单和库存分属不同服务或库，可能需要预留服务以及 Saga/TCC，明确中间状态、超时与补偿。"
+    },
+    {
+      "type": "paragraph",
+      "text": "建模也不会自动处理分布式锁、事务和重复消息。若为了维护同一个强不变量，频繁做跨库协调，应该反过来检查数据归属是不是拆错了。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "项目难点如何真实回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "技术难点可讨论热SKU串行瓶颈、资格与预留同事务、超时未知、支付关单竞态和恢复对账；必须配真实代码/压测/故障证据才能说是个人经历。验收重复下单、1000并发争最后一件、支付取消交错、消息重复、数据库提交后崩溃与Redis切换，校验业务守恒而不只看接口成功数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "状态模型可检验明确规则，不能把模型枚举当真实数据库隔离/高并发压测。TaskLeaseStore演示的是检查点本地事务，不能替代秒杀库存与资格状态机的并发和恢复验证。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.4 拼团库存如何强约束扣减，瞬时高并发怎样限流降级"
+    },
+    {
+      "type": "paragraph",
+      "text": "拼团应先在权威存储原子预留库存，成团支付后确认，失败或到期释放一次；入口限流保护数据库而不承担防超卖职责。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：拼团怎样防超卖；瞬时流量怎样降级；未成团库存怎样释放。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "以单SKU权威库存事务和拼团预留为设计边界，成团、支付、过期及释放分别建状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "库存事实和团状态分别建模"
+    },
+    {
+      "type": "paragraph",
+      "text": "SKU维护可售available、预留reserved、已确认sold等业务量，库存总量等式按补货/退货规则定义；参与订单有reservationId和幂等操作ID，团有人数/截止时间/成团终态。入团可以先预留，成团后确认，超时未成团释放；支付发生在哪一步、退款规则必须由业务明确，不能默认所有拼团都同一流程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心库存扣减在权威数据库事务内用带条件的UPDATE，只有available≥qty才转入reserved，并与唯一预留记录/订单写入同提交。检查影响行数而不是先查库存再无条件减。相同请求唯一约束阻止重复占用，确认/释放用预留当前状态条件转换，只有一次合法转换改变库存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "强一致是可证明的提交顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "若同SKU由单个权威事务所有者处理，可通过行锁/条件更新串行化冲突，提交前不返回最终预留成功。数据库复制/主从切换必须与所声称的持久性及一致性匹配；异步副本丢已确认写时，仅应用代码正确仍不能保证强语义。服务分区时宁可拒绝权威写，也不能两边各拿一份库存独立售卖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存分桶可以分散热点，但会带来额度碎片。预先把有限库存分给多个分片，只有每份额度的发放、归还和 epoch 都严格唯一，才守得住总量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "某分片没额度时，可能拒绝请求，其他分片却还有库存。若要求任何时刻都能看到精确全局剩余并售尽，就需要更强协调，不能把缓存异步扣减叫作全局线性一致。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "团人数、支付与释放竞态"
+    },
+    {
+      "type": "paragraph",
+      "text": "团人数上限也用权威条件状态转换/唯一成员约束，关团与新加入必须按同一顺序裁决。成团确认与未成团释放不能同时成功，关联团版本与预留版本，重复通知不重复确认/归还。跨服务时用可恢复状态机/TCC预留或明确最终一致收敛，不能用一个Redis锁包住多个数据库就宣称原子。"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付成功但关团/关单已经赢得状态转换时，查询支付事实后走退款或业务允许的补偿，不能既发货又释放给别人。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "突发容量保护与降级"
+    },
+    {
+      "type": "paragraph",
+      "text": "入口按用户、设备风险、团/SKU和全局资源限流，去重同操作，多级缓存只承接读与资格预筛；令牌桶允许有限突发，有界队列限等待，库存权威层还需并发限制。持久排队返回“处理中”而非已占库存，后续可查询结果。售罄标记降低无效流量，但补货/释放后应按版本失效，避免永久误判。"
+    },
+    {
+      "type": "paragraph",
+      "text": "降级推荐、排行榜和非关键展示，保住库存/订单/支付事实；数据库不可用时不以缓存数伪造成功。测试100并发争10件、重复入团、团到期与加入并发、支付/关团竞态、重试乱序、主从切换和配额回收，核对available/reserved/sold及团人数，不把QPS数字替代正确性。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.5 多人借同一本书怎样防超借，用户翻倍如何扩容"
+    },
+    {
+      "type": "paragraph",
+      "text": "借书要在权威存储原子占用可借副本并生成借阅记录，扩容优先分散不同书目和查询，不能复制热门书的库存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：多人借同一本书怎么防超借；用户翻倍怎样扩容；同一副本怎样防重复归还。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "ISBN书目和唯一实体副本是不同对象；借阅权限、到期和归还状态必须明确。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先把资源不变量建对"
+    },
+    {
+      "type": "paragraph",
+      "text": "书目表描述ISBN/标题，副本表copyId描述可借、借出、损坏等状态；借阅记录loanId关联userId/copyId、借出/到期/归还时间。核心约束是同一实体副本同时最多一个有效借阅，续借改变到期而不是新占一份，归还只有有效借阅向RETURNED一次转换才能释放副本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果按同ISBN总库存处理，还需权威available>=qty条件扣减和最终副本分配；两个用户不能都拿到同一copyId，即使全书目总数还非负。预约、续借、损坏和跨馆调拨分别有业务规则，不能用一次普通库存扣减涵盖所有生命周期。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据库裁决比先查再改可靠"
+    },
+    {
+      "type": "paragraph",
+      "text": "同库事务先登记唯一requestId，再条件UPDATE copy SET state=BORROWED,loan_id=? WHERE copy_id=? AND state=AVAILABLE；受影响必须为1，再插借阅记录及outbox，任一步失败回滚。另一并发事务更新0行就换副本/返回不可借，不能仍插一条成功借阅。也可SELECT FOR UPDATE锁副本后在锁内重读，或version乐观更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "归还要释放这次借阅占用的副本，不能只看“有人还了这本书”。用 loanId+状态/version 条件转换，防止旧借阅的迟到归还，释放了新借阅。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接口重试沿用请求 ID，重复归还不能再加可用数。Redis 锁可以减少重复竞争，但租约过期或切换时，仍得靠数据库不变量；单 JVM synchronized 也管不到其他实例。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "增长需要分清读热点与写竞争"
+    },
+    {
+      "type": "paragraph",
+      "text": "先测书目查询、库存展示、借阅写和通知的比例及p99/锁等待。书目搜索/元数据可以缓存、读副本/搜索索引和分页，库存展示允许的陈旧度明确，但最终借阅必须访问权威写路径。应用无状态水平扩容、连接池有界，不能扩20个应用后把数据库连接和同copy行竞争也放大20倍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同馆/书目副本可按归属分片；同副本强约束仍串行，不能通过多库各保存一份AVAILABLE来扩写。热点书目排队/预约可改善公平，持续到达超过可借资源时扩服务器也不增加书的数量。消息发送outbox和消费幂等复用Outbox与Inbox；借阅/归还事务短小，不持锁等外部通知。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "测两人争最后副本、同用户重复请求、借阅提交响应丢失、重复归还、旧loan归还与新借阅交错、缓存说有但实际无、扩容时路由切换。核对副本状态与有效loan逐条对应，不只比available总数；根据实测瓶颈逐步扩容，不能从用户翻倍直接断言数据库也要分库。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.6 铁路票务高并发怎样防超卖，未给优先级时如何设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "票务用区间占用表达座位可售范围，权威事务原子预留，再处理支付确认和过期释放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：铁路票务怎样防超卖；同一座位不同区间如何复用；是否一定需要长途优先。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里要求票务不超卖，没有额外规定长途优先、竞争人数或库存数，调度规则应单独选择。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先明确票的资源单位与公平规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通商品用SKU数量约束；铁路座位还受车次、乘车日期、席别、座位和站间区间约束。同座A到B与B到C可复用，A到C与B到D有重叠不能同时确认。库存展示可缓存，但最终预留要验证一个座位在所有所需区间都可用，单纯每个区间各剩一张也未必存在同一可贯通座位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目只问不超卖，就别自行加上长途优先。先到先得、排队序号、抽签、长途配额、有限批次优先，都是产品规则，可以先按合法排队序号受理，并讲清公平性约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能直接搬用另一道题的长途排序，更不能承诺未来长途请求能抢走已经确认的票。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "入口保护与权威一次预留"
+    },
+    {
+      "type": "paragraph",
+      "text": "入口按活动/车次/用户限流并使用有界排队，受理成功只表示责任已持久记录，用户按requestId查终态。不同车次/日期可分片，热门一趟列车的冲突资源仍由同一权威裁决，扩更多HTTP实例不降低同座竞争。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在数据库事务或可证明的单写者提交中，登记唯一请求、检查/占用同座所有所需区间、创建预留/订单及outbox；冲突整体失败，不能先占半程后发现后半程无座却不回滚。Redis只预筛时数据库条件是最后防线；若选Redis为唯一权威，必须另证明复制切换、双写与恢复，不靠Lua一词带过。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "释放与故障验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "同ID结果重放防重复售票，旧调度者用epoch/version拒绝迟到提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "逐座逐段校验不重叠、预留和订单可对应，测试最后一个座位竞争、相邻区间复用、两个区间各有空座但无法贯通、付款/取消交错、DB提交响应丢失与缓存重建。第8.1节的位图程序与测试仅展示局部区间分配不变量；没有真实购票集群/千万TPS压测，容量应按实际业务测定。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.9 库存是在支付前扣还是支付后扣"
+    },
+    {
+      "type": "paragraph",
+      "text": "稀缺库存通常先预留后支付确认，并用到期状态机释放；支付后才扣需接受并处理已付款却缺货的风险。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：支付前扣还是支付后扣；未支付订单怎么释放；支付和关单同时发生怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "扣库存分为减少可售量的预留和确认销售，支付渠道与缺货退款政策决定策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "稀缺库存通常先预留再确认"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付前扣库存，通常指先预留，不是先确认销售。下单在权威事务把 available 转 held，防别人再买同一资源；付款后 held 转 consumed，不再扣一次 available。"
+    },
+    {
+      "type": "paragraph",
+      "text": "未支付超时，只释放仍 HELD 的那份预留一次。这样付款前已有期限内的资源承诺，但也会被恶意占单锁住库存，所以要有限购、期限和取消策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先付款再扣库存并非天然错误，但要承认“钱收了却没货”的风险。它减少未付款占用，却可能库存先被别人买走，所以要有明确退款或替代供货方案，并可靠保存支付事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能承诺先收钱后扣，还能让每个付款者都有货。若采用授信或预授权，再正式扣款，也要按渠道真实语义分析，预授权不等于已经扣款。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "竞态和验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付与关单抢同一订单/预留状态，胜者合法转换，失败方重新读权威事实；订单已释放后晚到真实扣款进入待退款/人工处理，不能盲目复活旧预留。支付回调重复和响应丢失以渠道流水/业务请求去重，库存恢复与用户再次购买资格各自控制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试支付前后崩溃、付款正好到期、重复回调、最后一件和恶意长占单，核验available+held+consumed守恒及真实支付有归宿。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.10 单实例秒杀改成分布式，需要改造哪些地方"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式秒杀需把库存资格和幂等责任移入权威共享提交域，再补齐消息、缓存、时钟与旧执行者的故障协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：单机秒杀怎样改分布式；synchronized为什么不够；本地缓存库存能否各自扣。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "从单实例扩成多实例，进程锁、内存库存和本地去重不再覆盖全部请求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先找原来藏在单机内存中的权威"
+    },
+    {
+      "type": "paragraph",
+      "text": "从单机扩多机，先找出原来藏在进程里的权威状态。本地库存整数、HashSet 资格、synchronized、本地 session、递增 ID 和定时器，都不能简单每台复制一份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存、资格、订单和请求结果要放进明确的权威事务域。本地锁仍可减少本进程冲突，但最终条件更新和唯一约束，必须对所有写入者有效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "共享session或可验证token支持负载均衡后换实例；全局/租户额度不能每台各按原额度放行；ID按可靠唯一方案；每实例连接池大小乘实例数后可能压垮DB，线程、队列、RPC在途与下游总预算需一起限制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "请求和异步责任必须可迁移"
+    },
+    {
+      "type": "paragraph",
+      "text": "网关认证、活动/参数校验与多维反滥用，分布式节点按稳定operationId受理，状态可从任意实例查询。入内存队列后即返回“排队中”会在节点退出丢单，持久任务/outbox让其他实例能恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费者按请求ID同事务落订单/预留/扣库存/事件，重复消息不重复效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "热点、一致性与稳定性"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis可预筛，权威最终裁决不依赖缓存强一致；若把Redis作真正库存权威，必须证明复制丢写、消息双写和重建期间不超售，见第8.12节。热SKU可预分配不重叠库存桶，详见第8.11节，但跨桶查询和调拨要有守恒协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "服务发现/LB、readiness、摘流排空和实例配置版本让扩容可控；跨服务网络调用显式deadline、有限重试、熔断和隔离。失败时拒绝或排队中要准确，不能用降级缓存批准实际不存在库存。可用性目标、排队时限、公平性与一致性按接口定义，不说全链路都最终一致即可。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "改造顺序与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "先抽离权威状态与稳定幂等键，再用两实例验证同一库存/资格的并发，再加可靠队列、缓存/分桶和弹性治理；每步有回滚与对账。不要同时拆十个服务却没定义一个本地原子边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试两实例抢最后一件、同用户跨节点双击、提交后节点退出、消费者重放、缓存失效/主从切换、一个机房慢、全局限流存储故障和扩缩容排空；核验库存/预留/订单事实守恒，压力测试还要含热点分布与p99。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.13 从下单请求到响应怎样走，10个人同时抢单怎样裁决"
+    },
+    {
+      "type": "paragraph",
+      "text": "买家争库存用库存与资格原子预留，接单者抢一个订单则以未认领状态条件更新选出唯一合法赢家。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：下单请求完整链路是什么；10人同时抢单如何裁决；成功响应丢失怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "抢单可能指买家争库存或接单者认领同一任务，两个分支分别裁决；H2示例只展示单订单认领。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从入口到可核验响应"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端一次确认产生operationId，HTTPS入口认证主体、鉴权目标、校验商品/数量/价格与活动版本；网关限速和在途隔离，服务查幂等结果。需同步确定的交易在权威DB短事务完成；可异步则先可靠保存请求与调度责任，返回受理taskId，再由worker执行。请求到内存线程池不等于可恢复受理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务用唯一请求键防重复，条件扣可售库存、建立订单/HELD预留、保存稳定响应和outbox同提交。提交成功才返回真正订单状态；超时按原ID查询。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10位买家竞争最后一份库存"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定义库存和资格规则；UPDATE stock SET available=available-q WHERE sku=? AND available>=q，只有影响1行才继续写订单/预留。十人各买一件且仅剩一件时至多一个事务提交，其他返回真实售罄/资格拒绝；不能GET库存1后十个线程分别都写0。库存扣减和订单失败要一起回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若允许异步排队，十个人都可以收到“已受理”，却不能都收到“购买成功”。异步排队的公平性，要按事先约定的先后、抽签或优先级，不能把数据库锁偶然的调度顺序当产品规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 锁和按钮置灰只是优化，真正的条件更新与唯一约束，还要挡住多实例、锁过期和重试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10位接单者认领同一个任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "订单行保存claimed_by为空与可认领状态，执行UPDATE orders SET claimed_by=:user WHERE id=:order AND claimed_by IS NULL（生产还校验状态/资格/版本）。同一资源行的条件更新形成裁决点，只有一个合法owner。保存请求结果和认领事件同事务，失败者得到已被认领，胜者回包丢失仍重放原成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "认领后转派/超时回收必须另设assignmentEpoch、租约和业务状态；旧接单者的后续提交校验当前代际，不能只把claimed_by清空就让旧人继续交付。示例没有实现转派与租约，不将一次不可逆认领表当完整调度服务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "真实Java事务测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "ClaimOrder以10个独立线程同一闸门同时认领一单，真实H2条件更新恰一个owner，10个请求结果与1条outbox；胜者30次并发重放仍只有一个效果。另测payload冲突、认领/请求/outbox一起回滚、文件库重开、租户隔离和不存在订单。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代码假定tenant/user已在外部认证，模拟方法参数不是授权服务；没有MySQL、Redis、MQ、支付或网络压测。单订单竞争是有意串行，横向吞吐来自不同订单；拒绝热流量/缩短事务/适当排队比无限线程更有效。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下代码实现上述本地合同；它的状态与故障边界不能自动推广到外部系统。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "018/ClaimOrder.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** H2 local transaction: ten workers claim one order, stable request result plus outbox. */\npublic final class ClaimOrder {\n    public record Result(boolean won, String owner) { }\n    private final String url;\n    public ClaimOrder(String url) throws SQLException {\n        this.url = url;\n        try (Connection c = open(); Statement s = c.createStatement()) {\n            s.execute(\"CREATE TABLE IF NOT EXISTS orders(tenant VARCHAR, oid VARCHAR, claimed_by VARCHAR, PRIMARY KEY(tenant,oid))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS requests(tenant VARCHAR, op VARCHAR, oid VARCHAR, uid VARCHAR, won BOOLEAN, owner VARCHAR, PRIMARY KEY(tenant,op))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS outbox(tenant VARCHAR, oid VARCHAR, owner VARCHAR, PRIMARY KEY(tenant,oid))\");\n        }\n    }\n    private Connection open() throws SQLException { return DriverManager.getConnection(url); }\n    public void create(String tenant, String order) throws SQLException {\n        try (Connection c = open(); PreparedStatement p = c.prepareStatement(\"INSERT INTO orders VALUES(?,?,NULL)\")) {\n            p.setString(1, tenant); p.setString(2, order); p.executeUpdate();\n        }\n    }\n    private static void require(String... values) {\n        for (String v : values) if (v == null || v.isBlank() || v.length() > 100) throw new IllegalArgumentException();\n    }\n    public Result claim(String tenant, String order, String user, String op, boolean fail) throws SQLException {\n        require(tenant, order, user, op); // tenant/user must originate from authenticated server context\n        try (Connection c = open()) {\n            c.setAutoCommit(false);\n            try {\n                try (PreparedStatement p = c.prepareStatement(\"INSERT INTO requests VALUES(?,?,?,?,NULL,NULL)\")) {\n                    p.setString(1, tenant); p.setString(2, op); p.setString(3, order); p.setString(4, user); p.executeUpdate();\n                } catch (SQLException e) {\n                    if (!rollbackPreserving(c, e)) throw e;\n                if (!\"23505\".equals(e.getSQLState())) throw e;\n                    try (PreparedStatement p = c.prepareStatement(\"SELECT oid,uid,won,owner FROM requests WHERE tenant=? AND op=?\")) {\n                        p.setString(1, tenant); p.setString(2, op);\n                        try (ResultSet r = p.executeQuery()) {\n                            if (!r.next()) throw new SQLException(\"missing request\");\n                            if (!order.equals(r.getString(1)) || !user.equals(r.getString(2))) throw new IllegalArgumentException(\"payload conflict\");\n                            boolean won = r.getBoolean(3); if (r.wasNull()) throw new SQLException(\"incomplete result\");\n                            return new Result(won, r.getString(4));\n                        }\n                    }\n                }\n                boolean won;\n                try (PreparedStatement p = c.prepareStatement(\"UPDATE orders SET claimed_by=? WHERE tenant=? AND oid=? AND claimed_by IS NULL\")) {\n                    p.setString(1, user); p.setString(2, tenant); p.setString(3, order); won = p.executeUpdate() == 1;\n                }\n                String owner;\n                try (PreparedStatement p = c.prepareStatement(\"SELECT claimed_by FROM orders WHERE tenant=? AND oid=?\")) {\n                    p.setString(1, tenant); p.setString(2, order);\n                    try (ResultSet r = p.executeQuery()) { if (!r.next()) throw new IllegalArgumentException(\"unknown order\"); owner = r.getString(1); }\n                }\n                if (won) try (PreparedStatement p = c.prepareStatement(\"INSERT INTO outbox VALUES(?,?,?)\")) {\n                    p.setString(1, tenant); p.setString(2, order); p.setString(3, owner); p.executeUpdate();\n                }\n                if (fail) throw new SQLException(\"injected rollback\");\n                try (PreparedStatement p = c.prepareStatement(\"UPDATE requests SET won=?,owner=? WHERE tenant=? AND op=?\")) {\n                    p.setBoolean(1, won); p.setString(2, owner); p.setString(3, tenant); p.setString(4, op); p.executeUpdate();\n                }\n                c.commit(); return new Result(won, owner);\n            } catch (SQLException | RuntimeException e) { rollbackPreserving(c, e); throw e; }\n        }\n    }\n    public long count(String table) throws SQLException {\n        if (!Set.of(\"requests\", \"outbox\").contains(table)) throw new IllegalArgumentException();\n        try (Connection c = open(); Statement s = c.createStatement(); ResultSet r = s.executeQuery(\"SELECT COUNT(*) FROM \" + table)) { r.next(); return r.getLong(1); }\n    }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 1) throw new IllegalArgumentException(\"fresh H2 path required\");\n        String url = \"jdbc:h2:\" + args[0] + \";LOCK_TIMEOUT=20000\"; ClaimOrder s = new ClaimOrder(url); s.create(\"t\", \"one\");\n        ExecutorService pool = Executors.newFixedThreadPool(10);\n        int winner = -1;\n        try {\n            CountDownLatch ready = new CountDownLatch(10), start = new CountDownLatch(1);\n            List<Future<Result>> work = new ArrayList<>();\n            for (int i = 0; i < 10; i++) { final int n = i;\n                work.add(pool.submit(() -> { ready.countDown(); start.await(); return s.claim(\"t\", \"one\", \"u\" + n, \"op\" + n, false); })); }\n            check(ready.await(10, TimeUnit.SECONDS)); start.countDown();\n            int wins = 0; Set<String> owners = new HashSet<>();\n            for (int i = 0; i < work.size(); i++) { Result r = work.get(i).get(30, TimeUnit.SECONDS); owners.add(r.owner()); if (r.won()) { wins++; winner = i; } }\n            check(wins == 1 && owners.size() == 1 && s.count(\"outbox\") == 1 && s.count(\"requests\") == 10);\n            final int w = winner; List<Callable<Result>> retries = new ArrayList<>();\n            for (int i = 0; i < 30; i++) retries.add(() -> s.claim(\"t\", \"one\", \"u\" + w, \"op\" + w, false));\n            for (Future<Result> f : pool.invokeAll(retries)) check(f.get().equals(new Result(true, \"u\" + w)));\n            check(s.count(\"outbox\") == 1 && s.count(\"requests\") == 10);\n        } finally { pool.shutdownNow(); }\n        try { s.claim(\"t\", \"one\", \"another\", \"op\" + winner, false); throw new AssertionError(); } catch (IllegalArgumentException ok) { }\n        s.create(\"t\", \"rollback\");\n        try { s.claim(\"t\", \"rollback\", \"a\", \"fail\", true); throw new AssertionError(); } catch (SQLException e) { check(e.getMessage().contains(\"injected\")); }\n        check(s.count(\"outbox\") == 1 && s.count(\"requests\") == 10);\n        check(s.claim(\"t\", \"rollback\", \"b\", \"good\", false).won());\n        check(new ClaimOrder(url).claim(\"t\", \"one\", \"u\" + winner, \"op\" + winner, false).won());\n        s.create(\"other\", \"one\"); check(s.claim(\"other\", \"one\", \"a\", \"op0\", false).won());\n        try { s.claim(\"t\", \"missing\", \"a\", \"missing\", false); throw new AssertionError(); } catch (IllegalArgumentException ok) { }\n        System.out.println(\"PASS ClaimOrder: 10 simultaneous claimants one owner, 30 identical retries one effect, payload conflict, order+request+outbox rollback, reopen, tenant isolation, absent order\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

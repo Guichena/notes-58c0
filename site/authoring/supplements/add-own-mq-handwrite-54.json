@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-handwrite-54",
+  "entryId": "handwrite-54",
+  "expectedOriginalHash": "26216c34b8af8cc444cc3be1c920e19639bc7aea8c20625ced49b268cabb85d9",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q07 为什么需要 Outbox"
+    },
+    {
+      "type": "paragraph",
+      "text": "Outbox 把“业务变更”和“必须发布的事件”放进同一个数据库事务，避免业务已提交而发送意图丢失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：为什么不在代码里异步 send？为什么不用事务提交后回调？DB + MQ 如何一致？新加异常表本身不也会不一致吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "正常受理路径先完成一个本地事务：在同一个连接里写订单、写 READY Outbox，再一起 commit。业务和 Outbox 若分别提交，就重新出现了不可靠双写。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交后的回调可以尽快唤醒发布者，但 commit 后、回调前退出，仍要靠扫描器补发。反过来，在数据库事务里一直等待 broker 确认，会长时间占锁；broker 已成功而数据库随后回滚的窗口也依然存在。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-mq/figure-4.png",
+      "alt": "Outbox 与 Inbox 保护两侧本地事务；网络及两次提交之间仍存在重复窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Relay 领取 READY 或过期 PROCESSING，提交领取状态后执行网络发送，确认后条件更新 SENT。发成功而标 SENT 前宕机，恢复后重复发布是正常故障路径；先标 SENT 再发反而会漏。Outbox 解决可靠发布意图，Inbox 解决下游本地重复效果，两者不能互相替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "建议字段包括 event_id、aggregate_id/version、topic、payload、status、attempt_count、next_attempt_at、lease_owner/token、lease_until、created_at、sent_at、last_error。按待发送条件建索引，分页批处理，已发记录按回放/审计窗口归档。高并发可使用带条件 UPDATE 或短事务 SELECT FOR UPDATE SKIP LOCKED，但不能长事务持锁等网络。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么调整写库和发消息的先后顺序都不够？"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务库与 Broker 没有共同提交点时，任何简单顺序都留下失败窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先提交订单，再调用 send：订单已存在，进程在 send 前退出，就没有通知消费者的责任。先 send，再提交订单：消费者可能收到消息，而订单事务最终回滚。在数据库事务内部 send 也一样，数据库回滚撤不回已发出的消息，并且网络等待会占住连接和行锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“发送抛异常后写异常表”仍不完整。进程可能根本没走到 send，或者 send 抛异常后、异常表写入前退出；异常表本身也可能写失败。可靠待办必须存在于正常提交路径，而不是等失败发生后才补一张表。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只注册 afterCommit 回调也不够。数据库提交和内存回调执行之间仍可退出；回调把任务扔进线程池后，线程池满了或进程退出也会丢。afterCommit 可以降低常态延迟，但它只能唤醒已经持久化的责任。正确性不依赖这条快路径。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q49 Spring 事务怎样影响 Outbox"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务表和 Outbox 必须经过同一有效事务边界，注解写在方法上不代表任何调用方式都自动生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先检查写订单和写 Outbox 是否真的经过同一个有效的本地事务。代理式 Spring 事务里，同类内部 self-invocation 可能绕过代理；新线程也不会天然继承调用线程绑定的 JDBC 事务。于是“主线程写订单，线程池写 Outbox”通常就已拆成两个提交边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用独立的受代理服务，或 TransactionTemplate 明确建立边界，再核对传播、异常回滚规则和连接使用。只看到方法上有注解，还不能回答这些问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务提交后回调可以触发快路径发送，但持久 Outbox 扫描仍是崩溃恢复依据。网络 send 不能靠 @Transactional 自动撤销；同一方法中访问 MySQL、Redis、Kafka 也不自动等于三系统事务。异常被 catch 吞掉可能导致意外提交；业务预期回滚时应明确传播/标记事务状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "afterCommit为什么不是Outbox"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务提交后再发消息，避免了业务尚未提交就被消费者看到的问题，却仍存在提交成功后、回调发送前进程退出的窗口。Spring Framework 6.2.19的afterCommit是事务完成回调，不是持久待办。即使监听器加异步注解，内存事件/线程池也会丢；发送Future返回、发送成功和broker满足可靠确认更不是一回事。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可靠Outbox把业务变化和“必须发布这条事件”的意图放进同一可原子提交事务，relay通过轮询或CDC发送并处理确认。afterCommit可以做低延迟唤醒快路径，丢了仍由持久扫描恢复。提交后写新事务的Outbox也不自动安全：原业务已提交、新事务尚未提交时仍有间隙。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“同库”应准确理解为同一个真正原子提交边界。在一个数据库实例内、同一连接事务能原子覆盖的表可以组成该边界；两个独立数据库各commit一次不行。Outbox完成到broker确认即可由消费账本承接下游责任，也可设计端到端任务状态，但两者不能混称同一“已完成”。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    },
+    {
+      "entryId": "own-mq-basics-code",
+      "label": "Java 基础模块完整源码与事务示例"
+    }
+  ]
+}

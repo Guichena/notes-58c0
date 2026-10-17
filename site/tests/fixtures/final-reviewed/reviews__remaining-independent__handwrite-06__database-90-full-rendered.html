@@ -1,0 +1,45 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">如何用数据库唯一索引实现接口幂等？例如支付回调、订单创建、消息消费重复到达。</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">幂等是大厂后端高频，尤其和 MQ、支付、订单、异步任务结合。数据库唯一索引是最硬的一层防线，比单纯 Redis 去重更可靠，因为它和业务数据在同一个事务里。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>幂等键：业务唯一标识，如 <code class="tok-inline">request_id</code>、<code class="tok-inline">order_no</code>、<code class="tok-inline">event_id</code>。</li><li>唯一索引：数据库层防重复。</li><li>状态机：重复请求返回已有状态。</li><li>插入冲突处理：捕获 Duplicate Key。</li><li>Redis 去重：可做前置优化，但不能替代 DB 约束。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">订单创建：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE orders (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    order_no VARCHAR(64) NOT NULL,
+    user_id BIGINT NOT NULL,
+    request_id VARCHAR(64) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_request (user_id, request_id),
+    UNIQUE KEY uk_order_no (order_no)
+);</pre></div></section>
+<p class="md-p">处理逻辑：</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>客户端或服务端生成 <code class="tok-inline">request_id</code>。</li><li>插入订单。</li><li>如果插入成功，正常返回。</li><li>仅当命中同(user_id,request_id)且不可变参数完全相同才返回原已提交结果；order_no 冲突可能是另一业务错误。提交未知按原键查，不生成新号重做。</li></ol></div>
+<p class="md-p">消息消费：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE consume_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    event_id VARCHAR(64) NOT NULL,
+    consumer_group VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_event_group (event_id, consumer_group)
+);</pre></div></section>
+<p class="md-p">消费者在同一本地事务内插入 consume_log、执行业务并记录完成，提交成功才 ACK。确认为该事件/消费组的已提交终态才返回原结果；处理中、数据库异常或提交未知不能盲 ACK。<code class="tok-inline"></code></p><p class="md-p">MySQL 8.4/InnoDB；请求号和事件号建议使用 ASCII 二进制排序规则并限定长度，避免默认不区分大小写的 collation 合并不同身份。唯一键与业务效果必须同事务，授权租户进入键空间；保留收据覆盖重放与备份恢复窗口，未知与失败分开。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：幂等键由谁生成？</strong></p>
+<p class="md-p">问题分析：不同场景来源不同。</p>
+<p class="md-p">知识点：业务唯一性。</p>
+<p class="md-p">答案：支付回调用支付平台流水号；下单用用户维度 request_id；MQ 用 event_id；不能用随机 UUID 每次重试新生成，否则无法幂等。</p>
+<p class="md-p"><strong>变体 2：先查再插能保证幂等吗？</strong></p>
+<p class="md-p">问题分析：并发下先查都不存在。</p>
+<p class="md-p">知识点：竞态条件、唯一约束。</p>
+<p class="md-p">答案：不能。必须依赖唯一索引或锁。推荐直接插入，冲突后查询已有记录。</p>
+<p class="md-p"><strong>变体 3：Redis SETNX 幂等够不够？</strong></p>
+<p class="md-p">问题分析：Redis 和 DB 不在同一事务。</p>
+<p class="md-p">知识点：最终一致、双写风险。</p>
+<p class="md-p">答案：Redis 可做前置防重和削峰，但最终仍应有数据库唯一约束兜底。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-mysql-database-90">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">26.5 数据库比赛里说“用 redo 保证幂等”，足够吗？</h3><p class="md-p">先问“重复的是什么”：相同恢复日志再次扫描，还是同一个业务请求再次到达？如果问题只给出某个数据库比赛，没有接口、日志格式和实现，无法确定它具体问哪一层。仅凭“应该用 redo，崩溃后恢复”的猜测，不能推出某个数据库内核已经实现了业务幂等。</p><h3 class="md-h md-h3">引擎重放幂等</h3><p class="md-p">崩溃时部分修改已经写页、部分尚未写页，再次恢复不能把同一内部修改多产生一次效果。实现通常结合日志序号、页面或对象版本、记录语义与恢复状态判断。以 MySQL 8.4.0 为例，恢复代码读取页 LSN，并结合 redo 的起始位置和记录类型决定应用；初始化页面、表空间处理等还有特殊分支。因此不能把一个简化的 if pageLSN &lt; recordLSN 模型当成全内核算法，也不能把 InnoDB 的页机制直接套给其他数据库。</p><p class="md-p">一个便于推演的自定义模型是“把对象版本 7 设置为值 400”：若恢复状态已是该版本或更新版本，可以按协议跳过旧记录。与之相比，“再执行一次减 100”若没有序号判定，重复恢复可能额外扣款。模型展示的是所需不变量，实际引擎必须证明版本判断、页面写入和日志持久顺序共同正确。</p><h3 class="md-h md-h3">业务请求幂等</h3><p class="md-p">重放日志和重试扣款是两件事。客户端超时后再发一次扣款，数据库通常会把它当作新事务；即使每笔 redo 都完全正确，两次 balance = balance - 100 仍会扣 200。因此业务层需要稳定的逻辑请求身份，并把身份、规范化载荷、结果与业务修改放进可证明的原子边界。</p><p class="md-p">同库可以用唯一业务键守住请求记录，再在同一事务保存修改和固定结果。同键同载荷返回原结果，同键换金额或对象就拒绝；提交未知先查权威存储。键还要明确租户、作用域、保存期限及重试窗口。若每次点击都新生成一个号，数据库无从知道它们其实属于同一操作。</p><p class="md-p">也别把条件 UPDATE 的 0 行当成原请求成功。对象不存在、旧版本、状态冲突、过期、权限范围不符都可能得到 0 行。Redis 临时标记、限流或互斥锁不能代替持久结果，锁释放后串行到达的重复请求仍可能再执行。恢复层在这里提供可靠存储，完整业务幂等则由事务层协议负责。</p><h3 class="md-h md-h3">外部副作用</h3><p class="md-p">同一本地事务能保存“需要发送消息”的意图，却不能使数据库提交、消息系统确认和外部 HTTP 效果自动成为一个原子动作。消费者和外部服务需要稳定请求号、去重或结果查询契约。发送成功但本地回写前崩溃时会产生未知结果，恢复后直接重发可能重复执行。完整方案还应包含退避、失败隔离、版本控制和对账。</p><p class="md-p">例如将制造业告警的受理事实与 outbox 放在同一本地事务，是一个可讨论的教学设计；它证明的是该本地边界的原子性。后续发布、消费和渠道受理的可靠性仍由各自协议决定。它不能用于证明某个具体项目启用了特定 MySQL 版本、复制拓扑或断电零丢失。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

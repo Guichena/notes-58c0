@@ -1,0 +1,510 @@
+{
+  "entries": [
+    {
+      "id": "pattern-index-optimization",
+      "number": "索引优化",
+      "title": "索引与查询优化：B+ 树、最左前缀、Explain、深分页",
+      "kind": "pattern",
+      "kindLabel": "数据库模板",
+      "group": "题型模板",
+      "category": "索引优化",
+      "flat": false,
+      "subtitle": "覆盖 5 道题 · B+ 树 + 最左前缀 + 回表",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别慢查询",
+            "questions": [
+              "这条 SQL 走了哪个索引？",
+              "扫描了多少行？（EXPLAIN 的 rows）",
+              "有没有用临时表 / 文件排序？"
+            ],
+            "example": "慢查询日志看到 rows=100 万 → 没走索引或索引选择性差 → 看 EXPLAIN 的 type 是 ALL 还是 index。"
+          },
+          {
+            "stage": "识别索引失效",
+            "questions": [
+              "WHERE 条件是否符合最左前缀？",
+              "有没有函数 / 隐式转换 / LIKE %xx？",
+              "有没有 OR 条件跨多列？"
+            ],
+            "example": "联合索引 (a,b,c)，WHERE b=1 AND c=2 → 跳过了 a，索引失效。"
+          },
+          {
+            "stage": "识别回表成本",
+            "questions": [
+              "查询的列是否都在索引里？（覆盖索引）",
+              "回表多少次？",
+              "能否用覆盖索引避免回表？"
+            ],
+            "example": "SELECT * 必回表；SELECT 索引列 + 主键 → 覆盖索引，不回表。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 索引性能估算",
+        "formulas": [
+          {
+            "name": "B+ 树高度",
+            "formula": "log_fanout(N)",
+            "example": "fanout=1000，1 亿行 → log_1000(1e8) ≈ 3 层（3 次 IO）"
+          },
+          {
+            "name": "索引大小",
+            "formula": "N × (key_size + 8B) / page_size",
+            "example": "1 亿行 × (8B int key + 8B 指针) / 16KB 页 ≈ 100 MB"
+          },
+          {
+            "name": "回表成本",
+            "formula": "rows × 2（一次索引查找 + 一次主键查找）",
+            "example": "回表 1 万行 ≈ 2 万次 B+ 树查找"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "主键查询",
+            "write": "N/A",
+            "read": "~1ms",
+            "note": "B+ 树 3 层 = 3 次 IO"
+          },
+          {
+            "resource": "二级索引 + 回表",
+            "write": "N/A",
+            "read": "~2-5ms",
+            "note": "2 次 B+ 树查找"
+          },
+          {
+            "resource": "覆盖索引",
+            "write": "N/A",
+            "read": "~1ms",
+            "note": "不回表"
+          },
+          {
+            "resource": "全表扫描",
+            "write": "N/A",
+            "read": "~100MB/s",
+            "note": "SSD 顺序读"
+          }
+        ],
+        "pitfalls": [
+          "不看 rows 估算 → 不知道扫描了多少行",
+          "不考虑回表成本 → 二级索引不一定比全表快"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 索引设计演进",
+        "stages": [
+          {
+            "stage": "无索引",
+            "architecture": "全表扫描",
+            "pros": [
+              "写入快"
+            ],
+            "cons": [
+              "查询 O(n)"
+            ],
+            "when": "表 < 1000 行",
+            "tradeoff": ""
+          },
+          {
+            "stage": "单列索引",
+            "architecture": "KEY idx_col (col)",
+            "pros": [
+              "单条件查询快"
+            ],
+            "cons": [
+              "多条件失效"
+            ],
+            "when": "单条件查询为主",
+            "tradeoff": "用写性能换读性能"
+          },
+          {
+            "stage": "联合索引",
+            "architecture": "KEY idx_a_b_c (a, b, c)",
+            "pros": [
+              "多条件可走索引"
+            ],
+            "cons": [
+              "必须最左前缀"
+            ],
+            "when": "固定查询模式",
+            "tradeoff": "用索引大小换查询灵活度"
+          },
+          {
+            "stage": "覆盖索引",
+            "architecture": "KEY idx_cover (a, b, c) 包含所有查询列",
+            "pros": [
+              "不回表"
+            ],
+            "cons": [
+              "索引很大",
+              "写放大"
+            ],
+            "when": "读多写少 + 固定查询",
+            "tradeoff": "用存储空间换查询性能"
+          },
+          {
+            "stage": "函数索引 / 前缀索引",
+            "architecture": "KEY idx_prefix (col(20))",
+            "pros": [
+              "支持前缀匹配"
+            ],
+            "cons": [
+              "不支持范围查询"
+            ],
+            "when": "长字符串前缀查询",
+            "tradeoff": "用索引精确度换索引大小"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 索引 Trade-off",
+        "decisions": [
+          {
+            "question": "聚簇索引 vs 二级索引？",
+            "chooseCache": "聚簇索引：叶子节点存数据，主键查询最快",
+            "chooseDB": "二级索引：叶子节点存主键，需要回表",
+            "cost": "二级索引多一次 B+ 树查找"
+          },
+          {
+            "question": "B+ 树 vs 哈希索引？",
+            "chooseCache": "B+ 树：支持范围查询和排序",
+            "chooseDB": "哈希：等值查询 O(1)",
+            "cost": "哈希不支持范围查询和排序"
+          },
+          {
+            "question": "索引多 vs 索引少？",
+            "chooseCache": "索引多：查询快",
+            "chooseDB": "索引少：写入快，空间省",
+            "cost": "每个索引增加写放大（INSERT/UPDATE 都要维护索引）"
+          },
+          {
+            "question": "长索引 vs 短索引？",
+            "chooseCache": "短索引：索引小，扇出大，B+ 树矮",
+            "chooseDB": "长索引：选择性高",
+            "cost": "长索引占空间大，B+ 树层数多"
+          },
+          {
+            "question": "EXPLAIN 的 type=ref vs range vs index？",
+            "chooseCache": "ref：非唯一索引等值查询，扫描行数少",
+            "chooseDB": "range：范围查询；index：全索引扫描",
+            "cost": "index 类型虽走索引但仍扫全索引，未必比 ALL 快多少"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键分析骨架",
+        "snippets": [
+          {
+            "name": "EXPLAIN 分析实战",
+            "code": "-- 示例 1：全表扫描（需要优化）\nEXPLAIN SELECT * FROM orders WHERE customer_name = 'Alice';\n-- type: ALL （全表扫描，100 万行）\n-- rows: 1000000\n-- Extra: Using where\n\n-- 优化：加索引\nCREATE INDEX idx_customer_name ON orders(customer_name);\n-- 优化后：\n-- type: ref\n-- rows: 5\n-- Extra: Using index condition\n\n-- 示例 2：索引失效（函数）\nEXPLAIN SELECT * FROM orders WHERE DATE(create_time) = '2024-01-01';\n-- type: ALL（索引失效，因为对列用了函数）\n\n-- 优化：改写为范围查询\nEXPLAIN SELECT * FROM orders\nWHERE create_time >= '2024-01-01' AND create_time < '2024-01-02';\n-- type: range\n\n-- 示例 3：最左前缀失效\nCREATE INDEX idx_a_b_c ON t(a, b, c);\nEXPLAIN SELECT * FROM t WHERE b = 1 AND c = 2;\n-- type: ALL（跳过了 a）\n\n-- 优化：WHERE 加上 a，或者调整索引顺序\nEXPLAIN SELECT * FROM t WHERE a = 1 AND b = 1 AND c = 2;\n-- type: ref",
+            "explanation": "EXPLAIN 关键字段：type（ALL 全表 > index 全索引 > range 范围 > ref 非唯一等值 > eq_ref 唯一等值 > const 主键等值）；rows（估算扫描行数）；Extra（Using filesort / Using temporary 是危险信号）。"
+          },
+          {
+            "name": "深度分页优化",
+            "code": "-- 慢：OFFSET 1000000 会扫描并丢弃前 100 万行\nSELECT * FROM orders ORDER BY id LIMIT 1000000, 10;\n\n-- 快：游标方式（记录上次的 id）\nSELECT * FROM orders WHERE id > 1000000 ORDER BY id LIMIT 10;\n\n-- 如果必须跳页：先查 id 再回表\nSELECT o.* FROM orders o\nINNER JOIN (\n  SELECT id FROM orders ORDER BY id LIMIT 1000000, 10\n) t ON o.id = t.id;\n-- 子查询用覆盖索引，不回表；主查询只回表 10 次",
+            "explanation": "深度分页的本质问题：OFFSET 100 万要扫描并丢弃前 100 万行。游标方式（WHERE id > last_id）利用主键索引直接定位，O(log n) + 10 行。"
+          },
+          {
+            "name": "联合索引设计原则",
+            "code": "-- 原则 1：等值查询的列在前，范围查询的列在后\n-- WHERE a = 1 AND b > 10 ORDER BY c\nCREATE INDEX idx_a_b_c ON t(a, b, c);  -- 正确\nCREATE INDEX idx_b_a_c ON t(b, a, c);  -- 错误（b 是范围，后面的 c 用不上）\n\n-- 原则 2：高选择性的列在前\n-- WHERE status = 1 AND user_id = 12345\n-- status 只有 0/1 两种值，选择性低；user_id 有百万种，选择性高\nCREATE INDEX idx_user_status ON t(user_id, status);  -- 正确\nCREATE INDEX idx_status_user ON t(status, user_id);  -- 次优\n\n-- 原则 3：覆盖索引避免回表\n-- SELECT user_id, status FROM t WHERE user_id = 12345\nCREATE INDEX idx_cover ON t(user_id, status);  -- 查询列都在索引里，不回表",
+            "explanation": "联合索引三原则：等值在前范围在后；高选择性在前；覆盖索引避免回表。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 索引失效场景",
+        "scenarios": [
+          {
+            "failure": "对列用函数",
+            "symptom": "WHERE DATE(create_time) = ...",
+            "mitigation": "改写为范围查询",
+            "detection": "EXPLAIN 显示 ALL"
+          },
+          {
+            "failure": "隐式类型转换",
+            "symptom": "WHERE phone = 13800138000（phone 是 VARCHAR）",
+            "mitigation": "参数类型匹配",
+            "detection": "EXPLAIN 显示 ALL"
+          },
+          {
+            "failure": "LIKE %xx",
+            "symptom": "前缀模糊查询",
+            "mitigation": "用全文索引 / ES / 反转字符串",
+            "detection": "EXPLAIN 显示 ALL"
+          },
+          {
+            "failure": "OR 跨多列",
+            "symptom": "WHERE a = 1 OR b = 2",
+            "mitigation": "改用 UNION / 分别建索引",
+            "detection": "EXPLAIN 显示 ALL"
+          },
+          {
+            "failure": "不符合最左前缀",
+            "symptom": "联合索引 (a,b,c) 但 WHERE 只用 b",
+            "mitigation": "调整索引顺序 / 调整 WHERE 条件",
+            "detection": "EXPLAIN 显示 ALL"
+          },
+          {
+            "failure": "IS NULL / IS NOT NULL",
+            "symptom": "某些版本不走索引",
+            "mitigation": "用默认值代替 NULL",
+            "detection": "EXPLAIN 验证"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 索引监控",
+        "red": [
+          "慢查询数量（> 1s）",
+          "全表扫描次数（EXPLAIN type=ALL）",
+          "索引命中率"
+        ],
+        "use": [
+          "InnoDB Buffer Pool 命中率（目标 > 99%）",
+          "索引大小 / 表大小比例"
+        ],
+        "business": [
+          "核心 SQL 的 P99 响应时间",
+          "每天慢查询 TOP 10"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "B+ 树原理",
+          "ids": [
+            "database-80"
+          ],
+          "note": "聚簇索引 / 二级索引 / 回表"
+        },
+        {
+          "range": "联合索引",
+          "ids": [
+            "database-81"
+          ],
+          "note": "最左前缀原则"
+        },
+        {
+          "range": "索引失效",
+          "ids": [
+            "database-82"
+          ],
+          "note": "常见失效场景大全"
+        },
+        {
+          "range": "Explain 分析",
+          "ids": [
+            "database-83"
+          ],
+          "note": "EXPLAIN 每个字段的含义"
+        },
+        {
+          "range": "深分页优化",
+          "ids": [
+            "database-84"
+          ],
+          "note": "OFFSET 100 万的优化方案"
+        },
+        {
+          "range": "索引设计实战",
+          "ids": [
+            "database-85"
+          ],
+          "note": "30 天流水查询的索引设计"
+        }
+      ],
+      "interviewPitch": "索引优化我会按\"识别慢查询 → EXPLAIN 分析 → 找失效原因 → 设计索引\"四步走。EXPLAIN 关键看 type（不能是 ALL）和 rows（不能太大）。失效常见原因：函数 / 隐式转换 / LIKE %xx / 最左前缀 / OR。设计联合索引三原则：等值在前范围在后；高选择性在前；覆盖索引避免回表。",
+      "pitfalls": [
+        "不知道最左前缀 → 联合索引失效",
+        "SELECT * 导致回表 → 应该只查需要的列",
+        "EXPLAIN 只看 type 不看 rows → type=range 也可能扫 100 万行",
+        "深分页用 OFFSET → 应该用游标"
+      ],
+      "relatedIds": [
+        "database-80",
+        "database-81",
+        "database-82",
+        "database-83",
+        "database-84",
+        "database-85"
+      ],
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-80",
+      "number": 9,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "B+Tree、聚簇索引与回表",
+      "questionHtml": "<p class=\"md-p\">为什么 MySQL InnoDB 常用 B+Tree 索引？聚簇索引和二级索引有什么区别？什么是回表？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是 MySQL 索引面试必考。很多慢 SQL、深度分页、覆盖索引问题都建立在这道题之上。</p>\n<p class=\"md-p\">InnoDB 表按主键组织数据，主键索引的叶子节点存整行数据，因此叫聚簇索引。二级索引叶子节点不存整行，而是存索引列和主键值；如果查询列不在二级索引中，需要拿主键再查聚簇索引，这就是回表。</p>",
+      "knowledge": [
+        "B+Tree 多路平衡树，树高低，适合磁盘页读取。",
+        "B+Tree 叶子节点有序，适合范围查询和排序。",
+        "聚簇索引：叶子节点存整行数据。",
+        "二级索引：叶子节点存主键值。",
+        "回表：通过二级索引找到主键后，再查主键索引取完整行。",
+        "覆盖索引：查询列都在二级索引中，不需要回表。"
+      ],
+      "answerHtml": "<p class=\"md-p\">InnoDB 使用 B+Tree 的原因：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>树高低，查找一次通常只需要少量页 IO。</li><li>非叶子节点只存 key 和指针，能容纳更多 key。</li><li>叶子节点有序并通过链表连接，范围查询高效。</li><li>等值、范围、排序都能较好支持。</li></ol></div>\n<p class=\"md-p\">聚簇索引和二级索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">PRIMARY KEY(id) 的叶子节点：id + 整行数据\nidx_user_id(user_id) 的叶子节点：user_id + 主键 id</pre></div></section>\n<p class=\"md-p\">查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT amount\nFROM orders\nWHERE user_id = 100;</pre></div></section>\n<p class=\"md-p\">如果只有索引 <code class=\"tok-inline\">idx_user_id(user_id)</code>，执行过程是：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>在 <code class=\"tok-inline\">idx_user_id</code> 上找到 user_id=100 的主键 id。</li><li>用 id 回到主键索引查整行。</li><li>取出 amount。</li></ol></div>\n<p class=\"md-p\">这一步 2 就是回表。</p>\n<p class=\"md-p\">如果建立覆盖索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_user_amount\nON orders(user_id, amount);</pre></div></section>\n<p class=\"md-p\">查询 <code class=\"tok-inline\">user_id, amount</code> 时二级索引已经包含所需列，就不需要回表。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么主键建议短且递增？</strong></p>\n<p class=\"md-p\">问题分析：主键是聚簇索引，所有二级索引叶子节点也保存主键。</p>\n<p class=\"md-p\">知识点：索引空间、页分裂。</p>\n<p class=\"md-p\">答案：短主键能减少所有索引体积；递增主键减少随机插入和页分裂。UUID 作为主键通常不友好。</p>\n<p class=\"md-p\"><strong>变体 2：没有主键会怎样？</strong></p>\n<p class=\"md-p\">问题分析：InnoDB 必须有聚簇索引。</p>\n<p class=\"md-p\">知识点：隐藏 row_id。</p>\n<p class=\"md-p\">答案：如果没有显式主键，InnoDB 会选择唯一非空索引；如果也没有，会生成隐藏 row_id。工程上应显式定义主键。</p>\n<p class=\"md-p\"><strong>变体 3：覆盖索引是不是越多越好？</strong></p>\n<p class=\"md-p\">问题分析：索引能加速读，但会拖慢写。</p>\n<p class=\"md-p\">知识点：写放大、存储成本。</p>\n<p class=\"md-p\">答案：不是。索引会占空间，插入/更新/删除都要维护。只为高频、核心查询设计覆盖索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-81",
+      "number": 10,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "联合索引与最左前缀",
+      "questionHtml": "<p class=\"md-p\">表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">article(id, tenant_id, status, category_id, created_at, title)</pre></div></section>\n<p class=\"md-p\">常见查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, title\nFROM article\nWHERE tenant_id = ?\n  AND status = ?\n  AND category_id = ?\nORDER BY created_at DESC\nLIMIT 20;</pre></div></section>\n<p class=\"md-p\">如何设计索引？哪些查询能用上这个索引？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察联合索引顺序。一般原则是等值条件在前，排序/范围条件在后。对于多租户业务，<code class=\"tok-inline\">tenant_id</code> 通常必须放前面，既能过滤数据，也符合权限隔离。</p>",
+      "knowledge": [
+        "最左前缀：联合索引从最左列开始连续使用。",
+        "等值条件可以连续匹配。",
+        "遇到范围条件后，后续列通常不能继续用于精确过滤，但可能用于覆盖。",
+        "排序字段要和索引顺序一致，才能避免 filesort。",
+        "覆盖索引：查询列包含在索引中。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_tenant_status_category_created\nON article(tenant_id, status, category_id, created_at DESC, id DESC);</pre></div></section>\n<p class=\"md-p\">这个索引能很好支持：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE tenant_id = ?\n  AND status = ?\n  AND category_id = ?\nORDER BY created_at DESC, id DESC\nLIMIT 20</pre></div></section>\n<p class=\"md-p\">也能支持只查租户和状态：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE tenant_id = ?\n  AND status = ?</pre></div></section>\n<p class=\"md-p\">不能高效支持跳过 <code class=\"tok-inline\">tenant_id</code> 的查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE status = ?\n  AND category_id = ?</pre></div></section>\n<p class=\"md-p\">因为不满足最左前缀。若后台管理确实需要全局按状态查询，应另建索引。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">status</code> 区分度很低，要不要放索引里？</strong></p>\n<p class=\"md-p\">问题分析：低区分度字段单独建索引意义不大，但放在联合索引中可配合其他字段。</p>\n<p class=\"md-p\">知识点：选择性、组合过滤。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">status</code> 单列索引价值低；在 <code class=\"tok-inline\">(tenant_id, status, category_id, created_at)</code> 中有价值，因为它参与等值过滤并帮助排序定位。</p>\n<p class=\"md-p\"><strong>变体 2：范围条件如何影响索引？</strong></p>\n<p class=\"md-p\">问题分析：例如 <code class=\"tok-inline\">created_at &gt;= ? AND category_id = ?</code>。</p>\n<p class=\"md-p\">知识点：范围列之后的列难以继续用于索引定位。</p>\n<p class=\"md-p\">答案：应把等值过滤列放在范围列前。常见顺序是 <code class=\"tok-inline\">(tenant_id, status, category_id, created_at)</code>，不要把 <code class=\"tok-inline\">created_at</code> 放到 <code class=\"tok-inline\">category_id</code> 前面，除非时间过滤是主要入口。</p>\n<p class=\"md-p\"><strong>变体 3：查询 <code class=\"tok-inline\">SELECT *</code> 有什么问题？</strong></p>\n<p class=\"md-p\">问题分析：查询列过多会导致回表，覆盖索引失效。</p>\n<p class=\"md-p\">知识点：回表、覆盖索引、宽字段。</p>\n<p class=\"md-p\">答案：列表页只查必要字段；大字段如正文、JSON、向量信息不要放列表查询，详情页再按主键查。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-82",
+      "number": 11,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "索引失效场景",
+      "questionHtml": "<p class=\"md-p\">说出常见的 MySQL 索引失效场景，并给出改写方式。</p>",
+      "analysisHtml": "<p class=\"md-p\">索引失效是大厂面经高频。面试官通常会给 SQL，让你判断为什么没走索引。回答时要避免绝对化：是否走索引最终由优化器按成本决定，但下面这些写法确实常导致索引无法用于高效定位。</p>",
+      "knowledge": [
+        "对索引列使用函数或表达式。",
+        "隐式类型转换。",
+        "<code class=\"tok-inline\">LIKE '%xxx'</code> 前缀模糊。",
+        "联合索引不满足最左前缀。",
+        "范围条件后的列难以继续用于索引定位。",
+        "<code class=\"tok-inline\">OR</code> 两侧索引不完整。",
+        "低选择性条件可能不走索引。"
+      ],
+      "answerHtml": "<p class=\"md-p\">常见场景和改写：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>对列使用函数：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 不好\nWHERE DATE(created_at) = '2026-05-27'\n\n-- 好\nWHERE created_at &gt;= '2026-05-27 00:00:00'\n  AND created_at &lt;  '2026-05-28 00:00:00'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>隐式类型转换：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- phone 是 varchar，不好\nWHERE phone = 13800138000\n\n-- 好\nWHERE phone = '13800138000'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>前缀模糊：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 普通 B+Tree 难以利用前缀定位\nWHERE name LIKE '%abc'\n\n-- 可以利用前缀\nWHERE name LIKE 'abc%'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>联合索引跳过最左列：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 索引 (tenant_id, status, created_at)\n-- 不好\nWHERE status = 'PUBLISHED'\n\n-- 好\nWHERE tenant_id = ?\n  AND status = 'PUBLISHED'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>范围条件放太前：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 索引 (tenant_id, created_at, status)\nWHERE tenant_id = ?\n  AND created_at &gt;= ?\n  AND status = ?</pre></div></section>\n<p class=\"md-p\">如果 <code class=\"tok-inline\">status</code> 过滤重要，考虑索引 <code class=\"tok-inline\">(tenant_id, status, created_at)</code>。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">!=</code> 一定不走索引吗？</strong></p>\n<p class=\"md-p\">问题分析：不能绝对化。</p>\n<p class=\"md-p\">知识点：选择性、成本优化器。</p>\n<p class=\"md-p\">答案：不一定。如果排除的数据很少，优化器可能仍走索引；如果返回大部分行，全表扫描可能更便宜。</p>\n<p class=\"md-p\"><strong>变体 2：<code class=\"tok-inline\">OR</code> 怎么优化？</strong></p>\n<p class=\"md-p\">问题分析：<code class=\"tok-inline\">OR</code> 两边如果有一边没索引，整体可能低效。</p>\n<p class=\"md-p\">知识点：union 改写、索引合并。</p>\n<p class=\"md-p\">答案：为两侧条件都建合适索引，或改写为 <code class=\"tok-inline\">UNION ALL</code> 分别走索引，再去重。</p>\n<p class=\"md-p\"><strong>变体 3：<code class=\"tok-inline\">LIKE '%关键词%'</code> 怎么优化？</strong></p>\n<p class=\"md-p\">问题分析：B+Tree 不适合包含匹配。</p>\n<p class=\"md-p\">知识点：全文索引、倒排索引、ES。</p>\n<p class=\"md-p\">答案：短文本可用 MySQL FULLTEXT；复杂搜索用 Elasticsearch；不要期待普通索引支持中间模糊匹配。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-83",
+      "number": 12,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "Explain 怎么看",
+      "questionHtml": "<p class=\"md-p\">给一条慢 SQL，如何通过 <code class=\"tok-inline\">EXPLAIN</code> 判断问题？重点看哪些字段？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题和慢 SQL 排查强相关。很多候选人只会说“看有没有走索引”，但面试官更希望听到访问类型、扫描行数、索引选择、排序、临时表、回表等。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">type</code>：访问类型，常见从好到差有 const、ref、range、index、ALL。",
+        "<code class=\"tok-inline\">possible_keys</code>：可能使用的索引。",
+        "<code class=\"tok-inline\">key</code>：实际使用的索引。",
+        "<code class=\"tok-inline\">rows</code>：估算扫描行数。",
+        "<code class=\"tok-inline\">filtered</code>：过滤比例。",
+        "<code class=\"tok-inline\">Extra</code>：Using index、Using where、Using filesort、Using temporary。"
+      ],
+      "answerHtml": "<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">EXPLAIN\nSELECT id, title\nFROM article\nWHERE tenant_id = 1\n  AND status = 'PUBLISHED'\nORDER BY created_at DESC\nLIMIT 20;</pre></div></section>\n<p class=\"md-p\">重点解读：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">type=ALL</code>：可能全表扫描，大表危险。</li><li><code class=\"tok-inline\">key=NULL</code>：没有使用索引。</li><li><code class=\"tok-inline\">rows</code> 很大：扫描代价高。</li><li><code class=\"tok-inline\">Using filesort</code>：排序没有利用索引，可能需要优化索引顺序。</li><li><code class=\"tok-inline\">Using temporary</code>：分组/排序产生临时表，数据大时要关注。</li><li><code class=\"tok-inline\">Using index</code>：覆盖索引，通常是好信号。</li></ul></div>\n<p class=\"md-p\">针对上面查询可建：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_tenant_status_created\nON article(tenant_id, status, created_at DESC, id DESC);</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">Using filesort</code> 一定很差吗？</strong></p>\n<p class=\"md-p\">问题分析：小结果集排序没问题。</p>\n<p class=\"md-p\">知识点：排序成本、数据量。</p>\n<p class=\"md-p\">答案：不一定。要结合 rows、返回行数和耗时。大表深分页出现 filesort 需要重点优化。</p>\n<p class=\"md-p\"><strong>变体 2：<code class=\"tok-inline\">Using index</code> 和 <code class=\"tok-inline\">Using index condition</code> 区别？</strong></p>\n<p class=\"md-p\">问题分析：名字相近但含义不同。</p>\n<p class=\"md-p\">知识点：覆盖索引、索引下推 ICP。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">Using index</code> 通常表示覆盖索引；<code class=\"tok-inline\">Using index condition</code> 表示使用索引下推，在存储引擎层先过滤部分条件，但可能仍需回表。</p>\n<p class=\"md-p\"><strong>变体 3：为什么 EXPLAIN 估算不准？</strong></p>\n<p class=\"md-p\">问题分析：优化器依赖统计信息。</p>\n<p class=\"md-p\">知识点：统计信息、数据倾斜。</p>\n<p class=\"md-p\">答案：数据分布倾斜、统计信息过期会导致估算偏差。可更新统计信息，MySQL 8 也可用直方图辅助。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-84",
+      "number": 13,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "深度分页优化",
+      "questionHtml": "<p class=\"md-p\">订单表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">orders(id, user_id, amount, created_at)</pre></div></section>\n<p class=\"md-p\">查询某用户订单：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, user_id, amount, created_at\nFROM orders\nWHERE user_id = 12345\nORDER BY created_at DESC\nLIMIT 10000, 50;</pre></div></section>\n<p class=\"md-p\">为什么慢？如何优化？</p>",
+      "analysisHtml": "<p class=\"md-p\"><code class=\"tok-inline\">LIMIT 10000, 50</code> 不是只读 50 行。MySQL 需要按条件和排序找到前 10050 行，再丢弃前 10000 行。如果查询列不在索引中，还可能发生大量回表。</p>\n<p class=\"md-p\">面试官想听到两个方向：减少回表，以及避免大 offset。</p>",
+      "knowledge": [
+        "InnoDB 聚簇索引：主键索引叶子节点存整行。",
+        "二级索引：叶子节点存二级索引列 + 主键值，查其他列需要回表。",
+        "覆盖索引：查询列都在索引里，不需要回表。",
+        "延迟关联：先用覆盖索引拿主键，再回表取少量完整行。",
+        "游标分页/Keyset Pagination：用上一页最后一条记录作为下一页起点。"
+      ],
+      "answerHtml": "<p class=\"md-p\">先建立适配索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_user_created_id\nON orders(user_id, created_at DESC, id DESC);</pre></div></section>\n<p class=\"md-p\">方案 A：延迟关联，适合仍需要页码的场景：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT o.id, o.user_id, o.amount, o.created_at\nFROM orders o\nJOIN (\n    SELECT id\n    FROM orders\n    WHERE user_id = 12345\n    ORDER BY created_at DESC, id DESC\n    LIMIT 10000, 50\n) t ON o.id = t.id\nORDER BY o.created_at DESC, o.id DESC;</pre></div></section>\n<p class=\"md-p\">子查询只查 <code class=\"tok-inline\">id</code>，可以利用 <code class=\"tok-inline\">(user_id, created_at, id)</code> 索引，减少前 10000 行的回表。外层只回表 50 次。</p>\n<p class=\"md-p\">方案 B：游标分页，适合信息流、订单列表、评论列表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, user_id, amount, created_at\nFROM orders\nWHERE user_id = 12345\n  AND (\n      created_at &lt; '2026-05-01 12:00:00'\n      OR (created_at = '2026-05-01 12:00:00' AND id &lt; 987654)\n  )\nORDER BY created_at DESC, id DESC\nLIMIT 50;</pre></div></section>\n<p class=\"md-p\">这里用 <code class=\"tok-inline\">(created_at, id)</code> 作为稳定游标，避免相同时间导致翻页重复或漏数据。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：能不能只说“加索引”？</strong></p>\n<p class=\"md-p\">问题分析：加索引只能减少排序和过滤成本，但 offset 仍然要跳过大量记录。</p>\n<p class=\"md-p\">知识点：扫描行数、回表、offset。</p>\n<p class=\"md-p\">答案：不能只说加索引。要说明深度分页的核心成本是扫描并丢弃 offset 行，优化要么减少回表，要么改成游标分页。</p>\n<p class=\"md-p\"><strong>变体 2：必须跳到第 1000 页怎么办？</strong></p>\n<p class=\"md-p\">问题分析：游标分页不适合任意页跳转。</p>\n<p class=\"md-p\">知识点：产品约束、搜索引擎、缓存。</p>\n<p class=\"md-p\">答案：限制最大跳页；使用延迟关联；对静态结果做快照；搜索类需求交给 ES；后台报表走离线导出。</p>\n<p class=\"md-p\"><strong>变体 3：为什么排序要加 id？</strong></p>\n<p class=\"md-p\">问题分析：<code class=\"tok-inline\">created_at</code> 可能重复，单独排序不稳定。</p>\n<p class=\"md-p\">知识点：稳定排序、游标边界。</p>\n<p class=\"md-p\">答案：用 <code class=\"tok-inline\">(created_at, id)</code> 组成唯一有序游标，避免翻页时重复或遗漏。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-85",
+      "number": 14,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "查询用户过去 30 天流水与索引设计",
+      "questionHtml": "<p class=\"md-p\">设计一张用户流水表，并查询某用户过去 30 天流水。要求说明索引如何建。</p>",
+      "analysisHtml": "<p class=\"md-p\">这是后端常见索引题。查询条件是“等值用户 + 时间范围”，典型联合索引场景。索引顺序应先放等值过滤字段，再放范围字段。</p>",
+      "knowledge": [
+        "联合索引最左前缀。",
+        "等值字段在前，范围字段在后。",
+        "覆盖索引可减少回表。",
+        "时间范围查询要避免对列使用函数。",
+        "大表按时间归档或分区要结合业务。"
+      ],
+      "answerHtml": "<p class=\"md-p\">表设计：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE user_transactions (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    user_id BIGINT NOT NULL,\n    amount DECIMAL(18, 2) NOT NULL,\n    direction TINYINT NOT NULL,\n    txn_time DATETIME NOT NULL,\n    biz_no VARCHAR(64) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_biz_no (biz_no),\n    KEY idx_user_time_id (user_id, txn_time DESC, id DESC)\n);</pre></div></section>\n<p class=\"md-p\">查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, user_id, amount, direction, txn_time, biz_no\nFROM user_transactions\nWHERE user_id = ?\n  AND txn_time &gt;= NOW() - INTERVAL 30 DAY\nORDER BY txn_time DESC, id DESC\nLIMIT 100;</pre></div></section>\n<p class=\"md-p\">索引解释：<code class=\"tok-inline\">user_id</code> 是等值条件，放第一位；<code class=\"tok-inline\">txn_time</code> 是范围和排序字段，放第二位；<code class=\"tok-inline\">id</code> 用于稳定排序和游标分页。</p>\n<p class=\"md-p\">更推荐传入应用层计算好的起始时间，避免每次 SQL 中计算：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE user_id = ?\n  AND txn_time &gt;= ?</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：如果查询所有用户过去 30 天流水汇总，索引怎么变？</strong></p>\n<p class=\"md-p\">问题分析：查询不再按单个用户过滤，而是按时间范围扫。</p>\n<p class=\"md-p\">知识点：索引顺序取决于查询条件。</p>\n<p class=\"md-p\">答案：增加 <code class=\"tok-inline\">idx_time_user(txn_time, user_id)</code>，用于按时间范围统计。不能指望 <code class=\"tok-inline\">(user_id, txn_time)</code> 高效支持没有 <code class=\"tok-inline\">user_id</code> 条件的查询。</p>\n<p class=\"md-p\"><strong>变体 2：流水表能不能更新？</strong></p>\n<p class=\"md-p\">问题分析：流水通常是账务事实，更新会破坏审计。</p>\n<p class=\"md-p\">知识点：不可变日志、冲正、审计。</p>\n<p class=\"md-p\">答案：流水尽量只追加不修改。错误流水用反向冲正记录修复，保留完整审计链路。</p>\n<p class=\"md-p\"><strong>变体 3：数据量过亿怎么办？</strong></p>\n<p class=\"md-p\">问题分析：单表过大影响索引高度、备份、DDL 和查询。</p>\n<p class=\"md-p\">知识点：冷热分离、归档、分库分表、分区。</p>\n<p class=\"md-p\">答案：按用户维度查询为主可按 <code class=\"tok-inline\">user_id</code> 分库分表；按时间归档为主可冷热分离；分区表能优化时间范围管理，但不能替代合理索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    },
+    {
+      "id": "database-86",
+      "number": 15,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "慢 SQL 排查流程",
+      "questionHtml": "<p class=\"md-p\">线上某接口突然变慢，怀疑是 MySQL 查询问题。你如何排查和优化慢 SQL？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是工程面试常问题。面试官看的是系统化排查能力，不是只会说 <code class=\"tok-inline\">EXPLAIN</code>。完整路径是先定位 SQL，再看执行计划，再结合数据量、索引、锁等待、返回行数和业务口径优化。</p>",
+      "knowledge": [
+        "慢查询日志：定位慢 SQL。",
+        "<code class=\"tok-inline\">EXPLAIN</code>：看访问类型、索引选择、扫描行数、Extra。",
+        "<code class=\"tok-inline\">EXPLAIN ANALYZE</code>：MySQL 8 可看实际执行耗时。",
+        "索引：过滤、排序、覆盖、回表。",
+        "锁等待：慢不一定是 SQL 写得差，也可能是等锁。",
+        "大结果集：网络传输和应用处理也会慢。"
+      ],
+      "answerHtml": "<p class=\"md-p\">排查步骤：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>从监控确认慢的是 DB、应用、网络还是下游。</li><li>打开慢查询日志或 APM，定位具体 SQL 和参数。</li><li>用相同参数执行 <code class=\"tok-inline\">EXPLAIN</code>，关注 <code class=\"tok-inline\">type</code>、<code class=\"tok-inline\">key</code>、<code class=\"tok-inline\">rows</code>、<code class=\"tok-inline\">Extra</code>。</li><li>看是否走了错误索引、全表扫描、filesort、temporary、回表过多。</li><li>检查表数据量、索引基数、统计信息是否过期。</li><li>检查是否有锁等待：事务未提交、批量更新、DDL。</li><li>优化 SQL：改写条件、增加/调整联合索引、减少返回列、分页、拆查询。</li><li>验证优化前后执行计划和耗时，灰度上线。</li></ol></div>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">EXPLAIN\nSELECT id, title\nFROM article\nWHERE tenant_id = 1\n  AND status = 'PUBLISHED'\nORDER BY created_at DESC\nLIMIT 20;</pre></div></section>\n<p class=\"md-p\">索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_tenant_status_created\nON article(tenant_id, status, created_at DESC, id DESC);</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">EXPLAIN</code> 中 type=ALL 一定很差吗？</strong></p>\n<p class=\"md-p\">问题分析：小表全表扫描可能比走索引更快。</p>\n<p class=\"md-p\">知识点：成本优化器、数据量。</p>\n<p class=\"md-p\">答案：不一定。要结合表大小、过滤比例和实际耗时。大表核心查询出现 <code class=\"tok-inline\">ALL</code> 通常需要警惕。</p>\n<p class=\"md-p\"><strong>变体 2：为什么明明有索引却没走？</strong></p>\n<p class=\"md-p\">问题分析：索引不一定被优化器选择。</p>\n<p class=\"md-p\">知识点：函数、隐式转换、选择性、统计信息。</p>\n<p class=\"md-p\">答案：可能对索引列用了函数、类型不匹配、like 前缀 <code class=\"tok-inline\">%</code>、条件选择性太低、统计信息过期，或返回大量行导致优化器认为全表扫更便宜。</p>\n<p class=\"md-p\"><strong>变体 3：慢 SQL 优化只靠加索引吗？</strong></p>\n<p class=\"md-p\">问题分析：索引不是万能药。</p>\n<p class=\"md-p\">知识点：SQL 改写、架构优化。</p>\n<p class=\"md-p\">答案：还包括减少查询列、拆分宽表、游标分页、预聚合、缓存、读写分离、归档历史数据和异步化。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  ]
+}

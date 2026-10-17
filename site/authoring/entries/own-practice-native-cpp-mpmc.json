@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-practice-native-cpp-mpmc",
+  "kind": "qa",
+  "module": "code",
+  "part": "代码手撕",
+  "category": "跨册场景补充",
+  "title": "原生C++：从单生产单消费扩展到多生产多消费",
+  "questions": [
+    {
+      "id": "q-own-practice-native-cpp-mpmc",
+      "question": "原生C++：从单生产单消费扩展到多生产多消费",
+      "shortAnswer": "先用同一把互斥锁保护队列、容量和关闭状态，再用两个条件变量等待“非空”和“非满”。单生产者仍与消费者共享队列元数据，因此通常仍需加锁；生产者数量只有一个并不消除数据竞争。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "原生C++：从单生产单消费扩展到多生产多消费"
+        },
+        {
+          "type": "paragraph",
+          "text": "先用同一把互斥锁保护队列、容量和关闭状态，再用两个条件变量等待“非空”和“非满”。单生产者仍与消费者共享队列元数据，因此通常仍需加锁；生产者数量只有一个并不消除数据竞争。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单生产单消费仍有共享状态：一个线程 put，另一个 take，都会碰到同一队列的元数据。满时生产者等待，空时消费者等待；wait 先释放互斥锁，返回前再取得锁，并重新检查谓词。这个重查同时应对伪唤醒、线程竞争和关闭，不能把循环换成 if。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若生产和消费各用一把互不协调的锁，同一 deque 的 size、节点和关闭状态就没有共同同步关系，仍会发生数据竞争。先解释共享了什么，再讨论专用 SPSC 设计的不同证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多生产多消费继续使用这一把锁和两个条件变量即可正确工作：每次入/出队在锁内完成，普通状态变化notify_one，close唤醒全部等待者。close禁止新写，但读者排空已入队数据后返回结束；所有线程退出前不能析构队列。线程实际拿到CPU的顺序、从take返回的顺序和队列线性化出队顺序不同，不能因此承诺调度公平。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面是完整C++17原生实现，类型固定int以避开任意用户类型移动/复制抛异常的额外合同。先运行SPSC，再SPMC，最后MPMC；测试验证6000个值无丢失无重复、SPSC的FIFO及关闭排空。它是阻塞队列，不是无锁算法，也没有用Java代码替代原生题目。"
+        },
+        {
+          "type": "code",
+          "language": "c++",
+          "label": "backend-scenarios 原语言代码 L3282–3370（完整围栏，未执行）",
+          "value": "#include <algorithm>\n#include <chrono>\n#include <condition_variable>\n#include <deque>\n#include <future>\n#include <iostream>\n#include <mutex>\n#include <optional>\n#include <stdexcept>\n#include <thread>\n#include <vector>\n\n// int values keep the queue contract independent of throwing user-defined moves.\nclass IntQueue {\n    const std::size_t capacity_;\n    std::deque<int> data_;\n    bool closed_ = false;\n    std::mutex mutex_;\n    std::condition_variable not_empty_, not_full_;\npublic:\n    explicit IntQueue(std::size_t capacity) : capacity_(capacity) {\n        if (capacity == 0) throw std::invalid_argument(\"positive capacity required\");\n    }\n    bool put(int value) {\n        std::unique_lock<std::mutex> guard(mutex_);\n        not_full_.wait(guard, [&]{ return closed_ || data_.size() < capacity_; });\n        if (closed_) return false;\n        data_.push_back(value);\n        guard.unlock();\n        not_empty_.notify_one();\n        return true;\n    }\n    std::optional<int> take() {\n        std::unique_lock<std::mutex> guard(mutex_);\n        not_empty_.wait(guard, [&]{ return closed_ || !data_.empty(); });\n        if (data_.empty()) return std::nullopt;\n        int value = data_.front(); data_.pop_front();\n        guard.unlock();\n        not_full_.notify_one();\n        return value;\n    }\n    void close() {\n        { std::lock_guard<std::mutex> guard(mutex_); closed_ = true; }\n        not_empty_.notify_all(); not_full_.notify_all();\n    }\n};\n\nstatic void check(bool value) { if (!value) throw std::runtime_error(\"check failed\"); }\n\nstatic void transfer(int producers, int consumers, int each) {\n    IntQueue queue(7);\n    std::mutex output_mutex;\n    std::vector<int> output;\n    std::vector<std::thread> readers, writers;\n    for (int c = 0; c < consumers; ++c) readers.emplace_back([&] {\n        while (auto value = queue.take()) {\n            std::lock_guard<std::mutex> guard(output_mutex);\n            output.push_back(*value);\n        }\n    });\n    for (int p = 0; p < producers; ++p) writers.emplace_back([&, p] {\n        for (int i = 0; i < each; ++i) check(queue.put(p * each + i));\n    });\n    for (auto& writer : writers) writer.join();\n    queue.close();\n    for (auto& reader : readers) reader.join();\n    if (producers == 1 && consumers == 1)\n        for (int i = 0; i < each; ++i) check(output.at(i) == i); // FIFO observation\n    std::sort(output.begin(), output.end());\n    check(output.size() == static_cast<std::size_t>(producers * each));\n    for (int i = 0; i < producers * each; ++i) check(output.at(i) == i);\n    check(!queue.put(1)); check(!queue.take());\n}\nint main() {\n    transfer(1, 1, 1000);  // SPSC\n    transfer(1, 3, 1000);  // SPMC: producer still uses the same mutex\n    transfer(4, 3, 1000);  // MPMC\n    IntQueue full(1); check(full.put(7));\n    auto blocked = std::async(std::launch::async, [&]{ return full.put(8); });\n    full.close();\n    check(blocked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);\n    check(!blocked.get()); check(full.take() == std::optional<int>(7)); check(!full.take());\n    IntQueue empty(1);\n    auto waiting = std::async(std::launch::async, [&]{ return empty.take(); });\n    empty.close();\n    check(waiting.wait_for(std::chrono::seconds(2)) == std::future_status::ready);\n    check(!waiting.get());\n    std::cout << \"PASS SPSC/SPMC/MPMC, 6000 values, FIFO and close/drain checks\\n\";\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "编译示例：g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -pthread native_bounded_queue.cpp。专门的SPSC环形缓冲可以让生产者独占tail、消费者独占head，并用正确的原子release/acquire发布数据；但扩展到MPMC还需处理槽位占有、序号、ABA和进度保证，不能仅把线程数增加就沿用SPSC证明。C/C++的volatile不提供所需线程间原子性与happens-before。"
+        }
+      ]
+    }
+  ]
+}

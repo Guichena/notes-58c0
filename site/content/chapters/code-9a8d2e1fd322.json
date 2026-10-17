@@ -1,0 +1,148 @@
+{
+  "entries": [
+    {
+      "id": "dbqa-1",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · SQL 手撕",
+      "title": "索引设计与执行计划",
+      "number": "4 问",
+      "items": [
+        {
+          "q": "<code class=\"tok-inline\">select * from tableA where a = 0 and b &lt; 1 and c = 2 order by d desc;</code> 这种 SQL，索引设计、执行计划和优化主线分别怎么讲？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>索引设计</b>：等值优先，范围收尾；排序字段要看前面的过滤会不会把索引顺序打断。<code class=\"tok-inline\">a = 0</code>、<code class=\"tok-inline\">c = 2</code> 这类等值通常放联合索引前面，比如 <code class=\"tok-inline\">(a, c, b)</code> 或 <code class=\"tok-inline\">(c, a, b)</code>；<code class=\"tok-inline\">b &lt; 1</code> 是范围，很多时候是这个索引还能高效利用的最后一列。</li><li><b>执行计划</b>：把 <code class=\"tok-inline\">d</code> 加到索引最后，不一定能顺手消掉 <code class=\"tok-inline\">order by d desc</code>。前面已经命中范围扫描时，后续列往往没法继续稳定利用索引顺序，计划里仍可能出现 <code class=\"tok-inline\">Using filesort</code>。要看 <code class=\"tok-inline\">EXPLAIN</code> 的 <code class=\"tok-inline\">key</code>、<code class=\"tok-inline\">type</code>、<code class=\"tok-inline\">rows</code>、<code class=\"tok-inline\">filtered</code>、<code class=\"tok-inline\">Extra</code>，确认用了什么索引、扫了多少行、有没有回表和排序。</li><li><b>优化主线</b>：能不 <code class=\"tok-inline\">select <i></code> 就尽量别 <code class=\"tok-inline\">select </i></code>，先收敛字段，提高覆盖索引概率。若 <code class=\"tok-inline\">b &lt; 1</code> 本质是少量离散状态，可改写成更利于索引的等值或小范围条件。大表且排序分页频繁时，要一起看分页方式、回表成本，以及业务上能不能改交互。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>索引建完还要靠执行计划和慢 SQL 数据验证是否真的生效。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>这条 SQL 分三层：等值在前、范围收尾定索引；用 EXPLAIN 核对计划；再收敛字段和深分页。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>等值优先范围收尾 / EXPLAIN 核对 / 少 select * / 大表排序分页</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "联合索引里，为什么总说“最左匹配”？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>有序方式</b>：联合索引底层是按多列组合排序的一棵 B+ 树。<code class=\"tok-inline\">(a, b, c)</code> 先按 <code class=\"tok-inline\">a</code> 排，相同 <code class=\"tok-inline\">a</code> 里再按 <code class=\"tok-inline\">b</code> 排，最后按 <code class=\"tok-inline\">c</code> 排。</li><li><b>逐步收窄</b>：想高效利用，至少要从最左边把搜索范围收窄。<code class=\"tok-inline\">where a = ?</code> 能走；<code class=\"tok-inline\">where a = ? and b = ?</code> 通常可以继续往下缩。</li><li><b>缺最左列</b>：直接 <code class=\"tok-inline\">where b = ?</code> 时最左列 <code class=\"tok-inline\">a</code> 缺失，优化器很难把搜索范围快速定位到局部区域。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>最左匹配来自索引本身的有序方式。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>最左匹配的本质是联合索引按多列排成一棵 B+ 树，搜索必须从最左列逐步收窄。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>多列组合排序 / 从最左收窄 / 缺最左难定位</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "AB 联合索引里 A 走吗、B 走吗，范围查询为什么经常把后面的列堵死？",
+          "a": "<p class=\"md-p\">假设索引是 <code class=\"tok-inline\">(a, b, c)</code>。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>条件</th><th>a</th><th>b</th><th>后续列</th></tr></thead><tbody><tr><td>where a = ? and b = ?</td><td>等值，一般高效利用</td><td>等值，一般也能高效利用</td><td>前面都是等值，范围还没出现</td></tr><tr><td>where a = ? and b &gt; ?</td><td>仍是等值</td><td>范围，往往成为高效利用的最后一列</td><td>通常不再保持可直接利用的局部有序</td></tr></tbody></table></div>\n<p class=\"md-p\">范围一出现，后面的列通常不能再像前面的等值列那样，稳定用于过滤、排序和快速定位。索引本身还在用。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要背成“范围后面的列彻底没用”；它们只是通常不能再稳定用于过滤、排序和快速定位。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>范围会打断后续列的高效索引利用：后面的列通常不能再稳定做过滤、排序和快速定位。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>等值两列都能用 / 范围成最后一列 / 后续失去局部有序</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "索引建了为什么 SQL 还是慢？",
+          "a": "<p class=\"md-p\">我会按这条链路查，而不是只看有没有索引：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>选择性</b>：选择性太差时，优化器会判断扫索引再回表，还不如直接全表扫。</li><li><b>SQL 写法</b>：索引列上做函数、隐式类型转换、前导模糊匹配，都会让索引用不上。</li><li><b>回表</b>：命中了索引，但回表成本太高，整体仍然慢。</li><li><b>排序与中间结果</b>：排序、分组、临时表、文件排序这些开销，有时才是主因。</li></ol></div>\n<p class=\"md-p\">落地要一起看执行计划、扫描行数、回表次数、SQL 写法、统计信息，以及真实慢点在哪。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>索引存在不等于优化器一定会选它，也不等于选了就一定快。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>要讲清楚索引为什么没帮上忙。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>索引在仍可能慢：优化器未必会选它，选了也不等于快，慢点要分开看。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>选择性太差 / 写法让索引失效 / 回表成本高 / 排序分组才是主因</p>",
+          "leadType": "v9:排障"
+        }
+      ],
+      "source": "八股面经整理 · 数据库手撕"
+    },
+    {
+      "id": "dbqa-2",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · SQL 手撕",
+      "title": "分页与大表查询",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "InnoDB 里每页 10 条，怎么查第 50 万页？",
+          "a": "<p class=\"md-p\">不能直接写 <code class=\"tok-inline\">limit 4999990, 10</code> 就结束。<code class=\"tok-inline\">limit offset, size</code> 在 offset 很大时，即使走索引，也可能先扫描并跳过前面大量记录；再回表成本更高。问题是这么写为什么不适合线上大表。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>游标分页</b>：基于主键或唯一有序列的 seek method，拿上一页最后一条 <code class=\"tok-inline\">id</code>，继续 <code class=\"tok-inline\">where id &gt; ? order by id limit 10</code>。连续翻页最友好，复杂度稳定。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：复杂度稳定。<i>适用场景</i>：连续翻页。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>覆盖索引定位主键，再回表拿详情</b>。</li><li><b>业务层避免深翻页</b>：限制页数、改成时间游标、搜索后下钻，或者导出走异步任务。</li></ol></div>\n<p class=\"md-p\">现场可以写延迟关联：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">select *\nfrom orders o\njoin (\n    select id\n    from orders\n    order by create_time, id   -- 走二级索引 (create_time, id)，覆盖索引不回表\n    limit 4999990, 10\n) t on o.id = t.id;</pre></div></section>\n<p class=\"md-p\">子查询只在二级索引 <code class=\"tok-inline\">(create_time, id)</code> 上扫描，覆盖索引不回表，定位到 10 个主键后再回表 10 次，比直接 <code class=\"tok-inline\">select * limit ...</code> 好一点。排序字段就是主键 <code class=\"tok-inline\">id</code> 时，聚簇索引叶子本身就是整行，延迟关联几乎没有收益，应直接用 <code class=\"tok-inline\">where id &gt; ? order by id limit 10</code>。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>更优的方案通常还是游标分页，而不是硬顶超大 offset。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>大偏移分页慢在先扫描并跳过大量记录；线上优先游标，延迟关联只是折中。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>大 offset 先跳过 / 游标 seek / 覆盖索引再回表 / 业务避免深翻页</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "深分页为什么慢，核心瓶颈到底是什么？",
+          "a": "<p class=\"md-p\">核心瓶颈不是返回那 10 条慢，而是为了拿到这 10 条，前面可能已经扫描并丢弃了几百万条候选。贵的是跳过，不是取到。</p>\n<p class=\"md-p\">查询还要回表、排序或者临时表时，成本会继续放大。深分页很多时候也要追问业务：用户是否真的需要自由跳到第 50 万页。很多场景下，改交互比强压数据库更合理。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>深分页贵在跳过：为拿到 10 条，前面可能已扫描并丢弃几百万条候选。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>贵在跳过 / 回表排序再放大 / 改交互往往更合理</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · 数据库手撕"
+    },
+    {
+      "id": "dbqa-3",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · SQL 手撕",
+      "title": "聚合、排序与 SQL 手写",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "SQL 里如何从一组数字中找出最大且不重复的数字？",
+          "a": "<p class=\"md-p\">表是 <code class=\"tok-inline\">numbers(num)</code> 时，先 <code class=\"tok-inline\">group by num</code> 统计每个数出现次数，再用 <code class=\"tok-inline\">having count(*) = 1</code> 筛出只出现一次的数字，最后对结果做 <code class=\"tok-inline\">max(num)</code>。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">select max(num) as max_unique_num\nfrom (\n    select num\n    from numbers\n    group by num\n    having count(*) = 1\n) t;</pre></div></section>\n<p class=\"md-p\">没有满足条件的数字时，结果是 <code class=\"tok-inline\">null</code>，业务层要决定怎么处理。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>数据量大时还要看什么？</b></p><p class=\"md-p\">聚合是否走覆盖索引，以及是否有临时表和排序开销。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>从一组数字取最大且不重复，本质是先筛只出现一次的值，再对这些值取 max。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>group by 计数 / having 留一次 / 外层取 max / 无结果为 null</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "给定订单表和商家表，查询每个商家的名称、品类、已完成订单数量和金额，并按总金额降序排列，SQL 怎么写？",
+          "a": "<p class=\"md-p\">我会先定口径：没有完成订单的商家要不要出现在结果里。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>全部商家都展示</b>：主表用商家表 <code class=\"tok-inline\">merchant(id, name, category)</code>，<code class=\"tok-inline\">LEFT JOIN</code> 订单表 <code class=\"tok-inline\">orders(id, merchant_id, status, amount)</code>，把“已完成”写进 <code class=\"tok-inline\">join</code> 条件，避免 <code class=\"tok-inline\">LEFT JOIN</code> 被打成 <code class=\"tok-inline\">INNER JOIN</code>。<code class=\"tok-inline\">count(o.id)</code> 统计完成单量，<code class=\"tok-inline\">coalesce(sum(o.amount), 0)</code> 把没有订单时的金额补成 0，再按总金额降序。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">select\n    m.name,\n    m.category,\n    count(o.id) as completed_order_count,\n    coalesce(sum(o.amount), 0) as completed_order_amount\nfrom merchant m\nleft join orders o\n    on m.id = o.merchant_id\n   and o.status = 'COMPLETED'\ngroup by m.id, m.name, m.category\norder by completed_order_amount desc;</pre></div></section>\n<p class=\"md-p\"><i>适用场景</i>：题目要求所有商家都展示。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>只要有完成订单的商家</b>：同一套聚合改成 <code class=\"tok-inline\">inner join</code>。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：题目明确只要有完成订单的商家。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>状态过滤写在 where 还是 join 里，结果语义可能完全不一样；写进 where 容易把 LEFT JOIN 打成 INNER JOIN。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>查询口径的本质是：零完成订单的商家留不留，决定主表、JOIN 和过滤条件写在哪。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>零完成单是否保留 / 条件写进 JOIN / 聚合与排序 / 只要有单改 INNER</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 数据库手撕"
+    },
+    {
+      "id": "dbqa-4",
+      "kind": "qa",
+      "mod": "code",
+      "part": "面经问答",
+      "cat": "面经 · SQL 手撕",
+      "title": "事务、锁与并发控制",
+      "number": "4 问",
+      "items": [
+        {
+          "q": "订单支付和关单并发冲突时，乐观锁落到数据库层的主线是什么？",
+          "a": "<p class=\"md-p\">支付和关单并发时，我用状态条件更新做主线：把当前订单状态写进 <code class=\"tok-inline\">where</code>，让状态迁移自己带上并发保护。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>支付成功</b>：只允许从 <code class=\"tok-inline\">UNPAID</code> 迁到 <code class=\"tok-inline\">PAID</code>。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">update orders\nset status = 'PAID', pay_time = now()\nwhere order_id = ? and status = 'UNPAID';</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>超时关单</b>：只允许从 <code class=\"tok-inline\">UNPAID</code> 迁到 <code class=\"tok-inline\">CLOSED</code>。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">update orders\nset status = 'CLOSED', close_time = now()\nwhere order_id = ? and status = 'UNPAID';</pre></div></section>\n<p class=\"md-p\">谁先更新成功，谁完成迁移；另一个操作的 <code class=\"tok-inline\">where</code> 失效，影响行数为 0。数据库据此就能判断发生了并发冲突。<i>适用场景</i>：订单支付、超时关单这类明确的状态迁移。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>这已经是一种轻量乐观锁，不一定非要额外加 version 字段。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>乐观锁落到库层的本质，是把当前状态写进 where，用条件更新挡住并发状态迁移。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>状态写入 where / 支付成功更新 / 超时关单更新 / 行数判断冲突</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "什么时候用状态条件更新就够了，什么时候才需要额外 version 字段？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方式</th><th>真正关心</th><th>适用</th></tr></thead><tbody><tr><td>状态条件更新</td><td>当前是不是还处在允许迁移的状态，不是记录被改了几次</td><td>明确状态机，如 UNPAID -&gt; PAID、UNPAID -&gt; CLOSED、CREATED -&gt; CANCELED</td></tr><tr><td>version 字段</td><td>并发下记录有没有被别人改过</td><td>多个字段可能被不同请求修改，状态不能完整代表并发语义</td></tr></tbody></table></div>\n<p class=\"md-p\">状态条件更新更适合状态机型业务，版本号更适合通用数据并发控制。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>状态条件更新看还能不能迁；version 看记录是否被并发改过，两者适用的业务不同。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>状态机用条件更新 / 通用更新用 version / 关心点不同</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "MySQL 什么时候容易死锁？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>加锁顺序交叉</b>：多个事务获取资源的顺序不一致。事务 A 先锁记录 1 再锁记录 2，事务 B 先锁记录 2 再锁记录 1，最后互相等待。</li><li><b>RR 范围锁冲突</b>：RR 隔离级别下，一个事务做范围当前读或范围更新，另一个事务又试图在这个区间插入或修改记录。</li></ol></div>\n<p class=\"md-p\"><b>规避我会这样做</b>：统一加锁顺序；尽量走索引、缩小锁范围；减少长事务，大事务拆小；避免把慢 RPC 或复杂业务逻辑包在事务里。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先对上是顺序交叉还是范围锁冲突，再用统一顺序、索引和短事务把锁收住。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MySQL 死锁主要来自两类：加锁顺序交叉互相等待，以及 RR 下范围锁和区间插入修改冲突。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>加锁顺序交叉 / RR 范围锁冲突 / 顺序索引缩事务</p>",
+          "leadType": "v9:原理/排障"
+        },
+        {
+          "q": "间隙锁和 next-key lock，到底锁的是什么？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>间隙锁</b>：锁的不是某一行，而是索引记录之间的空隙。</li><li><b>next-key lock</b>：可以理解成“记录锁 + 前方间隙锁”的组合。</li><li><b>为什么锁</b>：在 RR 隔离级别下避免幻读，防止别的事务在已经锁住的区间里插入新记录。</li><li><b>锁的对象</b>：锁的是索引区间。SQL 没有命中合适索引时，锁范围可能会被放大，问题也会更明显。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要理解成锁了抽象意义上的“整张表某一段逻辑范围”；没命中合适索引，锁范围会被放大。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>间隙锁锁索引空隙，next-key lock 是记录锁加前方间隙，在 RR 下防止区间内插入。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>间隙锁锁空隙 / 记录锁加前方间隙 / 目标是防幻读 / 未走索引会放大</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · 数据库手撕"
+    }
+  ]
+}

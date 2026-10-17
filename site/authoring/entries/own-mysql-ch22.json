@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch22",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 实际访问路径决定锁范围",
+  "title": "实际访问路径决定锁范围",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s2288",
+      "order": 2288,
+      "question": "键 1 到 10，查询 6 到 9 后，9 到 10 之间能否插入？",
+      "shortAnswer": "只给口述区间不能确定，必须补齐数据类型、唯一性、完整谓词、索引和隔离级别；唯一整数域里甚至没有 9.5 这个候选。next-key 通常写成左开右闭，一把 (8,9] 不覆盖 (9,10)，但事务还可能持有后续 gap 或其他锁。应对每个插入值独立观察计划和真实锁集合，不能预填猜测结果。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "实验三 现有键 1 到 10 查询 6 到 9"
+        },
+        {
+          "type": "paragraph",
+          "text": "“搜 6–9，锁住 [6,9)，那么 9–10 还能插吗？”没有足够信息给唯一答案。标准 next-key 的表示通常是左开右闭，不是天然 [6,9)。若键是唯一 INT，9 与 10 之间没有可表示的新整数；插入 9.5 必须先换成允许小数的域。若是普通索引，重复 9 又要同时给新主键，这与插 9.5 不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "range_probe 因此明确采用 DECIMAL(4,1) 的非唯一索引，初始 k 恰为 1,2,…,10。下面两种条件必须分别进行，不能合并为一个“6–9”结论："
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "code/ch22/fence-082.sql",
+          "value": "-- A：每个条件分别开新事务。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT * FROM range_probe FORCE INDEX(ix_k) WHERE k>=6 AND k<9 FOR UPDATE;\n-- 本组结束 ROLLBACK 后再另开事务执行：\n-- SELECT * FROM range_probe FORCE INDEX(ix_k) WHERE k BETWEEN 6 AND 9 FOR UPDATE;\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "A 查询返回后保持锁。B 每次只试一个值，并独立 START TRANSACTION / ROLLBACK："
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "code/ch22/fence-083.sql",
+          "value": "INSERT INTO range_probe VALUES(100,5.5);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,6.5);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,8.5);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,9.0);\n-- 下一次独立事务：INSERT INTO range_probe VALUES(100,9.5);\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "为避免某个被阻塞的探针影响下一次，每个值都完整重建 A 的事务；如果 B 等待则由 O 记录并释放 A，B 成功后回滚，接着重做 A 再测下一值。得到的实验表应包含完整 A SQL、B 完整元组、执行计划、INDEX_NAME、LOCK_MODE、LOCK_DATA、结果和 VERSION，空白处留待实际执行填写，不预填猜测值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果确实观察到一把 (8,9]，它本身不覆盖 (9,10)；但全事务还可能持有 10 前 gap、其他 next-key 或聚簇索引锁，所以不能据“一把锁”证明 9.5 可插。比较唯一/普通索引、RR/RC、普通 SELECT/锁定读时，每次都改变一个明确条件。该推导方法能回答题目已有部分，也保留精确锁集合不可从口述恢复的边界。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "dbqa-4",
+          "label": "间隙锁和 next-key lock，到底锁的是什么？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s2317",
+      "order": 2317,
+      "question": "FOR UPDATE、NOWAIT 和 SKIP LOCKED 该怎样使用？",
+      "shortAnswer": "FOR UPDATE 适合在同一短事务中读当前值、校验再修改，事务结束后旧判断不再受保护。MySQL 8.4 的 NOWAIT 对冲突行锁立即失败，SKIP LOCKED 跳过锁住的行，适合任务分派，却不能证明完整集合或不存在其他记录。它们不免除 MDL 等等待，外层锁定子句也不会自动锁住未加锁的子查询。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "FOR UPDATE 的作用和使用代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "FOR UPDATE 适合在同一短事务中先读当前数据、校验，再修改。锁释放后再依赖旧判断，保护已经失效；外层查询的锁定子句也不会自动替未加锁的子查询锁住所有表。跨行业务约束应让所有写路径遵守共同守卫行或完整冲突集合的协议，再重新检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MySQL 8.4 的 NOWAIT 遇到冲突行锁可立即失败；SKIP LOCKED 跳过被锁行，适合多个消费者分派队列任务。它得到的集合不完整，不能用于“所有库存都查过”“不存在其他任务”的证明；它们针对行级锁，不保证免于 MDL 等其他等待，并有复制格式限制。MySQL 5.7 教学背景不能直接使用这两项语法。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-2",
+          "label": "<code class=\"tok-inline\">select</code> 查询的时候会加锁吗？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-frame-instruction",
+  "kind": "qa",
+  "module": "code",
+  "part": "代码手撕",
+  "category": "语言与解析实现",
+  "title": "条件化手写：隐藏包裹内容，只展示调用帧中的 instruction",
+  "questions": [
+    {
+      "id": "q-own-algo-frame-instruction",
+      "question": "条件化手写：隐藏包裹内容，只展示调用帧中的 instruction",
+      "shortAnswer": "先明确隐藏边界、字段格式和失败规则，再写增量状态机。下面约定一个可测试的教学字符协议，实现“隐藏包裹内容”和“只展示 instruction”两条规则。它不是 MCP 标准线格式、JSON-RPC 解析器或真实工具执行器；实际题目采用其他分隔符或消息 Schema 时，需要替换协议层并重新验证。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "条件化手写：隐藏包裹内容，只展示调用帧中的 instruction"
+        },
+        {
+          "type": "paragraph",
+          "text": "先明确隐藏边界、字段格式和失败规则，再写增量状态机。下面约定一个可测试的教学字符协议，实现“隐藏包裹内容”和“只展示 instruction”两条规则。它不是 MCP 标准线格式、JSON-RPC 解析器或真实工具执行器；实际题目采用其他分隔符或消息 Schema 时，需要替换协议层并重新验证。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先约定字符、分隔符和优先级"
+        },
+        {
+          "type": "paragraph",
+          "text": "输入是已经正确解码的 Java 字符流，长度按 UTF-16 code unit 计算，与字节数、Unicode 码点数不同。网络 UTF-8 输入应先经过保留跨字节块状态的增量解码器，不能逐个网络块独立转字符串；本实现接收的字符块可以切在标签、长度数字或代理项对中间，顺序拼接后的字符内容保持不变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通文本原样展示。<hide> 与 </hide> 包裹的内容隐藏，允许同类标签嵌套，深度受 maxDepth 限制。普通文本和隐藏区中的反斜杠只转义紧跟的一个 UTF-16 单元：例如 <hide> 展示字面量 <hide>，不会开启隐藏区；隐藏区内 </hide> 也不会提前关闭。标签前缀跨块保留，不能用对每块分别执行的正则替换。"
+        },
+        {
+          "type": "paragraph",
+          "text": "调用帧采用自定义格式 <mcp>M:I:metadataInstruction</mcp>：M、I 是非负十进制长度，分别表示 metadata 和 instruction 的 UTF-16 单元数，两段字段紧接在第二个冒号之后。数字最多十位，M+I 不超过 maxFrameUnits；不接受空长度、符号、空白或超预算长度。字段按长度读取，里面的尖括号、反斜杠和标签字符串都是普通数据，不再解释转义、嵌套或工具调用；instruction 中两个字符的反斜杠加 n 仍是这两个字符，不转换成换行，真正换行需作为字段中的一个字符计数。这里的字段名只是教学含义，不能拿这套格式去连接真实 MCP 服务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如 <mcp>4:3:metaRUN</mcp> 只展示 RUN。metadata 丢弃，instruction 最多缓冲到帧上限，完整匹配结束标签后才提交给输出端；坏帧或缺失结束标签不能泄露尚未验证的 instruction。隐藏区只识别 hide 标签的嵌套与字符转义，形似 MCP 的正文直接隐藏，不要求它构成合法调用帧；包裹隐藏优先。只有可见文本区中的 <mcp> 才开启调用帧解析。输出只是一段不可信展示文本，不能再次当作系统指令或授权工具调用执行。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "EOF、失败和资源合同"
+        },
+        {
+          "type": "paragraph",
+          "text": "未匹配的关闭标签报错；其他不构成标签的文本按普通字符处理。EOF 时仍有可能的标签前缀、悬空反斜杠、未闭合隐藏区、未完成帧或结束标签，一律报错，不猜测补全。成功 finish 可重复调用；成功结束后或发生解析/输出错误后不能再 feed。feed 接收空块，调用者保证 CharSequence 在调用期间不被并发修改。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实现限于单线程，且拒绝同一线程从输出回调重入 feed 或 finish。公共入口先检查进行中标记，再做任何状态改变或成功 finish 的幂等返回；最外层调用用 finally 释放标记。重入尝试只抛清晰的 IllegalStateException，不改解析状态；输出端若自行捕获该拒绝，原外层操作可以继续；若未捕获，异常经输出端传播，使外层解析器进入永久失败状态。这个检查不是多线程同步，不能据此声称线程安全。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不持有输入全文；隐藏正文和 metadata 不保存，只有短标签前缀与有上限的 instruction 缓冲。另设累计输出上限。完整帧在输出前检查剩余配额，因此配额不足时不输出这一帧；输出端抛出 IOException 或运行时异常时原样传播并使解析器永久失败。已经输出的普通文本或输出端出错前写出的前缀无法撤回，这不是事务型输出。若业务要求整条消息全有或全无，应另用有容量上限的暂存或外部事务协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "解析器不关闭、不刷新调用者提供的 Appendable。调用者负责输入读取、UTF-8 解码、网络超时/取消、sink 背压和资源回收；内部缓冲有界不等于外部队列或 StringBuilder sink 自动有界。没有授权执行工具，也不验证真实 MCP 的身份、协议版本或 Schema。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "ConditionalStream.java 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.io.IOException;\nimport java.util.Objects;\n\n/** Thread-confined teaching protocol, NOT the MCP wire protocol. UTF-16 units. */\npublic final class ConditionalStream {\n    private static final String HIDE = \"<hide>\", END_HIDE = \"</hide>\", MCP = \"<mcp>\", END_MCP = \"</mcp>\";\n    private enum State { TEXT, META_LENGTH, INSTRUCTION_LENGTH, META, INSTRUCTION, END }\n    private final Appendable sink;\n    private final int maxFrameUnits, maxDepth;\n    private final long maxOutputUnits;\n    private final StringBuilder pending = new StringBuilder();\n    private final StringBuilder instruction = new StringBuilder();\n    private State state = State.TEXT;\n    private int depth, length, digits, metaLeft, instructionLeft, endIndex;\n    private boolean escaped, failed, finished, inPublicCall;\n    private long emitted;\n\n    public ConditionalStream(Appendable sink, int maxFrameUnits, int maxDepth, long maxOutputUnits) {\n        this.sink = Objects.requireNonNull(sink);\n        if (maxFrameUnits < 0 || maxFrameUnits > 1_048_576 || maxDepth < 1 || maxOutputUnits < 0)\n            throw new IllegalArgumentException(\"frame=0..1Mi units, depth>=1, output>=0 required\");\n        this.maxFrameUnits = maxFrameUnits;\n        this.maxDepth = maxDepth;\n        this.maxOutputUnits = maxOutputUnits;\n    }\n    private IOException malformed(String why) { return new IOException(\"teaching stream: \" + why); }\n    private void rejectReentrancy() {\n        if (inPublicCall) throw new IllegalStateException(\"reentrant feed/finish call\");\n    }\n    private void active() {\n        if (failed || finished) throw new IllegalStateException(failed ? \"failed stream\" : \"finished stream\");\n    }\n    private void emit(char c) throws IOException {\n        if (emitted == maxOutputUnits) throw malformed(\"output budget exceeded\");\n        // Reserve before the call: a failing sink may already have written a prefix.\n        emitted++;\n        sink.append(c);\n    }\n    private void literal(char c) throws IOException { if (depth == 0) emit(c); }\n    private void text(char c) throws IOException {\n        pending.append(c);\n        while (pending.length() != 0) {\n            char first = pending.charAt(0);\n            if (escaped) { pending.deleteCharAt(0); escaped = false; literal(first); continue; }\n            if (first == '\\\\') { pending.deleteCharAt(0); escaped = true; continue; }\n            if (first != '<') { pending.deleteCharAt(0); literal(first); continue; }\n            String token = pending.toString();\n            if (token.equals(END_MCP)) {\n                if (depth == 0) throw malformed(\"unmatched frame close\");\n                pending.setLength(0); return;\n            }\n            if (token.equals(HIDE)) {\n                if (depth == maxDepth) throw malformed(\"hide depth exceeded\");\n                depth++; pending.setLength(0); return;\n            }\n            if (token.equals(END_HIDE)) {\n                if (depth == 0) throw malformed(\"unmatched hide close\");\n                depth--; pending.setLength(0); return;\n            }\n            if (token.equals(MCP)) {\n                if (depth != 0) { pending.setLength(0); return; }\n                state = State.META_LENGTH; length = digits = 0;\n                pending.setLength(0); return;\n            }\n            if (HIDE.startsWith(token) || END_HIDE.startsWith(token) || MCP.startsWith(token) || END_MCP.startsWith(token)) return;\n            pending.deleteCharAt(0); literal('<');\n        }\n    }\n    private int number(char c) throws IOException {\n        if (c == ':') {\n            if (digits == 0) throw malformed(\"empty length\");\n            return length;\n        }\n        if (c < '0' || c > '9' || digits == 10) throw malformed(\"invalid length\");\n        int digit = c - '0';\n        if (length > (maxFrameUnits - digit) / 10 || digit > maxFrameUnits)\n            throw malformed(\"length exceeds frame budget\");\n        length = length * 10 + digit;\n        if (length > maxFrameUnits) throw malformed(\"length exceeds frame budget\");\n        digits++;\n        return -1;\n    }\n    private void afterHeader() {\n        state = metaLeft > 0 ? State.META : instructionLeft > 0 ? State.INSTRUCTION : State.END;\n        endIndex = 0;\n    }\n    private void accept(char c) throws IOException {\n        switch (state) {\n            case TEXT -> text(c);\n            case META_LENGTH -> {\n                int n = number(c);\n                if (n >= 0) { metaLeft = n; length = digits = 0; state = State.INSTRUCTION_LENGTH; }\n            }\n            case INSTRUCTION_LENGTH -> {\n                int n = number(c);\n                if (n >= 0) {\n                    if (n > maxFrameUnits - metaLeft) throw malformed(\"combined frame budget exceeded\");\n                    instructionLeft = n; instruction.setLength(0); afterHeader();\n                }\n            }\n            case META -> { if (--metaLeft == 0) afterHeader(); }\n            case INSTRUCTION -> {\n                instruction.append(c);\n                if (--instructionLeft == 0) { state = State.END; endIndex = 0; }\n            }\n            case END -> {\n                if (c != END_MCP.charAt(endIndex++)) throw malformed(\"invalid frame close\");\n                if (endIndex == END_MCP.length()) {\n                    if (instruction.length() > maxOutputUnits - emitted) throw malformed(\"output budget exceeded\");\n                    for (int i = 0; i < instruction.length(); i++) emit(instruction.charAt(i));\n                    instruction.setLength(0); state = State.TEXT;\n                }\n            }\n        }\n    }\n    public void feed(CharSequence chunk) throws IOException {\n        rejectReentrancy();\n        active(); Objects.requireNonNull(chunk);\n        inPublicCall = true;\n        try { for (int i = 0; i < chunk.length(); i++) accept(chunk.charAt(i)); }\n        catch (IOException | RuntimeException error) { failed = true; throw error; }\n        finally { inPublicCall = false; }\n    }\n    public void finish() throws IOException {\n        rejectReentrancy();\n        if (finished) return;\n        active();\n        inPublicCall = true;\n        try {\n            if (state != State.TEXT || pending.length() != 0 || escaped || depth != 0)\n                throw malformed(\"incomplete frame/delimiter/escape/hide at EOF\");\n            finished = true;\n        } catch (IOException | RuntimeException error) { failed = true; throw error; }\n        finally { inPublicCall = false; }\n    }\n    public long emittedUnits() { return emitted; }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "ConditionalStreamTest.java 完整测试"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.io.IOException;\nimport java.util.Random;\n\npublic final class ConditionalStreamTest {\n    private static long checks;\n    private static void eq(Object a,Object b) { checks++; if (!a.equals(b)) throw new AssertionError(a+\" != \"+b); }\n    private static String frame(String meta,String text) { return \"<mcp>\"+meta.length()+\":\"+text.length()+\":\"+meta+text+\"</mcp>\"; }\n    private static String run(String text,int split) throws IOException {\n        StringBuilder out=new StringBuilder(); ConditionalStream p=new ConditionalStream(out,1024,8,10000);\n        p.feed(text.substring(0,split)); p.feed(\"\"); p.feed(text.substring(split)); p.finish();p.finish();return out.toString();\n    }\n    private static void allSplits(String input,String expected) throws IOException {\n        for(int k=0;k<=input.length();k++) eq(run(input,k),expected);\n        StringBuilder out=new StringBuilder();ConditionalStream p=new ConditionalStream(out,1024,8,10000);\n        for(int k=0;k<input.length();k++)p.feed(input.substring(k,k+1));p.finish();eq(out.toString(),expected);\n    }\n    private static void bad(String input,int frame,int depth,long output) throws Exception {\n        ConditionalStream p=new ConditionalStream(new StringBuilder(),frame,depth,output);\n        try {p.feed(input);p.finish();throw new AssertionError(\"accepted: \"+input);}\n        catch(IOException expected){checks++;}\n        try {p.feed(\"x\");throw new AssertionError(\"continued failed parser\");}\n        catch(IllegalStateException expected){checks++;}\n    }\n    private static void reentrancy(boolean frameOutput, boolean callFinish, boolean caught) throws Exception {\n        ConditionalStream[] owner = new ConditionalStream[1];\n        IllegalStateException[] guard = new IllegalStateException[1];\n        StringBuilder written = new StringBuilder();\n        Appendable sink = new Appendable() {\n            boolean called;\n            public Appendable append(char c) throws IOException {\n                written.append(c);\n                if (!called) {\n                    called = true;\n                    try {\n                        if (callFinish) owner[0].finish(); else owner[0].feed(\"z\");\n                        throw new AssertionError(\"reentrant public call succeeded\");\n                    } catch (IllegalStateException error) {\n                        guard[0] = error;\n                        eq(error.getMessage(), \"reentrant feed/finish call\");\n                        if (!caught) throw error;\n                    }\n                }\n                return this;\n            }\n            public Appendable append(CharSequence s) throws IOException {\n                for (int i=0;i<s.length();i++) append(s.charAt(i)); return this;\n            }\n            public Appendable append(CharSequence s,int a,int b) throws IOException {\n                return append(s.subSequence(a,b));\n            }\n        };\n        owner[0] = new ConditionalStream(sink,100,8,100);\n        String input = frameOutput ? frame(\"meta\",\"AB\") : \"AB\";\n        if (caught) {\n            owner[0].feed(input); owner[0].finish(); owner[0].finish();\n            eq(written.toString(),\"AB\"); eq(owner[0].emittedUnits(),2L);\n        } else {\n            try { owner[0].feed(input); throw new AssertionError(\"callback error swallowed\"); }\n            catch (IllegalStateException error) { eq(error,guard[0]); }\n            eq(written.toString(),\"A\");\n            try { owner[0].feed(\"x\"); throw new AssertionError(\"failed parser reused\"); }\n            catch (IllegalStateException error) { eq(error.getMessage(),\"failed stream\"); }\n            try { owner[0].finish(); throw new AssertionError(\"failed parser finished\"); }\n            catch (IllegalStateException error) { eq(error.getMessage(),\"failed stream\"); }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        allSplits(\"\",\"\");allSplits(\"hello\", \"hello\");\n        allSplits(\"a<hide>secret<hide>nested</hide>end</hide>b\",\"ab\");\n        allSplits(\"A\\\\<hide>literal\\\\</hide>B\", \"A<hide>literal</hide>B\");\n        allSplits(\"A<hide>secret\\\\</hide>still hidden</hide>B\",\"AB\");\n        allSplits(\"x\"+frame(\"private\",\"only instruction\")+\"z\",\"xonly instructionz\");\n        allSplits(frame(\"<hide>\",\"</mcp><hide>\\\\\"),\"</mcp><hide>\\\\\");\n        allSplits(\"<hide>\"+frame(\"meta\",\"must not leak\")+\"</hide>ok\",\"ok\");\n        allSplits(frame(\"\",\"\")+frame(\"\",\"😀中文\"),\"😀中文\");\n        allSplits(\"<hide><mcp>not a valid frame: \\\"instruction\\\":\\\"secret\\\"</mcp></hide>ok\",\"ok\");\n        allSplits(frame(\"meta\",\"a\\\\nb\\\\<hide>\"),\"a\\\\nb\\\\<hide>\");\n        allSplits(\"<<x><hi!>\\\\\\\\\", \"<<x><hi!>\\\\\");\n        String complete=frame(\"metadata\",\"instruction\");\n        for(int k=1;k<complete.length();k++)bad(complete.substring(0,k),1024,8,1000);\n        for(String s:new String[]{\"<hide>\",\"</hide>\",\"</mcp>\",\"\\\\\",\"<hi\",\"<mcp>:0:</mcp>\",\n                \"<mcp>-1:0:</mcp>\",\"<mcp>00000000000:0:</mcp>\",\"<mcp>9999999999:0:\",\n                \"<mcp>0:1:x</mcp!>\",\"<mcp>0:0:x</mcp>\"})bad(s,1024,8,1000);\n        bad(\"<hide><hide>x</hide></hide>\",1024,1,1000);\n        bad(frame(\"ab\",\"cd\"),3,8,1000);bad(\"ab\",1024,8,1);bad(frame(\"\",\"abc\"),1024,8,2);\n        StringBuilder delayed=new StringBuilder();ConditionalStream parser=new ConditionalStream(delayed,100,8,100);\n        parser.feed(\"before<mcp>0:3:abc</mcp\");eq(delayed.toString(),\"before\");parser.feed(\">\");parser.finish();eq(delayed.toString(),\"beforeabc\");\n        StringBuilder partial=new StringBuilder();ConditionalStream fail=new ConditionalStream(partial,100,8,100);\n        fail.feed(\"ok<mcp>0:6:secret\");try{fail.finish();throw new AssertionError();}catch(IOException expected){checks++;}eq(partial.toString(),\"ok\");\n        StringBuilder zero=new StringBuilder();ConditionalStream zp=new ConditionalStream(zero,0,1,0);zp.feed(frame(\"\",\"\"));zp.finish();eq(zero.toString(),\"\");\n        IOException sentinel=new IOException(\"sink failed\");Appendable broken=new Appendable(){\n            public Appendable append(char c)throws IOException{throw sentinel;}\n            public Appendable append(CharSequence s)throws IOException{throw sentinel;}\n            public Appendable append(CharSequence s,int a,int b)throws IOException{throw sentinel;}};\n        ConditionalStream bp=new ConditionalStream(broken,100,8,100);\n        try{bp.feed(\"x\");throw new AssertionError();}catch(IOException e){eq(e,sentinel);}\n        try{bp.feed(\"y\");throw new AssertionError();}catch(IllegalStateException expected){checks++;}\n        // Independent expected output is assembled by a grammar generator, not by parsing input.\n        Random random=new Random(713);\n        for(int trial=0;trial<2000;trial++) {\n            StringBuilder input=new StringBuilder(),expected=new StringBuilder();\n            for(int j=0;j<20;j++)switch(random.nextInt(4)){\n                case 0->{String s=\"t\"+random.nextInt(100);input.append(s);expected.append(s);}\n                case 1->input.append(\"<hide>s<hide>t</hide>u</hide>\");\n                case 2->{String s=\"i\"+random.nextInt(100);input.append(frame(\"secret\",s));expected.append(s);}\n                case 3->{input.append(\"\\\\<hide>\");expected.append(\"<hide>\");}\n            }\n            StringBuilder actual=new StringBuilder();ConditionalStream p=new ConditionalStream(actual,100,8,10000);\n            for(int pos=0;pos<input.length();){int next=Math.min(input.length(),pos+1+random.nextInt(9));p.feed(input.subSequence(pos,next));pos=next;}\n            p.finish();eq(actual.toString(),expected.toString());\n        }\n        StringBuilder written=new StringBuilder();Appendable partialSink=new Appendable(){\n            public Appendable append(char c)throws IOException{if(written.length()==1)throw sentinel;written.append(c);return this;}\n            public Appendable append(CharSequence s)throws IOException{for(int i=0;i<s.length();i++)append(s.charAt(i));return this;}\n            public Appendable append(CharSequence s,int a,int b)throws IOException{return append(s.subSequence(a,b));}};\n        ConditionalStream sp=new ConditionalStream(partialSink,100,8,100);\n        try{sp.feed(frame(\"m\",\"abc\"));throw new AssertionError();}catch(IOException e){eq(e,sentinel);}\n        eq(written.toString(),\"a\");try{sp.finish();throw new AssertionError();}catch(IllegalStateException expected){checks++;}\n        for (boolean frameOutput : new boolean[]{false,true})\n            for (boolean callFinish : new boolean[]{false,true})\n                for (boolean caught : new boolean[]{false,true}) reentrancy(frameOutput,callFinish,caught);\n        System.out.println(\"ConditionalStreamTest PASS checks=\"+checks+\", generated=2000; no MCP interoperability claim\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "复杂度与验证边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "设输入有 N 个 UTF-16 单元，输出有 K 个单元，instruction 配额为 F。标签长度为固定常数，每个输入单元只做有界标签匹配或状态推进，每个输出单元写出一次；解析与输出调用次数为 O(N+K)，这里 K 不超过 N，所以为 O(N)，不包含外部 sink 的阻塞耗时。内部辅助空间 O(F)，隐藏嵌套只保存深度计数；没有为隐藏正文或 metadata 累计内存。调用者的输入块、sink 或落盘存储另计。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试对代表输入枚举每一个两块切点，并逐字符送入；覆盖嵌套、转义、帧字段含标签、隐藏区中的调用帧、空字段、中文和代理项对、每个不完整帧前缀、非法长度与结束标签、深度/帧/输出上限、输出失败和失败后拒绝继续。回调重入回归覆盖普通文本输出和帧提交期间分别调用 feed/finish，且区分输出端捕获与未捕获拒绝的八种组合。另由独立语法生成器同时生成输入与期望输出，随机切块跑 2000 组，期望值不调用被测解析器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "将两份代码分别保存为 ConditionalStream.java 和 ConditionalStreamTest.java。在完整 JDK 21 环境中，用 javac -encoding UTF-8 -Xlint:all -Werror ConditionalStream.java ConditionalStreamTest.java 编译，再运行 java ConditionalStreamTest。测试验证的是上述教学字符协议；网络 UTF-8 增量解码、真实 MCP 适配、生产负载和整条流的事务性输出，需要各自补充验证。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        }
+      ],
+      "tags": [
+        "Java",
+        "后端与 Agent 实现"
+      ]
+    }
+  ]
+}

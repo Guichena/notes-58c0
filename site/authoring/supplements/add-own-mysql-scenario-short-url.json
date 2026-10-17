@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-scenario-short-url",
+  "entryId": "scenario-short-url",
+  "expectedOriginalHash": "097acb7f05ea5f428925ac6f7c8b484505e2f14643f34ef487a65cc8e2796ea7",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "短码到长链接的映射表怎么设计？哈希冲突、自定义码、有效期和并发写怎样处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "短链表以域名和短码的唯一约束裁决冲突，并分别处理请求幂等、过期撤销、大小写规则和缓存失效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：短码到长链接的映射表怎么设计？哈希冲突、自定义码、有效期和并发写怎样处理？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "核心schema与索引"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例short_links(id,domain_id,code,target_url,owner_id,status,expires_at,version,created_at)，UNIQUE(domain_id,code)决定短码在域名范围内唯一；code使用明确定义的大小写比较规则，若Base62区分大小写却使用不区分大小写collation会错误冲突。跳转按domain+code点查，管理列表可按owner_id和创建时间另建索引。"
+    },
+    {
+      "type": "paragraph",
+      "text": "target_url可很长，不宜为了去重直接给全URL建立无界宽唯一索引。若业务要求同一用户同URL幂等生成，可用规范化策略、摘要及原URL复核，明确查询参数顺序、大小写和编码是否可变，避免错误规范化改变目标语义。不同用户是否复用同短码是业务决定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "写入竞争与状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "新生成短码执行带唯一约束的INSERT，遇冲突生成另一码或确认已存在的幂等请求；禁止用REPLACE/无条件UPSERT把别人的短码目标覆盖。自定义码冲突应返回已占用，不能后台悄悄随机改码。请求幂等键和业务结果同事务记录，重试不能不断新建多个短链。"
+    },
+    {
+      "type": "paragraph",
+      "text": "expires_at使用明确时区，永久有效用NULL或约定独立状态，读取时判断status与过期，而非仅等后台物理删除。封禁/过期码是否允许再次分配要谨慎：旧用户手中的链接可能跳到新所有者，通常需保留墓碑/禁止近期复用。即使数据库中的URL已通过生成时检测，跳转时仍需按最新封禁/安全策略核验。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "缓存、扩容和验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存值带版本与有效期，TTL不得越过expires_at；状态撤销需失效或权威复核，不能让缓存延长恶意链接寿命。分片路由按短码/域稳定定位，唯一性要与路由一致；跨分片的自定义码唯一性不能靠每片各自UNIQUE保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试并发相同短码、重复请求、哈希碰撞、Base62大小写、NULL有效期、边界时间、封禁后旧缓存、超长URL和迁移旧路由。记录创建失败重试上限与占用率，短码空间接近满时随机重试成本会上升。题目未给真实表结构，这些是独立设计及理由。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

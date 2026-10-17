@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-weekly-report",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "两小时自动周报怎样按事件、时区和任务状态生成可核对产物？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-weekly-report",
+      "order": 6245,
+      "question": "两小时自动周报怎样按事件、时区和任务状态生成可核对产物？",
+      "shortAnswer": "先固定本地输入、周范围、去重和重开语义，确定性聚合后生成可追溯 Markdown；发送和调度另行授权实现。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "两小时 AI Coding 如何做出可运行、可核对的自动周报系统"
+        },
+        {
+          "type": "paragraph",
+          "text": "自动周报应先固定时间范围、输入口径和去重规则，用确定性代码完成汇总与可追溯报告，再考虑模型润色和定时发送；两小时内优先交付这条完整路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 限时两小时，实现一个自动汇报周报的系统，你先做什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 周报从哪些数据生成，跨时区、重复记录和任务重新打开怎样处理？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 要不要用大模型写周报，如何避免编造进展与成绩？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 定时执行失败、重复触发或发送超时，怎样避免漏报、重复发送？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- AI 生成了很多代码却没有做完，如何缩小范围并证明交付有效？"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先确认“自动汇报”的边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "只给“自动汇报周报”而没有输入格式、角色、数据源、收件人和部署要求时，不能自行断言题目要求接企业 IM、Git、工单、数据库或商业模型。先问周报写给谁、统计什么、每周何时截止、时区是什么、资料是否已授权读取、发送前是否审核，以及验收需要命令行、API 还是网页。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果允许先交付最小版本，下面约定从本地 UTF-8 工作记录读取数据，为显式指定的一周自动生成 Markdown 周报。它完整实现输入校验、去重、按时间筛选、按任务与人员项目汇总、阻塞和计划展示、可追溯输出及测试，不调用模型、不联网，也不自动给任何人发送消息。这是可运行的系统核心；如果验收明确要求网页或定时送达，还须按确认后的接口和权限补齐，不能把本例说成已经完成那些功能。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例子中的项目、人员、分钟数和进展都是教学数据，不代表个人项目经历、绩效或上线结果。AI Coding 表示使用 AI 辅助开发，不意味着周报生成本身必须调用 LLM。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "输入合同：工作记录是事件，不是任意一段总结"
+        },
+        {
+          "type": "paragraph",
+          "text": "每行包含九个字段：event_id、task_id、project、owner、at、status、minutes、summary、next_step。首行字段名必须完全匹配。字段用 Tab 分隔，没有引号转义，不支持字段内 Tab 或换行；允许 LF 或 CRLF，最后可带一个换行，拒绝中间空行、错误 UTF-8、额外列和缺列。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- event_id 是稳定事件 ID；task_id 是稳定任务 ID，均为 1～64 位 ASCII 字母、数字、下划线或连字符"
+        },
+        {
+          "type": "paragraph",
+          "text": "- project、owner 不可空白，各最多 80 个 Unicode 码点；同一任务在整个输入快照中必须保持项目和负责人一致"
+        },
+        {
+          "type": "paragraph",
+          "text": "- at 必须携带明确 UTC 偏移，例如 2026-09-07T00:00:00+08:00，解析成 Instant 后比较，拒绝无时区的本地时间"
+        },
+        {
+          "type": "paragraph",
+          "text": "- status 仅允许 IN_PROGRESS、DONE、BLOCKED"
+        },
+        {
+          "type": "paragraph",
+          "text": "- minutes 是本次记录新增工时，取 0～1440 的十进制整数；不是截至当时的累计工时，也不能直接推导产出或实际在线时长"
+        },
+        {
+          "type": "paragraph",
+          "text": "- summary 不可空白，最多 300 个码点；next_step 最多 300 个码点，可以空串，空串表示未提供计划"
+        },
+        {
+          "type": "paragraph",
+          "text": "全部文本拒绝控制字符、格式控制字符、Unicode 行段分隔符和孤立代理项。输入文件最多 1 MiB、10000 行数据；先完整校验，再生成报告。单条坏记录让本次生成失败，不会一边丢弃错误一边输出貌似完整的周报。"
+        },
+        {
+          "type": "paragraph",
+          "text": "相同 event_id 的规范化字段完全相同则去重，不重复加分钟；同 ID 但字段不同则整体报冲突，不能静默取最后一条。不同偏移写出的相同 Instant 视为同一时间。相同任务的负责人或项目改变也报错；真实系统若允许转交，应定义变更事件和归属口径，而不是依赖输入文件的排列顺序。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "时间范围与聚合口径"
+        },
+        {
+          "type": "paragraph",
+          "text": "调用者明确给出周一日期和 Java 支持的区域时区或固定偏移，示例采用 IANA 区域时区。窗口是该时区周一零点到下周一零点的半开区间 [start, end)，含开始，不含结束。不能把结束时间写成“周日 23:59:59”后漏掉亚秒记录，也不能在所有时区都简单加 168 小时，因为夏令时切换周可能是 167 或 169 小时。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例只汇总窗口内事件。任务状态取本周最后一个事件；同一 Instant 按 event_id 的 Java 字符串自然顺序取最后一个，作为明确、可重复的教学规则。它是确定性裁决，不代表事件 ID 天然体现业务先后。生产系统最好提供任务版本或来源序号，遇到同版本矛盾事件直接报警。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，“已完成任务数”是本周有记录任务在本周最后记录中的 DONE 数量，不是完成事件数，也不是整个项目截至周末的完整存量。任务周四 DONE、周五重新 IN_PROGRESS，只计进行中一次，分钟仍累加两个增量事件。没有本周事件的旧任务不会自动带入；如需完整项目状态，需要期初快照和窗口内事件重放。"
+        },
+        {
+          "type": "paragraph",
+          "text": "各负责人、各项目和各任务的分钟数均来自去重后的区间内增量之和。重叠工时、漏记工时以及内容是否真实，不在这个文件的可验证范围内。不能将“记录 365 分钟”改写为“节约 365 分钟”或据此评价员工表现。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "一个完整输入与报告示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "将完整实现保存到 src/WeeklyReport.java、测试保存到 tests/WeeklyReportTest.java。在工作目录运行下面的命令，生成字段间使用真正 Tab 的 fixtures/weekly.tsv："
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "一个完整输入与报告示例",
+          "value": "set -eu\nmkdir -p fixtures\nprintf '%b\\n' \\\n  'event_id\\ttask_id\\tproject\\towner\\tat\\tstatus\\tminutes\\tsummary\\tnext_step' \\\n  'e000\\tt-pre\\t评论治理\\t李明\\t2026-09-06T23:59:59+08:00\\tDONE\\t10\\t上周记录\\t' \\\n  'e001\\tt-api\\t评论治理\\t李明\\t2026-09-07T00:00:00+08:00\\tIN_PROGRESS\\t60\\t完成接口设计\\t实现审核接口' \\\n  'e002\\tt-api\\t评论治理\\t李明\\t2026-09-08T18:00:00+08:00\\tDONE\\t90\\t接口单测通过\\t' \\\n  'e003\\tt-doc\\t评论治理\\t王芳\\t2026-09-09T18:00:00+08:00\\tBLOCKED\\t45\\t接口文档缺少字段说明\\t向接口维护人确认字段' \\\n  'e004\\tt-ui\\t周报\\t陈晨\\t2026-09-10T18:00:00+08:00\\tDONE\\t120\\t演示页面完成\\t补充交互回归' \\\n  'e005\\tt-ui\\t周报\\t陈晨\\t2026-09-11T18:00:00+08:00\\tIN_PROGRESS\\t30\\t新增键盘操作修复\\t完成键盘回归' \\\n  'e006\\tt-ops\\t运维\\t王芳\\t2026-09-13T23:59:59+08:00\\tIN_PROGRESS\\t20\\t检查演示环境日志\\t补充故障演练' \\\n  'e007\\tt-next\\t周报\\t陈晨\\t2026-09-14T00:00:00+08:00\\tIN_PROGRESS\\t40\\t下周记录\\t' \\\n  'e002\\tt-api\\t评论治理\\t李明\\t2026-09-08T18:00:00+08:00\\tDONE\\t90\\t接口单测通过\\t' > fixtures/weekly.tsv\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "使用包含 jdk.compiler 模块的 JDK 21 编译并运行，不依赖 Maven 或第三方库："
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "一个完整输入与报告示例",
+          "value": "mkdir -p classes\njava com.sun.tools.javac.Main -encoding UTF-8 -d classes src/WeeklyReport.java tests/WeeklyReportTest.java\njava -cp classes WeeklyReportTest fixtures/weekly.tsv\njava -cp classes WeeklyReport fixtures/weekly.tsv 2026-09-07 Asia/Shanghai\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "程序把完整报告写到标准输出；错误信息写到标准错误并返回退出码 2，不输出半份报告。若只是本地演示，可以用重定向保存结果。生产替换既有文件时应先写临时文件、校验并原子发布，不能把 shell 重定向导致的旧文件截断当作可靠更新协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例生成的完整报告如下，代码块里的反斜线用于让 Markdown 中的任务 ID 等输入文字保持字面含义："
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "一个完整输入与报告示例",
+          "value": "# 周报：2026-09-07 至 2026-09-13\n\n时区：Asia/Shanghai；区间：[2026-09-06T16:00:00Z, 2026-09-13T16:00:00Z)。\n\n口径：仅统计区间内的增量工作记录；任务状态取本周最后一条记录，同一时刻按事件 ID 升序取最后一条。\n\n输入 9 行；唯一事件 8；完全重复 1；纳入 6；区间外 2。\n\n## 概览\n\n- 已完成任务：1\n- 进行中任务：2\n- 阻塞任务：1\n- 记录工时：365 分钟（自报增量之和，不代表产出或在线时长）\n\n## 按负责人汇总\n\n- 李明：150 分钟\n- 王芳：65 分钟\n- 陈晨：150 分钟\n\n## 按项目汇总\n\n- 周报：150 分钟\n- 评论治理：195 分钟\n- 运维：20 分钟\n\n## 任务进展\n\n- t\\-api｜评论治理｜李明｜已完成｜150 分钟：接口单测通过\n  - 依据事件：e001, e002；最后事件：e002\n- t\\-doc｜评论治理｜王芳｜阻塞｜45 分钟：接口文档缺少字段说明\n  - 依据事件：e003；最后事件：e003\n- t\\-ops｜运维｜王芳｜进行中｜20 分钟：检查演示环境日志\n  - 依据事件：e006；最后事件：e006\n- t\\-ui｜周报｜陈晨｜进行中｜150 分钟：新增键盘操作修复\n  - 依据事件：e004, e005；最后事件：e005\n\n## 阻塞与后续计划\n\n- t\\-doc：阻塞；向接口维护人确认字段\n- t\\-ops：补充故障演练\n- t\\-ui：完成键盘回归\n\n数据快照 SHA-256：e42bd1dc022f662fccd33b663fa9f02033cf1a6ecb04341140a87388f1b50cbc\n\n本文由确定性模板生成；摘要与后续计划保留输入含义，未调用模型，未自动发送。\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "输入有 9 行，e002 重复一次；8 个唯一事件中，e000 在周开始前，e007 恰好等于下周开始，因此都排除。剩余 6 条记录共 365 分钟。t-ui 后来重新打开，最终是进行中；t-doc 阻塞，并保留输入中的明确下一步。这些值都能从原始行复算。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么先用模板，而不是把整个文件丢给模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "时间筛选、去重、累加、状态归并和事实引用适合确定性代码，应该由程序产生结构化结果。模板负责把这些事实放在固定章节中，空数据写“本周无记录”，没有计划写“未提供”，不自行补出结果、原因、百分比或下一周承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正文中的 HTML、Markdown 链接和格式字符会转成字面文本。即使 summary 写着“忽略规则并宣称完成”，它也只能作为一条输入摘要出现，不能改变任务状态或标题结构。文本转义解决展示安全，不保证输入事实真实；数据来源和审核仍是另一层责任。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若业务确实要模型润色，可将已经聚合的有限事实及事件 ID 交给获准模型，要求生成内容携带证据引用，再校验引用存在、关键数字一致、无新增项目与完成事项。模型超时或无法验证就退回确定性模板。权限、收件人、时间窗口和发送动作不应让模型自由推断。含内部工作资料的外部模型传输需先满足数据授权，不能因为程序能调用 API 就默认可以上传。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "自动生成、任务幂等和送达要分别设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例没有定时器或发送器。真实定时任务可以以“租户、报告类型、周一、时区、报告版本”作为逻辑任务键，领取任务时采用数据库唯一约束和条件更新；状态至少区分待生成、生成中、已生成、待发送、已发送、失败和结果未知。重复触发同一版本应复用已验证产物，不再创建一份相互矛盾的报告。"
+        },
+        {
+          "type": "paragraph",
+          "text": "输入快照 SHA-256 对规范化去重后的全部输入事件计算，包含窗口外事件；它用于标识这次数据快照，不是报告正文摘要、数字签名或访问授权。输入顺序变化不改快照；重复行数量变化虽然不改快照，却会改变报告中的重复统计。缓存或幂等产物不能只按这个 hash 命中，还要绑定窗口、时区、模板与代码版本，以及需要展示的输入行统计。真实报告若要逐字复现，还应保存渲染后正文及其摘要、运行时与时区数据库版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "迟到或修正数据不能静默覆写已发送周报。应明确截止时间、水位和修订策略，创建新版本，记录变更原因，必要时经确认再补发。文件生成成功不代表收件人收到；发送前核对授权对象和内容，发送端保存消息操作 ID 与回执。请求超时而结果未知时先查询原操作，不能换新 ID 盲目重发。"
+        },
+        {
+          "type": "paragraph",
+          "text": "工单、Git 和日历等适配器只负责获取具有权限的数据，并提供稳定事件身份和时间语义。来源增多后要处理分页、水位、部分失败与重复拉取；任何来源未完成都应说明报告覆盖范围，不能让模型补齐缺失事实。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "两小时怎样安排，才能避免“代码很多但没做完”"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以将两小时拆为一份可调整的工作预算，而不是声称原题规定这些阶段：前 10 分钟澄清输入输出和验收；接下来 15 分钟做能编译、能读一条记录的骨架；35 分钟完成去重、窗口和汇总；20 分钟形成可读报告与命令入口；25 分钟覆盖边界和失败测试；最后 15 分钟完整演示并整理限制。各段总和为 120 分钟，应根据环境和验收需求调整。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每一段都保留可运行版本。让 AI 先生成数据模型与一个小测试，再实现一条路径，检查差异并真实编译；构建文件、命令入口和已通过的测试不要反复重写。如果模型卡在生成样式或复杂框架，先退回可验证的核心。若面试官明确要求 UI，就做能展示上传、生成、错误和报告的最小页面，而不是先写完整用户中心。"
+        },
+        {
+          "type": "paragraph",
+          "text": "未完成时如实说明已跑通哪一段、还缺什么和下一步，不用静态截图代替实际数据流。评估 AI Coding 帮助时记录验收用时、返工、缺陷和解释成本，不编造效率提升比例。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "测试、复杂度和后续追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整测试包含输入错误、编码与大小限制、重复冲突、规范化时区、周一校验、窗口边界、夏令时、同刻事件排序、任务重开、负责人冲突、空周报、不可变结果、HTML 与 Markdown 字面渲染，以及 50 轮固定随机种子的输入乱序。通过时输出 PASS WeeklyReportTest checks=96；其中包含乱序重复检查，不能将断言数当作业务覆盖率或真实用户测量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "设输入事件数为 n。按事件 ID 去重、任务分组与组内排序总体为 O(n log n)，内存为 O(n)，另外保留生成报告与规范化摘要的字节数据。这里的限制适合面试小样本，不代表大规模流式处理实现。大量数据应由来源分页、数据库过滤与分批聚合处理，同时保留稳定快照和一致的去重口径；不能只把最大行数调大。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问“为什么不用当前日期自动算上周”时，可以回答：显式周一和时区最便于测试与补跑；调度适配层可以依据业务时钟算出上一完整周，然后把确定参数传给同一个核心。追问“为什么没有真实模型”时，说明最小闭环依靠可复算事实，模型是可选表达层；若验收要求模型调用，则添加受控适配器和超时降级，并单独验证生成事实。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整实现：WeeklyReport.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整实现：WeeklyReport.java",
+          "value": "import java.io.*;\nimport java.nio.*;\nimport java.nio.charset.*;\nimport java.nio.file.*;\nimport java.security.*;\nimport java.time.*;\nimport java.util.*;\n\n/** Deterministic work-log aggregation. No LLM, network, scheduler or message delivery. */\npublic final class WeeklyReport {\n    public static final String HEADER = \"event_id\\ttask_id\\tproject\\towner\\tat\\tstatus\\tminutes\\tsummary\\tnext_step\";\n    public enum Status { IN_PROGRESS, DONE, BLOCKED }\n    public record Worklog(String eventId, String taskId, String project, String owner,\n                          Instant at, Status status, int minutes, String summary, String nextStep) {\n        public Worklog {\n            id(eventId); id(taskId); field(project, 80, false); field(owner, 80, false);\n            Objects.requireNonNull(at); Objects.requireNonNull(status);\n            if (minutes < 0 || minutes > 1440) throw new IllegalArgumentException(\"MINUTES\");\n            field(summary, 300, false); field(nextStep, 300, true);\n        }\n    }\n    public record Window(LocalDate monday, ZoneId zone, Instant start, Instant end) {\n        public Window(LocalDate monday, ZoneId zone) {\n            this(monday, zone, monday.atStartOfDay(zone).toInstant(), monday.plusDays(7).atStartOfDay(zone).toInstant());\n        }\n        public Window {\n            Objects.requireNonNull(monday); Objects.requireNonNull(zone);\n            if (monday.getDayOfWeek() != DayOfWeek.MONDAY || !start.equals(monday.atStartOfDay(zone).toInstant())\n                    || !end.equals(monday.plusDays(7).atStartOfDay(zone).toInstant()) || !start.isBefore(end))\n                throw new IllegalArgumentException(\"WINDOW\");\n        }\n        boolean contains(Instant t) { return !t.isBefore(start) && t.isBefore(end); }\n    }\n    public record Task(String id, String project, String owner, Status status,\n                       int minutes, String summary, String nextStep, String latestEvent, List<String> eventIds) { }\n    public record Report(Window window, int inputRows, int uniqueRows, int duplicateRows,\n                         int includedRows, int excludedRows, int totalMinutes,\n                         List<Task> tasks, SortedMap<String, Integer> ownerMinutes,\n                         SortedMap<String, Integer> projectMinutes, String snapshotSha256) { }\n    private static final Comparator<Worklog> ORDER = Comparator.comparing(Worklog::at).thenComparing(Worklog::eventId);\n    public static List<Worklog> parse(byte[] bytes) throws CharacterCodingException {\n        if (bytes.length > 1_048_576) throw new IllegalArgumentException(\"BYTE_LIMIT\");\n        String text = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)\n                .decode(ByteBuffer.wrap(bytes)).toString();\n        String[] lines = text.split(\"\\n\", -1);\n        if (lines.length == 0 || !stripCR(lines[0]).equals(HEADER)) throw new IllegalArgumentException(\"HEADER\");\n        List<Worklog> result = new ArrayList<>();\n        for (int i = 1; i < lines.length; i++) {\n            String line = stripCR(lines[i]);\n            if (i == lines.length - 1 && line.isEmpty()) continue;\n            if (result.size() >= 10000) throw new IllegalArgumentException(\"ROW_LIMIT\");\n            String[] p = line.split(\"\\t\", -1);\n            if (p.length != 9) throw new IllegalArgumentException(\"COLUMNS:\" + (i + 1));\n            try {\n                // An explicit offset is mandatory. Canonical storage/comparison uses Instant.\n                Instant at = OffsetDateTime.parse(p[4]).toInstant();\n                if (!p[6].matches(\"0|[1-9][0-9]{0,3}\")) throw new IllegalArgumentException(\"MINUTES_FORMAT\");\n                result.add(new Worklog(p[0], p[1], p[2], p[3], at, Status.valueOf(p[5]),\n                        Integer.parseInt(p[6]), p[7], p[8]));\n            } catch (RuntimeException e) { throw new IllegalArgumentException(\"ROW:\" + (i + 1), e); }\n        }\n        return List.copyOf(result);\n    }\n    private static String stripCR(String s) { return s.endsWith(\"\\r\") ? s.substring(0, s.length() - 1) : s; }\n    static void id(String s) {\n        if (s == null || !s.matches(\"[A-Za-z0-9_-]{1,64}\")) throw new IllegalArgumentException(\"ID\");\n    }\n    static void field(String s, int max, boolean allowEmpty) {\n        if (s == null || !allowEmpty && s.isBlank() || s.codePointCount(0, s.length()) > max)\n            throw new IllegalArgumentException(\"FIELD\");\n        if (allowEmpty && !s.isEmpty() && s.isBlank()) throw new IllegalArgumentException(\"BLANK_FIELD\");\n        for (int i = 0; i < s.length(); ) {\n            int cp = s.codePointAt(i);\n            int type = Character.getType(cp);\n            if (Character.isISOControl(cp) || type == Character.FORMAT || type == Character.LINE_SEPARATOR\n                    || type == Character.PARAGRAPH_SEPARATOR || cp >= 0xD800 && cp <= 0xDFFF)\n                throw new IllegalArgumentException(\"CONTROL\");\n            i += Character.charCount(cp);\n        }\n    }\n    public static Report aggregate(List<Worklog> input, Window window) {\n        Objects.requireNonNull(input); Objects.requireNonNull(window);\n        if (input.size() > 10000) throw new IllegalArgumentException(\"ROW_LIMIT\");\n        SortedMap<String, Worklog> unique = new TreeMap<>();\n        for (Worklog log : input) {\n            Objects.requireNonNull(log);\n            Worklog old = unique.putIfAbsent(log.eventId(), log);\n            if (old != null && !old.equals(log)) throw new IllegalArgumentException(\"EVENT_CONFLICT:\" + log.eventId());\n        }\n        // Metadata consistency applies to the entire supplied snapshot, including excluded rows.\n        Map<String, Worklog> identity = new HashMap<>();\n        for (Worklog log : unique.values()) {\n            Worklog old = identity.putIfAbsent(log.taskId(), log);\n            if (old != null && (!old.project().equals(log.project()) || !old.owner().equals(log.owner())))\n                throw new IllegalArgumentException(\"TASK_IDENTITY_CONFLICT:\" + log.taskId());\n        }\n        SortedMap<String, List<Worklog>> grouped = new TreeMap<>();\n        SortedMap<String, Integer> owners = new TreeMap<>(), projects = new TreeMap<>();\n        int included = 0, total = 0;\n        for (Worklog log : unique.values()) {\n            if (!window.contains(log.at())) continue;\n            included++; total = Math.addExact(total, log.minutes());\n            owners.merge(log.owner(), log.minutes(), Math::addExact);\n            projects.merge(log.project(), log.minutes(), Math::addExact);\n            grouped.computeIfAbsent(log.taskId(), k -> new ArrayList<>()).add(log);\n        }\n        List<Task> tasks = new ArrayList<>();\n        for (var group : grouped.entrySet()) {\n            List<Worklog> logs = group.getValue(); logs.sort(ORDER);\n            Worklog last = logs.getLast(); int minutes = 0;\n            for (Worklog log : logs) minutes = Math.addExact(minutes, log.minutes());\n            tasks.add(new Task(group.getKey(), last.project(), last.owner(), last.status(), minutes,\n                    last.summary(), last.nextStep(), last.eventId(), logs.stream().map(Worklog::eventId).toList()));\n        }\n        return new Report(window, input.size(), unique.size(), input.size() - unique.size(), included,\n                unique.size() - included, total, List.copyOf(tasks),\n                Collections.unmodifiableSortedMap(owners), Collections.unmodifiableSortedMap(projects), digest(unique));\n    }\n    private static String digest(SortedMap<String, Worklog> logs) {\n        try {\n            ByteArrayOutputStream bytes = new ByteArrayOutputStream();\n            try (DataOutputStream out = new DataOutputStream(bytes)) {\n                out.writeUTF(\"worklog-snapshot-v1\"); out.writeInt(logs.size());\n                for (Worklog l : logs.values()) {\n                    out.writeUTF(l.eventId()); out.writeUTF(l.taskId()); out.writeUTF(l.project()); out.writeUTF(l.owner());\n                    out.writeUTF(l.at().toString()); out.writeUTF(l.status().name()); out.writeInt(l.minutes());\n                    out.writeUTF(l.summary()); out.writeUTF(l.nextStep());\n                }\n            }\n            return HexFormat.of().formatHex(MessageDigest.getInstance(\"SHA-256\").digest(bytes.toByteArray()));\n        } catch (IOException | NoSuchAlgorithmException e) { throw new IllegalStateException(e); }\n    }\n    // User text stays literal Markdown text; it never selects headings or runs as HTML/instructions.\n    static String escape(String s) {\n        StringBuilder out = new StringBuilder();\n        for (char c : s.toCharArray()) {\n            if (c == '&') out.append(\"&amp;\"); else if (c == '<') out.append(\"&lt;\");\n            else if (c == '>') out.append(\"&gt;\");\n            else { if (\"\\\\`*_{}[]()#+-.!|\".indexOf(c) >= 0) out.append('\\\\'); out.append(c); }\n        }\n        return out.toString();\n    }\n    static String status(Status status) {\n        return switch (status) { case DONE -> \"已完成\"; case BLOCKED -> \"阻塞\"; case IN_PROGRESS -> \"进行中\"; };\n    }\n    public static String render(Report r) {\n        StringBuilder b = new StringBuilder(); Window w = r.window();\n        b.append(\"# 周报：\").append(w.monday()).append(\" 至 \").append(w.monday().plusDays(6)).append('\\n');\n        b.append(\"\\n时区：\").append(w.zone().getId()).append(\"；区间：[\").append(w.start()).append(\", \").append(w.end()).append(\")。\\n\");\n        b.append(\"\\n口径：仅统计区间内的增量工作记录；任务状态取本周最后一条记录，同一时刻按事件 ID 升序取最后一条。\\n\");\n        b.append(\"\\n输入 \").append(r.inputRows()).append(\" 行；唯一事件 \").append(r.uniqueRows())\n                .append(\"；完全重复 \").append(r.duplicateRows()).append(\"；纳入 \").append(r.includedRows())\n                .append(\"；区间外 \").append(r.excludedRows()).append(\"。\\n\");\n        b.append(\"\\n## 概览\\n\\n\");\n        for (Status s : List.of(Status.DONE, Status.IN_PROGRESS, Status.BLOCKED)) {\n            long n = r.tasks().stream().filter(t -> t.status() == s).count();\n            b.append(\"- \").append(status(s)).append(\"任务：\").append(n).append('\\n');\n        }\n        b.append(\"- 记录工时：\").append(r.totalMinutes()).append(\" 分钟（自报增量之和，不代表产出或在线时长）\\n\");\n        b.append(\"\\n## 按负责人汇总\\n\\n\");\n        if (r.ownerMinutes().isEmpty()) b.append(\"本周无记录。\\n\");\n        r.ownerMinutes().forEach((k, v) -> b.append(\"- \").append(escape(k)).append(\"：\").append(v).append(\" 分钟\\n\"));\n        b.append(\"\\n## 按项目汇总\\n\\n\");\n        if (r.projectMinutes().isEmpty()) b.append(\"本周无记录。\\n\");\n        r.projectMinutes().forEach((k, v) -> b.append(\"- \").append(escape(k)).append(\"：\").append(v).append(\" 分钟\\n\"));\n        b.append(\"\\n## 任务进展\\n\\n\");\n        if (r.tasks().isEmpty()) b.append(\"本周无记录；不能由此推断所有任务已完成或没有阻塞。\\n\");\n        for (Task t : r.tasks()) {\n            b.append(\"- \").append(escape(t.id())).append(\"｜\").append(escape(t.project())).append(\"｜\")\n                    .append(escape(t.owner())).append(\"｜\").append(status(t.status())).append(\"｜\")\n                    .append(t.minutes()).append(\" 分钟：\").append(escape(t.summary())).append('\\n');\n            b.append(\"  - 依据事件：\").append(escape(String.join(\", \", t.eventIds())))\n                    .append(\"；最后事件：\").append(escape(t.latestEvent())).append('\\n');\n        }\n        b.append(\"\\n## 阻塞与后续计划\\n\\n\");\n        boolean any = false;\n        for (Task t : r.tasks()) {\n            if (t.status() != Status.BLOCKED && t.nextStep().isEmpty()) continue;\n            any = true;\n            b.append(\"- \").append(escape(t.id())).append(\"：\")\n                    .append(t.status() == Status.BLOCKED ? \"阻塞；\" : \"\")\n                    .append(t.nextStep().isEmpty() ? \"后续计划未提供，待负责人补充\" : escape(t.nextStep())).append('\\n');\n        }\n        if (!any) b.append(\"未提供后续计划；不能推断下周没有任务。\\n\");\n        b.append(\"\\n数据快照 SHA-256：\").append(r.snapshotSha256()).append('\\n');\n        b.append(\"\\n本文由确定性模板生成；摘要与后续计划保留输入含义，未调用模型，未自动发送。\\n\");\n        return b.toString();\n    }\n    public static String generate(Path input, String monday, String zone) throws IOException {\n        byte[] bytes;\n        try (InputStream in = Files.newInputStream(input)) { bytes = in.readNBytes(1_048_577); }\n        Window window = new Window(LocalDate.parse(monday), ZoneId.of(zone));\n        return render(aggregate(parse(bytes), window));\n    }\n    public static void main(String[] args) {\n        if (args.length != 3) { System.err.println(\"Usage: WeeklyReport input.tsv YYYY-MM-DD ZoneId\"); System.exit(2); }\n        try { System.out.print(generate(Path.of(args[0]), args[1], args[2])); }\n        catch (Exception e) { System.err.println(\"ERROR: invalid configuration, input or I/O\"); System.exit(2); }\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整测试：WeeklyReportTest.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整测试：WeeklyReportTest.java",
+          "value": "import java.nio.charset.*;\nimport java.nio.file.*;\nimport java.time.*;\nimport java.util.*;\n\npublic final class WeeklyReportTest {\n    private static int checks;\n    static void check(boolean b, String message) { checks++; if (!b) throw new AssertionError(message); }\n    @FunctionalInterface interface Action { void run() throws Exception; }\n    static void rejects(Action r) throws Exception {\n        checks++;\n        try { r.run(); } catch (IllegalArgumentException | CharacterCodingException e) { return; }\n        throw new AssertionError(\"Expected rejection\");\n    }\n    static WeeklyReport.Window window() { return new WeeklyReport.Window(LocalDate.of(2026, 9, 7), ZoneId.of(\"Asia/Shanghai\")); }\n    static WeeklyReport.Worklog log(String event, String task, String at, WeeklyReport.Status status, int minutes, String summary) {\n        return new WeeklyReport.Worklog(event, task, \"project\", \"alice\", Instant.parse(at), status, minutes, summary, \"\");\n    }\n    static void sample(Path fixture) throws Exception {\n        var logs = WeeklyReport.parse(Files.readAllBytes(fixture)); var r = WeeklyReport.aggregate(logs, window());\n        check(r.inputRows() == 9 && r.uniqueRows() == 8 && r.duplicateRows() == 1, \"dedup counts\");\n        check(r.includedRows() == 6 && r.excludedRows() == 2, \"half-open week\");\n        check(r.totalMinutes() == 365 && r.tasks().size() == 4, \"totals\");\n        check(r.ownerMinutes().get(\"李明\") == 150 && r.ownerMinutes().get(\"王芳\") == 65 && r.ownerMinutes().get(\"陈晨\") == 150, \"owner totals\");\n        check(r.projectMinutes().get(\"评论治理\") == 195, \"project total\");\n        var ui = r.tasks().stream().filter(t -> t.id().equals(\"t-ui\")).findFirst().orElseThrow();\n        check(ui.status() == WeeklyReport.Status.IN_PROGRESS && ui.latestEvent().equals(\"e005\"), \"reopened task not done\");\n        check(ui.minutes() == 150 && ui.eventIds().equals(List.of(\"e004\", \"e005\")), \"incremental minutes and evidence\");\n        String baseline = WeeklyReport.render(r);\n        check(baseline.contains(\"已完成任务：1\") && baseline.contains(\"阻塞任务：1\"), \"status counts\");\n        check(baseline.contains(\"向接口维护人确认字段\"), \"blocker next action\");\n        check(!baseline.contains(\"上周记录\") && !baseline.contains(\"下周记录\"), \"excluded text not rendered\");\n        for (int seed = 0; seed < 50; seed++) {\n            var shuffled = new ArrayList<>(logs); Collections.shuffle(shuffled, new Random(seed));\n            check(WeeklyReport.render(WeeklyReport.aggregate(shuffled, window())).equals(baseline), \"input order invariant \" + seed);\n        }\n        check(WeeklyReport.generate(fixture, \"2026-09-07\", \"Asia/Shanghai\").equals(baseline), \"file entry point\");\n        try { r.ownerMinutes().put(\"other\", 1); throw new AssertionError(\"mutable totals\"); }\n        catch (UnsupportedOperationException expected) { checks++; }\n        try { r.tasks().clear(); throw new AssertionError(\"mutable tasks\"); }\n        catch (UnsupportedOperationException expected) { checks++; }\n    }\n    static void timeAndState() throws Exception {\n        var w = window();\n        check(w.start().equals(Instant.parse(\"2026-09-06T16:00:00Z\")) && w.end().equals(Instant.parse(\"2026-09-13T16:00:00Z\")), \"local week instants\");\n        check(w.contains(w.start()) && !w.contains(w.end()) && !w.contains(w.start().minusNanos(1)), \"exact boundaries\");\n        var spring = new WeeklyReport.Window(LocalDate.of(2026, 3, 2), ZoneId.of(\"America/New_York\"));\n        var autumn = new WeeklyReport.Window(LocalDate.of(2026, 10, 26), ZoneId.of(\"America/New_York\"));\n        check(Duration.between(spring.start(), spring.end()).toHours() == 167, \"spring DST\");\n        check(Duration.between(autumn.start(), autumn.end()).toHours() == 169, \"autumn DST\");\n        rejects(() -> new WeeklyReport.Window(LocalDate.of(2026, 9, 8), ZoneId.of(\"UTC\")));\n        rejects(() -> new WeeklyReport.Window(w.monday(), w.zone(), w.start().plusSeconds(1), w.end()));\n        var a = log(\"e1\", \"t1\", \"2026-09-07T01:00:00Z\", WeeklyReport.Status.DONE, 10, \"done\");\n        var b = log(\"e2\", \"t1\", \"2026-09-07T01:00:00Z\", WeeklyReport.Status.BLOCKED, 20, \"blocked\");\n        var r = WeeklyReport.aggregate(List.of(b, a), w);\n        check(r.tasks().getFirst().status() == WeeklyReport.Status.BLOCKED && r.totalMinutes() == 30, \"same-time event ID order\");\n        check(WeeklyReport.render(r).contains(\"后续计划未提供，待负责人补充\"), \"missing blocker next step\");\n        rejects(() -> WeeklyReport.aggregate(List.of(a, log(\"e1\", \"t1\", \"2026-09-07T01:00:00Z\", WeeklyReport.Status.DONE, 11, \"done\")), w));\n        var changedOwner = new WeeklyReport.Worklog(\"e3\", \"t1\", \"project\", \"bob\", w.end(), WeeklyReport.Status.DONE, 10, \"outside\", \"\");\n        rejects(() -> WeeklyReport.aggregate(List.of(a, changedOwner), w));\n        String empty = WeeklyReport.render(WeeklyReport.aggregate(List.of(), w));\n        check(empty.contains(\"本周无记录；不能由此推断所有任务已完成\") && empty.contains(\"记录工时：0\"), \"empty data honest\");\n    }\n    static byte[] data(String row) { return (WeeklyReport.HEADER + \"\\n\" + row + \"\\n\").getBytes(StandardCharsets.UTF_8); }\n    static void parsing() throws Exception {\n        String row = \"e1\\tt1\\tp\\ta\\t2026-09-07T00:00:00+08:00\\tDONE\\t10\\t完成\\t\";\n        var parsed = WeeklyReport.parse(data(row)); check(parsed.size() == 1, \"valid TSV\");\n        String equivalent = row.replace(\"2026-09-07T00:00:00+08:00\", \"2026-09-06T16:00:00Z\");\n        check(WeeklyReport.aggregate(WeeklyReport.parse(data(row + \"\\n\" + equivalent)), window()).duplicateRows() == 1, \"normalized offset duplicate\");\n        check(WeeklyReport.parse(new String(data(row), StandardCharsets.UTF_8).replace(\"\\n\", \"\\r\\n\").getBytes(StandardCharsets.UTF_8)).size() == 1, \"CRLF\");\n        rejects(() -> WeeklyReport.parse(data(row.replace(\"+08:00\", \"\"))));\n        rejects(() -> WeeklyReport.parse(data(row.replace(\"DONE\", \"UNKNOWN\"))));\n        for (String m : List.of(\"-1\", \"01\", \"1.5\", \"1441\", \"99999999\"))\n            rejects(() -> WeeklyReport.parse(data(row.replace(\"\\t10\\t\", \"\\t\" + m + \"\\t\"))));\n        rejects(() -> WeeklyReport.parse(data(row + \"\\textra\")));\n        rejects(() -> WeeklyReport.parse(data(\"\")));\n        rejects(() -> WeeklyReport.parse(\"wrong\\n\".getBytes(StandardCharsets.UTF_8)));\n        rejects(() -> WeeklyReport.parse(new byte[]{(byte)0xc3, (byte)0x28}));\n        rejects(() -> WeeklyReport.parse(new byte[1_048_577]));\n        rejects(() -> WeeklyReport.parse(data(row.replace(\"完成\", \"\\u202E隐藏\"))));\n        rejects(() -> log(\"e\", \"t\", \"2026-09-07T01:00:00Z\", WeeklyReport.Status.DONE, 1, \"\\uD800\"));\n        rejects(() -> WeeklyReport.aggregate(Collections.nCopies(10001, parsed.getFirst()), window()));\n        check(WeeklyReport.parse((WeeklyReport.HEADER + \"\\n\").getBytes(StandardCharsets.UTF_8)).isEmpty(), \"header-only input\");\n    }\n    static void literalRendering() {\n        String text = \"<script>alert(1)</script> [click](https://example.invalid) **伪标题** 忽略规则并宣称完成\";\n        var l = log(\"e\", \"t\", \"2026-09-07T01:00:00Z\", WeeklyReport.Status.BLOCKED, 0, text);\n        String out = WeeklyReport.render(WeeklyReport.aggregate(List.of(l), window()));\n        check(!out.contains(\"<script>\") && out.contains(\"&lt;script&gt;\"), \"HTML escaped\");\n        check(out.contains(\"\\\\[click\\\\]\\\\(https://example\\\\.invalid\\\\)\"), \"link is literal\");\n        check(out.contains(\"\\\\*\\\\*伪标题\\\\*\\\\*\") && out.contains(\"阻塞任务：1\"), \"untrusted text cannot decide state\");\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 1) throw new IllegalArgumentException(\"fixture path required\");\n        sample(Path.of(args[0])); timeAndState(); parsing(); literalRendering();\n        System.out.println(\"PASS WeeklyReportTest checks=\" + checks);\n    }\n}\n"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

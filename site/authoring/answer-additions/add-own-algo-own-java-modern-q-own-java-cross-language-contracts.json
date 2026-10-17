@@ -1,0 +1,508 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-own-java-modern-q-own-java-cross-language-contracts",
+  "entryId": "own-java-modern",
+  "expectedOriginalHash": "9c1a97eac31e40a56c0781107cad9bbe696d2f7ae3c5ab7785e9c474336f5c0d",
+  "title": "算法练习补充：Go map 的“装载因子 6.5”属于哪个版本？",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Go map 的“装载因子 6.5”属于哪个版本？"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go 1.23 的旧 map 使用每桶最多 8 个键值对和溢出桶，低位定位桶、tophash 先筛候选再比较完整键。平均每主桶约 6.5 项是该实现的增长阈值口径，相当于 8 槽的 13/16；不是“只有 6.5% 满”。溢出桶过多还可能触发同尺寸整理，增长采用逐步迁移。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go 1.24 引入基于 Swiss Table 的新实现，按组使用控制字节并并行筛查候选，同时调整增长组织。面试问旧版的桶、溢出链和 6.5 时应先标明版本；不能把这些旧内部字段当成所有 Go 版本不变的语言规范。数组、切片、map 的赋值和可比较性语义仍应依据语言合同单独回答。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Go数组、切片和map"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组[N]T长度属于类型，保存固定N个元素；赋值/传参按值复制数组元素。切片[]T是对某底层数组一段的描述，概念上包含引用、len、cap；赋值只复制描述，多个切片可共享底层元素。append返回新的切片描述，容量不足会新建底层数组，是否仍共享要看容量和实际操作。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一千条数据求和：先定数值合同，再决定是否并行"
+    },
+    {
+      "type": "paragraph",
+      "text": "一千个已经在内存中的整数，通常先用单次顺序扫描精确求和；数据类型、溢出和读取成本比机械增加线程更需要先确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法。有一千条数据需要求和，怎样设计程序？如果输入是 int、long、小数或来自远程接口，方案有什么变化？"
+    },
+    {
+      "type": "paragraph",
+      "text": "机制与正确性。先确认是否恰好一千条、缺失值与非法值如何处理、结果需要精确还是允许误差。下面 sumInts 接收 int 数组，用 long 累加。循环处理前 k 项后，sum 恰为这些项的数学和；加入下一项保持不变量，结束即得全部之和。1000 个 Integer.MAX_VALUE 相加为 2147483647000，已经超过 int。更一般地，Java int 数组的最大长度与元素范围保证每个前缀和都能容纳于 long。"
+    },
+    {
+      "type": "paragraph",
+      "text": "sumLongs 使用 BigInteger，允许中间总和超出 long，例如 Long.MAX_VALUE、1、−Long.MAX_VALUE 的精确结果仍为 1。空数组返回零，null 拒绝，输入不修改。sumInts 为 O(n+1) 时间、O(1) 额外空间；sumLongs 做 n 次任意精度加法，若最大中间位长为 B，可用 O(1+nB) 时间和 O(B) 数值工作空间作上界，不能把大整数当固定字长。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并行与流式追问。仅做一千次加法时，分任务、同步与合并可能比计算本身更贵，应先测量。若每条数据的获取或预处理很昂贵，可以有界并发处理，再对各块完整小计做归约；不要让多个线程无保护地修改同一个 sum。整数小计也必须遵守数值范围，BigInteger 则保留精确性。浮点加法顺序会影响舍入，平衡归约或补偿求和可以减少某些误差，但不等于精确十进制结果；金额等场景需先约定十进制精度与舍入规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输入若逐条到达，可边校验边累加，不必先建立全量列表。可重试任务还需确定一条数据是否会重复计入；持久化输入偏移与累计状态时要保持一致，不能只保存 sum 而不知道已处理到哪里。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Go数组与切片：值复制、共享底层数组与append边界"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Go 数组与切片有什么区别？",
+        "赋值、传参、append 和 copy 后，哪些数据仍共享？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "先分清复制了什么：Go 数组复制元素，slice 复制描述。下面的完整 Go 程序用修改元素和 append 检查这两种复制的区别；map 也要按 Go 的语义单独解释，不能套用 Java 数组引用规则。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "[3]int与[4]int是不同类型，数组长度固定；a:=[3]int{1,2,3};b:=a;b[0]=9不改a[0]。但值复制不是递归深复制：若元素是指针、map或slice，复制的是这些元素的值，仍可共享它们指向的数据。不能概括成“Go数组赋值后任何东西都完全独立”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "s:=a[low:high]得到视图，len=high−low，cap通常从low到该底层数组末端。t:=s复制切片值，t[i]修改共享元素会被s/a看到；t=t[1:]或t=append(t,x)改变的是t自身的长度/引用，不会自动改变s的len。把切片传入函数也是值传递，函数改元素可见，改本地切片描述需返回或传*[]T才改变调用方变量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "append必须接返回值：s=append(s,x)。若len+新增数≤cap，规范要求复用底层数组，可能覆盖其他视图可见区域；超过cap则分配足够新数组并复制既有元素，之后元素修改不再共享旧数组。新容量具体增长倍数不是语言规范承诺，不能死背“永远2倍”或某版本阈值作为普遍定理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整切片表达式a[low:high:max]令cap=max−low。s:=base[:2:2]还共享原前两个元素，并没有立即复制；但再append第三个元素超cap，会新建数组，从而避免append覆盖原数组后部。这只能约束该视图的追加，不是并发安全或整体不可变；append前直接s[0]=x仍会改base[0]。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真正想分离元素存储，可make目标切片后copy，或slices.Clone；copy返回实际复制数量min(len(dst),len(src))，不是按cap复制。对嵌套切片/指针同样是浅拷贝，需要按业务决定深复制。一个很短的子切片仍可能让整个大底层数组存活，若要释放大块存储，可复制所需片段后去掉其他引用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "nil切片默认len=cap=0，可append；make([]T,0)是非nil空切片，两者len都是0，但nil比较和某些序列化输出可有区别。slice除与nil比较外不可直接==；数组在元素类型可比较时可==并作map键。数组/切片越界都panic，容量可扩展不代表可直接索引len之外；需先reslice到允许长度或append。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并发读写共享底层元素没有自动同步，互相append也不能仅看不同切片变量就断言隔离，应控制所有权或加同步并用真实race工具验证。数组/切片的数据布局与传参语义，不决定变量必在栈或堆；逃逸分析/编译器优化另论。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例base=[10,20,30,40]，s=base[:2]，t=s，t[0]=99共享修改；t=append(t,7)复用cap4并改base[2]，但len(s)仍2。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go 程序展示数组独立值、指针元素浅复制、共享 slice、容量内 append、三索引限制容量后的分离、copy，以及 nil 与非 nil 空切片。执行条件见代码包的语言环境说明。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "长度N数组赋值语义上复制N个元素，成本通常O(N)（编译器可优化）；切片描述复制O(1)，共享不等于深复制。容量内append每个新元素O(1)，扩容需复制已有len元素，摊还成本取决于增长策略；copy是O(min(len(dst),len(src)))元素操作。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 数组与 ArrayList 还涉及引用、泛型和装箱；回答 Go 数组和 slice 时则应采用 Go 的值复制与底层数组共享语义。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整 Go 语义示例"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Go map版本机制与数组、切片、链表的选型边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组[N]T固定长度且按值复制元素，slice是共享某段底层数组的描述，map是按可比较key查value的关联容器，赋值后共享同一映射数据；map不是有下标顺序的动态数组。数组适合索引与顺序扫描，链表适合已知节点时频繁改链接。Go1.24已更换默认map实现，不能把旧hmap/bmap+overflow当所有版本永恒结构。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Go 的数组、slice 和 map 在类型、存储与复制语义上有什么区别？",
+        "数组与链表怎样选？解释 map 内部机制时为什么必须标明 Go 版本？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go 的语言规范与运行时实现要分开。数组和 slice 的基本语义见本章完整示例；map 的实现细节以下按 Go 1.23.0 旧实现与 Go 1.24.0 默认 Swiss Table 实现作版本对照，不能由帖子或项目日期猜测具体 Go 版本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go 数组的长度属于类型，slice 概念上包含底层引用、len、cap，append 可能复用也可能重新分配，传参仍是值传递。复制数组不会递归深复制其指针、map 或 slice 元素，复制 slice 描述也不会复制元素。索引受 len 约束，不是可以任意访问到 cap。"
+    },
+    {
+      "type": "paragraph",
+      "text": "map[K]V逻辑是无序且key唯一的映射，len是当前条目数，make(map[K]V,hint)的hint是容量提示，不固定上限，也不能用cap(map)。给m2=m1后两者改元素可相互看到；把m2重新赋值为另一个map只改变变量，不替换m1。零值nil map可读取/len/range/delete，但写入panic，要先make。读取零值不代表key存在，使用v,ok区分。"
+    },
+    {
+      "type": "paragraph",
+      "text": "key类型必须可比较；字符串、整数、可比较元素数组及可比较字段结构体可以，slice/map/function不能直接作key。interface{}作key时其动态值也必须可比较，否则例如放slice会在运行时panic。map元素通常不能直接取地址，结构体值字段要读出副本修改再写回，或明确用指针值；不能把哈希表可搬移元素当稳定节点地址。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go1.23.0源码的旧结构由hmap元信息和桶组成，一个常规桶存8组key/value并用tophash先筛，冲突可连接overflow桶。扩容可能按负载增加桶数或因过多overflow做同规模整理，旧桶逐步搬迁；所以旧版本也不应简化为“每个槽一条普通链表、每次满了整体同步搬完”。这些名称仅用于明确版本的源码讨论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go1.24.0默认使用Swiss Table：每group有8个槽及8字节控制字，控制字区分empty/deleted/used，used保存7位H2指纹。hash的其余高位H1决定起始组，组内批量筛指纹，再对候选比较完整key；指纹碰撞不是key相等，不可省最终比较。没有匹配就按组探测，遇有empty的组可结束未命中；不是旧overflow桶链。位数拆分以64位例子为高57/低7，32位uintptr不能硬说也有57位高位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "理解 tombstone，要从一次未命中查询怎样结束想起。若原组完全满，删除时直接把某槽改成 empty，后续查询就可能提前结束，漏掉探测序列后面的同类键；因此这里要标成 deleted，让查询继续探测。若组里已经有 empty，则可直接标成 empty。"
+    },
+    {
+      "type": "paragraph",
+      "text": "插入可以复用 deleted。tombstone 维护的是探测路径的正确性，不是业务数据“软删除以后永远不回收”的规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "增长按有限大小table处理，一个map的目录可指向多个table，用hash高位选择；某table到容量边界可增长或拆成两个，再按需扩大目录。Go1.24.0常量maxTableCapacity为1024槽，这是单table容量参数，不是map最多1024个元素；也不能误称1024槽都必须装满才扩。限制单表重排有助于控制增长尾部开销，但目录扩展、分配、GC和key哈希成本仍在，不能从这个常量证明整个操作绝对固定延迟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "map遍历顺序未指定，不能依赖插入顺序，更不能把随机遍历首个key当均匀抽样。规范允许同一执行流在遍历期间删除尚未走到项使其不再出现，新加项可出现也可不出现；这不授权多个goroutine无同步并发读写。并发纯读可行，读写/多写要用锁、明确所有权或合适并发容器；runtime检测到一些竞态会报错，不是线程安全保障。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组与链表对比要带操作前提：数组按索引O(1)，无序查值O(n)，有序数组二分O(log n)；中间插删为保持顺序要搬O(n)元素，动态数组尾追加通常摊还O(1)但扩容单次O(n)。链表随机访问第i项要沿链接O(n)，给定节点且有合适前驱/双链链接时插删才O(1)；先按值寻找位置仍O(n)，不能说“链表删除永远O(1)”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "链表每节点多指针与分配管理成本，遍历需追指针，通常不如连续数组的局部性；但这属于常见硬件行为，实际大小/访问模式/分配器会改变性能，未实测不能报提速倍数。Go标准container/list是双向链表，List/Element维护前后链接，适合已有节点引用时移动；它不自动提供按key快查，LRU仍需Map定位与链表顺序的组合。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组非引用元素的复制与 slice 共享底层数组的差异，可以用修改和 append 的小例子检查；完整原生程序见本章 Go 容器示例。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果需要“第10000个元素”，连续数组可计算位置，链表必须走链接；如果Map已给出某节点，双链移到头部可常数改链接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "概念反例：两个不同key可有相同7位H2，必须继续比较完整key；nil map读到0不能据此说键存在；range顺序不稳定不能充当排序或公平随机。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组索引O(1)，链表定位O(n)/已知节点改链接O(1)。哈希map在合理散列与受控负载下平均查改常按O(1)描述，但字符串哈希/相等比较随key长度变化，扩容与碰撞会增加工作；语言规范不承诺固定表布局或无条件最坏O(1)。Map/链表/数组空间均随存储数据规模增长，常数和额外引用布局不同。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "讨论项目中的 Go map 时，先确认编译器与运行时版本，再说明对应的扩容和桶结构。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Python可变性、元组的浅层不可变与哈希键契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把两个问题分开：对象能不能改，和它能不能当哈希键。list、dict、set、bytearray 是常见可变内建对象；int、float、str、bytes、tuple、frozenset、range 等不可变。tuple 不能替换自己的元素引用，但引用指向的 list 仍然能改。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再问能否作键：list 不可哈希，不能直接当 dict 键；tuple 也要所有参与哈希的成员都可哈希才行。因此只说“外层不可变”，还不足以判断一个 tuple 能不能作键。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Python 中哪些对象可变？元组包含 list 时，究竟哪一层不可变？",
+        "可变性与可哈希性是什么关系？list 能不能作 dict 的键？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "Python 的可变性要区分对象状态变化与名称重新绑定，再分析容器引用的成员以及成员指向对象的状态。下面使用 Python 原生示例。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "Python变量是名称到对象的绑定。a=[1]、b=a让两个名称指向同一list，a.append(2)或list的+=会原地改变对象，b能看到变化；a=[9]则仅把a改绑到新list，b还指向旧对象。对tuple做t+=(3,)是产生更长tuple再绑定名称，不代表原tuple被修改；is比较身份，==比较定义的相等性，不可互换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "t=([1],\"fixed\")不能执行t[0]=新对象，因为tuple槽位不可替换；但t[0].append(2)可改变其中list。这叫容器层面的浅不可变，不是整个可达对象图冻结。一个细节是t[0]+=[2]会先原地改list，再尝试将结果写回tuple槽位而抛TypeError，所以抛错并不保证此前无副作用；完整示例验证这个状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "哈希表键必须有合法__hash__，键参与查找的hash与相等语义需要保持稳定，且a==b必须推出hash(a)==hash(b)，反向不成立，碰撞要再判等。list按内容相等而内容可变，因此内建list设为不可哈希，hash([1,2])及以list作dict键均抛TypeError。不能为list随便加一个内容hash后继续任意变更，再期待已存映射自动搬桶。"
+    },
+    {
+      "type": "paragraph",
+      "text": "(1,2)可作键；([1],2)虽然外层tuple不可变，内部list不可哈希，hash整tuple仍抛TypeError。若需要以序列内容作稳定key，可先确认语义再转换为只含可哈希成员的tuple；嵌套list需递归冻结，字典无序/有序语义、重复项和类型区别都要定义，不能任意str(obj)假装得到无冲突规范键。内容很大时哈希与比较本身也有成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可变与可哈希不是严格同义反面：未重写相等性的普通用户类默认按对象身份相等并具有匹配hash，实例可修改与身份相等无关的state，仍可安全作为身份键。若自定义按内容__eq__却不定义__hash__，Python会把__hash__设为None；若真需要值对象键，应让参与相等/hash的字段稳定并实现一致契约，不借object.__hash__与按值__eq__混用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "共享可变对象还会影响数据处理：浅拷贝只复制外层容器，嵌套对象仍共享，原地数据增强、缓存修改或批处理可能意外互相污染；deepcopy会复制可达结构但有时间/内存代价和对象自定义行为，不能把它当免费万能修复。不可变配置/键能降低误改风险，但“tuple包list”不提供深冻结或线程安全保证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用脚本检查 list 别名的原地修改与名称重绑定、tuple 槽位不可替换但内部 list 可变、包含 list 的 tuple 不可哈希、list 作键抛 TypeError、普通 tuple 作键成功，以及浅拷贝、深拷贝和自定义相等性的区别。"
+    },
+    {
+      "type": "paragraph",
+      "text": "str/bytes的hash通常进程内稳定、不同进程可因随机化而不同；不要把内建hash结果作为跨进程持久文件分桶协议，若需要稳定分桶应使用明确编码与稳定摘要/哈希算法。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "容器可变性是语义，不直接决定所有操作复杂度。tuple/list的索引访问一般常数，但tuple内容哈希可能遍历元素；dict的平均常数查找依赖hash/equals成本及分布，不能忽略长tuple或自定义比较。浅拷贝O(n)外层元素，深拷贝成本取决于对象图。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "元组不是“其中所有数据都绝对不变”，不可变的是元组的引用槽位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数值相等也影响键：Python的1、1.0和True相等且hash契约一致，可指向同一dict条目；若业务需要类型区分，应把类型纳入明确键结构。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Python 语义示例与自测"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "C++容器的存储、复杂度与失效规则：vector/array/map/unordered_map"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按访问方式分两组。要按位置访问连续元素，vector 提供可增长序列，array<T,N> 在对象内保存固定 N 个元素。要按键查询，map 按比较器有序，常见用平衡搜索树，按键查询 O(log n)；unordered_map 按哈希分桶、同桶再判等，平均键操作 O(1)、最坏 O(n)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选型还没结束：如果还要范围查询、保留迭代顺序，或在修改后继续使用旧引用，就必须说明重分配/rehash 以及迭代器和引用何时失效。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "C++ 的 vector、array、map 和 unordered_map 分别有什么存储与复杂度契约？",
+        "map 与 unordered_map 怎样选择？修改容器后哪些迭代器、指针和引用会失效？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下按 C++20 接口给出 STL 示例。标准接口保证与具体库实现要分开：LLVM 18.1.8 libc++ 的树源码可以解释红黑树实现，但树类型、桶数量和 vector 增长倍率不能都当作 C++ 标准强制规定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "vector<T>（bool特化除外）保存一段连续的已构造T对象，随机下标访问O(1)。size是活元素数，capacity是无需重新分配能容纳的数量。reserve只预留容量，不增加size也没有创造可访问的新元素；resize才构造或销毁元素。reserve(100)后空vector[0]依旧越界，at(0)抛out_of_range，不能把预留空间当已存在元素。"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量不足时vector申请更大连续存储，将已有元素移动或复制过去，再释放旧存储，因此那一次push_back可O(n)，连续尾插通常摊还O(1)，不是每次最坏O(1)。标准不要求固定1.5倍或2倍；每次先reserve(size+1)可能破坏正常增长策略，不能拿它当通用优化。中间插删要移动后缀，通常O(n)。T的构造/析构/移动成本仍要计入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "vector重分配使旧元素指针、引用和迭代器全部失效；未重分配的插入使插入点及其后的迭代器/引用失效，删除也影响删除点及后缀。即使push_back未重分配，旧end也不能继续当新的end用。demo只在容量确定足够时使用保留指针，重分配后重新取得指针，不用“程序似乎还能读到”证明悬空指针安全。vector<bool>可用位压缩代理引用，不能照普通vector推断可取得bool*连续数组。"
+    },
+    {
+      "type": "paragraph",
+      "text": "array<T,N>把N作为类型的一部分，对象内部直接持有固定长度元素，无需为扩容再分配。array<int,3>与array<int,4>是不同类型；可整体拷贝/赋值，代价O(N)，不是C数组衰变指针。N=0合法且begin==end，但front/back/下标不能访问。它不必然在栈上：成员、全局、动态分配的array对象其存储期取决于外层对象，不能说array天然栈、vector天然堆就是完整结论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "map的key按Compare形成严格弱序，唯一性是!comp(a,b)&&!comp(b,a)，不一定调用operator==。键不可直接就地修改成破坏顺序的新值。迭代按比较器顺序，lower_bound/upper_bound定位边界后顺序走k个元素可做O(log n+k)范围扫描；unordered_map没有对应的有序范围边界。map常用红黑树等平衡树，标准关注复杂度与语义而非强制某种节点布局。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以实际红黑树实现解释O(log n)：根黑、红节点不能接红孩子、每条根到空叶路径黑高度相同。黑高为b的子树至少2^b−1个内部节点，最长路径至多交替红黑约2b，因此树高O(log n)。查找按比较器走一条路径，插入/删除通过旋转和变色维持约束。普通未平衡BST遇有序输入会退化链表，不能用它解释map的对数保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "unordered_map先计算Hash(key)并定位bucket，再用KeyEqual确认同桶候选是否同一个键。相等键必须有相同哈希，但相同哈希不代表同键；哈希碰撞本身不会覆盖另一个不相等键。可以使用链式节点等实现，不过标准未要求照搬Java8树化阈值8/64。桶分布良好且装载因子受控时平均短链；全部键同hash时查询会退化到线性。自定义忽略大小写的KeyEqual时Hash也必须满足对应等价关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "load_factor=size/bucket_count，max_load_factor限制增长策略的目标。reserve(n)用于为预期元素数准备桶，rehash(n)以桶数为参数；它们不为每个key预先创建映射，也不保证精确等于请求桶数。rehash改变桶归属/遍历次序，使迭代器失效，但不使仍存在元素的指针和引用失效。这里与vector搬动元素的重分配明显不同；被erase的那个元素的引用当然失效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "map插入通常不使已有元素迭代器/引用失效，删除只使被删元素相关引用失效；unordered_map插入若触发rehash则迭代器失效。不能在拿着旧迭代器遍历时随便插入并假定都安全。对两种map，operator[]在键不存在时可能插入默认值，纯查询用find/contains，要求存在可用at，不要无意间把读操作变成写。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选vector做紧凑顺序数据与索引，固定长度值对象可用array；要有序遍历/上下界/稳定对数键查找用map；只按键检索且散列条件适合可用unordered_map。哈希并不必然在真实硬件更快：长字符串哈希、比较器、分配器、缓存局部性、碰撞和内存预算都影响结果，需要代表性工作负载测量，而不是把大O当固定延迟。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "程序验证array复制独立、零长度容器；vector reserve不造元素、at越界、连续地址、插删结果和容量内尾插保留引用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++ 自测检查 map 的排序迭代、lower_bound 与插删后的迭代器规则；再让 unordered_map 的所有整数 hash 相同，与独立 map 对照增减计数，验证仍按完整键区分碰撞项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++ 容器自测对照独立模型检查查找、删除与碰撞，编译时可开启严格警告和未定义行为检查。测试不能通过访问失效迭代器来证明其“通常可用”，因为该访问本身就可能是未定义行为。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "vector索引O(1)、尾插摊还O(1)/单次扩容O(n)、中间插删O(n)，占用O(capacity)元素存储；array固定O(N)存储。map一般按键查找/插入/按键删除O(log n)，迭代n项O(n)，节点O(n)。unordered_map按键操作平均O(1)最坏O(n)，rehash平均O(n)、最坏可O(n²)，空间需计元素与桶O(n+buckets)。上述按单次Hash/Compare/元素移动为单位，复杂键需乘其真实代价。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "以上非并发安全承诺；多个线程并发结构修改要另建同步协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "allocator、增长策略和哈希分布都会影响实际成本，涉及具体实现时应明确库版本并测量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C++ 容器合同与碰撞自测"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ],
+  "questionId": "q-own-java-cross-language-contracts",
+  "targetOrigin": "authored"
+}

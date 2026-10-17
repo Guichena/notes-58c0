@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s6516",
+  "entryId": "own-mq-contracts",
+  "expectedOriginalHash": "7595820927bce65bdbb7679304e78058c0f303a7425a7977228585308db5d88f",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.17 购买优惠券后取消先到、创建还没写DB和Redis，怎样处理消息乱序"
+    },
+    {
+      "type": "paragraph",
+      "text": "先到的取消应保存终态屏障，迟到创建检查该屏障并不得复活已取消意图，已发券或付款则按独立补偿处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：取消先到创建后到怎么办；MQ是否有序就够了；删除空记录为何不能代表已取消。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消可能先于创建到达DB和Redis，MQ顺序即使可控也不能替代业务状态机与稳定身份。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "首先补上订单受理的可靠事实"
+    },
+    {
+      "type": "paragraph",
+      "text": "若接口声称已购买而DB、Redis、消息持久源全部没有任何可恢复记录，服务崩溃后根本无法证明该购买，任何消费排序都救不了。允许异步创建时，入口至少可靠保存带稳定orderId/intentId的受理账及待发责任，再返回PENDING；用户取消携同一身份和可验证归属。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis可作查询投影，不能因它未写就说订单不存在；从权威请求账读取PENDING/取消状态。如果创建记录在业务库稍后形成，也必须保留可恢复输入/购买身份，使取消能绑定这一笔，而不是按userId+couponId把未来新购买也取消。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "有序队列能减少乱序，但不能代替状态判断"
+    },
+    {
+      "type": "paragraph",
+      "text": "按orderId路由同一分区/队列，同一实体的生产更新由权威状态顺序生成，消费端同实体串行提交。Rabbit的同channel入队顺序与多channel交错、多个消费者并行完成、重投和优先级要区别；Kafka/Rocket也只有相应分区/队列内约束，不是产品名字自带全局业务顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建和取消来自两个生产者时，不能各拿本地时钟就决定谁先谁后。可靠事件需要权威 entityVersion 或明确的命令因果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果传的是增量，直接跳过低版本可能漏效果，要补缺口或查当前完整状态。只有足够完整的状态快照，才能用更高版本覆盖旧版本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取消先到需要空回滚墓碑与防悬挂"
+    },
+    {
+      "type": "paragraph",
+      "text": "在同一权威事务域以orderId唯一创建CANCELLED/CANCEL_REQUESTED墓碑，绑定受理请求/用户/券参数。随后Create看到该墓碑不再发券或占用库存；重复Cancel只返回原状态，不重复释放。墓碑只由鉴权且确属该请求的取消产生，防恶意用户猜ID取消他人或未来请求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若Create已完成预留，则Cancel条件从可取消状态转终态并释放一次；若付款/核销已有不可逆效果，进入核对/退款或拒绝取消的业务路径，不能仅删除券或把发行库存加回。订单取消、支付退款、优惠券是否可再发/返还各有状态与唯一操作，见第8.7节及第8.9节及第4.20节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消的终态屏障，要活得比可能重放的旧创建更久。状态、资源变化、处理记录和 outbox 同事务保存，缓存按版本更新，旧创建通知不能复活 CANCELLED 投影。"
+    },
+    {
+      "type": "paragraph",
+      "text": "墓碑和唯一操作证据，需保留到所有队列重放、离线请求、灾备恢复窗口之外。不能 30 秒一过期，旧 Create 又发券。真正的新购买用新 intentId，不受旧墓碑影响。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "若系统不能立刻写墓碑"
+    },
+    {
+      "type": "paragraph",
+      "text": "可把取消命令可靠记入同一请求账并让订单协调器串行归并，或对不存在订单保存持久pending cancellation再核对创建；不能直接ACK并丢弃“查不到订单”的取消。也不能无限nack重入造成风暴，需有界等待、补查和可观测异常终态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "更简单的架构是入口先创建最小PENDING订单，使Create/Cancel始终竞争同一行版本；之后执行耗时校验/发券。每种方案都要说明持久权威在哪里，以及数据尚未落到展示库不等于命令没受理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可执行模型与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "CouponCancellation给明确的受信单权威模型：未付款/未核销且可取消的请求，Create建立一次分配，Cancel留下永久墓碑并至多释放一次。全24种两个Create与两个Cancel排列、100并发交错均最终CANCELLED/分配0；另测新购买不受影响及同ID参数冲突。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它用Java内存锁，不含数据库、支付、消息保序或跨重启持久化。生产须把同样判断落在共享事务/唯一约束中，测试故障恢复、缓存旧事件、墓碑归档、付款/退款竞态。模型的“取消总能赢”只适用于明示的可取消子场景，不能推广到已核销券或已完成交易。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 代码 CouponCancellation.java"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java状态模型验证未核销可取消请求的次序无关性，不包含真实支付或持久服务。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "019/CouponCancellation.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Authenticated, cancellable, not-yet-redeemed coupon request model. No payment or external effects. */\npublic final class CouponCancellation {\n    public enum State { CREATED, CANCELLED }\n    public record Row(String payload,State state) {}\n    private final Map<String,Row> rows=new HashMap<>();\n    private long allocated;\n    private static void valid(String id,String payload) {\n        if(id==null||id.isBlank()||payload==null||payload.isBlank())throw new IllegalArgumentException();\n    }\n    private Row prior(String id,String payload) {\n        Row old=rows.get(id);\n        if(old!=null&&!old.payload().equals(payload))throw new IllegalArgumentException(\"request payload conflict\");\n        return old;\n    }\n    public synchronized State create(String id,String payload) {\n        valid(id,payload);Row old=prior(id,payload);\n        if(old!=null)return old.state();\n        long next=Math.addExact(allocated,1);\n        rows.put(id,new Row(payload,State.CREATED));allocated=next;return State.CREATED;\n    }\n    public synchronized State cancel(String id,String payload) {\n        valid(id,payload);Row old=prior(id,payload);\n        if(old!=null&&old.state()==State.CANCELLED)return State.CANCELLED;\n        // A missing create still leaves a tombstone. The caller's authorization is a prerequisite.\n        long next=old==null?allocated:allocated-1;\n        rows.put(id,new Row(payload,State.CANCELLED));allocated=next;return State.CANCELLED;\n    }\n    public synchronized long allocated(){return allocated;}\n    public synchronized State state(String id){return rows.get(id).state();}\n    private static void check(boolean x){if(!x)throw new AssertionError();}\n    private static void permutations(int depth,int[] order,boolean[] used,int[] count) {\n        if(depth==4){\n            CouponCancellation s=new CouponCancellation();\n            for(int x:order){if(x<2)s.create(\"order\",\"owner:sku\");else s.cancel(\"order\",\"owner:sku\");check(s.allocated()>=0&&s.allocated()<=1);}\n            check(s.allocated()==0&&s.state(\"order\")==State.CANCELLED);count[0]++;return;\n        }\n        for(int i=0;i<4;i++)if(!used[i]){used[i]=true;order[depth]=i;permutations(depth+1,order,used,count);used[i]=false;}\n    }\n    public static void main(String[] args)throws Exception {\n        int[] count={0};permutations(0,new int[4],new boolean[4],count);check(count[0]==24);\n        CouponCancellation s=new CouponCancellation();ExecutorService pool=Executors.newFixedThreadPool(12);\n        try {\n            List<Callable<State>> jobs=new ArrayList<>();\n            for(int i=0;i<100;i++){boolean create=(i%2==0);jobs.add(()->create?s.create(\"order\",\"owner:sku\"):s.cancel(\"order\",\"owner:sku\"));}\n            for(Future<State> f:pool.invokeAll(jobs))f.get();\n            check(s.allocated()==0&&s.state(\"order\")==State.CANCELLED);\n            check(s.create(\"order\",\"owner:sku\")==State.CANCELLED);\n            check(s.create(\"new-purchase\",\"owner:sku\")==State.CREATED&&s.allocated()==1);\n            try{s.cancel(\"order\",\"another-owner\");throw new AssertionError();}catch(IllegalArgumentException expected){}\n            check(s.allocated()==1);\n        } finally {pool.shutdownNow();}\n        System.out.println(\"PASS CouponCancellation: all24 orderings of duplicate create/cancel; 100 concurrent calls; early tombstone stops late create; repeated cancel releases once; fresh intent and payload conflict. In-memory trusted model only.\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mq-cancel-before-create",
+  "targetOrigin": "authored"
+}

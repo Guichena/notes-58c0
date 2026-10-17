@@ -1,0 +1,420 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-1-2",
+  "entryId": "bg-mysql-1",
+  "expectedOriginalHash": "1fcc704ce65f0fad87dbd1bfb39322ed3b67c74aa9ec3f7d7915ef7c6ad1b40b",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第20章 隔离级别、幻读与写偏差：用两会话推导结果"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先给结论"
+    },
+    {
+      "type": "paragraph",
+      "text": "先给最重要的结论：InnoDB 默认是 REPEATABLE READ，但 RR 的稳定快照不等于可串行化，也不会自动防超卖、去重或保护跨行约束。RC 与 RR 不只差在快照何时建立，还差在加锁读、写语句的范围保护以及非匹配记录锁释放等行为。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以问“有没有幻读”，要先说是哪种读、是否在同一事务里。普通一致性读靠版本选择，不靠间隙锁阻止别人插入；范围加锁读和写语句则要沿实际索引、谓词和隔离级别，推导记录锁、gap lock、next-key lock。把两条路径混在一句“RR 防幻读”里，就无法解释后面的两会话结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "四种级别分别允许什么、怎样选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "READ UNCOMMITTED： 普通读可能看到其他事务未提交的修改，包括后来回滚的值。写操作仍有锁和其他并发控制，不能理解为“没有任何机制”。只有明确容忍撤销和不稳定结果的近似观察才值得评估，余额、库存及业务决策不应以这种读取为事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "READ COMMITTED： 每次普通一致性读采用新的已提交视图。同一个事务再次读同一行可能变化，同一个谓词的结果集也可能变化。适合每条查询独立看已提交状态、业务不变量由约束和原子更新等另外表达的服务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "REPEATABLE READ： 同一事务的普通一致性读通常复用第一次这类读的视图，适合多次核对或有界快照报表。自己的写和当前加锁操作仍需单独分析；范围加锁访问可能阻止相关插入，长快照也增加历史保留成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "SERIALIZABLE： 在关闭 autocommit 的事务中，InnoDB 将普通 SELECT 隐式转为共享加锁读，以施加更强并发约束。它可能等待、发生锁升级死锁并要求事务重试。自动提交的单条只读 SELECT 有独立优化语义；“把级别设成串行化”不意味着整个数据库只能有一个工作线程，也不包含外部 HTTP 副作用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "隔离级别不是通用性能排名。RC 在部分范围更新负载下减少间隙保护和无效记录持锁，可能降低冲突；RR 已存在唯一键完整等值命中通常只需记录锁，不能说“RR 每次都锁间隙”。RC 的外键和重复键检查仍可用 gap lock。RC UPDATE 遇到被锁记录时还可能先用半一致读判断已提交版本是否匹配，真正修改时仍需锁定并重新检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RC 和 RR 都可能死锁。例如 A 先锁记录 1 再请求记录 2，B 先锁记录 2 再请求记录 1，就可能形成等待环。RC 可以减少部分范围负载的锁冲突，却不能消除这个环；统一访问顺序、缩短持锁时间，并完整回滚重试更重要。库存单行扣减与月末多查询对账的快照需求不同，不能按公司所属行业选择级别。"
+    },
+    {
+      "type": "paragraph",
+      "text": "切换到 RC 还应核对 binlog：InnoDB 的 RC 变更只支持行格式；MIXED 会为相应操作自动用 ROW。这个限制不能证明“默认 RR 只因为历史 statement binlog”这一完整历史因果。默认值是产品行为，实际全局、会话、连接池和事务管理器配置可能不同，必须检查实际连接。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三种现象，三个独立时间线"
+    },
+    {
+      "type": "paragraph",
+      "text": "脏读： 初始余额 100，A 改成 50 未提交；B 在 RU 读到 50；A 回滚。B 读到的 50 从未成为提交事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不可重复读： 初始余额 100，A 在 RC 读到 100；B 改成 80 并提交；A 再读同一主键得到 80。两次都读已提交值，变化发生在同一条记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幻读： A 在 RC 查询 status='OPEN' 得到 ID={1,2}；B 插入符合条件的 ID=3 并提交；A 重复谓词得到 {1,2,3}。这里关注谓词集合的成员变化。新增/删除行，或更新使已有行进入/离开谓词，都要按结果集合分析；单纯数行数还可能漏掉“数量相同、成员已换”的变化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若题目只说“三道 SQL，分析事务结果”或“给了两个事务，各隔离级别结果是什么”，却没有语句、DDL、初始数据、交错顺序、提交点和读类型，就没有唯一答案。应补齐这些输入后逐步推导，不能凭隔离级别名称制造输出。“索引相关问题”没有具体 SQL 时，也不能推算确切锁范围。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "练习一：RU 脏读与 RC 不可重复读"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1A：余额 100→50→回滚"
+    },
+    {
+      "type": "paragraph",
+      "text": "先在 A、B 各执行 ROLLBACK。然后 A 重置："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-018.sql",
+      "value": "UPDATE s2_balance SET balance=100 WHERE id=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 A1→B1→A2→B2 执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-019.sql",
+      "value": "-- A1：完成 UPDATE 后暂停，不能提交。\nSET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;\nSTART TRANSACTION;\nUPDATE s2_balance SET balance=50 WHERE id=1;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-020.sql",
+      "value": "-- B1：A1 已完成但未提交。\nSET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nSTART TRANSACTION;\nSELECT balance FROM s2_balance WHERE id=1; -- 预期 50\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-021.sql",
+      "value": "-- A2\nROLLBACK;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-022.sql",
+      "value": "-- B2：确认 A2 已返回。\nSELECT balance FROM s2_balance WHERE id=1; -- 预期 100\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立重置后，把 B1 改为 READ COMMITTED，普通读应得到 100；它读的是可见已提交版本，不需要读 A 的未提交 50 来避免等待。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1B：余额 100→80→提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "两边回滚后，A 再重置 balance=100 并 COMMIT。按 A1→B1→A2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-023.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;\nSTART TRANSACTION;\nSELECT balance FROM s2_balance WHERE id=1; -- 100\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-024.sql",
+      "value": "-- B1\nSET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;\nSTART TRANSACTION;\nUPDATE s2_balance SET balance=80 WHERE id=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-025.sql",
+      "value": "-- A2：B1 的 COMMIT 已返回。\nSELECT balance FROM s2_balance WHERE id=1; -- RC 预期 80\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立重置 100 后，只把 A 的级别改为 RR，相同时序的 A2 预期仍为 100。这不等于所有形式的读取都得到 100。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "S2-C：不同的行都更新成功，整体却错了"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "两台备用设备：至少留一台待命"
+    },
+    {
+      "type": "paragraph",
+      "text": "两会话回滚后由 A 重置："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-047.sql",
+      "value": "UPDATE s2_device SET on_standby=1 WHERE slot_id=1;\nUPDATE s2_shift SET remaining=2 WHERE slot_id=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "先完成 A1、B1，再做 A2、B2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-048.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT SUM(on_standby) INTO @a_count FROM s2_device WHERE slot_id=1; -- 2\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-049.sql",
+      "value": "-- B1：在 A2 前完成。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT SUM(on_standby) INTO @b_count FROM s2_device WHERE slot_id=1; -- 2\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-050.sql",
+      "value": "-- A2：使用自己读到的决策。\nUPDATE s2_device SET on_standby=0\nWHERE slot_id=1 AND id=1 AND on_standby=1 AND @a_count>1;\nSELECT ROW_COUNT(); -- 1\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-051.sql",
+      "value": "-- B2：更新另一行，不会因 A 已经改第一行而自动失败。\nUPDATE s2_device SET on_standby=0\nWHERE slot_id=1 AND id=2 AND on_standby=1 AND @b_count>1;\nSELECT ROW_COUNT(); -- 1\nCOMMIT;\nSELECT SUM(on_standby) FROM s2_device WHERE slot_id=1; -- 预期 0，违反约束\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里每条单行条件都成立，两条 UPDATE 也都成功，但“至少一台待命”已经被破坏。行内 CHECK 只能约束 0/1，不能自动保证跨行的 SUM>=1。改成 RC 也未必解决：只要两人仍先看到 2，再各改一行，同样可能都停用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样证明这是写偏差"
+    },
+    {
+      "type": "paragraph",
+      "text": "换成更容易口述的医生例子：doctor(id,on_call) 两行最初都是 1。A 看到两人在岗，把医生 1 改成 0；B 也看到两人在岗，把医生 2 改成 0。两人的写集合没有交集，却都读了对方后来修改的行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "现在试着把它们排成串行顺序。若 A 先做完，B 就该看到只剩一人而拒绝下班；B 先做完也一样。两人都下班的结果不对应任何遵守这条业务逻辑的串行执行，这才是写偏差的关键。因此，RR 普通读没纳入新增行，并不能证明整个事务历史已经可串行化。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "修复方案一：预先存在的守卫行"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个时段有一行稳定的 s2_shift，所有新增、停用、删除和管理后台写路径先锁它。守卫行不存在时应拒绝或按另外定义的创建协议处理，不能“查不到就当没锁也继续”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两边回滚后重新把设备都置 1、remaining=2。按 A1→B1 等待→A2→B2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-052.sql",
+      "value": "-- A1：获得共同冲突点，并读取当前候选集合。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT slot_id FROM s2_shift WHERE slot_id=1 FOR UPDATE;\nSELECT on_standby INTO @a_one FROM s2_device WHERE slot_id=1 AND id=1 FOR UPDATE;\nSELECT on_standby INTO @a_two FROM s2_device WHERE slot_id=1 AND id=2 FOR UPDATE;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-053.sql",
+      "value": "-- B1：只执行到守卫行锁；这里应等待 A。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT slot_id FROM s2_shift WHERE slot_id=1 FOR UPDATE;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "A 通过等待观察 SQL 确认 B 等待自己的 s2_shift 锁，然后："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-054.sql",
+      "value": "-- A2：示例固定两台设备，停用自己的设备。\nUPDATE s2_device SET on_standby=0\nWHERE slot_id=1 AND id=1 AND on_standby=1 AND (@a_one+@a_two)>1;\nSELECT ROW_COUNT(); -- 1\nUPDATE s2_shift SET remaining=1 WHERE slot_id=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "B 的守卫锁返回后，必须用当前读重新判断，不能沿用任何早先普通快照："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-055.sql",
+      "value": "-- B2\nSELECT on_standby INTO @b_one FROM s2_device WHERE slot_id=1 AND id=1 FOR UPDATE;\nSELECT on_standby INTO @b_two FROM s2_device WHERE slot_id=1 AND id=2 FOR UPDATE;\nUPDATE s2_device SET on_standby=0\nWHERE slot_id=1 AND id=2 AND on_standby=1 AND (@b_one+@b_two)>1;\nSELECT ROW_COUNT(); -- 预期 0，剩余待命数为 1\nROLLBACK;\nSELECT id,on_standby FROM s2_device WHERE slot_id=1 ORDER BY id; -- (1,0),(2,1)\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例中的 remaining 仅随成功路径维护。一般化实现必须同时维护计数、设备存在性和所有状态转换，不应把固定写 remaining=1 推广到任意数量。按固定顺序锁全部候选也能保护已知集合，但动态新增候选还涉及范围或守卫协议，不能只锁两条现有记录便宣称保护任意集合。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "修复方案二：把不变量集中到一行条件更新"
+    },
+    {
+      "type": "paragraph",
+      "text": "若业务允许汇总维护，所有停用先原子减少 remaining，成功才在同一事务修改对应设备。两边回滚后重置设备全为 1、remaining=2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-056.sql",
+      "value": "-- A1：先不提交。\nSTART TRANSACTION;\nUPDATE s2_shift SET remaining=remaining-1 WHERE slot_id=1 AND remaining>1;\nSET @a_allowed=ROW_COUNT();\nUPDATE s2_device SET on_standby=0\nWHERE slot_id=1 AND id=1 AND on_standby=1 AND @a_allowed=1;\nSELECT ROW_COUNT() AS a_device_changed; -- 预期 1\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-057.sql",
+      "value": "-- B1：应在 s2_shift 上等待 A。\nSTART TRANSACTION;\nUPDATE s2_shift SET remaining=remaining-1 WHERE slot_id=1 AND remaining>1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "A 确认等待边后 COMMIT；B 的 UPDATE 返回后紧接着执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-058.sql",
+      "value": "-- B2\nSET @b_allowed=ROW_COUNT(); -- 预期 0\nUPDATE s2_device SET on_standby=0\nWHERE slot_id=1 AND id=2 AND on_standby=1 AND @b_allowed=1;\nSELECT ROW_COUNT() AS b_device_changed; -- 0\nCOMMIT;\nSELECT remaining FROM s2_shift WHERE slot_id=1; -- 1\nSELECT SUM(on_standby) FROM s2_device WHERE slot_id=1; -- 1\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整业务中，如果汇总扣减成功、设备更新却不是恰好 1 行，必须回滚整个事务；不能提交减了计数却没停设备的半段状态。汇总行成为热点，新增/恢复设备、取消请求、重复请求都要遵循同一守恒协议。它将跨行不变量化成共同冲突点，交换的是并发度和维护成本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "SERIALIZABLE 如何处理两医生下班"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里只研究同库、两位现有医生，显式关闭 autocommit，确保普通读处于多语句事务。需要实例已开启死锁检测；若关闭，可能表现为超时，应先回滚并恢复实验条件，不能声称必然立即报告死锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两边回滚并 SET autocommit=1 后，由 A 重置："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-059.sql",
+      "value": "UPDATE doctor SET on_call=1;\nCOMMIT;\nSELECT @@global.innodb_deadlock_detect;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 A1→B1→A2 等待→B2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-060.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;\nSET autocommit=0;\nSTART TRANSACTION;\nSELECT id,on_call FROM doctor ORDER BY id; -- 1、2 都在岗，读操作持共享锁\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-061.sql",
+      "value": "-- B1\nSET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;\nSET autocommit=0;\nSTART TRANSACTION;\nSELECT id,on_call FROM doctor ORDER BY id; -- 共享锁兼容，仍可读两人在岗\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-062.sql",
+      "value": "-- A2：单独发送此句，等待 B 的共享锁。\nUPDATE doctor SET on_call=0 WHERE id=1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "B 运行等待观察 SQL，确认 A 正在等待 B 的 doctor 锁。然后 B 执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-063.sql",
+      "value": "-- B2：需要升级另一记录的锁，形成等待环。\nUPDATE doctor SET on_call=0 WHERE id=2;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要预设牺牲哪一个事务。死锁检测应使一个事务报错并整笔回滚；另一个 UPDATE 得以继续。在成功返回的那一侧执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-064.sql",
+      "value": "COMMIT;\nSET autocommit=1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "错误侧执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-065.sql",
+      "value": "ROLLBACK;\nSET autocommit=1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "确认两边都完成上述结束动作后，任意一侧在新的事务边界下查询："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-066.sql",
+      "value": "SELECT id,on_call FROM doctor ORDER BY id;\nSELECT SUM(on_call) AS remaining_doctors FROM doctor; -- 预期 1\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能提前查询尚未提交的另一侧结果，或把谁成为受害者写成固定答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "失败侧若重试，应从完整业务判断重新开始："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-067.sql",
+      "value": "SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;\nSET autocommit=0;\nSTART TRANSACTION;\nSELECT id,on_call FROM doctor ORDER BY id; -- 只剩一人在岗\n-- 业务判断人数不大于 1，拒绝再下班；不执行 UPDATE。\nROLLBACK;\nSET autocommit=1;\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这说明更强隔离可以把原本无写写冲突的错误历史变成等待或失败；它没有替应用写出“人数不大于 1 就拒绝”的规则，也没有保证每次调用都成功。若错误后只重放 UPDATE，不再判断人数，依旧会破坏业务约束。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "2"
+}

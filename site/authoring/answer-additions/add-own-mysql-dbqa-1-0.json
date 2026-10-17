@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-dbqa-1-0",
+  "entryId": "dbqa-1",
+  "expectedOriginalHash": "fc5587da6a026d56a8b78675395907ff05930893275302598d594daf15cb7a59",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "索引或 SQL 改写必须保持题目运算符和结果语义。不能为了改成等值前缀而把范围条件换成几个状态；只有业务域与谓词确实等价，并通过 NULL、边界和并发视图校验，才可采用改写。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "科幻、今年、张三：保留三个等值"
+    },
+    {
+      "type": "paragraph",
+      "text": "若 schema 是 category、published_year、author_name，则“今年的科幻类、作者张三”对应三个等值条件，(category,published_year,author_name) 能定位组合。三个字段均等值时，其他列序也可能服务该查询，应看缺少某个条件时的其他工作负载，而不是把它误判为范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“今年”需在明确的业务时区和时钟中确定为具体年份。若表里实际存的是出版时间戳，应转换为同一时区下的年起止区间，不能想当然说现有 year 索引存在。章末先给无租户的原三列逻辑例，再明确给多租户扩展；租户列不是原题隐含已存在的条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若实际条件是 published_at 的年内范围，(category,published_at,author_name) 固定类别后先按时间扫描，author_name 通常不能继续把全部候选缩成一个连续区间；可比较 (category,author_name,published_at)。作者若改为 LIKE '%张三%'，就不再是原等值条件；没有 category 条件时，也须重新分析最左前缀和其他查询。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "原三列查询与明确的租户扩展"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 book.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/book.sql",
+      "value": "SET NAMES utf8mb4;\n-- Original three-equality logical workload without an added tenant predicate.\nCREATE TABLE book_original(id BIGINT PRIMARY KEY,title VARCHAR(200) NOT NULL,\n category VARCHAR(80) NOT NULL,published_year INT NOT NULL,author_name VARCHAR(80) NOT NULL);\nCREATE INDEX ix_original_cya ON book_original(category,published_year,author_name);\nINSERT INTO book_original VALUES(1,'A','科幻',2026,'张三'),(2,'B','科幻',2025,'张三'),\n (3,'C','科幻',2026,'李四'),(4,'D','历史',2026,'张三');\nSELECT id,title FROM book_original WHERE category='科幻' AND published_year=2026 AND author_name='张三';\nCREATE TABLE book (\n tenant_id BIGINT NOT NULL,id BIGINT NOT NULL,title VARCHAR(200) NOT NULL,\n category VARCHAR(80) NOT NULL,published_year INTEGER NOT NULL,author_name VARCHAR(80) NOT NULL,\n PRIMARY KEY(tenant_id,id),CHECK(published_year BETWEEN 1000 AND 9999)\n);\nCREATE INDEX ix_book_category_year_author ON book(tenant_id,category,published_year,author_name);\nINSERT INTO book VALUES\n (7,1,'A','科幻',2026,'张三'),(7,2,'B','科幻',2025,'张三'),\n (8,3,'C','科幻',2026,'张三'),(7,4,'D','历史',2026,'张三');\n-- Independent multi-tenant extension.\nSELECT id,title FROM book WHERE tenant_id=7 AND category='科幻' AND published_year=2026 AND author_name='张三' ORDER BY id LIMIT 20;\n-- \"This year\" must resolve in an explicit business timezone/clock; do not wrap the indexed year in a function.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第13章 从真实查询分布推导索引"
+    },
+    {
+      "type": "paragraph",
+      "text": "索引设计的单位是查询工作负载，而不是字段清单；先固定结果语义、过滤与排序，再用数据分布和读写代价比较少量候选。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：姓名、性别谁放前？千万用户怎么查姓王的女性？status=0 且 age>12 怎么建索引？今年科幻类张三的书如何查询？七八千万用户的昵称查询和爱好人数统计怎么设计？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从需求到候选的五步"
+    },
+    {
+      "type": "paragraph",
+      "text": "“第一步列核心查询、频率和延迟目标；第二步确定等值、范围、排序、投影以及租户权限；第三步估算候选数量和相关性；第四步设计能减少扫描、回表或排序的索引；第五步用实际计划和相同结果校验，并检查写放大。我不会因为一个字段区分度高，就把它在所有联合索引里都放第一。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "要记录的数据至少包括总行数、每租户行数、常见与极端参数、NULL 比例、热点、状态分布及时间相关性。同一个状态占比 1%，既可能均匀出现在时间轴上，也可能全部积压在旧数据中；对“最新 20 条”而言，两个分布的代价可能完全不同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "有过期时间的查询也属于工作负载"
+    },
+    {
+      "type": "paragraph",
+      "text": "有效租约可以定义为 state='ACTIVE' AND (expires_at IS NULL OR expires_at>固定判定时刻)，其中 NULL 表示无期限，等于截止即失效。按用户查看有效租约与后台扫描已过期租约，是两个不同访问模式，前者可考虑 (tenant,user,state,expires_at,id)，后者可考虑 (state,expires_at,id)。索引帮助找候选，真正修改仍需按当前状态、版本和截止条件执行，不能依赖 Job 先把状态改好。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MySQL NOW() 取语句开始时刻，不等于拿到锁或提交时刻。若业务要求严格截止，应先定义在哪个时点判定，再设计并发验证，不能靠加了一个时间索引就保证期限语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "项目口述如何落地"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以这样组织一个假设推演：“如果我给 NoteWeave 的资料任务列表做索引，我先按 workspace、状态、时间及稳定 ID 列出查询，再看任务大小和租户倾斜；列表索引与唯一幂等约束分别服务性能和正确性。对待重试扫描，我还会检查状态是否单值、priority 是否固定，避免误认为 next_retry_time 一定提供全局顺序。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave 当前代码快照能证明 MySQL/JDBC/Flyway 和任务、attempt、event、outbox 的实现存在，不能由此补造某次索引优化下降多少毫秒。制造业学习场景中的 idx_scan、200ms 阈值、MySQL 5.7 和具体慢 SQL 改进同样应作为设计假设，不当作个人故障履历。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最后应能回答：加索引之后写入多花多少？相似前缀索引是否真的冗余？大字段值得覆盖吗？高频小查询与低频高成本查询哪个优先？这些要用累计资源消耗和业务目标权衡，而不是只优化最显眼的一条 SQL。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "0"
+}

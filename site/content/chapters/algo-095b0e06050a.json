@@ -1,0 +1,829 @@
+{
+  "entries": [
+    {
+      "id": "p-array",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "title": "数组 / 矩阵 / 字符串模拟 · 专题",
+      "number": "专题",
+      "summary": "这个专题按题面写死的顺序做模拟：逐位进位、按边界走格子、按字符规则扫描，以及在原数组里交换或覆盖。它处理规则明确、靠区间不变量和边界就能做对的题。",
+      "recognize": [
+        "数字字符串很长，且要求按位做加、减、乘，结果仍以字符串返回。",
+        "输出格式被步骤规定死：去掉多余空格、版本号分段比数值、IP 按 8 位拼合、扫描到第一个非法字符就停。",
+        "要求原地改数组：循环移位、生成下一个排列，或把落在 1..n 的值映射到下标。",
+        "矩阵要按圈、按对角线或从某个角出发，每个格子按固定方向处理一次。",
+        "题面本身就是算法步骤（先找拐点再反转、先做标记再统一写回），指针或边界单调移动。",
+        "每个位置的决策只依赖当前位、相邻格子或已经收缩的边界。"
+      ],
+      "notApplicable": [
+        "连续子串的最长、最短、覆盖由窗口内频次决定，归滑动窗口；双重循环枚举在长度 1e5 时会超时。",
+        "区间合并、会议室、差分修改依赖排序或预聚合，循环在维护事件或前缀，而不是把题面动作逐格演一遍。",
+        "文本和模式串都长、且要求线性匹配时用 KMP 或 Z 函数；逐起点对齐的复杂度是 O(nm)，只适合短串或只找第一次出现。"
+      ],
+      "templates": [
+        {
+          "name": "竖式进位（大数加与乘）",
+          "when": "两个非负数字字符串做加或乘，长度可以超过 long，结果仍返回数字字符串。",
+          "java": "// LC 415：从低位向高位逐位相加，个位先进入 StringBuilder，返回前反转。\n// 换题：减法把 carry 改成借位，当前差 < 0 时加 10 并向高位借 1；基数不是 10 时替换下面的 10。\nstatic String addStrings(String num1, String num2) {\n    int i = num1.length() - 1;\n    int j = num2.length() - 1;\n    int carry = 0;\n    StringBuilder sb = new StringBuilder();\n    while (i >= 0 || j >= 0 || carry > 0) {\n        int d1 = 0;\n        int d2 = 0;\n        if (i >= 0) {\n            d1 = num1.charAt(i) - '0';\n            i--;\n        }\n        if (j >= 0) {\n            d2 = num2.charAt(j) - '0';\n            j--;\n        }\n        int sum = d1 + d2 + carry;\n        sb.append((char) ('0' + sum % 10));\n        carry = sum / 10;\n    }\n    return sb.reverse().toString();\n}\n\n// LC 43：num1[i] * num2[j] 累加到 acc[i + j + 1]，再从低位向高位一次进位。\n// 无前导零时只有全 0 需要特判；若存在前导零，先剥掉再判断是否为 0。\n// 换题：大数除法改为从高位试商，余数 * 基数后加下一位。\nstatic String multiply(String num1, String num2) {\n    if (num1.equals(\"0\") || num2.equals(\"0\")) {\n        return \"0\";\n    }\n    int m = num1.length();\n    int n = num2.length();\n    int[] acc = new int[m + n];\n    for (int i = m - 1; i >= 0; i--) {\n        int d1 = num1.charAt(i) - '0';\n        for (int j = n - 1; j >= 0; j--) {\n            acc[i + j + 1] += d1 * (num2.charAt(j) - '0');\n        }\n    }\n    for (int k = m + n - 1; k > 0; k--) {\n        acc[k - 1] += acc[k] / 10;\n        acc[k] %= 10;\n    }\n    StringBuilder sb = new StringBuilder();\n    int start = acc[0] == 0 ? 1 : 0;\n    for (int k = start; k < acc.length; k++) {\n        sb.append((char) ('0' + acc[k]));\n    }\n    return sb.toString();\n}",
+          "demo": "LC 415 字符串相加、LC 43 字符串相乘",
+          "demoMain": "System.out.println(addStrings(\"11\", \"123\"));\nSystem.out.println(addStrings(\"456\", \"77\"));\nSystem.out.println(multiply(\"123\", \"456\"));\nSystem.out.println(multiply(\"2\", \"3\"));",
+          "expected": "134\n533\n56088\n6\n"
+        },
+        {
+          "name": "四边界收缩的螺旋遍历",
+          "when": "按顺时针一圈圈输出矩阵，每个元素恰好一次。逆时针只改四条边的顺序。",
+          "java": "// LC 54。top/bottom/left/right 是还没输出的边界，每走完一条边立刻收缩。\n// 单行或单列时，收缩后必须再用 top<=bottom、left<=right 判断，否则回程会重复或越界。\n// 换题：逆时针改成上行、左列、下行、右列。对角线遍历不要复用这四条边，改按 d=row+col 分组。\nstatic List<Integer> spiralOrder(int[][] matrix) {\n    List<Integer> ans = new ArrayList<>();\n    if (matrix == null || matrix.length == 0 || matrix[0].length == 0) {\n        return ans;\n    }\n    int top = 0;\n    int bottom = matrix.length - 1;\n    int left = 0;\n    int right = matrix[0].length - 1;\n    while (top <= bottom && left <= right) {\n        for (int c = left; c <= right; c++) {\n            ans.add(matrix[top][c]);\n        }\n        top++;\n        for (int r = top; r <= bottom; r++) {\n            ans.add(matrix[r][right]);\n        }\n        right--;\n        if (top <= bottom) {\n            for (int c = right; c >= left; c--) {\n                ans.add(matrix[bottom][c]);\n            }\n            bottom--;\n        }\n        if (left <= right) {\n            for (int r = bottom; r >= top; r--) {\n                ans.add(matrix[r][left]);\n            }\n            left++;\n        }\n    }\n    return ans;\n}",
+          "demo": "LC 54 螺旋矩阵",
+          "demoMain": "System.out.println(spiralOrder(new int[][]{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}}));\nSystem.out.println(spiralOrder(new int[][]{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}}));",
+          "expected": "[1, 2, 3, 6, 9, 8, 7, 4, 5]\n[1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7]\n"
+        },
+        {
+          "name": "三次反转的原地轮转",
+          "when": "数组循环移位且只要 O(1) 额外空间。同一个 reverse 负责区间反转。",
+          "java": "// 反转闭区间 [l, r]。l>=r 时直接返回，空区间不会越界。\nstatic void reverseRange(int[] a, int l, int r) {\n    while (l < r) {\n        int t = a[l];\n        a[l] = a[r];\n        a[r] = t;\n        l++;\n        r--;\n    }\n}\n\n// LC 189 右旋 k：整体反转，再反转前 k 个，再反转剩余部分。\n// k 先规范到 [0, n)。Java 中负 k 取模仍为负，所以写成 (k % n + n) % n；左旋 k 等价于右旋 n-k。\n// 换题：LC 48 先按主对角线转置，再对每一行调用 reverseRange(row, 0, n-1)，得到顺时针 90°。\nstatic void rotate(int[] nums, int k) {\n    int n = nums.length;\n    if (n == 0) {\n        return;\n    }\n    k = (k % n + n) % n;\n    reverseRange(nums, 0, n - 1);\n    reverseRange(nums, 0, k - 1);\n    reverseRange(nums, k, n - 1);\n}",
+          "demo": "LC 189 轮转数组",
+          "demoMain": "int[] a = {1, 2, 3, 4, 5, 6, 7};\nrotate(a, 3);\nSystem.out.println(Arrays.toString(a));\nint[] b = {-1, -100, 3, 99};\nrotate(b, 2);\nSystem.out.println(Arrays.toString(b));",
+          "expected": "[5, 6, 7, 1, 2, 3, 4]\n[3, 99, -1, -100]\n"
+        },
+        {
+          "name": "按字符规则扫描的解析",
+          "when": "从左到右消费字符串：前导空格、至多一个正负号、一段连续数字，遇到第一个不符合规则的字符就停止，并在乘 10 之前截断溢出。",
+          "java": "// LC 8。只认 '0'..'9'；符号只允许出现在数字之前，且只有一个。\n// 溢出判断放在 res = res * 10 + d 之前，正数钳到 Integer.MAX_VALUE，负数钳到 Integer.MIN_VALUE。\n// 换题：纯数字串（无空格、无符号）删掉空格和符号两段；版本号不要整段调用本方法，按 '.' 分段后逐段转整数再比较，缺段当 0。\nstatic int myAtoi(String s) {\n    int n = s.length();\n    int i = 0;\n    while (i < n && s.charAt(i) == ' ') {\n        i++;\n    }\n    if (i == n) {\n        return 0;\n    }\n    int sign = 1;\n    if (s.charAt(i) == '+' || s.charAt(i) == '-') {\n        if (s.charAt(i) == '-') {\n            sign = -1;\n        }\n        i++;\n    }\n    int res = 0;\n    while (i < n && s.charAt(i) >= '0' && s.charAt(i) <= '9') {\n        int d = s.charAt(i) - '0';\n        if (res > (Integer.MAX_VALUE - d) / 10) {\n            return sign == 1 ? Integer.MAX_VALUE : Integer.MIN_VALUE;\n        }\n        res = res * 10 + d;\n        i++;\n    }\n    return sign * res;\n}",
+          "demo": "LC 8 字符串转换整数 (atoi)",
+          "demoMain": "System.out.println(myAtoi(\"42\"));\nSystem.out.println(myAtoi(\"   -42\"));\nSystem.out.println(myAtoi(\"4193 with words\"));\nSystem.out.println(myAtoi(\"-91283472332\"));",
+          "expected": "42\n-42\n4193\n-2147483648\n"
+        }
+      ],
+      "variants": [
+        "竖式加法改乘法：每位乘积累加到长度 m+n 的数组再统一进位。改减法时维护借位，当前差为负则加基数并向前借 1。基数不是 10 时替换取模和整除的除数。",
+        "右旋 k 改左旋 k：把 k 换成 n-k，或先反转左右两段再整体反转。k 大于 n 或为负时先规范到 [0, n)。",
+        "下一个排列（LC 31）：从右找第一个 nums[i] < nums[i+1]；再从右找第一个 nums[j] > nums[i] 并交换；最后用 reverseRange 反转 i+1 到末尾。不存在 i 时整段反转，得到最小排列。",
+        "顺时针螺旋改逆时针：四条边改成上、左、下、右。对角线（LC 498）按 d=row+col 从 0 扫到 m+n-2，偶数 d 从下端向上（r--、c++，起点行 min(d, m-1)），奇数 d 从上端向下（r++、c--，起点列 min(d, n-1)）。",
+        "矩阵置零（LC 73）：第一遍只把含 0 的行、列记到首行和首列，并用两个布尔记下首行、首列自身是否含 0；第二遍再按标记清零，最后处理首行首列。",
+        "atoi 改版本号（LC 165）：按 '.' 切开，逐段比整数，缺段当 0，1.10 大于 1.9。IP 转 32 位：四段各自校验 0..255，每段左移 8 位后按位或；比较两段时用无符号比较。"
+      ],
+      "pitfalls": [
+        "进位循环在两位都用完后还要继续，直到 carry 变成 0。个位是先追加的，返回前要反转。乘积和加法的结果为 0 时保留一个字符 0，不能把前导零删空。",
+        "轮转取模写成 k % n 时，负 k 在 Java 里仍是负数，随后 reverseRange 的端点会倒过来。n 为 0 时不能取模。",
+        "螺旋每走完一条边就收缩。只剩一行或一列时，若不再判断对边是否还在，回程会把同一格再输出一次，或访问到边界外。",
+        "值域是 1..n 时，把 x 交换到下标 x-1，或把 nums[x-1] 记成相反数。取标记要用绝对值定位，标记若仍落在 1..n 里，会被当成另一个有效数字。先覆盖还没读过的格子会丢掉原值。",
+        "atoi 在 res * 10 + digit 之前判断溢出。2147483648 这个幅度用正 int 装不下，负号分支要直接返回 Integer.MIN_VALUE。数字开始之后再出现的符号或空格都应停止，不能跳过。",
+        "矩阵用 matrix[row][col]。转置交换的是 matrix[r][c] 与 matrix[c][r]。循环里用 String 的 + 拼接会反复复制，逐位构造用 StringBuilder。"
+      ],
+      "groups": [
+        {
+          "name": "数字字符串的竖式与整段解析",
+          "note": "从低位或高位逐位扫描，进位、符号和溢出都在循环里完成，整串不先转成大整数。",
+          "items": [
+            [
+              "#/e/415",
+              "415. 字符串相加"
+            ],
+            [
+              "#/e/43",
+              "43. 字符串相乘"
+            ],
+            [
+              "#/e/8",
+              "8. 字符串转换整数 (atoi)"
+            ],
+            [
+              "#/e/nonlc-5-1",
+              "不使用 JDK 内置 API，把字符串 \"123\" 转成数值 123。"
+            ],
+            [
+              "#/e/nonlc-5-5",
+              "大数相乘怎么做？如果两个数字长到内置整数类型放不下，怎么用字符串实现？"
+            ]
+          ]
+        },
+        {
+          "name": "切分、重排、编码与对齐",
+          "note": "按空格或点号切开后重排、按数值比段、或按 8 位拼回；找子串时从每个起点逐字符对齐，失败就把起点加一。",
+          "items": [
+            [
+              "#/e/151",
+              "151. 翻转字符串里的单词"
+            ],
+            [
+              "#/e/165",
+              "165. 比较版本号"
+            ],
+            [
+              "#/e/nonlc-5-4",
+              "把 IP 地址比如 192.168.1.1 转成 32 位无符号整数，怎么写？"
+            ],
+            [
+              "#/e/lc-face-extra-26",
+              "找出字符串中第一个匹配项的下标"
+            ]
+          ]
+        },
+        {
+          "name": "原地轮转、排列与下标映射",
+          "note": "用区间反转、交换，或把 1..n 的值放到下标上完成重排。左右扫描最值时，每一位要和该侧全部元素的最值比，不能只看相邻格。",
+          "items": [
+            [
+              "#/e/189",
+              "189. 轮转数组"
+            ],
+            [
+              "#/e/31",
+              "31. 下一个排列"
+            ],
+            [
+              "#/e/41",
+              "41. 缺失的第一个正数"
+            ],
+            [
+              "#/e/442",
+              "442. 数组中重复的数据"
+            ],
+            [
+              "#/e/array-left-smaller-right-greater",
+              "面试数组 1. 无序数组中找“左侧都更小、右侧都更大”的元素"
+            ]
+          ]
+        },
+        {
+          "name": "矩阵按层、标记位与方向行走",
+          "note": "用四条边界、转置加反转行、首行首列标记，或从右上角按大小决定左移/下移，保证每个格子按规则被读或写。",
+          "items": [
+            [
+              "#/e/73",
+              "73. 矩阵置零"
+            ],
+            [
+              "#/e/54",
+              "54. 螺旋矩阵"
+            ],
+            [
+              "#/e/48",
+              "48. 旋转图像"
+            ],
+            [
+              "#/e/240",
+              "240. 搜索二维矩阵 II"
+            ],
+            [
+              "#/e/498",
+              "498. 对角线遍历（沿对角线打印矩阵）"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "原专题笔记 · 数组 / 矩阵 / 区间",
+          "html": "<h3 class=\"md-h md-h3\">1. 数组题的本质</h3>\n<p class=\"md-p\">数组题通常考三件事：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>下标含义：每个指针、边界、区间端点是否清楚。</li><li>原地修改：能否在 O(1) 额外空间内完成覆盖、交换、旋转。</li><li>顺序信息：排序、前缀、差分、扫描线都在利用顺序。</li></ul></div>\n<h3 class=\"md-h md-h3\">2. 常见边界</h3>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>空数组、单元素数组。</li><li>左闭右闭 <code class=\"tok-inline\">[l, r]</code> 和左闭右开 <code class=\"tok-inline\">[l, r)</code> 不混用。</li><li>原地修改时，写指针永远不能越过读指针的语义边界。</li><li>矩阵题先确认 <code class=\"tok-inline\">m</code>、<code class=\"tok-inline\">n</code>，不要把行列写反。</li></ul></div>\n<h3 class=\"md-h md-h3\">3. 矩阵方向数组</h3>\n<p class=\"md-p\">常见方向：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">int[][] dirs = {{1,0},{0,1},{-1,0},{0,-1}};</pre></div></section>\n<p class=\"md-p\">螺旋矩阵更适合维护四条边界：<code class=\"tok-inline\">top</code>、<code class=\"tok-inline\">bottom</code>、<code class=\"tok-inline\">left</code>、<code class=\"tok-inline\">right</code>。</p>\n<h3 class=\"md-h md-h3\">4. 区间排序</h3>\n<p class=\"md-p\">区间题通常先排序：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>按左端点排序：合并、插入、交集。</li><li>按右端点排序：最多不重叠区间、射气球。</li><li>按事件点排序：扫描线、会议室、日程安排。</li></ul></div>\n<h3 class=\"md-h md-h3\">5. 前缀和与差分</h3>\n<p class=\"md-p\">前缀和适合频繁求区间和：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">sum(l, r) = prefix[r + 1] - prefix[l]</pre></div></section>\n<p class=\"md-p\">差分适合频繁做区间加：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">diff[l] += v;\ndiff[r + 1] -= v;</pre></div></section>\n<p class=\"md-p\">二维前缀和：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">sum(x1,y1,x2,y2)=pre[x2+1][y2+1]-pre[x1][y2+1]-pre[x2+1][y1]+pre[x1][y1]</pre></div></section><h3 class=\"md-h md-h3\">1. 原地扫描型</h3><p class=\"md-p\">目标：用一个读指针扫描，用一个写指针维护结果区域。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">read</code> 遍历所有元素。</li><li>满足保留条件时写到 <code class=\"tok-inline\">write</code>。</li><li>最后 <code class=\"tok-inline\">[0, write)</code> 是答案区域。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 26 删除有序数组中的重复项</li><li>LC 27 移除元素</li><li>LC 80 删除有序数组中的重复项 II</li><li>LC 283 移动零</li><li>LC 189 轮转数组</li></ul></div><h3 class=\"md-h md-h3\">2. 原地哈希型</h3><p class=\"md-p\">目标：利用“数组下标”和“数值范围”之间的关系，把数组本身当哈希表。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>如果数值范围是 <code class=\"tok-inline\">1..n</code>，把值 <code class=\"tok-inline\">x</code> 放到下标 <code class=\"tok-inline\">x - 1</code>。</li><li>通过交换让每个位置尽量归位。</li><li>再扫描第一个不匹配的位置。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 41 缺失的第一个正数</li><li>LC 442 数组中重复的数据</li><li>LC 448 找到所有数组中消失的数字</li><li>LC 645 错误的集合</li></ul></div><h3 class=\"md-h md-h3\">3. 矩阵遍历与原地变换型</h3><p class=\"md-p\">目标：按指定顺序访问矩阵，或在矩阵内原地完成变换。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>螺旋：四边界收缩。</li><li>旋转：先转置，再翻转每一行。</li><li>置零：用第一行第一列当标记位。</li><li>对角线：按 <code class=\"tok-inline\">i + j</code> 分组或模拟方向。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 48 旋转图像</li><li>LC 54 螺旋矩阵</li><li>LC 59 螺旋矩阵 II</li><li>LC 73 矩阵置零</li><li>LC 498 对角线遍历</li><li>LC 289 生命游戏</li></ul></div><h3 class=\"md-h md-h3\">4. 区间合并与交集型</h3><p class=\"md-p\">目标：处理重叠、覆盖、插入、交集。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>按左端点排序。</li><li>维护当前区间 <code class=\"tok-inline\">[start, end]</code>。</li><li>新区间左端点 <code class=\"tok-inline\">&lt;= end</code> 则合并，否则结算旧区间。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 56 合并区间</li><li>LC 57 插入区间</li><li>LC 986 区间列表的交集</li><li>LC 1288 删除被覆盖区间</li></ul></div><h3 class=\"md-h md-h3\">5. 扫描线型</h3><p class=\"md-p\">目标：把区间的开始和结束拆成事件，按时间顺序处理。</p>\n<p class=\"md-p\">套路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>开始事件 <code class=\"tok-inline\">+1</code>，结束事件 <code class=\"tok-inline\">-1</code>。</li><li>排序后累计当前活跃区间数。</li><li>最大活跃数就是最大重叠数量。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 253 会议室 II</li><li>LC 729 我的日程安排表 I</li><li>LC 731 我的日程安排表 II</li><li>LC 1094 拼车</li><li>LC 1109 航班预订统计</li></ul></div><h3 class=\"md-h md-h3\">6. 数组模拟型</h3><p class=\"md-p\">目标：按题意维护状态，重点是边界和状态更新顺序。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 54 螺旋矩阵</li><li>LC 59 螺旋矩阵 II</li><li>LC 498 对角线遍历</li><li>LC 6 Z 字形变换</li><li>LC 54 / 59 / 498 都是 CodeTop 高频矩阵模拟题。</li></ul></div><h3 class=\"md-h md-h3\">7. 局部扫描、奇偶重排与山脉型</h3><p class=\"md-p\">目标：补齐数组里常见的局部规律题。它们不需要复杂数据结构，但要抓住单次扫描中的状态变化。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 334 递增的三元子序列</li><li>LC 845 数组中的最长山脉</li><li>LC 905 按奇偶排序数组</li><li>LC 628 三个数的最大乘积</li><li>LC 252 会议室</li></ul></div>\n<p class=\"md-p\">补充要点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">334</code> 是贪心阈值扫描。</li><li><code class=\"tok-inline\">845</code> 先找峰，再判断峰两侧是否严格上升/下降。</li><li><code class=\"tok-inline\">905</code> 是原地重排。</li><li><code class=\"tok-inline\">628</code> 只需要比较最大三个和最小两个。</li></ul></div>"
+        },
+        {
+          "title": "专题精讲 · LC 415 字符串相加",
+          "html": "<p class=\"md-p\">从末位开始逐位相加，用变量维护进位。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static String solve(String num1, String num2) {\n        StringBuilder sb = new StringBuilder();\n        int i = num1.length() - 1, j = num2.length() - 1;\n        int carry = 0;\n        while (i &gt;= 0 || j &gt;= 0 || carry &gt; 0) {\n            int sum = carry;\n            if (i &gt;= 0) sum += num1.charAt(i--) - '0';\n            if (j &gt;= 0) sum += num2.charAt(j--) - '0';\n            sb.append(sum % 10);\n            carry = sum / 10;\n        }\n        return sb.reverse().toString();\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String num1 = sc.next(), num2 = sc.next();\n        System.out.println(solve(num1, num2));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 8 字符串转换整数 (atoi)",
+          "html": "<p class=\"md-p\">考点：边界模拟。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>跳过前导空格。</li><li>处理可选的正负号。</li><li>读取连续数字字符，遇到非数字停止。</li><li>处理32位整数溢出（clamp到 Integer.MIN_VALUE 和 Integer.MAX_VALUE）。</li></ul></div>\n<p class=\"md-p\">输入格式：一行字符串。</p>\n<p class=\"md-p\">输出格式：转换后的整数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">字符串与子串总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int solve(String s) {\n        int i = 0, n = s.length();\n        // 跳过前导空格\n        while (i &lt; n &amp;&amp; s.charAt(i) == ' ') i++;\n        if (i == n) return 0;\n        // 处理符号\n        int sign = 1;\n        if (s.charAt(i) == '+' || s.charAt(i) == '-') {\n            sign = s.charAt(i) == '-' ? -1 : 1;\n            i++;\n        }\n        long res = 0;\n        while (i &lt; n &amp;&amp; Character.isDigit(s.charAt(i))) {\n            res = res * 10 + (s.charAt(i) - '0');\n            // 溢出检查\n            if (res * sign &gt; Integer.MAX_VALUE) return Integer.MAX_VALUE;\n            if (res * sign &lt; Integer.MIN_VALUE) return Integer.MIN_VALUE;\n            i++;\n        }\n        return (int) (res * sign);\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String s = sc.nextLine();\n        System.out.println(solve(s));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 8 字符串转换整数 (atoi)",
+          "html": "<p class=\"md-p\">按顺序处理：跳前导空格、判断符号、逐字符累积数字、溢出裁剪。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int solve(String s) {\n        int i = 0, n = s.length();\n        // 1. 跳过前导空格\n        while (i &lt; n &amp;&amp; s.charAt(i) == ' ') i++;\n        if (i == n) return 0;\n        // 2. 读符号\n        int sign = 1;\n        if (s.charAt(i) == '+' || s.charAt(i) == '-') {\n            sign = s.charAt(i) == '-' ? -1 : 1;\n            i++;\n        }\n        long res = 0;\n        // 3. 逐位累加数字字符\n        while (i &lt; n &amp;&amp; Character.isDigit(s.charAt(i))) {\n            res = res * 10 + (s.charAt(i) - '0');\n            // 4. 溢出裁剪\n            if (sign == 1 &amp;&amp; res &gt; Integer.MAX_VALUE) return Integer.MAX_VALUE;\n            if (sign == -1 &amp;&amp; -res &lt; Integer.MIN_VALUE) return Integer.MIN_VALUE;\n            i++;\n        }\n        return (int) (sign * res);\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String s = sc.nextLine();\n        System.out.println(solve(s));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 43 字符串相乘",
+          "html": "<p class=\"md-p\">考点：大数模拟。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">num1[i] * num2[j]</code> 贡献到结果数组 <code class=\"tok-inline\">i + j + 1</code>。</li><li>处理进位。</li><li>去掉前导零。</li></ul></div>\n<p class=\"md-p\">输入格式：两行，每行一个非负整数字符串。 输出格式：乘积字符串。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">字符串与子串总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static String solve(String num1, String num2) {\n        int m = num1.length(), n = num2.length();\n        // 结果最多 m + n 位\n        int[] pos = new int[m + n];\n        // 从低位到高位逐位相乘\n        for (int i = m - 1; i &gt;= 0; i--) {\n            for (int j = n - 1; j &gt;= 0; j--) {\n                int mul = (num1.charAt(i) - '0') * (num2.charAt(j) - '0');\n                // 乘积贡献到 pos[i+j+1]（低位）和 pos[i+j]（进位）\n                int p1 = i + j, p2 = i + j + 1;\n                int sum = mul + pos[p2];\n                pos[p2] = sum % 10;\n                pos[p1] += sum / 10;\n            }\n        }\n        StringBuilder sb = new StringBuilder();\n        for (int p : pos) {\n            // 跳过前导零；但如果全是零则保留一个\n            if (!(sb.length() == 0 &amp;&amp; p == 0)) {\n                sb.append(p);\n            }\n        }\n        return sb.length() == 0 ? &quot;0&quot; : sb.toString();\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String num1 = sc.nextLine();\n        String num2 = sc.nextLine();\n        System.out.println(solve(num1, num2));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 43 字符串相乘",
+          "html": "<p class=\"md-p\">竖式乘法：<code class=\"tok-inline\">num1[i] * num2[j]</code> 的结果放在 <code class=\"tok-inline\">res[i+j]</code> 和 <code class=\"tok-inline\">res[i+j+1]</code> 位置。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static String solve(String num1, String num2) {\n        int m = num1.length(), n = num2.length();\n        int[] res = new int[m + n]; // 最多 m+n 位\n        // 逐位相乘，累加到对应位置\n        for (int i = m - 1; i &gt;= 0; i--) {\n            for (int j = n - 1; j &gt;= 0; j--) {\n                int mul = (num1.charAt(i) - '0') * (num2.charAt(j) - '0');\n                int p1 = i + j, p2 = i + j + 1;\n                int sum = mul + res[p2];\n                res[p2] = sum % 10;  // 当前位\n                res[p1] += sum / 10; // 进位\n            }\n        }\n        StringBuilder sb = new StringBuilder();\n        for (int v : res) {\n            if (!(sb.length() == 0 &amp;&amp; v == 0)) sb.append(v); // 跳过前导零\n        }\n        return sb.length() == 0 ? &quot;0&quot; : sb.toString();\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        String num1 = sc.next(), num2 = sc.next();\n        System.out.println(solve(num1, num2));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 189 轮转数组",
+          "html": "<p class=\"md-p\">考点：三次翻转。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static void rev(int[] a,int l,int r){while(l&lt;r){int t=a[l];a[l++]=a[r];a[r--]=t;}}\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int n=sc.nextInt(),k=sc.nextInt();int[] a=new int[n];\n        for(int i=0;i&lt;n;i++)a[i]=sc.nextInt();\n        k%=n;rev(a,0,n-1);rev(a,0,k-1);rev(a,k,n-1);\n        for(int v:a)System.out.print(v+&quot; &quot;);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 41 缺失的第一个正数",
+          "html": "<p class=\"md-p\">思路：把值 <code class=\"tok-inline\">x</code> 放到下标 <code class=\"tok-inline\">x - 1</code>，只处理 <code class=\"tok-inline\">1 &lt;= x &lt;= n</code> 的值。最后第一个 <code class=\"tok-inline\">nums[i] != i + 1</code> 的位置就是答案。</p>\n<p class=\"md-p\">易错点：交换时必须用 while，因为换过来的数仍可能需要继续归位。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int solve(int[] nums) {\n        int n = nums.length;\n        // 原地哈希：把值 x 放到下标 x-1\n        for (int i = 0; i &lt; n; i++) {\n            while (nums[i] &gt;= 1 &amp;&amp; nums[i] &lt;= n &amp;&amp; nums[nums[i] - 1] != nums[i]) {\n                // 交换，使 nums[i] 归位到 nums[i]-1\n                int tmp = nums[nums[i] - 1];\n                nums[nums[i] - 1] = nums[i];\n                nums[i] = tmp;\n            }\n        }\n        // 找第一个 nums[i] != i+1 的位置\n        for (int i = 0; i &lt; n; i++) {\n            if (nums[i] != i + 1) return i + 1;\n        }\n        return n + 1; // 所有 1..n 都存在，答案是 n+1\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(solve(nums));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 41 缺失的第一个正数",
+          "html": "<p class=\"md-p\">考点：原地哈希。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int n=sc.nextInt();int[] a=new int[n];\n        for(int i=0;i&lt;n;i++)a[i]=sc.nextInt();\n        for(int i=0;i&lt;n;i++)while(a[i]&gt;0&amp;&amp;a[i]&lt;=n&amp;&amp;a[a[i]-1]!=a[i]){int t=a[a[i]-1];a[a[i]-1]=a[i];a[i]=t;}\n        for(int i=0;i&lt;n;i++)if(a[i]!=i+1){System.out.println(i+1);return;}\n        System.out.println(n+1);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 73 矩阵置零",
+          "html": "<p class=\"md-p\">用第一行和第一列记录哪些行列需要置零。额外变量记录第一列是否本来需要置零。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void solve(int[][] matrix) {\n        int m = matrix.length, n = matrix[0].length;\n        boolean firstRowZero = false, firstColZero = false;\n        // 检查第一行是否有 0\n        for (int j = 0; j &lt; n; j++) if (matrix[0][j] == 0) { firstRowZero = true; break; }\n        // 检查第一列是否有 0\n        for (int i = 0; i &lt; m; i++) if (matrix[i][0] == 0) { firstColZero = true; break; }\n        // 用第一行/列做标记\n        for (int i = 1; i &lt; m; i++) {\n            for (int j = 1; j &lt; n; j++) {\n                if (matrix[i][j] == 0) {\n                    matrix[i][0] = 0;\n                    matrix[0][j] = 0;\n                }\n            }\n        }\n        // 根据标记置零（从 1 开始，先不动第一行/列）\n        for (int i = 1; i &lt; m; i++) {\n            for (int j = 1; j &lt; n; j++) {\n                if (matrix[i][0] == 0 || matrix[0][j] == 0) matrix[i][j] = 0;\n            }\n        }\n        // 处理第一行\n        if (firstRowZero) for (int j = 0; j &lt; n; j++) matrix[0][j] = 0;\n        // 处理第一列\n        if (firstColZero) for (int i = 0; i &lt; m; i++) matrix[i][0] = 0;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int m = sc.nextInt(), n = sc.nextInt();\n        int[][] matrix = new int[m][n];\n        for (int i = 0; i &lt; m; i++)\n            for (int j = 0; j &lt; n; j++)\n                matrix[i][j] = sc.nextInt();\n        solve(matrix);\n        for (int i = 0; i &lt; m; i++)\n            for (int j = 0; j &lt; n; j++)\n                System.out.print(matrix[i][j] + (j == n - 1 ? &quot;\\n&quot; : &quot; &quot;));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 73 矩阵置零",
+          "html": "<p class=\"md-p\">考点：O(1) 空间用首行首列标记。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int m=sc.nextInt(),n=sc.nextInt();int[][] a=new int[m][n];\n        for(int i=0;i&lt;m;i++)for(int j=0;j&lt;n;j++)a[i][j]=sc.nextInt();\n        boolean c0=false,r0=false;\n        for(int i=0;i&lt;m;i++)if(a[i][0]==0)c0=true;\n        for(int j=0;j&lt;n;j++)if(a[0][j]==0)r0=true;\n        for(int i=1;i&lt;m;i++)for(int j=1;j&lt;n;j++)if(a[i][j]==0){a[i][0]=0;a[0][j]=0;}\n        for(int i=1;i&lt;m;i++)for(int j=1;j&lt;n;j++)if(a[i][0]==0||a[0][j]==0)a[i][j]=0;\n        if(c0)for(int i=0;i&lt;m;i++)a[i][0]=0;\n        if(r0)for(int j=0;j&lt;n;j++)a[0][j]=0;\n        for(int[] row:a){for(int v:row)System.out.print(v+&quot; &quot;);System.out.println();}\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 54 螺旋矩阵",
+          "html": "<p class=\"md-p\">维护四条边界，每走完一条边就收缩对应边界。每次进入下一条边前判断边界是否仍合法。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static List&lt;Integer&gt; solve(int[][] matrix) {\n        List&lt;Integer&gt; res = new ArrayList&lt;&gt;();\n        int m = matrix.length, n = matrix[0].length;\n        int top = 0, bottom = m - 1, left = 0, right = n - 1;\n        while (top &lt;= bottom &amp;&amp; left &lt;= right) {\n            // 从左到右走顶边\n            for (int j = left; j &lt;= right; j++) res.add(matrix[top][j]);\n            top++;\n            // 从上到下走右边\n            for (int i = top; i &lt;= bottom; i++) res.add(matrix[i][right]);\n            right--;\n            if (top &lt;= bottom) {\n                // 从右到左走底边\n                for (int j = right; j &gt;= left; j--) res.add(matrix[bottom][j]);\n                bottom--;\n            }\n            if (left &lt;= right) {\n                // 从下到上走左边\n                for (int i = bottom; i &gt;= top; i--) res.add(matrix[i][left]);\n                left++;\n            }\n        }\n        return res;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int m = sc.nextInt(), n = sc.nextInt();\n        int[][] matrix = new int[m][n];\n        for (int i = 0; i &lt; m; i++)\n            for (int j = 0; j &lt; n; j++)\n                matrix[i][j] = sc.nextInt();\n        List&lt;Integer&gt; ans = solve(matrix);\n        for (int i = 0; i &lt; ans.size(); i++)\n            System.out.print(ans.get(i) + (i == ans.size() - 1 ? &quot;\\n&quot; : &quot; &quot;));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 54 螺旋矩阵",
+          "html": "<p class=\"md-p\">考点：模拟四边界。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int m=sc.nextInt(),n=sc.nextInt();int[][] a=new int[m][n];\n        for(int i=0;i&lt;m;i++)for(int j=0;j&lt;n;j++)a[i][j]=sc.nextInt();\n        int t=0,b=m-1,l=0,r=n-1;List&lt;Integer&gt; res=new ArrayList&lt;&gt;();\n        while(t&lt;=b&amp;&amp;l&lt;=r){\n            for(int j=l;j&lt;=r;j++)res.add(a[t][j]);t++;\n            for(int i=t;i&lt;=b;i++)res.add(a[i][r]);r--;\n            if(t&lt;=b)for(int j=r;j&gt;=l;j--)res.add(a[b][j]);b--;\n            if(l&lt;=r)for(int i=b;i&gt;=t;i--)res.add(a[i][l]);l++;\n        }\n        for(int v:res)System.out.print(v+&quot; &quot;);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 48 旋转图像",
+          "html": "<p class=\"md-p\">顺时针旋转 90 度：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>主对角线转置。</li><li>每一行左右翻转。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void solve(int[][] matrix) {\n        int n = matrix.length;\n        // 第一步：沿主对角线转置（交换 matrix[i][j] 和 matrix[j][i]）\n        for (int i = 0; i &lt; n; i++) {\n            for (int j = i + 1; j &lt; n; j++) {\n                int tmp = matrix[i][j];\n                matrix[i][j] = matrix[j][i];\n                matrix[j][i] = tmp;\n            }\n        }\n        // 第二步：每一行左右翻转\n        for (int i = 0; i &lt; n; i++) {\n            int l = 0, r = n - 1;\n            while (l &lt; r) {\n                int tmp = matrix[i][l];\n                matrix[i][l] = matrix[i][r];\n                matrix[i][r] = tmp;\n                l++; r--;\n            }\n        }\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[][] matrix = new int[n][n];\n        for (int i = 0; i &lt; n; i++)\n            for (int j = 0; j &lt; n; j++)\n                matrix[i][j] = sc.nextInt();\n        solve(matrix);\n        for (int i = 0; i &lt; n; i++)\n            for (int j = 0; j &lt; n; j++)\n                System.out.print(matrix[i][j] + (j == n - 1 ? &quot;\\n&quot; : &quot; &quot;));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 48 旋转图像",
+          "html": "<p class=\"md-p\">先沿主对角线转置，再左右翻转，即完成 90 度顺时针旋转。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void solve(int[][] matrix) {\n        int n = matrix.length;\n        // 第一步：沿主对角线转置（行列互换）\n        for (int i = 0; i &lt; n; i++) {\n            for (int j = i + 1; j &lt; n; j++) {\n                int tmp = matrix[i][j];\n                matrix[i][j] = matrix[j][i];\n                matrix[j][i] = tmp;\n            }\n        }\n        // 第二步：每行左右翻转\n        for (int i = 0; i &lt; n; i++) {\n            for (int j = 0; j &lt; n / 2; j++) {\n                int tmp = matrix[i][j];\n                matrix[i][j] = matrix[i][n - 1 - j];\n                matrix[i][n - 1 - j] = tmp;\n            }\n        }\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[][] matrix = new int[n][n];\n        for (int i = 0; i &lt; n; i++)\n            for (int j = 0; j &lt; n; j++)\n                matrix[i][j] = sc.nextInt();\n        solve(matrix);\n        for (int i = 0; i &lt; n; i++) {\n            for (int j = 0; j &lt; n; j++) {\n                if (j &gt; 0) System.out.print(&quot; &quot;);\n                System.out.print(matrix[i][j]);\n            }\n            System.out.println();\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 48 旋转图像",
+          "html": "<p class=\"md-p\">考点：转置 + 水平翻转。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int n=sc.nextInt();int[][] a=new int[n][n];\n        for(int i=0;i&lt;n;i++)for(int j=0;j&lt;n;j++)a[i][j]=sc.nextInt();\n        for(int i=0;i&lt;n;i++)for(int j=i+1;j&lt;n;j++){int t=a[i][j];a[i][j]=a[j][i];a[j][i]=t;}\n        for(int i=0;i&lt;n;i++)for(int j=0;j&lt;n/2;j++){int t=a[i][j];a[i][j]=a[i][n-1-j];a[i][n-1-j]=t;}\n        for(int[] row:a){for(int v:row)System.out.print(v+&quot; &quot;);System.out.println();}\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 240 搜索二维矩阵 II",
+          "html": "<p class=\"md-p\">考点：行列有序。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>从右上角出发。</li><li>当前值大于 target，向左。</li><li>当前值小于 target，向下。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">二分总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static boolean solve(int[][] matrix, int target) {\n        int m = matrix.length, n = matrix[0].length;\n        // 从右上角出发，每次排除一行或一列\n        int r = 0, c = n - 1;\n        while (r &lt; m &amp;&amp; c &gt;= 0) {\n            if (matrix[r][c] == target) return true;\n            if (matrix[r][c] &gt; target) c--; // 当前值太大，左移\n            else r++; // 当前值太小，下移\n        }\n        return false;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int m = sc.nextInt(), n = sc.nextInt(), target = sc.nextInt();\n        int[][] matrix = new int[m][n];\n        for (int i = 0; i &lt; m; i++)\n            for (int j = 0; j &lt; n; j++)\n                matrix[i][j] = sc.nextInt();\n        System.out.println(solve(matrix, target));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 498 对角线遍历",
+          "html": "<p class=\"md-p\">按方向模拟时，越界后要根据当前方向修正坐标。也可以按 <code class=\"tok-inline\">i + j</code> 分组，偶数对角线反转。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int[] solve(int[][] matrix) {\n        int m = matrix.length, n = matrix[0].length;\n        int[] res = new int[m * n];\n        int row = 0, col = 0, idx = 0;\n        // 方向：右上 = -1，左下 = 1\n        int dir = -1;\n        while (idx &lt; m * n) {\n            res[idx++] = matrix[row][col];\n            int nr = row, nc = col;\n            if (dir == -1) { // 右上方向\n                nr -= 1; nc += 1;\n            } else { // 左下方向\n                nr += 1; nc -= 1;\n            }\n            // 越界时修正坐标\n            if (nr &lt; 0 || nr &gt;= m || nc &lt; 0 || nc &gt;= n) {\n                if (dir == -1) {\n                    // 右上越界：优先向右走，右到头则向下走\n                    if (col + 1 &lt; n) { row = row; col = col + 1; }\n                    else { row = row + 1; col = col; }\n                } else {\n                    // 左下越界：优先向下走，下到头则向右走\n                    if (row + 1 &lt; m) { row = row + 1; col = col; }\n                    else { row = row; col = col + 1; }\n                }\n                dir = -dir; // 切换方向\n            } else {\n                row = nr; col = nc;\n            }\n        }\n        return res;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int m = sc.nextInt(), n = sc.nextInt();\n        int[][] matrix = new int[m][n];\n        for (int i = 0; i &lt; m; i++)\n            for (int j = 0; j &lt; n; j++)\n                matrix[i][j] = sc.nextInt();\n        int[] ans = solve(matrix);\n        for (int i = 0; i &lt; ans.length; i++)\n            System.out.print(ans[i] + (i == ans.length - 1 ? &quot;\\n&quot; : &quot; &quot;));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 498 对角线遍历",
+          "html": "<p class=\"md-p\">考点：模拟对角线方向。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int m=sc.nextInt(),n=sc.nextInt();int[][] a=new int[m][n];\n        for(int i=0;i&lt;m;i++)for(int j=0;j&lt;n;j++)a[i][j]=sc.nextInt();\n        int[] res=new int[m*n];int idx=0;\n        for(int d=0;d&lt;m+n-1;d++){List&lt;Integer&gt; line=new ArrayList&lt;&gt;();\n            int r=d&lt;n?0:d-n+1,c=d&lt;n?d:n-1;\n            while(r&lt;m&amp;&amp;c&gt;=0)line.add(a[r++][c--]);\n            if(d%2==0)Collections.reverse(line);\n            for(int v:line)res[idx++]=v;}\n        for(int v:res)System.out.print(v+&quot; &quot;);\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "id": "415",
+      "number": 415,
+      "title": "字符串相加",
+      "slug": "add-strings",
+      "category": "字符串",
+      "source": "",
+      "time": "O(max(m,n))",
+      "space": "O(max(m,n))",
+      "idea": "i、j 分别从两个字符串末尾向左扫，越界的那一位当成 0，carry 保存进位。每一位把 digit1、digit2 与 carry 相加，StringBuilder 先追加 sum%10，再把 carry 改成 sum/10。循环一直到两边都处理完且进位为 0，因为数字是从低位写到高位，最后 reverse 再返回。",
+      "description": "给定两个只包含数字的非负整数字符串 num1 和 num2，在不能直接使用大整数类型的前提下，返回它们的十进制和。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public String addStrings(String num1, String num2) {\n        int i = num1.length() - 1;\n        int j = num2.length() - 1;\n        int carry = 0; // 保存上一位产生的进位。\n        StringBuilder reversed = new StringBuilder();\n\n        // 还有未处理的位，或最后仍有进位，都必须再算一位。\n        while (i >= 0 || j >= 0 || carry != 0) {\n            int digit1 = i >= 0 ? num1.charAt(i) - '0' : 0;\n            int digit2 = j >= 0 ? num2.charAt(j) - '0' : 0;\n\n            int sum = digit1 + digit2 + carry;\n            reversed.append(sum % 10); // 当前位只保留个位。\n            carry = sum / 10;          // 十位留给下一轮当进位。\n\n            i--;\n            j--;\n        }\n\n        // 结果从低位写到高位，反转后才是正常十进制。\n        return reversed.reverse().toString();\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "字符串 / 子串",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定两个只包含数字的非负整数字符串 num1 和 num2，在不能直接使用大整数类型的前提下，返回它们的十进制和。",
+        "req": [
+          "num1 和 num2 只包含数字且为非负整数",
+          "不能直接使用大整数类型",
+          "返回两者的十进制和"
+        ],
+        "analysis": "i、j 分别从两个字符串末尾向左扫，越界的那一位当成 0，carry 保存进位。每一位把 digit1、digit2 与 carry 相加，StringBuilder 先追加 sum%10，再把 carry 改成 sum/10。循环一直到两边都处理完且进位为 0，因为数字是从低位写到高位，最后 reverse 再返回。",
+        "cx": "时间 O(max(m,n))，空间 O(max(m,n))",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "字符串"
+    },
+    {
+      "id": "43",
+      "number": 43,
+      "title": "字符串相乘",
+      "slug": "multiply-strings",
+      "category": "字符串",
+      "source": "",
+      "time": "O(mn)",
+      "space": "O(m+n)",
+      "idea": "任一字符串等于 \"0\" 就直接返回 \"0\"。否则用长度 m+n 的 digits 模拟竖式：num1[i] 与 num2[j] 的乘积先加到 low=i+j+1，该位只留 sum%10，进位 sum/10 加到 high=i+j。全部乘完后跳过数组前面的 0，再按从高位到低位的顺序拼进 StringBuilder。",
+      "description": "给定两个非负整数字符串 num1 和 num2，不能直接转换成大整数，返回它们乘积的十进制字符串。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public String multiply(String num1, String num2) {\n        if (num1.equals(\"0\") || num2.equals(\"0\")) {\n            return \"0\";\n        }\n\n        int m = num1.length();\n        int n = num2.length();\n        int[] digits = new int[m + n];\n\n        // 从低位向高位累加每一对数字的乘积，对应竖式的某一位。\n        for (int i = m - 1; i >= 0; i--) {\n            int a = num1.charAt(i) - '0';\n            for (int j = n - 1; j >= 0; j--) {\n                int b = num2.charAt(j) - '0';\n\n                int low = i + j + 1; // 当前乘积落在的低位。\n                int high = i + j;    // 进位要加到的高一位。\n                int sum = a * b + digits[low];\n\n                digits[low] = sum % 10;\n                digits[high] += sum / 10;\n            }\n        }\n\n        StringBuilder answer = new StringBuilder();\n        int index = 0;\n        // 最高位可能因长度留空而为 0，跳过它们才不会多出前导零。\n        while (index < digits.length && digits[index] == 0) {\n            index++;\n        }\n        while (index < digits.length) {\n            answer.append(digits[index++]);\n        }\n\n        return answer.toString();\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "字符串 / 子串",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定两个非负整数字符串 num1 和 num2，不能直接转换成大整数，返回它们乘积的十进制字符串。",
+        "req": [
+          "num1 和 num2 为非负整数字符串",
+          "不能直接转换成大整数",
+          "返回乘积的十进制字符串"
+        ],
+        "analysis": "任一字符串等于 \"0\" 就直接返回 \"0\"。否则用长度 m+n 的 digits 模拟竖式：num1[i] 与 num2[j] 的乘积先加到 low=i+j+1，该位只留 sum%10，进位 sum/10 加到 high=i+j。全部乘完后跳过数组前面的 0，再按从高位到低位的顺序拼进 StringBuilder。",
+        "cx": "时间 O(mn)，空间 O(m+n)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "字符串"
+    },
+    {
+      "id": "8",
+      "number": 8,
+      "title": "字符串转换整数 (atoi)",
+      "slug": "string-to-integer-atoi",
+      "category": "字符串",
+      "source": "",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "index 先跳过前导空格，再读至多一个 '+' 或 '-' 得到 sign。limit 在正数时是 Integer.MAX_VALUE，负数时是 2147483648。之后只处理连续数字，每次乘 10 之前若 result 已经大于 (limit-digit)/10，就直接返回对应的 32 位边界，否则 result=result*10+digit。非数字处停止，最后返回 sign 乘 result。",
+      "description": "实现类似 C/C++ atoi 的转换：忽略前导空格，识别可选正负号，读取连续数字，遇到第一个非数字停止，并把结果限制在 32 位有符号整数范围内。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int myAtoi(String s) {\n        int index = 0;\n        int n = s.length();\n\n        // 前导空格不属于数值，先跳过。\n        while (index < n && s.charAt(index) == ' ') {\n            index++;\n        }\n\n        // 符号最多读一个，决定最终结果的正负。\n        int sign = 1;\n        if (index < n && (s.charAt(index) == '+' || s.charAt(index) == '-')) {\n            sign = s.charAt(index) == '-' ? -1 : 1;\n            index++;\n        }\n\n        long result = 0;\n        // 负数绝对值上限是 2147483648，比正数多 1。\n        long limit = sign == 1 ? Integer.MAX_VALUE : -(long) Integer.MIN_VALUE;\n\n        // 遇到第一个非数字就停止，只累计连续数字。\n        while (index < n && Character.isDigit(s.charAt(index))) {\n            int digit = s.charAt(index) - '0';\n\n            // 乘 10 之前先判断，避免 result 自己先溢出。\n            if (result > (limit - digit) / 10) {\n                return sign == 1 ? Integer.MAX_VALUE : Integer.MIN_VALUE;\n            }\n\n            result = result * 10 + digit;\n            index++;\n        }\n\n        return (int) (sign * result);\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "字符串 / 子串",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "实现类似 C/C++ atoi 的转换：忽略前导空格，识别可选正负号，读取连续数字，遇到第一个非数字停止，并把结果限制在 32 位有符号整数范围内。",
+        "req": [
+          "忽略前导空格，并识别可选的正负号",
+          "只读取连续数字，遇到第一个非数字即停止",
+          "结果限制在 32 位有符号整数范围内"
+        ],
+        "analysis": "index 先跳过前导空格，再读至多一个 '+' 或 '-' 得到 sign。limit 在正数时是 Integer.MAX_VALUE，负数时是 2147483648。之后只处理连续数字，每次乘 10 之前若 result 已经大于 (limit-digit)/10，就直接返回对应的 32 位边界，否则 result=result*10+digit。非数字处停止，最后返回 sign 乘 result。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "字符串"
+    },
+    {
+      "id": "nonlc-5-1",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "title": "不使用 JDK 内置 API，把字符串 \"123\" 转成数值 123。",
+      "number": "补2",
+      "description": "不使用 JDK 内置的解析 API，把形如 \"123\" 的数字字符串转换成对应的整数值。",
+      "idea": "用 sign 记录正负，若首位是 '-' 则 sign 置为 -1 且 index 从 1 开始。之后逐字符取出 c，不是 '0' 到 '9' 就抛异常，否则执行 ans = ans * 10 + (c - '0')。扫完后返回 ans * sign。",
+      "code": "class Solution {\n    public int parseInt(String s) {\n        int sign = 1;\n        int index = 0;\n        // 负号只看首位，数字从下一位开始累加\n        if (s.charAt(0) == '-') {\n            sign = -1;\n            index++;\n        }\n        int ans = 0;\n        while (index < s.length()) {\n            char c = s.charAt(index++);\n            // 非数字无法按十进制累加，直接拒绝\n            if (c < '0' || c > '9') {\n                throw new IllegalArgumentException(\"invalid number\");\n            }\n            // 先乘 10 腾出个位，再加当前数位\n            ans = ans * 10 + (c - '0');\n        }\n        return ans * sign;\n    }\n}",
+      "progressKey": "nonlc-5#1",
+      "faceParent": "nonlc-5",
+      "faceIdx": 1,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "不使用 JDK 内置的解析 API，把形如 \"123\" 的数字字符串转换成对应的整数值。",
+        "req": [
+          "不使用 JDK 内置 API"
+        ],
+        "analysis": "用 sign 记录正负，若首位是 '-' 则 sign 置为 -1 且 index 从 1 开始。之后逐字符取出 c，不是 '0' 到 '9' 就抛异常，否则执行 ans = ans * 10 + (c - '0')。扫完后返回 ans * sign。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      }
+    },
+    {
+      "id": "nonlc-5-5",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "title": "大数相乘怎么做？如果两个数字长到内置整数类型放不下，怎么用字符串实现？",
+      "number": "补6",
+      "description": "两个非负整数长到内置整数类型放不下，用字符串表示并求出它们的乘积，结果仍用字符串返回。",
+      "idea": "任一输入是 \"0\" 时直接返回 \"0\"。否则开长度 m+n 的数组 ans，从低位起让 num1[i] 与 num2[j] 相乘，乘积加到 ans[i+j+1] 上，个位写回该位，十位累加进 ans[i+j]。最后跳过前导 0，把剩余各位按顺序拼成字符串。",
+      "code": "class Solution {\n    public String multiply(String num1, String num2) {\n        // 乘数为 0 时积就是 0，避免做出一串前导零\n        if (\"0\".equals(num1) || \"0\".equals(num2)) {\n            return \"0\";\n        }\n\n        int m = num1.length();\n        int n = num2.length();\n        // 两数相乘最多 m+n 位\n        int[] ans = new int[m + n];\n\n        for (int i = m - 1; i >= 0; i--) {\n            for (int j = n - 1; j >= 0; j--) {\n                int mul = (num1.charAt(i) - '0') * (num2.charAt(j) - '0');\n                // i、j 的个位落在下标 i+j+1，进位落到 i+j\n                int sum = mul + ans[i + j + 1];\n                ans[i + j + 1] = sum % 10;\n                ans[i + j] += sum / 10;\n            }\n        }\n\n        StringBuilder sb = new StringBuilder();\n        int index = 0;\n        // 最高几位可能仍是 0，从第一个非零位开始输出\n        while (index < ans.length && ans[index] == 0) {\n            index++;\n        }\n        while (index < ans.length) {\n            sb.append(ans[index++]);\n        }\n        return sb.toString();\n    }\n}",
+      "progressKey": "nonlc-5#5",
+      "faceParent": "nonlc-5",
+      "faceIdx": 5,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "两个非负整数长到内置整数类型放不下，用字符串表示并求出它们的乘积，结果仍用字符串返回。",
+        "req": [
+          "用字符串实现，不把整个数转成内置整数类型"
+        ],
+        "analysis": "任一输入是 \"0\" 时直接返回 \"0\"。否则开长度 m+n 的数组 ans，从低位起让 num1[i] 与 num2[j] 相乘，乘积加到 ans[i+j+1] 上，个位写回该位，十位累加进 ans[i+j]。最后跳过前导 0，把剩余各位按顺序拼成字符串。",
+        "cx": "时间 O(m*n)，空间 O(m+n)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      }
+    },
+    {
+      "id": "151",
+      "number": 151,
+      "title": "翻转字符串里的单词",
+      "slug": "reverse-words-in-a-string",
+      "category": "字符串",
+      "source": "",
+      "time": "O(n)",
+      "space": "O(n)",
+      "idea": "用 answer 收集结果，下标 i 从 s.length() - 1 向左走。先跳过空格，把当前单词的右端记为 end，再向左扫到空格，start = i + 1 即为左端。按遇到的顺序把区间 [start, end] 追加到 answer，非首个单词前先补一个空格，因此先写入的是原串最后一个单词。",
+      "description": "给定可能含有前导空格、尾随空格以及多个连续空格的字符串 s，返回将其中单词顺序翻转后的字符串。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public String reverseWords(String s) {\n        StringBuilder answer = new StringBuilder();\n        int i = s.length() - 1;\n\n        while (i >= 0) {\n            // 从右端丢掉空格，下一个字符才是某个单词的结尾。\n            while (i >= 0 && s.charAt(i) == ' ') {\n                i--;\n            }\n            if (i < 0) {\n                break;\n            }\n\n            int end = i;\n            while (i >= 0 && s.charAt(i) != ' ') {\n                i--;\n            }\n            int start = i + 1;\n\n            // 先遇到靠后的单词，按此顺序追加即得到逆序。\n            if (answer.length() > 0) {\n                answer.append(' ');\n            }\n            answer.append(s, start, end + 1);\n        }\n\n        return answer.toString();\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "字符串 / 子串",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定可能含有前导空格、尾随空格以及多个连续空格的字符串 s，返回将其中单词顺序翻转后的字符串。",
+        "req": [
+          "单词之间只保留一个空格。"
+        ],
+        "analysis": "用 answer 收集结果，下标 i 从 s.length() - 1 向左走。先跳过空格，把当前单词的右端记为 end，再向左扫到空格，start = i + 1 即为左端。按遇到的顺序把区间 [start, end] 追加到 answer，非首个单词前先补一个空格，因此先写入的是原串最后一个单词。",
+        "cx": "时间 O(n)，空间 O(n)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "字符串"
+    },
+    {
+      "id": "165",
+      "number": 165,
+      "title": "比较版本号",
+      "slug": "compare-version-numbers",
+      "category": "字符串",
+      "source": "",
+      "time": "O(m+n)",
+      "space": "O(1)",
+      "idea": "i、j 分别沿 version1、version2 同步前进。每一轮把点号前的字符用 current = current * 10 + 数字 解析成 current1、current2，某一侧已经没有字符时该侧保持 0。两段不等立即返回 -1 或 1；相等则 i++、j++ 越过点号，两边都扫完时返回 0。",
+      "description": "比较两个形如 \"1.01.3\" 的版本号。每个点号分隔的片段按整数值比较，某一侧缺失的后续片段按 0 处理。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int compareVersion(String version1, String version2) {\n        int i = 0;\n        int j = 0;\n\n        while (i < version1.length() || j < version2.length()) {\n            long current1 = 0;\n            long current2 = 0;\n\n            // 按十进制累加，前导零被吸收；该侧已结束则这段保持 0。\n            while (i < version1.length() && version1.charAt(i) != '.') {\n                current1 = current1 * 10 + (version1.charAt(i) - '0');\n                i++;\n            }\n\n            while (j < version2.length() && version2.charAt(j) != '.') {\n                current2 = current2 * 10 + (version2.charAt(j) - '0');\n                j++;\n            }\n\n            if (current1 < current2) {\n                return -1;\n            }\n            if (current1 > current2) {\n                return 1;\n            }\n\n            // 两段相等才越过点号；已到末尾时加 1 只是停在界外。\n            i++;\n            j++;\n        }\n\n        return 0;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "字符串 / 子串",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "比较两个形如 \"1.01.3\" 的版本号。每个点号分隔的片段按整数值比较，某一侧缺失的后续片段按 0 处理。",
+        "req": [
+          "version1 较大返回 1，较小返回 -1，相等返回 0。"
+        ],
+        "analysis": "i、j 分别沿 version1、version2 同步前进。每一轮把点号前的字符用 current = current * 10 + 数字 解析成 current1、current2，某一侧已经没有字符时该侧保持 0。两段不等立即返回 -1 或 1；相等则 i++、j++ 越过点号，两边都扫完时返回 0。",
+        "cx": "时间 O(m+n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "字符串"
+    },
+    {
+      "id": "nonlc-5-4",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "title": "把 IP 地址比如 192.168.1.1 转成 32 位无符号整数，怎么写？",
+      "number": "补5",
+      "description": "把形如 192.168.1.1 的 IPv4 地址转换成一个 32 位无符号整数。",
+      "idea": "用 split 按点分成四段，段数不是 4 就抛异常。long ans 从 0 开始，每段 parseInt 后若不在 0 到 255 也抛异常，否则 ans = (ans << 8) | value，把已拼好的部分移到更高字节，当前段放进最低 8 位。用 long 保存是为了让超过有符号 int 上限的地址仍显示为正数。",
+      "code": "class Solution {\n    public long ipToLong(String ip) {\n        String[] parts = ip.split(\"\\\\.\");\n        if (parts.length != 4) {\n            throw new IllegalArgumentException(\"invalid ip\");\n        }\n\n        // long 避免结果超过 Integer.MAX_VALUE 时变成负数\n        long ans = 0;\n        for (String part : parts) {\n            int value = Integer.parseInt(part);\n            if (value < 0 || value > 255) {\n                throw new IllegalArgumentException(\"invalid ip segment\");\n            }\n            // 左移 8 位腾出低字节，再并上当前段\n            ans = (ans << 8) | value;\n        }\n        return ans;\n    }\n}",
+      "progressKey": "nonlc-5#4",
+      "faceParent": "nonlc-5",
+      "faceIdx": 4,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "把形如 192.168.1.1 的 IPv4 地址转换成一个 32 位无符号整数。",
+        "req": [
+          "结果是 32 位无符号整数",
+          "恰好四段，每段为 0 到 255 的整数"
+        ],
+        "analysis": "用 split 按点分成四段，段数不是 4 就抛异常。long ans 从 0 开始，每段 parseInt 后若不在 0 到 255 也抛异常，否则 ans = (ans << 8) | value，把已拼好的部分移到更高字节，当前段放进最低 8 位。用 long 保存是为了让超过有符号 int 上限的地址仍显示为正数。",
+        "cx": "时间 O(1)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      }
+    },
+    {
+      "id": "lc-face-extra-26",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "title": "找出字符串中第一个匹配项的下标",
+      "number": "28",
+      "description": "在字符串 haystack 中找出模式串 needle 第一次出现的起始下标；若没有匹配则返回 -1。",
+      "idea": "buildLps 里 len 是当前已经对齐的最长前后缀长度。pattern[i] 与 pattern[len] 相等时，len 加一写入 lps[i]；不相等且 len 大于 0 时，把 len 改成 lps[len - 1]，i 不动，继续用更短的前后缀对齐。主循环中字符相等就同时推进 i 和 j，j 走到 needle 末尾时返回 i - j。失配时若 j 大于 0，就把 j 设为 lps[j - 1]，否则只把 i 加一。扫完仍未匹配则返回 -1。",
+      "code": "class Solution {\n    public int strStr(String haystack, String needle) {\n        if (needle.isEmpty()) {\n            return 0;\n        }\n\n        int[] lps = buildLps(needle);\n        int i = 0;\n        int j = 0;\n\n        while (i < haystack.length()) {\n            if (haystack.charAt(i) == needle.charAt(j)) {\n                i++;\n                j++;\n                // j 走完说明从 i - j 开始整段匹配\n                if (j == needle.length()) {\n                    return i - j;\n                }\n            } else if (j > 0) {\n                // 用已匹配前后缀把模式串前滑，主串不回退\n                j = lps[j - 1];\n            } else {\n                i++;\n            }\n        }\n\n        return -1;\n    }\n\n    private int[] buildLps(String pattern) {\n        int[] lps = new int[pattern.length()];\n        int len = 0;\n        int i = 1;\n\n        while (i < pattern.length()) {\n            if (pattern.charAt(i) == pattern.charAt(len)) {\n                len++;\n                lps[i] = len;\n                i++;\n            } else if (len > 0) {\n                // 缩短到上一个前后缀，继续比当前位置\n                len = lps[len - 1];\n            } else {\n                lps[i] = 0;\n                i++;\n            }\n        }\n\n        return lps;\n    }\n}",
+      "progressKey": "lc-face-extra#26",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 26,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "在字符串 haystack 中找出模式串 needle 第一次出现的起始下标；若没有匹配则返回 -1。",
+        "req": [],
+        "analysis": "buildLps 里 len 是当前已经对齐的最长前后缀长度。pattern[i] 与 pattern[len] 相等时，len 加一写入 lps[i]；不相等且 len 大于 0 时，把 len 改成 lps[len - 1]，i 不动，继续用更短的前后缀对齐。主循环中字符相等就同时推进 i 和 j，j 走到 needle 末尾时返回 i - j。失配时若 j 大于 0，就把 j 设为 lps[j - 1]，否则只把 i 加一。扫完仍未匹配则返回 -1。",
+        "cx": "时间 O(n + m)，空间 O(m)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "lc": "28"
+    },
+    {
+      "number": 189,
+      "title": "轮转数组",
+      "slug": "rotate-array",
+      "category": "普通数组",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "先取 k %= n，转满整圈就相当于不动；空数组直接返回。接着 reverse(0, n - 1) 把原末尾的一段翻到前面，但这段内部顺序是反的。再 reverse(0, k - 1) 与 reverse(k, n - 1) 把前后两段各自翻正，相对顺序恢复。reverse 用左右指针交换直到相遇。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public void rotate(int[] nums, int k) {\n        int n = nums.length;\n        if (n == 0) return;\n        k %= n; // 转满 n 次与不转相同。\n\n        // 整体翻转后末尾 k 个到了前面且反序，再分别翻正两段。\n        reverse(nums, 0, n - 1);\n        reverse(nums, 0, k - 1);\n        reverse(nums, k, n - 1);\n    }\n\n    private void reverse(int[] nums, int left, int right) {\n        while (left < right) {\n            int temp = nums[left];\n            nums[left++] = nums[right];\n            nums[right--] = temp;\n        }\n    }\n}",
+      "description": "给定数组 nums，把数组整体向右轮转 k 个位置，使最后 k 个元素移到数组最前面。要求尽量在原数组上完成。",
+      "source": "",
+      "id": "189",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定数组 nums，把数组整体向右轮转 k 个位置，使最后 k 个元素移到数组最前面。要求尽量在原数组上完成。",
+        "req": [
+          "尽量在原数组上完成轮转。"
+        ],
+        "analysis": "先取 k %= n，转满整圈就相当于不动；空数组直接返回。接着 reverse(0, n - 1) 把原末尾的一段翻到前面，但这段内部顺序是反的。再 reverse(0, k - 1) 与 reverse(k, n - 1) 把前后两段各自翻正，相对顺序恢复。reverse 用左右指针交换直到相遇。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "普通数组"
+    },
+    {
+      "number": 31,
+      "title": "下一个排列",
+      "slug": "next-permutation",
+      "category": "技巧",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "从右向左找第一个 nums[i] < nums[i+1]，这个位置右侧此时是非递增的。若 i 仍有效，就从右端找第一个 nums[j] > nums[i] 并交换，只把前缀抬到刚好更大的值。随后 reverse 把下标 i+1 到末尾翻成升序，使后缀成为该前缀下的最小排列；找不到转折点时整段被反转成最小排列。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Solution {\n    public void nextPermutation(int[] nums) {\n        int i = nums.length - 2;\n\n        // 最右的升序转折点才是还能变大的位置，右侧必为非递增。\n        while (i >= 0 && nums[i] >= nums[i + 1]) i--;\n\n        if (i >= 0) {\n            // 右侧非递增，从右端遇到的第一个更大值就是刚好更大的替换。\n            int j = nums.length - 1;\n            while (nums[j] <= nums[i]) j--;\n            swap(nums, i, j);\n        }\n\n        // 后缀翻成升序，得到当前前缀下最小的下一个排列。\n        reverse(nums, i + 1, nums.length - 1);\n    }\n\n    private void reverse(int[] nums, int left, int right) {\n        while (left < right) {\n            swap(nums, left++, right--);\n        }\n    }\n\n    private void swap(int[] nums, int i, int j) {\n        int temp = nums[i];\n        nums[i] = nums[j];\n        nums[j] = temp;\n    }\n}",
+      "description": "把一个整数数组表示的排列原地改成字典序中下一个更大的排列；若当前已是最大排列，则改成最小的升序排列。",
+      "source": "",
+      "id": "31",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "把一个整数数组表示的排列原地改成字典序中下一个更大的排列；若当前已是最大排列，则改成最小的升序排列。",
+        "req": [
+          "原地完成"
+        ],
+        "analysis": "从右向左找第一个 nums[i] < nums[i+1]，这个位置右侧此时是非递增的。若 i 仍有效，就从右端找第一个 nums[j] > nums[i] 并交换，只把前缀抬到刚好更大的值。随后 reverse 把下标 i+1 到末尾翻成升序，使后缀成为该前缀下的最小排列；找不到转折点时整段被反转成最小排列。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "技巧"
+    },
+    {
+      "number": 41,
+      "title": "缺失的第一个正数",
+      "slug": "first-missing-positive",
+      "category": "普通数组",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "最小缺失正数只可能落在 1 到 n + 1。扫描时，只要 nums[i] 在 1 到 n 之间，且下标 nums[i] - 1 上还不是这个值，就把它交换到 targetIndex，直到当前位置无法再归位。整理后从左找第一个 nums[i] != i + 1 的下标并返回 i + 1；若 1 到 n 都在对应位置，则返回 n + 1。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int firstMissingPositive(int[] nums) {\n        int n = nums.length;\n\n        for (int i = 0; i < n; i++) {\n            // 只有 1..n 有位置 x-1；目标处已是该值则停止，避免来回交换。\n            while (nums[i] >= 1 && nums[i] <= n\n                    && nums[nums[i] - 1] != nums[i]) {\n                int targetIndex = nums[i] - 1;\n                int temp = nums[i];\n                nums[i] = nums[targetIndex];\n                nums[targetIndex] = temp;\n            }\n        }\n\n        // 归位后，第一个不是 i+1 的位置就是缺失值。\n        for (int i = 0; i < n; i++) {\n            if (nums[i] != i + 1) return i + 1;\n        }\n\n        return n + 1;\n    }\n}",
+      "description": "给定一个无序整数数组，找出没有出现在数组中的最小正整数。",
+      "source": "",
+      "id": "41",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定一个无序整数数组，找出没有出现在数组中的最小正整数。",
+        "req": [
+          "时间复杂度为 O(n)。",
+          "额外空间为 O(1)，把数组本身当作位置哈希表。"
+        ],
+        "analysis": "最小缺失正数只可能落在 1 到 n + 1。扫描时，只要 nums[i] 在 1 到 n 之间，且下标 nums[i] - 1 上还不是这个值，就把它交换到 targetIndex，直到当前位置无法再归位。整理后从左找第一个 nums[i] != i + 1 的下标并返回 i + 1；若 1 到 n 都在对应位置，则返回 n + 1。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "普通数组"
+    },
+    {
+      "id": "442",
+      "number": 442,
+      "title": "数组中重复的数据",
+      "slug": "find-all-duplicates-in-an-array",
+      "category": "普通数组",
+      "source": "面经手撕",
+      "time": "O(n)",
+      "space": "O(1)（不计返回结果）",
+      "idea": "从左到右扫描 nums。当前位置可能已被改成负数，所以先用 Math.abs 得到 value，再映射到下标 index = value - 1。若 nums[index] 已是负数，说明 value 第二次出现，把它加入 answer；否则把 nums[index] 取负，作为已见过的标记，之后不再翻回正数。扫完返回 answer。",
+      "description": "给定长度为 n 的整数数组 nums，每个整数都在 [1, n] 范围内，且每个元素最多出现两次。返回所有出现两次的整数，并尽量使用 O(1) 额外空间。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public List<Integer> findDuplicates(int[] nums) {\n        List<Integer> answer = new ArrayList<>();\n\n        for (int i = 0; i < nums.length; i++) {\n            // 前面的标记可能已把该格改成负数，取绝对值才是原来的数值。\n            int value = Math.abs(nums[i]);\n            int index = value - 1;\n\n            if (nums[index] < 0) {\n                // 映射位置已是负，说明 value 第二次出现。\n                answer.add(value);\n            } else {\n                // 第一次见到：取负留下标记，下次再见到同一下标即可识别。\n                nums[index] = -nums[index];\n            }\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定长度为 n 的整数数组 nums，每个整数都在 [1, n] 范围内，且每个元素最多出现两次。返回所有出现两次的整数，并尽量使用 O(1) 额外空间。",
+        "req": [
+          "每个整数都在 [1, n] 范围内",
+          "每个元素最多出现两次",
+          "返回所有出现两次的整数",
+          "尽量使用 O(1) 额外空间"
+        ],
+        "analysis": "从左到右扫描 nums。当前位置可能已被改成负数，所以先用 Math.abs 得到 value，再映射到下标 index = value - 1。若 nums[index] 已是负数，说明 value 第二次出现，把它加入 answer；否则把 nums[index] 取负，作为已见过的标记，之后不再翻回正数。扫完返回 answer。",
+        "cx": "时间 O(n)，空间 O(1)（不计返回结果）",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "普通数组"
+    },
+    {
+      "id": "array-left-smaller-right-greater",
+      "number": "面试数组 1",
+      "title": "无序数组中找“左侧都更小、右侧都更大”的元素",
+      "slug": "",
+      "category": "普通数组",
+      "source": "本批手撕",
+      "time": "O(n)",
+      "space": "O(n)",
+      "idea": "长度小于 3 时没有同时具备左右两侧的位置，直接返回空列表。先自右向左填 suffixMin，使 suffixMin[i] 等于从 i 到末尾的最小值。再自左向右，leftMax 从 nums[0] 开始，只看下标 1 到 n-2：当 leftMax < nums[i] 且 nums[i] < suffixMin[i+1] 时把 nums[i] 加入 answer，比较之后才用 Math.max 更新 leftMax。",
+      "description": "给定一个无序数组，找出这样的元素：它左边的所有元素都比它小，它右边的所有元素都比它大。不能用 O(n²) 逐点检查，返回所有满足条件的元素值。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public List<Integer> findQualifiedElements(int[] nums) {\n        List<Integer> answer = new ArrayList<>();\n        int n = nums.length;\n        if (n < 3) return answer;\n\n        // 右侧最小值先算好，后面判断“右边都更大”才是 O(1)。\n        int[] suffixMin = new int[n];\n        suffixMin[n - 1] = nums[n - 1];\n        for (int i = n - 2; i >= 0; i--) {\n            suffixMin[i] = Math.min(nums[i], suffixMin[i + 1]);\n        }\n\n        // leftMax 只能含 i 左侧，所以要在比较之后再更新。\n        int leftMax = nums[0];\n        for (int i = 1; i < n - 1; i++) {\n            if (leftMax < nums[i] && nums[i] < suffixMin[i + 1]) {\n                answer.add(nums[i]);\n            }\n            leftMax = Math.max(leftMax, nums[i]);\n        }\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定一个无序数组，找出这样的元素：它左边的所有元素都比它小，它右边的所有元素都比它大。不能用 O(n²) 逐点检查，返回所有满足条件的元素值。",
+        "req": [
+          "不能使用 O(n²) 暴力逐点检查",
+          "返回所有满足条件的元素值"
+        ],
+        "analysis": "长度小于 3 时没有同时具备左右两侧的位置，直接返回空列表。先自右向左填 suffixMin，使 suffixMin[i] 等于从 i 到末尾的最小值。再自左向右，leftMax 从 nums[0] 开始，只看下标 1 到 n-2：当 leftMax < nums[i] 且 nums[i] < suffixMin[i+1] 时把 nums[i] 加入 answer，比较之后才用 Math.max 更新 leftMax。",
+        "cx": "时间 O(n)，空间 O(n)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "普通数组"
+    },
+    {
+      "number": 73,
+      "title": "矩阵置零",
+      "slug": "set-matrix-zeroes",
+      "category": "矩阵",
+      "time": "O(mn)",
+      "space": "O(1)",
+      "idea": "先扫首行和首列，用 firstRowZero、firstColZero 记下它们原来有没有 0。再看除首行首列外的格子，遇到 0 就把 matrix[r][0] 和 matrix[0][c] 写成 0。然后按这两个标记把内部区域置 0；若 firstRowZero 或 firstColZero 为真，再用 Arrays.fill 或逐行赋值清空首行、首列。",
+      "code": "import java.util.*; // 最后用 Arrays.fill 把需要清零的首行一次写完\n\nclass Solution {\n    public void setZeroes(int[][] matrix) {\n        int rows = matrix.length;\n        int cols = matrix[0].length;\n\n        // 首行首列马上要当标记用，先记住它们原本是否含 0\n        boolean firstRowZero = false;\n        boolean firstColZero = false;\n\n        for (int c = 0; c < cols; c++) {\n            if (matrix[0][c] == 0) firstRowZero = true;\n        }\n        for (int r = 0; r < rows; r++) {\n            if (matrix[r][0] == 0) firstColZero = true;\n        }\n\n        // 内部的 0 只写进行首、列首，不必另开标记数组\n        for (int r = 1; r < rows; r++) {\n            for (int c = 1; c < cols; c++) {\n                if (matrix[r][c] == 0) {\n                    matrix[r][0] = 0;\n                    matrix[0][c] = 0;\n                }\n            }\n        }\n\n        // 行首或列首为 0，说明这一行或这一列整段都要清\n        for (int r = 1; r < rows; r++) {\n            for (int c = 1; c < cols; c++) {\n                if (matrix[r][0] == 0 || matrix[0][c] == 0) {\n                    matrix[r][c] = 0;\n                }\n            }\n        }\n\n        if (firstRowZero) Arrays.fill(matrix[0], 0);\n        if (firstColZero) {\n            for (int r = 0; r < rows; r++) matrix[r][0] = 0;\n        }\n    }\n}",
+      "description": "如果矩阵中某个位置是 0，就把该位置所在的整行和整列都变成 0。要求原地完成，并把额外空间降到常数级。",
+      "source": "",
+      "id": "73",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "如果矩阵中某个位置是 0，就把该位置所在的整行和整列都变成 0。要求原地完成，并把额外空间降到常数级。",
+        "req": [
+          "原地完成",
+          "额外空间为常数级"
+        ],
+        "analysis": "先扫首行和首列，用 firstRowZero、firstColZero 记下它们原来有没有 0。再看除首行首列外的格子，遇到 0 就把 matrix[r][0] 和 matrix[0][c] 写成 0。然后按这两个标记把内部区域置 0；若 firstRowZero 或 firstColZero 为真，再用 Arrays.fill 或逐行赋值清空首行、首列。",
+        "cx": "时间 O(mn)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "矩阵"
+    },
+    {
+      "number": 54,
+      "title": "螺旋矩阵",
+      "slug": "spiral-matrix",
+      "category": "矩阵",
+      "time": "O(mn)",
+      "space": "O(1)",
+      "idea": "用 top、bottom、left、right 框住还没输出的矩形。每一层先从左到右把上边放进 answer 并 top++，再从上到下把右边放进 answer 并 right--。只有 top 仍不超过 bottom 才从右到左走下边并 bottom--，只有 left 仍不超过 right 才从下到上走左边并 left++，直到两条边界交叉。",
+      "code": "import java.util.*; // 用 ArrayList 按访问顺序收集元素\n\nclass Solution {\n    public List<Integer> spiralOrder(int[][] matrix) {\n        List<Integer> answer = new ArrayList<>();\n        int top = 0, bottom = matrix.length - 1;\n        int left = 0, right = matrix[0].length - 1;\n\n        while (top <= bottom && left <= right) {\n            // 上边走完立刻 top++，下一层不再碰到这一行\n            for (int c = left; c <= right; c++) answer.add(matrix[top][c]);\n            top++;\n\n            // 右边走完立刻 right--，已输出的列退出边界\n            for (int r = top; r <= bottom; r++) answer.add(matrix[r][right]);\n            right--;\n\n            // 只剩一行时 top 已超过 bottom，不能再从右往左回头\n            if (top <= bottom) {\n                for (int c = right; c >= left; c--) answer.add(matrix[bottom][c]);\n                bottom--;\n            }\n\n            // 只剩一列时 right 已小于 left，不能再从下往上回头\n            if (left <= right) {\n                for (int r = bottom; r >= top; r--) answer.add(matrix[r][left]);\n                left++;\n            }\n        }\n        return answer;\n    }\n}",
+      "description": "给定一个二维矩阵，按顺时针螺旋顺序输出所有元素：先上边，再右边，再下边，再左边，并逐层向中心收缩。",
+      "source": "",
+      "id": "54",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定一个二维矩阵，按顺时针螺旋顺序输出所有元素：先上边，再右边，再下边，再左边，并逐层向中心收缩。",
+        "req": [
+          "按顺时针螺旋顺序输出全部元素：上、右、下、左，逐层向中心收缩"
+        ],
+        "analysis": "用 top、bottom、left、right 框住还没输出的矩形。每一层先从左到右把上边放进 answer 并 top++，再从上到下把右边放进 answer 并 right--。只有 top 仍不超过 bottom 才从右到左走下边并 bottom--，只有 left 仍不超过 right 才从下到上走左边并 left++，直到两条边界交叉。",
+        "cx": "时间 O(mn)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "矩阵"
+    },
+    {
+      "number": 48,
+      "title": "旋转图像",
+      "slug": "rotate-image",
+      "category": "矩阵",
+      "time": "O(n²)",
+      "space": "O(1)",
+      "idea": "外层 r 从 0 到 n-1，内层 c 从 r+1 到 n-1，用 temp 交换 matrix[r][c] 和 matrix[c][r]，只动主对角线一侧完成转置。接着每一行设 left=0、right=n-1，在 left<right 时交换两端并相向移动，把该行左右翻转，得到顺时针 90°。",
+      "code": "import java.util.*; // 旋转只做原地交换，集合工具不参与计算\n\nclass Solution {\n    public void rotate(int[][] matrix) {\n        int n = matrix.length;\n\n        // c 从 r+1 起交换，主对角线两侧只对调一次\n        for (int r = 0; r < n; r++) {\n            for (int c = r + 1; c < n; c++) {\n                int temp = matrix[r][c];\n                matrix[r][c] = matrix[c][r];\n                matrix[c][r] = temp;\n            }\n        }\n\n        // 转置后左右对换，列下标从 c 变成 n-1-c\n        for (int r = 0; r < n; r++) {\n            int left = 0, right = n - 1;\n            while (left < right) {\n                int temp = matrix[r][left];\n                matrix[r][left++] = matrix[r][right];\n                matrix[r][right--] = temp;\n            }\n        }\n    }\n}",
+      "description": "给定一个 n×n 方阵，把图像顺时针旋转 90°。必须原地修改矩阵，不能额外创建另一张 n×n 矩阵。",
+      "source": "",
+      "id": "48",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "给定一个 n×n 方阵，把图像顺时针旋转 90°。必须原地修改矩阵，不能额外创建另一张 n×n 矩阵。",
+        "req": [
+          "原地修改矩阵",
+          "不能额外创建另一张 n×n 矩阵"
+        ],
+        "analysis": "外层 r 从 0 到 n-1，内层 c 从 r+1 到 n-1，用 temp 交换 matrix[r][c] 和 matrix[c][r]，只动主对角线一侧完成转置。接着每一行设 left=0、right=n-1，在 left<right 时交换两端并相向移动，把该行左右翻转，得到顺时针 90°。",
+        "cx": "时间 O(n²)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "矩阵"
+    },
+    {
+      "number": 240,
+      "title": "搜索二维矩阵 II",
+      "slug": "search-a-2d-matrix-ii",
+      "category": "矩阵",
+      "time": "O(m+n)",
+      "space": "O(1)",
+      "idea": "从 row=0、col 为最后一列的右上角读出 value。value 等于 target 就返回 true；value 大于 target 时 col--，因为这一列再往下只会更大；value 小于 target 时 row++，因为这一行再往左只会更小。row 或 col 越界后返回 false。",
+      "code": "import java.util.*; // 搜索只用两个下标，不借助额外容器\n\nclass Solution {\n    public boolean searchMatrix(int[][] matrix, int target) {\n        int row = 0;\n        int col = matrix[0].length - 1;\n\n        // 右上角左边更小、下边更大，每次可以丢掉一行或一列\n        while (row < matrix.length && col >= 0) {\n            int value = matrix[row][col];\n            if (value == target) return true;\n\n            if (value > target) {\n                col--; // 当前列下方只会更大，剩余部分不可能等于 target\n            } else {\n                row++; // 当前行左侧只会更小，剩余部分不可能等于 target\n            }\n        }\n        return false;\n    }\n}",
+      "description": "矩阵每一行从左到右递增，每一列从上到下递增，判断目标值是否存在。应利用这种二维有序性，而不是逐行逐列完整扫描。",
+      "source": "",
+      "id": "240",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "矩阵每一行从左到右递增，每一列从上到下递增，判断目标值是否存在。应利用这种二维有序性，而不是逐行逐列完整扫描。",
+        "req": [
+          "利用行、列递增的二维有序性判断目标是否存在",
+          "不要逐行逐列完整扫描"
+        ],
+        "analysis": "从 row=0、col 为最后一列的右上角读出 value。value 等于 target 就返回 true；value 大于 target 时 col--，因为这一列再往下只会更大；value 小于 target 时 row++，因为这一行再往左只会更小。row 或 col 越界后返回 false。",
+        "cx": "时间 O(m+n)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "矩阵"
+    },
+    {
+      "id": "498",
+      "number": 498,
+      "title": "对角线遍历（沿对角线打印矩阵）",
+      "slug": "diagonal-traverse",
+      "category": "矩阵",
+      "source": "本批面经 · 按 LeetCode 498 常见规则整理",
+      "time": "O(mn)",
+      "space": "O(1)",
+      "idea": "空矩阵直接返回长度为 0 的数组。d 从 0 到 rows+cols-2，同一条对角线上 row+col 都等于 d。d 为偶数时起点是 row=min(d, rows-1)、col=d-row，然后 row--、col++ 写入 answer；d 为奇数时起点是 col=min(d, cols-1)、row=d-col，然后 row++、col-- 写入 answer。",
+      "description": "按 LeetCode 498 的常见形式，从左上角开始，沿各条副对角线交替向右上、左下输出矩阵中的全部元素。若每条对角线要求固定同一方向，则只改该对角线的输出顺序。",
+      "code": "class Solution {\n    public int[] findDiagonalOrder(int[][] mat) {\n        if (mat == null || mat.length == 0 || mat[0].length == 0) {\n            return new int[0];\n        }\n\n        int rows = mat.length;\n        int cols = mat[0].length;\n        int[] answer = new int[rows * cols];\n        int index = 0;\n\n        // d 相同的格子在同一条副对角线上，一共 rows+cols-1 条\n        for (int d = 0; d < rows + cols - 1; d++) {\n            if ((d & 1) == 0) {\n                // 偶数条从靠下的一端出发，才能一路向右上\n                int row = Math.min(d, rows - 1);\n                int col = d - row;\n\n                while (row >= 0 && col < cols) {\n                    answer[index++] = mat[row][col];\n                    row--;\n                    col++;\n                }\n            } else {\n                // 奇数条从靠右的一端出发，才能一路向左下\n                int col = Math.min(d, cols - 1);\n                int row = d - col;\n\n                while (col >= 0 && row < rows) {\n                    answer[index++] = mat[row][col];\n                    row++;\n                    col--;\n                }\n            }\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "数组 / 矩阵 / 字符串模拟",
+      "simple": {
+        "statement": "按 LeetCode 498 的常见形式，从左上角开始，沿各条副对角线交替向右上、左下输出矩阵中的全部元素。若每条对角线要求固定同一方向，则只改该对角线的输出顺序。",
+        "req": [
+          "从左上角起，沿副对角线交替向右上、左下输出"
+        ],
+        "analysis": "空矩阵直接返回长度为 0 的数组。d 从 0 到 rows+cols-2，同一条对角线上 row+col 都等于 d。d 为偶数时起点是 row=min(d, rows-1)、col=d-row，然后 row--、col++ 写入 answer；d 为奇数时起点是 col=min(d, cols-1)、row=d-col，然后 row++、col-- 写入 answer。",
+        "cx": "时间 O(mn)，空间 O(1)",
+        "topic": "p-array",
+        "topicName": "数组 / 矩阵 / 字符串模拟"
+      },
+      "oldCat": "矩阵"
+    }
+  ]
+}

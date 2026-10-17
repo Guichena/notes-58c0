@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-87",
+  "entryId": "database-87",
+  "expectedOriginalHash": "a7a5a712b703ca315941d9593cf684cb65f5fd5e63d2e906565c56352dc67a1a",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "S2-B：检查和修改放错位置，写锁也救不了"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "错误方案：两人都把 10-1 算成常量 9"
+    },
+    {
+      "type": "paragraph",
+      "text": "两会话回滚后，由 A 重置："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-037.sql",
+      "value": "UPDATE s2_stock SET available=10,version=0 WHERE sku=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "先完成 A1 与 B1，再执行 A2，最后执行 B2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-038.sql",
+      "value": "-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT available INTO @a_seen FROM s2_stock WHERE sku=1; -- 10\nSET @a_next=@a_seen-1; -- 模拟 Java 中基于读值计算的 9\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-039.sql",
+      "value": "-- B1：必须在 A2 之前完成读取。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT available INTO @b_seen FROM s2_stock WHERE sku=1; -- 10\nSET @b_next=@b_seen-1; -- 9\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-040.sql",
+      "value": "-- A2\nUPDATE s2_stock SET available=@a_next,version=version+1 WHERE sku=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-041.sql",
+      "value": "-- B2：A2 已提交，但 B 仍使用先前算出的常量。\nUPDATE s2_stock SET available=@b_next,version=version+1 WHERE sku=1;\nCOMMIT;\nSELECT available,version FROM s2_stock WHERE sku=1; -- 预期 (9,2)\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个请求都读到 10，各自在应用里算出 9，再先后把 9 写回。写锁确实让写入排了队，却没办法把第二个请求带来的旧常量重新算成 8。于是两条成功路径各认为预留一份，库存总共只少一份，这是丢失更新式的业务错误。把初值改成 1，同样的先查后写就可能让两笔订单都以为抢到了最后一份。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "正确的单行约束：把条件与算术放在数据库里"
+    },
+    {
+      "type": "paragraph",
+      "text": "两边回滚，A 重置 (1,10,0)。按 A1→B1→等待证据→A2→B2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-042.sql",
+      "value": "-- A1：UPDATE 返回后先不提交。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nUPDATE s2_stock\nSET available=available-1,version=version+1\nWHERE sku=1 AND available>=1;\nSELECT ROW_COUNT() AS a_changed; -- 预期 1\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-043.sql",
+      "value": "-- B1：只提交这条 UPDATE 到服务器，然后停在等待中。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nUPDATE s2_stock\nSET available=available-1,version=version+1\nWHERE sku=1 AND available>=1;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "此时在 A 执行共同约定中的等待观察 SQL。看到 B 等待 A 的 s2_stock 锁之后，A 才执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-044.sql",
+      "value": "-- A2\nCOMMIT;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "等 B1 的 UPDATE 返回，B 紧接着执行，ROW_COUNT 之前不要夹任何其他语句："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-045.sql",
+      "value": "-- B2\nSELECT ROW_COUNT() AS b_changed; -- 初值 10 时预期 1\nCOMMIT;\nSELECT available,version FROM s2_stock WHERE sku=1; -- 预期 (8,2)\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一 SQL 会在写入所需锁定下判断条件和修改行。重新结束事务并把 available=1、version=0，按完全相同关卡执行，A 成功 1 行，B 等待后影响 0 行，最终 (0,1)。改为 RC 也应保持这一单行条件约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这只证明库存条件，并未实现请求幂等。同一逻辑请求超时重试，换一轮再扣仍可能成功。完整业务还需要稳定请求键、同键同参数校验，以及请求记录与扣减同事务；不能把“影响 0 行”统称为重复成功。0 行也可能是 SKU 不存在、库存不足、版本冲突或其他谓词未满足。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "乐观版本条件的边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "若确实要检测从读取后发生的相关变化，可使用业务 version："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-046.sql",
+      "value": "-- 示例前提：quantity=1，预期 version=7，数据库当前库存=1、version=7。\nUPDATE s2_stock\nSET available=available-1,version=version+1\nWHERE sku=1 AND version=7 AND available>=1;\nSELECT ROW_COUNT();\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立测试前应由 A 在两边回滚后重置 available=1、version=7。两次使用这个条件的竞争预期仅一次影响 1 行，最终库存 0、version=8。版本条件是应用协议，所有相关写必须维护它，递增还要考虑数值上界。失败后重新读取、重新判断整个业务，不能只替换版本号继续用旧决策；旧 RR 快照中盲目重读可能永远读到旧版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "quantity 必须大于 0。若把 -1 带进 available>=quantity 与 available=available-quantity，“扣库存”反而会加库存。接口层校验正数量，金额和数量范围也要受控；不要等数据库整数溢出才发现契约有洞。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "最后用不变量验收，而不是只看 SQL 成功"
+    },
+    {
+      "type": "paragraph",
+      "text": "建议在同一基线上逐项观察以下预期："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "同一 SKU 两次扣 1：初值 10 最终 8；初值 1 只一次成功、最终 0；初值 0 两次均 0 行。",
+        "不同 SKU：另插入 (2,10,0) 后，各自按主键扣减，不应仅因业务使用同一张表就被全局串行化；额外索引、外键或其他共享资源仍要另查。",
+        "非正数量：应用拒绝，不能进入扣减 SQL。",
+        "中途异常：成功扣减后未完成必要后续写就回滚，库存恢复；提交后响应丢失则走结果查询，不能盲重扣。",
+        "重复逻辑请求：只有稳定身份与同事务去重记录才能检验此契约；本章单行条件更新本身不提供它。",
+        "两设备或两医生：失败方案可能得到 0；守卫、汇总或正确 Serializable 重试应保持至少 1。",
+        "长事务：跟踪事务年龄、历史保留和空间趋势；低 CPU 不代表没有成本。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "库存先查后改为什么仍可能超卖？条件更新保护单行后，能否自动保护跨行约束？ 检查与修改若分离，会基于过时状态作决定；同一行条件更新只能保护该行表达的条件。跨行约束必须让竞争者在共同受保护的决策点相遇。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RR 有 MVCC 和间隙锁，为什么仍可能需要 Serializable？ 普通快照读未自动锁住决策集合，非相交写集合仍可能形成写偏差。更强隔离是选择之一，守卫和集中约束也是；它们都需要完整失败处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "单行库存怎样防超卖"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设一个租户一个 SKU 只有一条库存记录，stock/version 均为非负 BIGINT，quantity 必须大于 0。读到 stock=1、version=7 的两个请求，各自扣 1："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch24/fence-131.sql",
+      "value": "UPDATE inventory\nSET stock=stock-?,version=version+1\nWHERE tenant_id=? AND sku_id=? AND version=? AND stock>=?;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "最后一个参数必须绑定同一 quantity。一个成功后变为 stock=0/version=8，另一个带 version=7 的更新不能再次成功。只需保护单行不负数时，WHERE stock>=quantity 的原子条件扣减已经足够；version 是检测其他相关变化的额外协议，不必为“乐观锁”名词强加。所有会影响决策的写入口必须推进 version，达到 Long.MAX_VALUE 要拒绝或迁移，不能回绕。"
+    },
+    {
+      "type": "paragraph",
+      "text": "影响 1 行表示这一条 CAS 通过，最终事务提交才表示业务完成。影响 0 行可能是库存不足、版本过期、记录不存在、租户或状态条件不符；数据库异常又是另一类结果。应在不泄露其他租户数据的前提下重新确认状态，不能统一当成重复成功。MySQL 驱动的 matched/changed 行数选项还需关注，不过本例成功必增加 version，因此不会出现“命中但写回相同值”歧义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 OptimisticStock.java，调用者负责事务、订单、预留收据和 outbox；它明确只完成单次 CAS："
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/transactions/code/locking/OptimisticStock.java",
+      "value": "import java.sql.*;\n\n/** A single SQL CAS. Caller owns transaction, receipt, order and outbox. */\npublic final class OptimisticStock {\n    private OptimisticStock() {}\n    public static boolean tryReserve(Connection c,long tenant,long sku,long quantity,long expected)\n            throws SQLException {\n        if (tenant<=0 || sku<=0 || quantity<=0 || expected<0 || expected==Long.MAX_VALUE)\n            throw new IllegalArgumentException(\"positive IDs/quantity and incrementable version required\");\n        try (PreparedStatement p = Db.prepare(c,\n                \"UPDATE inventory SET stock=stock-?,version=version+1 \" +\n                \"WHERE tenant_id=? AND sku_id=? AND version=? AND stock>=?\")) {\n            p.setLong(1,quantity); p.setLong(2,tenant); p.setLong(3,sku);\n            p.setLong(4,expected); p.setLong(5,quantity);\n            int changed=p.executeUpdate();\n            if (changed>1) throw new SQLException(\"stock key is not unique\");\n            return changed==1;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个请求若超时后重新读 version 再扣一次，CAS 仍可能再次成功。因此业务重放需要独立的唯一 (tenant,request_id) 收据，绑定不可变 SKU/数量并与扣减同事务。缺库存是业务结果，不应无限重试；RR 中反复使用原读视图又可能总拿到旧版本。只有可恢复竞争才开新事务重读，限制次数、时间并退避。多 SKU 全成全败需同一事务与固定锁序，单行条件不保护“总额不超预算”等跨行约束。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

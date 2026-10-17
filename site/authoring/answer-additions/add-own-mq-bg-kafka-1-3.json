@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-kafka-1-3",
+  "entryId": "bg-kafka-1",
+  "expectedOriginalHash": "5d5c5fb70ae63520b4ea8da459eaabe68eb1e9078a00290a85f0083446da50e6",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q12 Kafka 为什么吞吐高 核心参数怎么调"
+    },
+    {
+      "type": "paragraph",
+      "text": "高吞吐来自分区并行、顺序日志、批量收发、压缩和 page cache 的协同，优化必须围绕真实瓶颈和尾延迟预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Producer 序列化后按分区积累批次，发送线程组合请求；broker 追加日志并复制；consumer 批量 fetch。批量减少每条记录分摊的请求/系统调用开销，顺序 I/O 避免把主路径做成大量随机小写；page cache 缓存文件页；适用的传输路径能减少用户态复制。TLS、格式转换和实现路径会改变零拷贝条件，“零拷贝”不意味着数据从未经过内存。"
+    },
+    {
+      "type": "table",
+      "headers": [
+        "参数组",
+        "关注点",
+        "典型代价"
+      ],
+      "rows": [
+        [
+          "batch.size、linger.ms",
+          "凑批与等待",
+          "吞吐可能提高，稀疏流量延迟可能增加"
+        ],
+        [
+          "compression.type",
+          "带宽和磁盘字节",
+          "增加 CPU 开销"
+        ],
+        [
+          "buffer.memory、max.block.ms",
+          "待发送积压和阻塞预算",
+          "缓冲不是无限内存，也不是全部内存硬上限"
+        ],
+        [
+          "acks、enable.idempotence、max.in.flight",
+          "可靠性和顺序",
+          "错误组合会削弱保证"
+        ],
+        [
+          "request.timeout.ms、delivery.timeout.ms",
+          "单请求与整体交付预算",
+          "超时可能是结果未知"
+        ],
+        [
+          "fetch.min.bytes、fetch.max.wait.ms",
+          "拉取批量和等待",
+          "吞吐与尾延迟取舍"
+        ],
+        [
+          "max.poll.records、max.poll.interval.ms",
+          "单次交付数量和处理周期",
+          "过大批次可触发处理超时"
+        ],
+        [
+          "retention、segment、cleanup.policy",
+          "保留、回放、清理",
+          "存储和恢复成本"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 4.0 的 linger.ms 默认从 0 改为 5ms；示例显式写值以避免背错版本。enable.idempotence=true 要求 acks=all、retries>0、max.in.flight.requests.per.connection≤5。delivery.timeout.ms 至少覆盖 request.timeout.ms + linger.ms，应用自己的等待预算还应包括元数据/缓冲阻塞等调用路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "max.poll.records 限制一次 poll 交付数量，不等于网络拉取或 JVM 总缓存大小；fetch 大小限制也有首批过大时保证进展的例外。压测要固定消息大小、压缩率、复制数、ACK 强度和业务逻辑，对比 records/s、bytes/s、p95/p99、错误率、GC、磁盘与网络；不能把 broker 空消费压测数字当带数据库业务的生产吞吐。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Offset 是分区内的逻辑位置，Kafka 先定位 segment，再借助稀疏索引找到附近文件位置并扫描记录批次；高吞吐来自整条批量 I/O 路径的配合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“offset 如何实现”可能问位置分配、物理查找或消费进度，应先区分。Topic、partition、offset 共同定位某段日志中的记录，offset 不是跨分区的业务唯一 ID，更不是文件第几个字节。同一业务重复发送两次，可以占据两个不同 offset。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Page cache、批量、压缩和零拷贝如何协作？"
+    },
+    {
+      "type": "paragraph",
+      "text": "追加大块连续日志减少零散随机 I/O；OS page cache 缓存热点页，让 broker 不必把所有消息对象长期保存在 Java 堆中。生产、复制和消费都以批次摊薄网络协议、系统调用和请求处理开销。批次压缩进一步降低网络和磁盘字节，常见代价是 CPU 和解压延迟。批次平均有 b 条记录时，可以把某些固定请求成本摊到 b 条上，这不等于端到端处理复杂度降成 O(1)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在适用的文件到网络路径中，操作系统传输能力可减少用户态复制；“零拷贝”不代表数据完全不经过内存。TLS 加密、格式转换、压缩批次处理及不同传输实现可能改变路径。只有在相同复制因子、确认门槛、消息大小、压缩、消费逻辑和延迟目标下，性能比较才有意义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "反例很直观：每条消息都 send().get() 会削弱批量机会；稀疏流量等凑批增加等待；压缩在 CPU 已满时可能更慢；大消息会放大缓冲、反序列化和 GC 压力；数据库处理慢时，加 broker 网络线程不能消除消费端的慢 SQL。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三个超时预算不是同一只表"
+    },
+    {
+      "type": "paragraph",
+      "text": "把一次发送的等待拆成三只计时器："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "max.block.ms：主要限制 send 等待元数据、申请缓冲的阻塞，也约束若干事务 API；用户 serializer/partitioner 自己阻塞的时间不全由它限制。",
+        "request.timeout.ms：限制一次请求等待响应的时间。",
+        "delivery.timeout.ms：限制 send 返回后，这条记录排队、等待确认和协议重试的总体时间；必须不小于 request.timeout.ms + linger.ms。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "例如教学配置 max.block=5 秒、request.timeout=10 秒、linger=5 毫秒、delivery.timeout=30 秒，并不是“整个业务请求一定 30 秒结束”。序列化、调用前排队、多个 API、事务初始化和资源关闭还有各自成本。应用应携带总 deadline，每次等待使用剩余预算，不在每次重试重新获得完整业务时限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "retries 控制可重试失败的次数上限，而 delivery.timeout 可能更早终止发送。设置 retries=3 并不比没有重试可靠，也不覆盖未曾调用 send 的事件。退避避免持续打满 broker，业务时限到达后应保留待处理责任并暴露错误。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调 Kafka 参数应先固定可靠性和延迟目标，再定位瓶颈并比较吞吐、尾延迟和错误率；牺牲确认条件换来的数字不能直接叫优化。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生产参数按职责组织"
+    },
+    {
+      "type": "paragraph",
+      "text": "bootstrap.servers 与 serializer 解决发现和编码；acks、idempotence、retries、in-flight 解决发送协议；batch.size、linger.ms、compression.type 影响批量和字节；buffer.memory、max.block.ms 影响拥堵时的缓冲与阻塞；request.timeout、delivery.timeout 控制不同失败预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "batch.size 是每分区批次大小配置，不是一个全局批次，也不是最大业务消息的唯一开关。过大时活跃分区多会浪费缓冲；过小时难以摊销。Kafka 4.0 把 linger.ms 默认从 0 改到 5 毫秒，旧客户端不能机械套用。负载高时即使 linger=0 也可能自然凑批；负载低时增大 linger 会增加等待，且 broker 背压可能使实际等待更长。"
+    },
+    {
+      "type": "paragraph",
+      "text": "buffer.memory 不是 JVM 总内存硬上限，压缩和在途请求仍有额外占用。max.request.size 与 broker/message.max.bytes、topic/max.message.bytes 及消费者接收配置需配合；大批次的压缩前后限制不同，不能只改一个参数就承诺任意大消息可传。Kafka 文件接入型业务更适合传稳定对象引用、版本、校验和与必要元数据，而非把整份文件塞进每条事件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费参数不能只看条数"
+    },
+    {
+      "type": "paragraph",
+      "text": "max.poll.records 限制一次交给应用的记录数量，不是全部 fetch 缓冲的内存硬上限；fetch.min.bytes 和 fetch.max.wait.ms 在请求批量与等待间取舍。fetch.max.bytes、max.partition.fetch.bytes 限制拉取大小，但为确保进度，首个非空分区的首批次可能超过配置值。应用还要限制解码后体积、业务在途数和下游连接占用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若最大一批 M 条，每条同步处理最长 T，串行处理预算约 M×T，必须与 max.poll.interval 及其他操作预算比较；平均耗时很低也不能掩盖一条异常慢记录。异步派发能维持 poll，但若没有完成前缀、队列上限和 per-key 顺序，换来的只是更隐蔽的丢失或 OOM。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "高吞吐与Mafka压缩怎么回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "MQ能接住大量请求，通常因为入口工作比完整业务处理轻、写入批量化、顺序存储/页缓存、分区并行和网络批处理，但这些优化不是无限容量。可靠确认、复制、消息大小、压缩、磁盘饱和、热点和下游处理会改变结果。较大的批次常提高吞吐却增加等待，压缩用CPU换网络与存储，数据压缩比低时可能得不偿失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Mafka应依据具体历史公开架构和实测配置讨论，不能仅因与Kafka有关就继承Kafka当前默认acks、压缩算法、分区行为或性能数字。能可靠解释的是压缩位置、批次、CPU预算、数据可压缩性、网络瓶颈和端到端测量方法。没有对应版本/配置与实验，不能回答“必然提升几倍”。历史结算实践中的同分区滑动窗口并行，需要只推进连续完成前缀，不能越过失败消息；这不是所有Mafka部署通用的消费协议。若原始速率为R字节/秒、压缩后比例为c，网络有效载荷约为cR，再加协议与复制开销；压缩或解压吞吐不足R时，瓶颈可能转到CPU。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "3"
+}

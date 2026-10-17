@@ -1,0 +1,279 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-6b7303267bed7946",
+  "entryId": "handwrite-46",
+  "expectedOriginalHash": "6e9354d8b4335cfd84554633144da6e5f642457e344a28584f67e514d0201873",
+  "title": "跨册场景补充：一百个文件找全局最大一千个怎样控制内存与并行",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一百个文件找全局最大一千个怎样控制内存与并行"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个文件先取局部 Top K；一份候选完成，就立即合并进全局 K 堆，最多让 P 个文件任务在途。 这样既能并行读取，也不会为了并行而把所有结果留在内存里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题设为 100 个文件，每个文件数亿个数字，4 核 CPU，另有内存充裕、32 GB 与 10 MB 的变体。输入是目录，输出全局最大的 1000 个数字；这些条件都不要求全量加载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先澄清 10 MB 限制的是哪一层。下面把它用作算法的额外工作空间预算，文件流式读取、不全量驻留；完整 JVM 进程的总 RSS 并不因此只有 10 MB。若题目限制的是整进程 RSS，还必须把 JVM 本身、线程栈、堆外与系统开销一起实测，不能凭堆的渐进空间声称满足。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "题意、输入契约与例子"
+    },
+    {
+      "type": "paragraph",
+      "text": "目录里有约 100 个文件，每个文件可有数亿个数字，找全局最大的 K=1000 个值，按从大到小输出。机器有 4 核，内存可能只有 32 GB。先确认是“最大的数值”而非“出现频率最高的数”；本解保留重复值。若需要去重 Top K，集合语义和内存分析要另行修改。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现读取目录第一层的普通文件，不递归，不假设文件已经排序。数字为 ASCII 空白分隔的有符号 long，每个数字至多 19 位十进制数字，可有 +/− 号；空文件合法，坏格式或越界数直接令整个任务失败。运行期间文件内容应稳定，输出中不允许悄悄混入“部分文件读失败后的不完整答案”。K 与工作线程数须大于 0；不足 K 个数就返回全部。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例：文件 A 为 [5,1,9]，B 为 [9,2,8]，K=3，输出 [9,9,8]。堆中重复的两个 9 代表两个实际输入元素。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "从全排序到局部堆"
+    },
+    {
+      "type": "paragraph",
+      "text": "全量加载后排序既不必要，也可能超出内存。维护一个大小至多 K 的小顶堆，堆顶就是当前保留下来的最小值，新值只有大于堆顶时才值得替换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扫描到前 t 个数时，不变量是：堆保存该前缀中最大的 min(t,K) 个数，其他数都不可能改善当前答案。堆未满时直接加入；已满时，较小值丢弃，较大值替换最小者，归纳即可证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进一步按文件求局部 Top K。某个元素若连本文件前 K 都进不去，本文件里已经至少有 K 个元素不小于它，全局结果也不需要强制选它。因此把各文件的局部候选再次送入同样的小顶堆即可；相等元素任取等值代表，不改变多重集的正确性。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "并行并不等于同时把 100 个结果留在内存"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个工作线程维护独立堆，避免所有线程争抢一个全局堆。主线程通过 CompletionService 按完成顺序收结果，合并一个再提交一个新文件，最多 P 个任务在途，避免结果 Future 在内存里积累 100 份。文件路径列表仍占 O(F) 元数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "4 个核只给并行度一个起点。机械硬盘上多个文件并发读可能增加寻道；网络盘、SSD、解析 CPU 的瓶颈不同，不能先验认定 4～8 线程必然更快。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L822–938（完整围栏，未执行）",
+      "value": "import java.io.*;\nimport java.nio.file.*;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.stream.Collectors;\nimport java.util.stream.Stream;\n\npublic final class ParallelTopK {\n    public static List<Long> find(Path directory, int k, int workers) throws Exception {\n        if (k <= 0 || workers <= 0) throw new IllegalArgumentException(\"k/workers > 0 required\");\n        List<Path> files;\n        try (Stream<Path> paths = Files.list(directory)) {\n            files = paths.filter(Files::isRegularFile).sorted().collect(Collectors.toList());\n        }\n        if (files.isEmpty()) return Collections.emptyList();\n        int p = Math.min(workers, files.size());\n        ExecutorService pool = new ThreadPoolExecutor(p, p, 0, TimeUnit.MILLISECONDS,\n                new ArrayBlockingQueue<Runnable>(p), new ThreadPoolExecutor.AbortPolicy());\n        CompletionService<List<Long>> done = new ExecutorCompletionService<>(pool);\n        Set<Future<List<Long>>> active = new HashSet<>();\n        PriorityQueue<Long> global = new PriorityQueue<>(k);\n        int submitted = 0, completed = 0;\n        Throwable primary = null;\n        try {\n            // Only p files are in flight, including finished but not yet merged results.\n            while (submitted < p) {\n                final Path file = files.get(submitted++);\n                active.add(done.submit(() -> single(file, k)));\n            }\n            while (completed < files.size()) {\n                Future<List<Long>> future = done.take();\n                active.remove(future);\n                for (long value : future.get()) add(global, value, k);\n                completed++;\n                if (submitted < files.size()) {\n                    final Path file = files.get(submitted++);\n                    active.add(done.submit(() -> single(file, k)));\n                }\n            }\n            List<Long> result = new ArrayList<>(global);\n            result.sort(Collections.reverseOrder());\n            return result;\n        } catch (Exception | Error ex) {\n            primary = ex;\n            throw ex;\n        } finally {\n            for (Future<?> f : active) f.cancel(true);\n            stop(pool, 5, TimeUnit.SECONDS, primary);\n        }\n    }\n    private static List<Long> single(Path file, int k) throws IOException, InterruptedException {\n        PriorityQueue<Long> heap = new PriorityQueue<>(k);\n        try (LongReader reader = new LongReader(file)) {\n            Long value;\n            while ((value = reader.next()) != null) {\n                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();\n                add(heap, value, k);\n            }\n        }\n        return new ArrayList<>(heap);\n    }\n    private static void add(PriorityQueue<Long> heap, long value, int k) {\n        if (heap.size() < k) heap.offer(value);\n        else if (value > heap.peek()) { heap.poll(); heap.offer(value); }\n    }\n    /** ASCII whitespace-separated signed long values; no unbounded readLine allocation. */\n    private static final class LongReader implements Closeable {\n        private final InputStream in;\n        LongReader(Path file) throws IOException {\n            in = new BufferedInputStream(Files.newInputStream(file), 64 * 1024);\n        }\n        private static boolean space(int c) { return c == 32 || c >= 9 && c <= 13; }\n        Long next() throws IOException {\n            int c;\n            do { c = in.read(); } while (c >= 0 && space(c));\n            if (c < 0) return null;\n            boolean negative = c == '-';\n            if (negative || c == '+') c = in.read();\n            long limit = negative ? Long.MIN_VALUE : -Long.MAX_VALUE;\n            long multmin = limit / 10, value = 0;\n            int digits = 0;\n            while (c >= 0 && !space(c)) {\n                if (c < '0' || c > '9' || ++digits > 19)\n                    throw new IOException(\"invalid integer token\");\n                int digit = c - '0';\n                if (value < multmin) throw new IOException(\"long overflow\");\n                value *= 10;\n                if (value < limit + digit) throw new IOException(\"long overflow\");\n                value -= digit;  // Negative accumulation safely represents Long.MIN_VALUE.\n                c = in.read();\n            }\n            if (digits == 0) throw new IOException(\"sign without digits\");\n            return negative ? value : -value;\n        }\n        public void close() throws IOException { in.close(); }\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 1) throw new IllegalArgumentException(\"usage: ParallelTopK DIRECTORY\");\n        for (long n : find(Paths.get(args[0]), 1000, 4)) System.out.println(n);\n    }\n    private static void stop(ExecutorService pool, long wait, TimeUnit unit, Throwable primary)\n            throws InterruptedException {\n        pool.shutdownNow();\n        try {\n            if (!pool.awaitTermination(wait, unit)) {\n                IllegalStateException cleanup = new IllegalStateException(\n                        \"workers remain alive after cancellation; inspect blocked operations\");\n                if (primary == null) throw cleanup;\n                primary.addSuppressed(cleanup);\n            }\n        } catch (InterruptedException cleanup) {\n            if (primary == null) throw cleanup;\n            primary.addSuppressed(cleanup);\n            Thread.currentThread().interrupt(); // Preserve a second interrupt during cleanup.\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "逐步演算"
+    },
+    {
+      "type": "paragraph",
+      "text": "K=3，顺序看到 5、1、9 后堆含 {1,5,9}；遇到 2，淘汰 1，变为 {2,5,9}；遇到另一个 9，淘汰 2，变为 {5,9,9}；遇到 8，淘汰 5，最终排序为 [9,9,8]。PriorityQueue 的迭代顺序不是全排序，最后必须显式排序或逐个 poll。"
+    },
+    {
+      "type": "paragraph",
+      "text": "字节读取器采用负数累加，能表达 Long.MIN_VALUE 的绝对值边界，不会先把它转换成无法表示的正数。它按流读数字，不用 readLine 分配可能无限长的行，也不用 Scanner 对每个 token 做较重的通用解析。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与资源成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "令 N 为总数字数、F 为文件数、P 为并行数、B 为每线程读取缓冲。总计算工作为 O(N log K + F K log K + K log K)，总读取量为输入字节数。并行墙钟时间受最慢文件、存储吞吐和调度限制；不能把文件数 F 与工作线程数 P 混成一个 M 再简单除 N。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按实际同时存活的对象计算空间：最多 P 份局部候选和一个全局堆，另有每个任务的读取缓冲与文件路径列表。因此算法工作空间为 O(PK + PB + F + K)，其中 P 是在途任务数，B 是每个任务的读取缓冲，F 是文件数；实现时还要计入对象头、装箱、缓冲与路径元数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在 10 MB 算法工作预算下，可先用单线程、K=1000 的流式堆，按实际对象布局与缓冲大小核验余量。JVM 基础占用、线程栈和其他堆外内存另算。只有 K 本身放不下、要求全排序或另有数据变换时，外部归并才成为必要候选；输入大或预算写着“10 MB”，本身不足以推出必须全量磁盘排序。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "失败、追问与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 文件异常或格式错误通过 Future.get 传播，不返回伪装完整的部分答案；finally 取消其他任务并关闭池，清理错误不覆盖主错误。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果个别文件极大，可按字节区间切分，但必须校准到 token 边界，防止漏读/重复读一个数字；不能任意从数字中间开始解析。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 中断检查是合作式的；单次底层 read 长期卡住时仍需存储系统或可关闭通道的超时策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 测试空目录、空文件、K=1、K>N、重复数、全负数、Long.MIN/MAX、坏 token、数值溢出、不可读文件；随机小数据用全量排序作为独立正确性对照。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "10TB 视频浏览/点赞数据，Python 如何统计每个视频的观看人数和点击人数"
+    },
+    {
+      "type": "paragraph",
+      "text": "人数是按用户去重的集合基数，不能用事件行数替代。先把“点赞数据”和“点击人数”的事件映射说清，再用本地磁盘外排或稳定分区完成全局去重，内存只保存一个有界块。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：10个T在一台本地机器怎么写？能否直接Pandas groupby？同一用户重复观看、跨文件出现怎么处理？"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "先定义数据合同"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要视频ID、稳定用户ID、事件类型以及统计时间范围。匿名用户按设备还是登录用户去重会得到不同人数，应单独定义；机器人/无效事件是否排除也需规则。题设输入描述为浏览/点赞，输出却说观看/点击：点赞是否视作点击必须确认，不能默默重命名。下面的教学格式明确只有view和click，若业务决定把like映射成click，应在受审计预处理里完成；代码遇到未定义like会拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对固定统计窗口，观看人数是每视频不同user在view事件中的数量，点击人数同理。一人既看又点会分别贡献1；没有浏览事件的点击不能自动补一条观看，除非业务合同明确。行数、事件去重(eventId)与人数去重(video,user,action)也不同。统计前先按事件时间与截止水位筛窗口，迟到数据的修订/重跑规则单独定义。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "外排与哈希分区两条路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "外排先把有界块按(video,user,action)排序并局部去重，写成 runs；再用有界 fan-in 多轮归并，每轮继续去重。全局排序后，相同视频连续，就能流式累加 view 和 click 两类不同用户数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一用户即使跨块、跨文件出现，也会在全局归并后合在一起。练习时把同一 video/user/action 放进两个块，解释为什么直接相加两块人数会多算，以及归并在哪一步消除这次重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "哈希分区则用稳定哈希把完整去重键分到相同桶，各桶精确去重后按视频汇总。单视频/单键倾斜需要递归分桶或桶内外排；不同进程的随机化语言hash不可当跨运行稳定分区函数。Bloom只能预筛，误判不能直接丢掉首次真实用户；HyperLogLog适合明确允许误差的估计，不是精确人数答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "10TB意味着至少一次完整读与若干轮临时读写，必须规划磁盘容量、文件描述符、吞吐、校验和及恢复时间。若单次读的有效速度是1GB/s，十进制10TB仅一趟也约10000秒，约2.78小时；这是算术下界示例，真实磁盘/解析通常更慢。存不下中间文件或期限低于I/O下界时，一台机器的条件本身不成立，要增加磁盘/机器或放宽合同，不能靠多进程绕过物理限制。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整标准库实现与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "下例Python3.12使用ASCII TSV教学输入，无表头，ID长度1–128，仅字母数字下划线短横线；最后换行可省略。实际CSV/JSON/Parquet应换成有明确字段/编码/坏行策略的流式适配器，不能直接把逗号字符串split当完整CSV解析器。chunk_rows限制块中记录数，最大行长同时限制单条对象尺寸；Python对象开销仍需在内存预算内测量。只保留一组fan-in路径，避免一次打开全部runs或在内存列出数百万路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "结果在目标目录旁暂存，成功后replace发布；输入错误保留上一份结果。文件fsync不自动保证目录元数据跨掉电持久，也没有实现中途checkpoint恢复，进程失败后可重跑并按工作目录政策清理孤儿文件。示例要求源文件在运行期间不变；生产以只读快照、版本/摘要和阶段manifest保证可复验。测试只验证小规模语义、跨块/多轮/空输入和坏行，不是10TB实测。"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "label": "backend-scenarios 原语言代码 L3558–3718（完整围栏，未执行）",
+      "value": "\"\"\"Bounded-run external distinct counts. Python 3.12, standard library only.\nInput: ASCII video_id<TAB>user_id<TAB>view|click, no header; final LF optional.\nThe two ID fields match [A-Za-z0-9_-]{1,128}. Output is per-video distinct users.\n\"\"\"\nfrom contextlib import ExitStack\nfrom pathlib import Path\nimport argparse\nimport heapq\nimport os\nimport re\nimport tempfile\n\nID = re.compile(rb\"[A-Za-z0-9_-]{1,128}\\Z\")\nMAX_LINE = 300\n\n\ndef rows(stream):\n    while True:\n        line = stream.readline(MAX_LINE + 1)\n        if not line:\n            return\n        if len(line) > MAX_LINE:\n            raise ValueError(\"line too long\")\n        if line.endswith(b\"\\n\"):\n            line = line[:-1]\n        if line.endswith(b\"\\r\"):\n            line = line[:-1]\n        fields = tuple(line.split(b\"\\t\"))\n        if (len(fields) != 3 or not ID.fullmatch(fields[0])\n                or not ID.fullmatch(fields[1]) or fields[2] not in (b\"view\", b\"click\")):\n            raise ValueError(\"expected video<TAB>user<TAB>view|click\")\n        yield fields\n\n\ndef write_unique(records, destination):\n    previous = None\n    with destination.open(\"wb\") as out:\n        for row in records:\n            if row != previous:\n                out.write(b\"\\t\".join(row) + b\"\\n\")\n                previous = row\n\n\ndef count_users(source, output, work_parent, chunk_rows=50_000, fan_in=32):\n    source, output, work_parent = map(Path, (source, output, work_parent))\n    if source.resolve() == output.resolve():\n        raise ValueError(\"input and output must differ\")\n    if chunk_rows <= 0 or not 2 <= fan_in <= 64:\n        raise ValueError(\"positive chunk_rows; fan_in in [2,64]\")\n    staged = None\n    try:\n        with tempfile.TemporaryDirectory(prefix=\"video-runs-\", dir=work_parent) as name:\n            work = Path(name)\n            def run(level, index):\n                return work / f\"l{level}-r{index}.tsv\"\n            count, chunk = 0, []\n            with source.open(\"rb\") as inp:\n                for row in rows(inp):\n                    chunk.append(row)\n                    if len(chunk) == chunk_rows:\n                        chunk.sort()\n                        write_unique(chunk, run(0, count))\n                        count += 1\n                        chunk.clear()\n                if chunk:\n                    chunk.sort()\n                    write_unique(chunk, run(0, count))\n                    count += 1\n            level = 0\n            # Only counters and one fan-in batch of paths are resident, not all run paths.\n            while count > 1:\n                next_count = 0\n                for begin in range(0, count, fan_in):\n                    group = [run(level, i) for i in range(begin, min(begin + fan_in, count))]\n                    with ExitStack() as stack:\n                        inputs = [rows(stack.enter_context(p.open(\"rb\"))) for p in group]\n                        write_unique(heapq.merge(*inputs), run(level + 1, next_count))\n                    for p in group:\n                        p.unlink()\n                    next_count += 1\n                count, level = next_count, level + 1\n            # Stage beside the output so replace does not cross filesystems.\n            fd, temporary = tempfile.mkstemp(prefix=\".video-result-\", dir=output.parent)\n            staged = Path(temporary)\n            with os.fdopen(fd, \"wb\") as out:\n                out.write(b\"video_id\\tview_users\\tclick_users\\n\")\n                video, views, clicks = None, 0, 0\n                if count:\n                    with run(level, 0).open(\"rb\") as inp:\n                        for v, _u, action in rows(inp):\n                            if video is not None and v != video:\n                                out.write(video + f\"\\t{views}\\t{clicks}\\n\".encode(\"ascii\"))\n                                views, clicks = 0, 0\n                            video = v\n                            views += action == b\"view\"\n                            clicks += action == b\"click\"\n                    if video is not None:\n                        out.write(video + f\"\\t{views}\\t{clicks}\\n\".encode(\"ascii\"))\n                out.flush()\n                os.fsync(out.fileno())\n            os.replace(staged, output)\n            staged = None\n    finally:\n        if staged is not None:\n            staged.unlink(missing_ok=True)\n\n\ndef self_test():\n    import random\n    rng = random.Random(20261012)\n    with tempfile.TemporaryDirectory() as name:\n        root = Path(name)\n        source, output = root / \"in.tsv\", root / \"out.tsv\"\n        data = [(f\"v{rng.randrange(7)}\".encode(), f\"u{rng.randrange(19)}\".encode(),\n                 rng.choice([b\"view\", b\"click\"])) for _ in range(800)]\n        data += [(b\"v0\", b\"u0\", b\"view\")] * 90\n        rng.shuffle(data)\n        expected = {}\n        for v, u, action in data:\n            expected.setdefault(v, {b\"view\": set(), b\"click\": set()})[action].add(u)\n        oracle = b\"video_id\\tview_users\\tclick_users\\n\" + b\"\".join(\n            v + f\"\\t{len(a[b'view'])}\\t{len(a[b'click'])}\\n\".encode()\n            for v, a in sorted(expected.items()))\n        source.write_bytes(b\"\\n\".join(b\"\\t\".join(row) for row in data))\n        checks = 0\n        for chunk in [1, 7, 101, 2000]:\n            for fan in [2, 3, 32]:\n                count_users(source, output, root, chunk, fan)\n                assert output.read_bytes() == oracle\n                checks += 1\n        source.write_bytes(b\"\")\n        count_users(source, output, root, 2, 2)\n        assert output.read_bytes() == b\"video_id\\tview_users\\tclick_users\\n\"\n        checks += 1\n        for invalid in [b\"v\\tu\\tlike\\n\", b\"v\\t\\tview\\n\", b\"x\" * 301,\n                        b\"v\\tu\\tview\\textra\\n\", b\"v\\t\\xff\\tview\\n\"]:\n            source.write_bytes(invalid)\n            output.write_bytes(b\"previous-success\")\n            try:\n                count_users(source, output, root, 1, 2)\n            except ValueError:\n                pass\n            else:\n                raise AssertionError(\"invalid accepted\")\n            assert output.read_bytes() == b\"previous-success\"\n            assert not list(root.glob(\"video-runs-*\"))\n            checks += 1\n        print(f\"PASS {checks} external distinct/oracle and failure checks; no 10TB benchmark\")\n\n\nif __name__ == \"__main__\":\n    parser = argparse.ArgumentParser()\n    parser.add_argument(\"--test\", action=\"store_true\")\n    parser.add_argument(\"paths\", nargs=\"*\")\n    args = parser.parse_args()\n    if args.test:\n        self_test()\n    elif len(args.paths) == 3:\n        count_users(*args.paths)\n    else:\n        parser.error(\"use --test or INPUT OUTPUT WORK_DIRECTORY\")\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "运行自测：python distinct_video_users.py --test。正式调用接受 INPUT OUTPUT WORK_DIRECTORY。排序阶段约O(N log M)，多轮归并约O(N log R)，R为初始runs数、M为块记录数；重复去重会减少后续数据。内存为有界块和fan-in缓冲，外存成本随记录量和归并轮数增长。若要求保留所有原事件，需要单独归档，去重输出不是事件备份。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "几十GB的ID文件，禁止Redis/Kafka等中间件，JVM如何去重导出"
+    },
+    {
+      "type": "paragraph",
+      "text": "流式读取、有界块内排序去重、磁盘多路归并、原子发布导出文件，可以在不把全文件载入JVM的条件下完成全局精确去重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：唯一索引为什么能去重？Set为什么可以？不能用中间件怎么办？核心是解析内容而不是保存上传文件，流程如何安排？"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库唯一索引以规定的键相等/排序规则拒绝重复值，适合允许数据库且需要事务查询的方案；要注意NULL、大小写/字符排序规则和批量冲突处理。HashSet通过hash定位再用equals区分碰撞，不是“hash相同就同一ID”；内存容得下时方便，几十GB文件不保证能容下其字符串、哈希表与对象开销。分块HashSet后直接拼文件只保证块内唯一，不能解决跨块重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地外排不依赖Redis、Kafka或远程数据库。上传端流式写入受配额的临时文件/解析任务，由有界worker处理；若只需解析，可边接收边产出初始runs，待输入完整且校验通过才发布结果。不能每收到一块就把部分“最终导出”暴露为全部完成。需要重试时保存源快照/阶段manifest，或要求客户端重新上传；仅内存队列不能承诺宕机不丢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下Java21实现按字符串字典序输出，保留0001与1的差异。若ID是数值且二者等价，必须在解析层明确归一化与溢出规则；不能改变合同后仍用这个oracle。ID格式/最大长度固定，使BufferedReader.readLine可能遇到恶意超长行的内存风险被有界解析器消除。实现每轮只打开至多fanIn个文件，完成一组合并后删除其输入；输入快照和临时空间仍是前提。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L3736–3882（完整围栏，未执行）",
+      "value": "import java.io.*;\nimport java.nio.channels.FileChannel;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** No middleware. ASCII ID per line, 1..128 chars from [A-Za-z0-9_-]. */\npublic final class ExternalIdDedup {\n    private ExternalIdDedup() {}\n    // Package-private seam for deterministic read/close fault injection; public API is unchanged.\n    interface IdInput extends Closeable { String next() throws IOException; }\n    @FunctionalInterface interface InputFactory { IdInput open(Path path) throws IOException; }\n    private static final class Lines implements IdInput {\n        final InputStream in;\n        Lines(Path p) throws IOException { in = new BufferedInputStream(Files.newInputStream(p)); }\n        public String next() throws IOException {\n            byte[] bytes = new byte[128]; int n = 0, c;\n            while ((c = in.read()) != -1 && c != '\\n' && c != '\\r') {\n                boolean valid = c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'\n                        || c >= '0' && c <= '9' || c == '_' || c == '-';\n                if (!valid || n == bytes.length) throw new IOException(\"invalid/oversized ID\");\n                bytes[n++] = (byte)c;\n            }\n            if (c == '\\r' && in.read() != '\\n') throw new IOException(\"CR must be followed by LF\");\n            if (n == 0) {\n                if (c == -1) return null;\n                throw new IOException(\"empty ID\");\n            }\n            return new String(bytes, 0, n, StandardCharsets.US_ASCII);\n        }\n        public void close() throws IOException { in.close(); }\n    }\n    private static Path run(Path dir, int level, long index) {\n        return dir.resolve(\"l\" + level + \"-r\" + index + \".txt\");\n    }\n    private static BufferedWriter writer(Path p) throws IOException {\n        return Files.newBufferedWriter(p, StandardCharsets.US_ASCII);\n    }\n    private static void chunk(List<String> values, Path out) throws IOException {\n        Collections.sort(values); String previous = null;\n        try (BufferedWriter w = writer(out)) {\n            for (String value : values) if (!value.equals(previous)) {\n                w.write(value); w.write('\\n'); previous = value;\n            }\n        }\n    }\n    private record Head(String value, int source) {}\n    /** Runs only bounded, caller-owned cleanup actions; never suppress an exception onto itself. */\n    static void cleanup(Throwable primary, Closeable... resources) throws IOException {\n        Throwable failure = primary;\n        for (Closeable resource : resources) {\n            try { resource.close(); }\n            catch (IOException | RuntimeException | Error closing) {\n                if (failure == null) failure = closing;\n                else if (failure != closing) failure.addSuppressed(closing);\n            }\n        }\n        if (primary == null && failure != null) {\n            if (failure instanceof IOException io) throw io;\n            if (failure instanceof RuntimeException runtime) throw runtime;\n            if (failure instanceof Error error) throw error;\n            throw new AssertionError(\"unexpected cleanup exception type\", failure);\n        }\n    }\n    private static void merge(List<Path> group, Path out) throws IOException {\n        merge(group, out, Lines::new);\n    }\n    static void merge(List<Path> group, Path out, InputFactory factory) throws IOException {\n        List<IdInput> inputs = new ArrayList<>();\n        Throwable primary = null;\n        try (BufferedWriter w = writer(out)) {\n            PriorityQueue<Head> q = new PriorityQueue<>(Comparator.comparing(Head::value)\n                    .thenComparingInt(Head::source));\n            for (Path p : group) {\n                IdInput reader = factory.open(p); inputs.add(reader);\n                String value = reader.next();\n                if (value != null) q.add(new Head(value, inputs.size() - 1));\n            }\n            String previous = null;\n            while (!q.isEmpty()) {\n                Head h = q.remove();\n                if (!h.value.equals(previous)) { w.write(h.value); w.write('\\n'); previous = h.value; }\n                String value = inputs.get(h.source).next();\n                if (value != null) q.add(new Head(value, h.source));\n            }\n        } catch (IOException | RuntimeException | Error e) { primary = e; throw e; }\n        finally { cleanup(primary, inputs.toArray(Closeable[]::new)); }\n    }\n    private static void clean(Path dir) throws IOException {\n        try (DirectoryStream<Path> entries = Files.newDirectoryStream(dir)) {\n            for (Path entry : entries) Files.deleteIfExists(entry);\n        }\n        Files.deleteIfExists(dir);\n    }\n    public static void deduplicate(Path input, Path output, Path workParent,\n                                   int chunkRows, int fanIn) throws IOException {\n        Objects.requireNonNull(input); Objects.requireNonNull(output); Objects.requireNonNull(workParent);\n        if (chunkRows <= 0 || chunkRows > 1_000_000 || fanIn < 2 || fanIn > 64)\n            throw new IllegalArgumentException(\"bounded chunkRows and fanIn 2..64 required\");\n        if (input.toAbsolutePath().normalize().equals(output.toAbsolutePath().normalize())\n                || Files.exists(output) && Files.isSameFile(input, output))\n            throw new IllegalArgumentException(\"input and output must differ\");\n        Path parent = output.toAbsolutePath().getParent();\n        Path work = Files.createTempDirectory(workParent, \"id-runs-\");\n        Path staged = null; Throwable primary = null;\n        try {\n            List<String> values = new ArrayList<>(chunkRows); long count = 0;\n            try (Lines in = new Lines(input)) {\n                String value;\n                while ((value = in.next()) != null) {\n                    values.add(value);\n                    if (values.size() == chunkRows) {\n                        chunk(values, run(work, 0, count++)); values.clear();\n                    }\n                }\n                if (!values.isEmpty()) chunk(values, run(work, 0, count++));\n            }\n            values.clear(); int level = 0;\n            while (count > 1) {\n                long next = 0;\n                for (long first = 0; first < count; first += fanIn) {\n                    List<Path> group = new ArrayList<>(fanIn);\n                    for (long i = first; i < Math.min(count, first + fanIn); i++) group.add(run(work, level, i));\n                    merge(group, run(work, level + 1, next++));\n                    for (Path p : group) Files.delete(p);\n                }\n                count = next; level++;\n            }\n            staged = Files.createTempFile(parent, \".id-result-\", \".txt\");\n            if (count == 1) Files.copy(run(work, level, 0), staged, StandardCopyOption.REPLACE_EXISTING);\n            try (FileChannel channel = FileChannel.open(staged, StandardOpenOption.WRITE)) { channel.force(true); }\n            // Fail rather than silently weaken atomic publication if this filesystem cannot do it.\n            Files.move(staged, output, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);\n            staged = null;\n        } catch (IOException | RuntimeException | Error e) { primary = e; throw e; }\n        finally {\n            Path abandoned = staged;\n            cleanup(primary,\n                    () -> { if (abandoned != null) Files.deleteIfExists(abandoned); },\n                    () -> clean(work));\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length != 3) throw new IllegalArgumentException(\"INPUT OUTPUT WORK_DIRECTORY\");\n        deduplicate(Path.of(args[0]), Path.of(args[1]), Path.of(args[2]), 50_000, 32);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "独立测试与失败边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试用完整TreeSet作小数据oracle，但主实现从未依赖全量Set；覆盖跨块重复、不同fan-in、多轮归并、前导零、空文件、CRLF/末行无换行、非法字符、超长行和失败不发布。这个测试不是几十GB吞吐测量，也不证明断电恢复；磁盘配额、源文件不可变、权限和校验manifest应由任务宿主保证。原子move若文件系统不支持会报错，而不是默默退化成对读者可见的半写文件。发布已成功而清理失败时可能报错，调用者应按结果文件身份核对，不盲目把它当从未发布。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L3890–3919（完整围栏，未执行）",
+      "value": "import java.nio.file.*;\nimport java.util.*;\npublic final class ExternalIdDedupTest {\n    public static void main(String[] args) throws Exception {\n        Path root = Files.createTempDirectory(\"dedup-test-\");\n        try {\n            Path in = root.resolve(\"in.txt\"), out = root.resolve(\"out.txt\");\n            Random random = new Random(20261012); TreeSet<String> expected = new TreeSet<>();\n            StringBuilder data = new StringBuilder();\n            for (int i = 0; i < 5000; i++) { String id = \"id_\" + random.nextInt(1300); expected.add(id); data.append(id).append('\\n'); }\n            data.append(\"0001\\n1\\n\"); expected.add(\"0001\"); expected.add(\"1\");\n            Files.writeString(in, data); int checks = 0;\n            for (int n : new int[]{3, 23, 1000}) for (int fan : new int[]{2, 7}) {\n                ExternalIdDedup.deduplicate(in, out, root, n, fan);\n                if (!Files.readAllLines(out).equals(new ArrayList<>(expected))) throw new AssertionError(\"oracle\"); checks++;\n            }\n            Files.writeString(in, \"\"); ExternalIdDedup.deduplicate(in, out, root, 2, 2);\n            if (Files.size(out) != 0) throw new AssertionError(\"empty\"); checks++;\n            Files.writeString(in, \"a\\r\\nb\\nlast\"); ExternalIdDedup.deduplicate(in, out, root, 1, 2);\n            if (!Files.readAllLines(out).equals(List.of(\"a\",\"b\",\"last\"))) throw new AssertionError(\"newline\"); checks++;\n            for (String invalid : List.of(\"\\n\", \"bad id\\n\", \"x\".repeat(129), \"a\\rb\", \"中文\\n\")) {\n                Files.writeString(in, invalid); Files.writeString(out, \"previous\");\n                try { ExternalIdDedup.deduplicate(in, out, root, 1, 2); throw new AssertionError(\"bad accepted\"); }\n                catch (java.io.IOException expectedError) { }\n                if (!Files.readString(out).equals(\"previous\")) throw new AssertionError(\"partial published\"); checks++;\n            }\n            System.out.println(\"PASS \" + checks + \" external ID dedup checks; no multi-GB throughput claim\");\n        } finally { try (var paths = Files.walk(root)) { for (Path p : paths.sorted(Comparator.reverseOrder()).toList()) Files.delete(p); } }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "清理失败怎样保留真正的主因"
+    },
+    {
+      "type": "paragraph",
+      "text": "先保住真正导致任务失败的异常。输入读取、比较或归并已经失败时，关闭流和删除暂存文件的错误只能作为 suppressed 附在原异常上；如果没有主异常，才抛第一个清理错误，并继续尝试其余清理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还有一个容易漏掉的分支：同一异常对象不能附到自己身上，否则 addSuppressed 又会抛错，反而遮住主因。实现把受限的 Closeable 清理动作集中处理，分别保留 IOException、RuntimeException 和 Error，避免遗漏未检查异常。读后面的注入测试时，逐项检查主异常身份及其附加错误。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面通过包内InputFactory测试入口向真实merge循环注入读错误和关闭错误，覆盖相同对象、不同对象、没有主异常、打开第二个输入失败及全部已打开输入都尝试关闭。该测试入口不改变对外deduplicate接口，也不替换分块排序或多路归并算法；原有13项外部排序语义测试继续运行。它不承诺虚拟机已无法分配内存或进程被强杀时还能完成清理。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L3931–4027（完整围栏，未执行）",
+      "value": "import java.io.*;\nimport java.nio.file.*;\nimport java.util.*;\nimport java.util.concurrent.atomic.AtomicInteger;\n\npublic final class ExternalIdDedupCleanupTest {\n    private static int checks;\n    private static void check(boolean ok) { checks++; if (!ok) throw new AssertionError(\"check \" + checks); }\n    private static void raise(Throwable t) throws IOException {\n        if (t instanceof IOException io) throw io;\n        if (t instanceof RuntimeException runtime) throw runtime;\n        if (t instanceof Error error) throw error;\n        if (t != null) throw new AssertionError(\"unsupported fixture\", t);\n    }\n    private static ExternalIdDedup.IdInput input(String first, Throwable readFailure,\n                                                Throwable closeFailure, AtomicInteger closed) {\n        return new ExternalIdDedup.IdInput() {\n            private boolean supplied;\n            public String next() throws IOException {\n                if (!supplied) { supplied = true; return first; }\n                raise(readFailure); return null;\n            }\n            public void close() throws IOException { closed.incrementAndGet(); raise(closeFailure); }\n        };\n    }\n    private static void helperChecks() throws IOException {\n        IOException same = new IOException(\"same\"); AtomicInteger actions = new AtomicInteger();\n        ExternalIdDedup.cleanup(same, () -> { throw same; }, actions::incrementAndGet);\n        check(same.getSuppressed().length == 0); check(actions.get() == 1);\n        RuntimeException primary = new IllegalStateException(\"primary\");\n        IOException close1 = new IOException(\"close1\"), close2 = new IOException(\"close2\");\n        ExternalIdDedup.cleanup(primary, () -> { throw close1; }, () -> { throw close2; });\n        check(Arrays.equals(primary.getSuppressed(), new Throwable[]{close1, close2}));\n        try {\n            ExternalIdDedup.cleanup(null, () -> { throw same; }, () -> { throw same; },\n                    () -> { throw close1; }, actions::incrementAndGet);\n            throw new AssertionError(\"missing cleanup failure\");\n        } catch (IOException caught) {\n            check(caught == same); check(Arrays.equals(caught.getSuppressed(), new Throwable[]{close1}));\n        }\n        check(actions.get() == 2);\n        for (Throwable failure : List.of(new IllegalArgumentException(\"close\"), new AssertionError(\"close\"))) {\n            try { ExternalIdDedup.cleanup(null, () -> raise(failure)); throw new AssertionError(\"missing\"); }\n            catch (RuntimeException | Error caught) { check(caught == failure); }\n        }\n        ExternalIdDedup.cleanup(null, actions::incrementAndGet); check(actions.get() == 3);\n        ExternalIdDedup.cleanup(null); check(true);\n    }\n    private static void mergeChecks(Path root) throws IOException {\n        Path a = Path.of(\"a\"), b = Path.of(\"b\"); Path out = root.resolve(\"merged.txt\");\n        // Fail only after both readers were registered and the real merge loop wrote its first ID.\n        for (Throwable primary : List.of(new IOException(\"read\"), new IllegalStateException(\"read\"), new AssertionError(\"read\"))) {\n            AtomicInteger closed = new AtomicInteger(); IOException close1 = new IOException(\"close1\"), close2 = new IOException(\"close2\");\n            try {\n                ExternalIdDedup.merge(List.of(a,b), out, path -> path.equals(a)\n                        ? input(\"a\", primary, close1, closed) : input(\"b\", null, close2, closed));\n                throw new AssertionError(\"expected read failure\");\n            } catch (IOException | RuntimeException | Error caught) {\n                check(caught == primary);\n                check(Arrays.equals(caught.getSuppressed(), new Throwable[]{close1,close2}));\n            }\n            check(closed.get() == 2); check(Files.readString(out).equals(\"a\\n\"));\n        }\n        // The exact same IOException instance is thrown from read and both close methods.\n        IOException same = new IOException(\"reused\"); AtomicInteger closed = new AtomicInteger();\n        try {\n            ExternalIdDedup.merge(List.of(a,b), out, path -> path.equals(a)\n                    ? input(\"a\", same, same, closed) : input(\"b\", null, same, closed));\n            throw new AssertionError(\"expected reused error\");\n        } catch (IOException caught) { check(caught == same); check(caught.getSuppressed().length == 0); }\n        check(closed.get() == 2);\n        // Successful merge followed by cleanup failures: first is thrown and second is suppressed.\n        IOException c1 = new IOException(\"c1\"), c2 = new IOException(\"c2\"); closed.set(0);\n        try {\n            ExternalIdDedup.merge(List.of(a,b), out, path -> path.equals(a)\n                    ? input(\"a\", null, c1, closed) : input(\"b\", null, c2, closed));\n            throw new AssertionError(\"expected close failure\");\n        } catch (IOException caught) { check(caught == c1); check(Arrays.equals(caught.getSuppressed(), new Throwable[]{c2})); }\n        check(Files.readString(out).equals(\"a\\nb\\n\")); check(closed.get() == 2);\n        // Failure opening a later reader must still close the already opened reader.\n        closed.set(0); RuntimeException open = new IllegalArgumentException(\"open\");\n        IOException close = new IOException(\"close after open failure\");\n        try {\n            ExternalIdDedup.merge(List.of(a,b), out, path -> {\n                if (path.equals(b)) throw open;\n                return input(\"a\", null, close, closed);\n            }); throw new AssertionError(\"expected open failure\");\n        } catch (RuntimeException caught) { check(caught == open); check(caught.getSuppressed()[0] == close); }\n        check(closed.get() == 1);\n    }\n    public static void main(String[] args) throws Exception {\n        helperChecks(); Path root = Files.createTempDirectory(\"dedup-cleanup-test-\");\n        try { mergeChecks(root); }\n        finally { try (var paths = Files.walk(root)) { for (Path p : paths.sorted(Comparator.reverseOrder()).toList()) Files.delete(p); } }\n        System.out.println(\"PASS \" + checks + \" cleanup checks: identity guards, first failure preservation, all cleanup attempted, IOException/RuntimeException/Error in actual merge loop and open failure; local fault injection only.\");\n    }\n}\n"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-redis-3-3",
+  "entryId": "bg-redis-3",
+  "expectedOriginalHash": "91295345eacae388b36e1945805ae2180d1ca43c4b623dfeee1d00fc9dbae9bf",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "11. ZSet 到期解封如何避免“重新封禁被旧任务解除”？"
+    },
+    {
+      "type": "paragraph",
+      "text": "MySQL 的封禁状态、到期时间和 generation 是权威事实，Redis ZSet 只负责高效找到到期候选。每次封禁、续期或重新封禁递增 generation；member 使用 tenant:user:generation，score 是明确单位的到期毫秒。旧任务必须带原 generation，不能只凭 userId 做无条件解除。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是完整教学表与一条到期更新事务，保存为 ban_expiry.sql。示例固定在 UTC，毫秒、微秒的转换须统一，ZSet 的 double score 对常用 Unix 毫秒时间在整数精确范围内。该 SQL 未执行。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/application/code/ban_expiry.sql",
+      "value": "-- MySQL 8.4.0 teaching example; not executed. Use a new empty local schema.\nSET time_zone='+00:00';\nCREATE TABLE ban_state (\n tenant_id BIGINT NOT NULL, user_id BIGINT NOT NULL, generation BIGINT NOT NULL,\n status VARCHAR(16) NOT NULL, banned_until DATETIME(6) NOT NULL,\n PRIMARY KEY(tenant_id,user_id), KEY due_bans(status,banned_until,user_id),\n CHECK(generation>=0)\n) ENGINE=InnoDB;\nCREATE TABLE ban_event (\n tenant_id BIGINT NOT NULL,user_id BIGINT NOT NULL,generation BIGINT NOT NULL,\n event_type VARCHAR(16) NOT NULL,\n PRIMARY KEY(tenant_id,user_id,generation,event_type)\n) ENGINE=InnoDB;\nINSERT INTO ban_state VALUES(1,42,7,'BANNED','2026-10-10 00:00:00.000000');\nSET @tenant=1,@user=42,@generation=7;\nSTART TRANSACTION;\nUPDATE ban_state SET status='ACTIVE'\nWHERE tenant_id=@tenant AND user_id=@user AND generation=@generation\n AND status='BANNED' AND banned_until<=UTC_TIMESTAMP(6);\nSET @changed=ROW_COUNT();\nINSERT INTO ban_event(tenant_id,user_id,generation,event_type)\nSELECT @tenant,@user,@generation,'UNBANNED' WHERE @changed=1;\nCOMMIT;\n-- After confirmed COMMIT, remove exactly '1:42:7' from the Redis ZSet.\n-- A connection failure during COMMIT requires reconciliation, not an assumed rollback.\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "只把 ACTIVE 再写成 ACTIVE，状态位本身可以是幂等的；但重复发送通知、追加审计、刷新更新时间或覆盖后来的一次新封禁，仍会改变业务效果。对于纯粹这条带条件的单行转换，不必再加一个全局分布式锁来保证原子性；涉及其他资源时才按其实际边界设计。解封 UPDATE 同时判断状态、generation 和到期时间。重新封禁已推进到 generation 8，generation 7 的旧任务只能得到零行；到期任务重复执行也不会重复改变状态。解封成功和 UNBANNED 事件在同一事务落地。提交后再移除 ZSet 中那个完整旧 member，移除失败可重试，绝不能用“删除该用户全部 member”误删新一代任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 丢任务或写入失败时，数据库按 status,banned_until 扫描到期记录修复；先从 Redis 移除再更新 MySQL，会在中途崩溃时丢工作。用 ZPOPMIN 认领也需要持久恢复机制，不能把弹出动作当作业务已完成。监控到期未解封数量、最老滞后、失败重试与扫描器存活，两消费者同任务、续期并发、提交应答丢失和 Redis 数据丢失都要纳入故障验证。候选扫描重复没关系，正确性由数据库条件更新保证。对高吞吐执行器，可增加独立租约和 epoch 降低重复计算，但这不替代 generation 条件。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "3"
+}

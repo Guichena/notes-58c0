@@ -1,0 +1,561 @@
+{
+  "schemaVersion": 1,
+  "id": "own-os-diagnostics",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "操作系统与 Linux",
+  "category": "Linux诊断证据",
+  "title": "Linux诊断证据",
+  "source": "操作系统与 Linux 面试复习手册",
+  "tags": [
+    "Java后端",
+    "Linux",
+    "版本与边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-os-exit-evidence",
+      "order": 3907,
+      "question": "程序异常退出而日志没有线索 怎样建立诊断证据链？",
+      "shortAnswer": "先确认进程是正常返回、未处理异常、被信号终止还是被内核或容器杀死，再把退出时间与运行时、服务管理和系统证据对齐；没有应用日志不能证明没有错误。",
+      "commonPhrasings": [
+        "程序异常退出而日志没有线索 怎样建立诊断证据链？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "程序异常退出而日志没有线索 怎样建立诊断证据链"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确认进程是正常返回、未处理异常、被信号终止还是被内核或容器杀死，再把退出时间与运行时、服务管理和系统证据对齐；没有应用日志不能证明没有错误。"
+        },
+        {
+          "type": "paragraph",
+          "text": "记录确切程序版本、启动参数、PID及启动时间、退出时刻、退出状态和部署事件。shell常用128加信号号表示某些信号终止，但它只是shell约定，也可能与应用主动返回值重叠；137不能单独证明OOM。父进程可用wait相关接口区分退出与信号终止，Java Process的退出码还应与服务管理器或平台给出的终止原因合看。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在有权查看的范围内，检查服务的stdout/stderr、systemd单元日志或容器最近终止状态，核对滚动发布、健康检查、人工停止和超时策略。用内核事件、memory.events中的oom/oom_kill增量及平台记录判断OOM路径；cgroup计费须包含堆外、子进程和文件工作集。SIGKILL不能被应用捕获，日志缓冲也可能来不及刷新，所以“finally没写日志”并不能排除进程被杀。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java先区分普通线程未捕获异常、Future中未观察的异常、OutOfMemoryError、显式System.exit与JVM原生崩溃；hs_err等致命错误日志需关联相同进程和时间。Go应区分panic及其栈、运行时fatal错误、显式退出与外部终止；recover只在适当goroutine的defer路径处理可恢复panic，不能兜住SIGKILL或所有运行时致命错误。C/C++再重点看非法访存、对象生命期、栈破坏、断言与ABI不匹配。"
+        },
+        {
+          "type": "paragraph",
+          "text": "已有core dump可在授权环境用匹配的二进制、符号和库版本分析线程栈、故障指令与地址映射；无core时检查既有core配置和服务限制，但不能未经批准扩大转储或读取范围。core、堆转储和命令行可能含凭据、用户数据与大块内存；调试器attach还可能暂停目标，应提前评估影响，优先分析离线副本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若服务仍活着只是卡住，采集同一时间窗CPU、RSS、线程或goroutine栈、队列、FD及下游时延，区分执行热点、锁等待、I/O和就绪排队。复现使用最小脱敏输入、相同构建与依赖，并覆盖取消、异常、资源耗尽和关闭路径。修复后确认同类负载下退出原因、错误率与资源趋势，而不只验证“重启后暂时好了”。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-nginx-active-config",
+      "order": 4011,
+      "question": "NGINX配置默认在哪里 改过位置后怎样找正在使用的文件？",
+      "shortAnswer": "官方源码构建默认prefix通常为/usr/local/nginx，配置路径按conf-path设置，常见为该prefix下conf/nginx.conf；许多发行版包使用/etc/nginx/nginx.conf，但不是Linux统一规定。",
+      "commonPhrasings": [
+        "NGINX配置默认在哪里 改过位置后怎样找正在使用的文件？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "NGINX配置默认在哪里 改过位置后怎样找正在使用的文件"
+        },
+        {
+          "type": "paragraph",
+          "text": "官方源码构建默认prefix通常为/usr/local/nginx，配置路径按conf-path设置，常见为该prefix下conf/nginx.conf；许多发行版包使用/etc/nginx/nginx.conf，但不是Linux统一规定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以已有授权的Linux NGINX实例为诊断对象。安装方式、启动参数及容器视图都会改变路径，不能只回答一个通用/etc/nginx。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Linux下NGINX配置文件默认在哪个目录，如果某个用户更改了目录，通过什么命令找到(说一下Linux命令)"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "默认由构建与打包方式决定"
+        },
+        {
+          "type": "paragraph",
+          "text": "NGINX 配置在哪，先看它怎么安装，而不是死记一个目录。官方源码构建的 prefix 通常是 /usr/local/nginx，配置路径由 conf-path 决定，常见为该 prefix 下的 conf/nginx.conf；发行版包常用 /etc/nginx/nginx.conf，但 Linux 没有统一规定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先用 command -v nginx 确认当前 shell 找到的二进制，再对这个文件执行 nginx -V，查看版本以及 --prefix、--conf-path 等构建参数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "-V的构建默认还不等于运行实例实际路径。启动时-c指定另一配置文件，-p改变prefix，-g增加全局指令；机器上多个安装或容器中的实例可能与PATH找到的程序不同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "从运行实例向配置追溯"
+        },
+        {
+          "type": "paragraph",
+          "text": "用ps -eo pid,ppid,args或pgrep -a nginx找到master并核实身份，查看该实例的启动命令及服务管理器定义，例如有systemd时systemctl cat nginx和相应ExecStart。权限允许时readlink /proc/PID/exe核对运行二进制；路径要结合容器/mount命名空间，宿主同名目录不一定是同一个文件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "找运行配置，要沿启动参数继续核对。存在 -c 或 -p，就带相同参数核验；没有显式指定，再使用该二进制的构建默认。主配置还可能通过 include 引用其他文件，找到主文件只是第一步。"
+        },
+        {
+          "type": "paragraph",
+          "text": "还要区分“磁盘现在是什么”和“服务上次加载了什么”。文件后来改过，不代表 master 已成功 reload；需要结合部署和 reload 日志确认。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "测试和搜索的安全边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "nginx -t检查语法并尝试打开所引用文件，-T还把配置内容输出；它们不是reload命令，但配置、证书路径、模块和文件访问可能有敏感信息与运行环境要求。应在已授权范围、用匹配实例参数执行，输出脱敏，不擅自加sudo或发送-s reload。"
+        },
+        {
+          "type": "paragraph",
+          "text": "启动信息确实缺失时，可在已知安装目录内find /目标目录 -type f -name nginx.conf；locate依赖索引新鲜度，可能漏新文件。搜索结果不能证明运行实例使用它，必须回到启动链验证。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-gdb-core-memory",
+      "order": 4043,
+      "question": "GDB怎样调试并把一段内存dump成文件？",
+      "shortAnswer": "通常用-g生成调试信息，低优化如-Og便于对应源行，优化构建中的变量可能被消除或寄存器重用。",
+      "commonPhrasings": [
+        "GDB怎样调试并把一段内存dump成文件？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "GDB怎样调试并把一段内存dump成文件"
+        },
+        {
+          "type": "paragraph",
+          "text": "通常用-g生成调试信息，低优化如-Og便于对应源行，优化构建中的变量可能被消除或寄存器重用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "GDB命令应对获授权的测试进程或离线core使用，匹配可执行文件、调试符号与库版本；attach可能暂停目标，内存导出还需限定地址范围和数据权限。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "从可解释的调试信息开始"
+        },
+        {
+          "type": "paragraph",
+          "text": "通常用-g生成调试信息，低优化如-Og便于对应源行，优化构建中的变量可能被消除或寄存器重用。gdb ./program后用break函数名或文件:行号设断点，run带参数启动，next跨过函数、step进入、continue继续，bt看调用栈，frame选择栈帧，info locals和print表达式看值，info threads及thread apply all bt定位多线程等待。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在线attach需要目标身份与ptrace权限，可能暂停所有或部分线程并影响时延；core分析还需匹配二进制、符号和库。不能看到一次栈就断言根因，也不能把优化后的局部变量显示缺失当内存损坏。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先确认范围再导出"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设测试程序有可读数组unsigned char buf[16]，在其有效生命周期内停住：print &buf[0]确认起点，x/16bx &buf[0]按16个十六进制字节查看；dump binary memory bytes.bin &buf[0] &buf[0]+16导出对应半开地址范围。也可先set $start=(char*)&buf[0]，set $end=$start+16，再dump binary memory bytes.bin $start $end。"
+        },
+        {
+          "type": "paragraph",
+          "text": "看内存时，先分清显示单位和指针步长。x/nfu address 中，n 是个数、f 是格式、u 是单位大小；x/4wx 与 x/16bx 的分组不同，大端和小端也影响多字节整数的解释。"
+        },
+        {
+          "type": "paragraph",
+          "text": "地址加法则由指针类型决定。通用字节范围先转 char*，避免把 int* 加 16 误当成前进 16 字节，实际可能跨了 64 字节。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "导出文件不是完整对象序列化"
+        },
+        {
+          "type": "paragraph",
+          "text": "确保起止地址可读、长度合理且地址未溢出，可在有相应支持的目标用info proc mappings辅助确认映射；不可读范围可能报错，不能据此认为整个dump成功。导出后核对文件长度和代表字节，使用hexdump或xxd离线查看；若需要完整进程状态，generate-core-file属于更大范围转储，要另评估空间和敏感信息。"
+        },
+        {
+          "type": "paragraph",
+          "text": "dump 出来的字节，不等于一个可以随处恢复的完整对象。里面的指针仍然是当时地址；导出一个 C++ 对象，不会递归带上它指向的堆、虚表和所有依赖，跨进程、跨架构也未必能解释。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果其他线程仍在修改内存，这些字节也不一定是一致业务快照。要选择安全停点，并理解 non-stop 调试模式下哪些线程还在运行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "安全和恢复边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "dump读取目标内存写文件，restore反向改写目标内存，是不同风险的操作，不能为了查看就使用restore。转储可能包含密钥、会话或个人数据，应最小范围、最小权限保存和受控清理，禁止默认上传到外部。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-environment-shell-status",
+      "order": 4083,
+      "question": "Linux环境变量怎样传递 Shell怎样准确判断命令和管道失败？",
+      "shortAnswer": "环境变量由进程传给子进程，子进程不能直接改父环境；shell失败判断必须区分单命令状态与整条管道状态。",
+      "commonPhrasings": [
+        "Linux环境变量怎样传递 Shell怎样准确判断命令和管道失败？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Linux环境变量怎样传递 Shell怎样准确判断命令和管道失败"
+        },
+        {
+          "type": "paragraph",
+          "text": "环境变量由进程传给子进程，子进程不能直接改父环境；shell失败判断必须区分单命令状态与整条管道状态。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "9.Linux下的常用环境变量有哪些？"
+        },
+        {
+          "type": "paragraph",
+          "text": "10.如何在shell脚本中判断上一条命令执行成功与否？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "环境是启动时传给子进程的字符串集合"
+        },
+        {
+          "type": "paragraph",
+          "text": "环境变量是启动时传给子进程的输入，不会向父进程反向同步。环境由名字和值组成，exec 时交给新程序；shell 变量通常只有 export 后才进入它启动的外部程序环境。"
+        },
+        {
+          "type": "paragraph",
+          "text": "export NAME=value 影响当前 shell 和以后启动的子进程，不自动写进配置文件永久生效。NAME=value command 可以只给这次外部命令不同的值，原 shell 随后仍保留原值。source 脚本则是在当前 shell 执行，和另启 bash 执行脚本不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见PATH用于命令搜索，HOME用于家目录约定，LANG及LC_*影响语言/排序/格式，LC_ALL覆盖具体locale分类；TZ影响时区解释，TMPDIR是很多工具采用的临时目录约定。PWD/OLDPWD由shell维护目录信息，SHELL通常说明登录shell而非保证当前解释器。JAVA_HOME及CLASSPATH属于相关工具约定，不是Linux内核内存管理参数。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "查看配置必须避免泄露环境里的秘密"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试可以解释printenv NAME、printf '%s\\n' \"$NAME\"、export和unset；诊断应只看所需非敏感键，不随意把env全量贴进日志，因为环境可能携带令牌。PATH中的空项或不可信可写目录可能导致执行错误程序；LD_LIBRARY_PATH、LD_PRELOAD影响动态装载且在安全执行模式受限制，不能当普通性能开关随便设置。"
+        },
+        {
+          "type": "paragraph",
+          "text": "环境是进程的输入之一，不是跨进程实时共享配置中心。父进程后改变量不会自动更新已经启动的服务；启动脚本、交互shell、systemd和容器的配置来源也不同，先查实际服务的启动方式再判断变量为何没生效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "优先用if直接检查 不在中途覆盖退出码"
+        },
+        {
+          "type": "paragraph",
+          "text": "判断命令失败，最好直接让 if 检查它，并立即保存原退出码。通常 0 表示成功，非 0 表示失败或特定业务结果。可以写 if command; then 成功处理; else rc=$?; 失败处理; fi。"
+        },
+        {
+          "type": "paragraph",
+          "text": "别先 echo/printf 再读 $?，那时读到的是打印命令的状态。if ! command 又做了取反，成功分支中的 $? 不是原始失败码，也不能拿它还原错误。"
+        },
+        {
+          "type": "paragraph",
+          "text": "grep的1通常只是没有匹配，2表示错误；diff的非0也有差异/错误区分，应查命令契约。Bash对未找到命令常用127、不可执行126、信号终止采用128加信号编号；不要把任意非0都解释成崩溃。set -e在if、&&、\\|\\|等上下文有例外，不替代显式错误协议。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "管道状态与各段状态要分开捕获"
+        },
+        {
+          "type": "paragraph",
+          "text": "管道整体成功，不代表每一段都成功。Bash 默认拿最后一段的状态作为管道状态，前面失败、最后 cat 成功，结果仍可能是 0。set -o pipefail 改为采用最右侧非 0 状态，但仍没有列出各段结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要两种信息时，紧接管道使用 snapshot=( \"$?\" \"${PIPESTATUS[@]}\" )，在同一次赋值展开里保存整体状态和各段状态。拆成两次赋值，前一次就可能覆盖 PIPESTATUS。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "shell_status.bash 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "shell_status.bash",
+          "value": "#!/usr/bin/env bash\n# Isolated Bash teaching fixture; does not inspect the caller's environment.\nset -u\nchecks=0\nexpect() {\n  if [[ $1 != \"$2\" ]]; then printf 'FAIL %s != %s\\n' \"$1\" \"$2\" >&2; exit 1; fi\n  checks=$((checks + 1))\n}\nfalse\nrc=$?\nexpect \"$rc\" 1\nif bash -c 'exit 7'; then\n  exit 1\nelse\n  rc=$?\nfi\nexpect \"$rc\" 7\nif ! false; then\n  # This is the inverted compound status, not the original false status.\n  expect \"$?\" 0\nfi\nfalse\nprintf ''\nexpect \"$?\" 0  # printf overwrote false's status.\nset +o pipefail\nbash -c 'exit 7' | cat\nsnapshot=( \"$?\" \"${PIPESTATUS[@]}\" )\nexpect \"${snapshot[*]}\" '0 7 0'\nset -o pipefail\nbash -c 'exit 7' | cat\nsnapshot=( \"$?\" \"${PIPESTATUS[@]}\" )\nexpect \"${snapshot[*]}\" '7 7 0'\nprintf '%s\\n' abc | grep -q missing\nrc=$?\nexpect \"$rc\" 1  # grep: no match, different from error status 2.\nUNEXPORTED_OS009=local\nexpect \"$(bash -c 'printf %s \"${UNEXPORTED_OS009-unset}\"')\" unset\nexport EXPORTED_OS009=parent\nexpect \"$(bash -c 'printf %s \"$EXPORTED_OS009\"')\" parent\nEXPORTED_OS009=one_command bash -c '[[ $EXPORTED_OS009 == one_command ]]'\nexpect \"$?\" 0\nexpect \"$EXPORTED_OS009\" parent\nbash -c 'export EXPORTED_OS009=child'\nexpect \"$EXPORTED_OS009\" parent\nprintf 'PASS Bash status/environment %s checks\\n' \"$checks\"\n\n"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-oncpu-offcpu-architecture",
+      "order": 4226,
+      "question": "onCPU与offCPU怎样区分 ARM和x86的CRC为什么可能快慢不同？",
+      "shortAnswer": "on-CPU分析正在执行的时间，off-CPU分析等待时间；跨架构性能比较还必须核对指令支持、编译选项与输入规模。",
+      "commonPhrasings": [
+        "onCPU与offCPU怎样区分 ARM和x86的CRC为什么可能快慢不同？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "onCPU与offCPU怎样区分 ARM和x86的CRC为什么可能快慢不同"
+        },
+        {
+          "type": "paragraph",
+          "text": "on-CPU分析正在执行的时间，off-CPU分析等待时间；跨架构性能比较还必须核对指令支持、编译选项与输入规模。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "性能量化分析：onCPU 和 offCPU 分别表示什么？同一段 CRC 校验代码在 ARM 和 x86 架构上为什么执行性能不同？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "CPU时间与墙钟等待不是一个分母"
+        },
+        {
+          "type": "paragraph",
+          "text": "onCPU表示任务正在处理器上运行的时间，包括用户代码和属于该任务的内核执行；CPU采样通常告诉你运行时间花在哪个栈。offCPU表示未在CPU执行的时间，其中可包括阻塞/睡眠，也可能包括已就绪但排队未获CPU，必须看工具实际口径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程 CPU 时间不能直接加成一次请求的延迟。请求的墙钟时间还包含排队，多线程之间也会重叠执行，所以并行任务累计 CPU 时间可以大于墙钟时间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Linux perf sched timehist 可以把等待、调度延迟与运行时间分开，帮助判断到底慢在锁或 I/O，还是缺少 CPU 执行机会。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "定位先看正在算还是在等"
+        },
+        {
+          "type": "paragraph",
+          "text": "onCPU热栈集中于CRC、序列化或复制，就查算法、实现与指令；offCPU主要等网络/磁盘/锁时，优化几条CRC指令未必改善总体延迟。就绪等待高则查配额、过度订阅和调度竞争；GC和页缺失可能跨这些路径，需按实际时间线关联。"
+        },
+        {
+          "type": "paragraph",
+          "text": "采样频率、丢事件、调用栈符号、内核权限及观测开销影响解释，不能把未采到函数当它没有成本。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "同名CRC可能不是同一数学协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "先固定多项式、初始值、反射方式、最终xor、数据长度和输入字节序。x86 SSE4.2的CRC32指令使用Castagnoli多项式，是CRC-32C路线，不能直接当常见IEEE CRC-32的可替换加速。Arm ACLE则区分CRC32和CRC32C等intrinsics，是否可用仍需目标特性支持。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一份 CRC 源码，在两种架构上可能走的是两套实现。某个库在一边使用硬件 CRC、多路向量或无进位乘法，另一边却回退到逐字节、查表；编译器 target、运行时特性探测、对齐和尾部处理也会改变实际分支。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此要看最后执行了什么，不能仅凭“RISC 指令简单”就推导哪边更快。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "合理比较和不能声称的结果"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定等价校验输出，记录CPU型号/微架构/频率、内存带宽、数据冷热、块大小、编译优化与实际分派路径，多次测吞吐和cycles/byte，检查小块固定开销与大块带宽瓶颈。一次暖缓存结果不代表磁盘冷读端到端性能。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CRC用于差错检测，不提供抵抗恶意篡改的密码学完整性保证。跨ARM与x86的性能结论必须来自相同CRC变体、正确结果、数据规模与编译条件下的实际测量。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-perf-ebpf-packets",
+      "order": 4262,
+      "question": "perf eBPF与tcpdump分别回答哪类故障问题？",
+      "shortAnswer": "perf观察CPU执行与性能事件，eBPF在受验证和权限约束下把观测逻辑接到内核或用户事件，tcpdump捕获报文；先选需要证伪的假设，再选工具和采集范围。",
+      "commonPhrasings": [
+        "perf eBPF与tcpdump分别回答哪类故障问题？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "perf eBPF与tcpdump分别回答哪类故障问题"
+        },
+        {
+          "type": "paragraph",
+          "text": "perf观察CPU执行与性能事件，eBPF在受验证和权限约束下把观测逻辑接到内核或用户事件，tcpdump捕获报文；先选需要证伪的假设，再选工具和采集范围。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "perf从CPU时间定位到代码路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "服务CPU高时，先确定目标PID、有效CPU配额和采样窗口。perf stat可统计目标程序的cycles、instructions、cache-misses、context-switches等受支持事件；instructions/cycles只是解释效率的线索，不能跨不同工作量直接比较。事件受硬件和虚拟化支持限制，多事件复用还可能引入缩放误差。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对自己的有界测试程序可使用perf stat -- ./program；对已授权目标的采样可使用perf record -F 99 -g -p PID -- sleep 10，随后perf report。这里采样的是十秒窗口中的执行热点，-g请求调用链但并不保证自动得到完整可读栈。调试符号、帧指针或展开信息、JIT代码映射、内核权限都会影响归因。Java服务需要匹配的JIT符号与栈解析支持，也可结合JFR等运行时工具交叉检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "热栈说明这一窗口的执行时间主要花在哪，不直接证明那里有 bug。某函数占样本多，只能说明它消耗了较多采样到的执行时间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果 CPU 不高但请求很慢，单看 on-CPU 火焰图可能漏掉锁、I/O 和排队，需要再结合 off-CPU 等待、线程栈、队列及下游时延。性能事件权限由系统策略控制，采集失败也不是随意调低 perf_event_paranoid 的理由。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "eBPF把事件变成有界聚合"
+        },
+        {
+          "type": "paragraph",
+          "text": "eBPF 的作用，是在事件发生的位置做受约束的观测和聚合。它可以附着在受支持的 tracepoint、kprobe、uprobe 等位置，读取允许的上下文，在内核侧汇总计数或延迟，再向用户态输出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验证器会检查相应安全约束，但通过验证不代表零开销、没有数据泄露风险或能适配所有内核。BTF 与 CO-RE 能帮助适配结构布局，事件契约、helper 能力和权限仍然要逐项核对。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如要区分数据库客户端慢在网络还是调度，可按目标PID和连接范围关联发送、接收与调度事件，按请求或线程时间线聚合；要查块I/O，可记录提交与完成时间差的直方图。只收集回答问题所需的元数据，避免默认导出完整payload、用户栈中的秘密或所有进程活动。map容量、采样率、丢失事件和探针开销都要监控，结束后撤下自己创建的探针。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行eBPF工具可能需要不同capability和额外授权，不能把已有只读日志访问权限等同于加载探针权限。优先使用审核过、与目标内核匹配的工具，短窗口验证，再决定是否扩大采集；缺少权限时用现有指标、日志和运行时剖析继续缩小假设。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "tcpdump证明线上传了什么包"
+        },
+        {
+          "type": "paragraph",
+          "text": "对授权的本机测试可用tcpdump -i lo -nn -s 128 -c 100 'tcp port 8080'，限定接口、协议、端口、捕获字节和包数。-nn避免地址与端口名解析，-c限制捕获量，-s控制每包快照长度；截断会让应用载荷解析不完整，不能从缺少后半段字节推断发送方没发。需要写pcap时明确本地文件位置、空间上限与访问权限，不自动上传。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SYN重复且无回应支持连接建立异常，但需区分目标无响应、路径丢包与采集点看不到回包；RST说明某一端或中间设备主动复位，必须结合方向和时序。重传、重复ACK、窗口缩小可支持链路或接收端压力假设，不能单凭一包定责。网卡offload可能使主机侧抓到的包大小、校验和或分段形态不同于线上真实帧；采集丢包也会造成假象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TLS通常使应用载荷不可直接阅读，但仍可观察连接、方向、包时序和大小。抓包可能包含身份与业务数据，应先获得目标和范围的授权，不为排查而降低加密或泄露密钥。容器网络命名空间、veth、回环和宿主接口是不同采集点，选错接口的“没有包”不能证明应用没发请求。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    }
+  ]
+}

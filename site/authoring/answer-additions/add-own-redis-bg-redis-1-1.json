@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-1-1",
+  "entryId": "bg-redis-1",
+  "expectedOriginalHash": "da53203b37dccf733e4b0e2c46741ca0957217861d2f04da9d08e11b04c8b799",
+  "title": "双索引、span 排名、紧凑编码与跳表实现",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis ZSet：从双索引和跳表，到精确五分钟排行榜"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZSet 的两条查询路很好记：给成员 ID 查分数，扩展编码走字典；给分数或名次找位置，走跳表。两份索引一起支撑同一个有序集合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "做排行榜还要回答分数从哪里来。重复事件不能多加，旧贡献到时要退出，查询也要说明对应哪个时刻。过去五分钟的 Top100 必须撤销已出窗的点击；给累计榜设置五分钟 TTL，只会控制整榜寿命，得不到五分钟内的分数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "这些问法可以一起准备，但不能答成同一道题"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "结构与复杂度：ZSet 底层是什么？其中 Hash 有什么用？只用 Hash 为什么不够？跳表如何搜索，为什么通常是 O(log N)？取一个范围为什么还要算输出量？",
+        "结构选择：为什么选跳表而不是红黑树、AVL 或 B+ 树？红黑树和平衡二叉树是什么关系？同样都是有序索引，为什么 InnoDB 常规索引更适合按页组织？",
+        "主播礼物榜：按主播 ID 怎么查分数、名次和资料？礼物件数相同怎么办？同一礼物重投、退款、跨日和总榜怎么处理？",
+        "五分钟游戏榜：点击加一，查询五分钟内前一百名，返回 list{name, score}。这里的“加 1 set”如果指写操作，就应根据要维护的计数选择命令；如果指 Set 类型，Set 的去重语义本身并不能维护用户分数和排序。还要问清固定窗口还是滚动窗口、采用什么时间、同分如何处理。",
+        "连续追问：缓存和数据库怎样一致，先删缓存再更新数据库会怎样？Redis 常用类型各适合什么访问方式？动态榜分页会不会重复？分片的 Top100 能否直接合成全局 Top100？"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "下面固定讨论 Redis 7.2.0 的内存实现和命令行为，Java 示例使用 Java 21。两个榜单都是设计推演：礼物榜按有效礼物“件数”计分；游戏榜按一次有效点击加一。金额、礼物权重、反作弊资格和退款口径需要另行约定，不能在实现时悄悄替换。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一、双索引各自解决什么问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把 member 和 score 分清。member 是唯一成员，例如稳定的主播 ID；score 是这个成员当前的分数，可以与别人相同。按用户 u 查询分数，字典做 member → score 的定位；找分数 80 到 100 的用户，或者查 u 在全榜中的位置，使用按 (score, member) 排序的跳表。两者是同一个集合的不同索引，不是可以各写各的两份备份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果只有 Hash，找到 u 很方便，但不知道哪批用户位于 80 到 100。通常要扫描所有 N 个成员；若还需有序返回，再付排序代价。临时找 TopK 可以扫描并维护大小为 K 的堆，付 O(N log K) 的代价，但每次查询仍要重新审视全体成员。只有有序索引又能支持范围，却不能仅凭 member 的哈希值直接找到它当前的 score。这就是两条访问路径一起存在的理由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.2.0 的扩展 ZSet 中，dict 与 skiplist 共享成员 SDS；字典里的分数引用可以指向跳表节点的 score。改分后若节点位置不变，存在直接修改的路径；否则删除旧位置并重新插入，再让字典引用新的分数字段。删除成员也要同步移除两边。不能只改字典里的数值，留下旧的有序位置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "小 ZSet 是另一条路径：listpack 把 member、score 成对放进紧凑连续空间。默认配置中 zset-max-listpack-entries 为 128，zset-max-listpack-value 为 64 字节，后者约束成员的实际字节长度，还要满足安全容量检查。增长越界时可以转为扩展编码；这是版本和配置相关的实现行为，并非 ZSet 类型语义。小 listpack 的成员查询可能扫描，改值还可能搬动字节，不能把后面的跳表复杂度原封不动套给它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里把紧凑存储的比较压到最必要的一点：ziplist/listpack 省逐元素节点和指针，quicklist 再把紧凑片段连接起来。头尾操作可以从端点处理，中间位置或内容查询通常仍要逐项、逐片段定位。它们没有凭空获得按分数跳过大量节点的多层索引；连续内存的局部性优势与跳表的有序定位能力，是不同的取舍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用也不止排行榜。如果设计到期任务候选集，可以用预计执行时间做 score，先找已到期候选，再原子领取，避免多个消费者先查后删抢到同一个任务。领取不等于外部任务成功，确认、重试和崩溃恢复还需另设状态。若用时间 ZSet 统计滑动窗口事件，必须让 member 区分同一时间的不同事件，并清理旧事件；按时间筛选事件与按用户窗口计数排序，是两个索引目的。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二、沿着图看搜索，再看 span 如何算排名"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-redis/c0c3f3567d185ac3.png",
+      "alt": "跳表层级、前进指针与 span 排名示意"
+    },
+    {
+      "type": "paragraph",
+      "text": "图中底层包含 1 到 20，上层只保留部分节点：第四级从 1 跳到 10，跨过 9 个底层位置；第三级从 1 到 5、5 到 10，标出的跨度分别为 4、5。虚线表达同一节点跨层的关系。图用于理解“层级越高，通常越稀疏”和“跨度统计跳过多少个底层位置”；它不是 Redis 7.2.0 的完整 C 结构图，也没有画出所有头节点、尾部和空指针细节。实际层高是随机产生的，不是规定每隔四个或五个节点必定升层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查 13 时，从高层尽量向右，发现继续走会越过目标就下降。可以先从 1 到 10，再降到能走到 13 的层。如果查的是不存在的 12.5，搜索停在它前面的节点，再看底层后继即可判断不存在。真实 ZSet 比较的是 (score, member)：查 (90, userB)，遇到 score=90 还必须比较 member，不能因为分数相同就认为命中。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为什么比一条普通链表快？最底层后继每次只能前进一步；高层能越过一大片已知不可能包含目标的节点。假设每次以概率 p 晋升一层，第 k 层出现节点的概率约为 p 的 k−1 次方，规模逐层变小；在层数与数据规模匹配时，期望经过 O(log N) 个导航步骤。Redis 7.2.0 的晋升参数是 1/4、最大层数是 32。随机分布极差时仍可能退化到线性，不能给它平衡树那样的确定最坏对数保证；固定最大层数也不是对无限增大的 N 的通用对数证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只算跳表有几层，还不能得到整次搜索的工作量。先看层数：第 k 层的期望节点数是 N×p^(k−1)，令它降到常数量，得到约 1+log_(1/p)N 个有效层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看每层走几步。反向看搜索路径，在某层沿前驱方向寻找一个能升到上一层的节点，每个独立随机塔有固定晋升概率 p，因此升层前的期望水平步数是 O(1/p)；p 固定时就是常数。把各层的步数加起来，才得到期望 O((1/p)log_(1/p)N)，通常简写 O(log N)。期望为常数，不表示每次搜索在每层都恰好走相同步数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个推导还要检查层高上限。若最大层数固定为 L，而 N 大到顶层仍有很多节点，顶层预期约 N×p^(L−1) 个节点的水平扫描项就不能忽略，不能仅凭固定层数继续断言对数成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "forward 告诉我们下一步去哪，span 告诉我们这一步跨过多少个底层节点。查某个成员的 rank 时，沿搜索路径累加 span；按 rank 找成员时，判断“已走排名 + 下一步跨度”会不会超过目标，再决定向右还是下降。内部跳表以头节点到第一个成员跨度为 1 来累计，命令 ZRANK/ZREVRANK 的外部排名是从 0 开始，两种编号不要混用。底层 backward 和 tail 则支持倒序走。"
+    },
+    {
+      "type": "paragraph",
+      "text": "插入时，搜索不仅找到位置，还保存每层前驱 update[i] 和到达该前驱时累计的 rank[i]。假设这一层原来的前向跨度为 s，底层插入点与该层前驱相差 d=rank[0]−rank[i]：新节点到旧后继的跨度为 s−d，前驱到新节点变成 d+1。新节点没升到的高层，也要把跨越插入位置的跨度加一。只接好 forward 而忘记这些更新，按分数走可能正常，排名却会错。"
+    },
+    {
+      "type": "paragraph",
+      "text": "删除时，如果该层前驱直接指向被删节点，就把两段跨度合并为“前驱原 span + 被删节点 span − 1”；如果该层跨过它但没有直接连接它，就把 span 减一。还要维护底层后向链接、尾节点和有效最高层。最高层变空后收缩有效层数。改分导致重定位也要满足这些不变量，所以“在节点上把 score 改掉”并不总是合法的更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "理想无限层模型里，每个节点期望前向指针数为 1/(1−p)，p=1/4 时约为 4/3，p=1/2 时约为 2。真实内存还包括每层 span、backward、节点头、SDS、字典、对齐与分配器开销；截断层高会改变精确期望。因此多层索引是在增加导航元数据换取访问效率，不能仅数几个箭头就声称比所有树都省内存。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三、命令复杂度要分清定位、跳过和输出"
+    },
+    {
+      "type": "paragraph",
+      "text": "把 N 看成 ZSet 成员数，M 看成实际返回或删除的成员数，并先限定为扩展编码、成员比较成本有界："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "ZSCORE 按 member 走字典，通常说平均 O(1)，不是最坏保证。",
+        "ZADD、ZINCRBY、ZREM 的单成员操作，以及 ZRANK/ZREVRANK，通常按期望 O(log N) 理解；一次写多个成员要累计各项成本。",
+        "普通按排名或分数范围取 M 项，通常是期望 O(log N + M)：先定位，再顺序走。返回十万条时，还要序列化和传输十万条，不能只算找到起点。",
+        "ZCOUNT 只计数量，可以找到分数区间的两端，利用 span 计算两端排名之差，通常 O(log N)，无须把区间内 M 个成员全部输出。小 listpack 分支仍会按其布局扫描。",
+        "ZREMRANGEBYSCORE 删除 M 项通常记 O(log N + M)，因为删除本身也要遍历和维护索引；这不等于“删除事件后还要逐用户减分”的整个业务批次同样便宜。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "例如，取最高的 100 个成员可以用 ZRANGE rank 0 99 REV WITHSCORES；ZRANGE 的 REV 等统一选项从 Redis 6.2 起提供，在这里的 7.2.0 可用。按分数查 [80,100] 用 ZRANGE rank 80 100 BYSCORE；若加 REV，分数上下界顺序也要反过来。默认分数边界包含端点，需要开区间时使用括号前缀。命令的类型、边界与方向都要一起看。"
+    },
+    {
+      "type": "paragraph",
+      "text": "尤其要区分两种“大偏移”。按 score 查范围再用 LIMIT offset count，Redis 7.2.0 需要在命中的区间中向前跳过 offset 项，因此可能接近 O(N)。按 rank 查询有 span 帮助定位起始排名，不能看到一个很大的 start 就一律套用同样的线性 offset 结论。无论哪种，结果本身的 M 和总字节数都绕不过去。"
+    },
+    {
+      "type": "paragraph",
+      "text": "score 相等时按 member 的二进制字节序排列，REV 也会反转同分成员的次序。字符串 ID “10” 与 “2”不是按整数 10、2 排序，默认规则更不是“先到先得”。Java String.compareTo 比较 UTF-16 代码单元，不能当成任意 UTF-8 成员的 Redis 字节比较；一个补充平面字符与 U+E000 的顺序，在这两种比较下就可能相反。用 ASCII ID 能使这个示例的两种顺序一致；处理任意字节 ID 时，应统一序列化并按无符号字节比较。"
+    },
+    {
+      "type": "paragraph",
+      "text": "score 使用 double，[-2^53, 2^53] 内的整数都可精确表示；越界后加一可能不再改变数值。Java long 能保存的整数范围更大，不代表发给 Redis 后仍然精确。不要把业务时间塞进小数位、或者把分数乘一个大常数再拼接名次，随后声称两部分永远无损。NaN 不是合法 score；一般业务计数也应主动拒绝无穷大、非法负值和溢出。若自行写 Java 的 double 比较器，还要注意 Double.compare 对正负零的处理与 Redis 的数值相等语义并不完全相同。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四、为什么不是红黑树、AVL 或 B+ 树"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会先承认这些结构都能实现有序索引，再比较需求。平衡二叉搜索树可以先找到 lower_bound，再沿后继遍历 M 个结果，范围查询也能达到 O(log N + M)。给节点加子树大小，还能做 rank/select。因此“树不能范围查询”“查 M 个结果一定要 M 次独立搜索”都不是选择跳表的理由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跳表的搜索路径直观，插删主要是局部接链，不需要旋转和染色，底层链方便顺序/逆序输出，span 也能纳入更新过程。代价是随机高度只有期望保证，多次指针跳转还可能造成缓存未命中。红黑树有确定的最坏对数高度，也有旋转、颜色修复和节点指针成本。哪种更快，需要把实现、读写比例、元素大小、内存分配和并发模型一起测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“红黑树和平衡二叉树有什么区别”最好先消除术语歧义：红黑树本身就是一种自平衡二叉搜索树；若对方指 AVL，再比较两种约束。AVL 要求每个节点左右子树高度差至多 1，通过高度或平衡因子与旋转恢复。红黑树维护颜色规则：根与空叶为黑，红节点不能有红孩子，从一个节点到所有后代空叶的路径有相同黑高。它不要求每个节点两侧高度差至多 1，但高度最坏不超过约 2 log2(N+1)，查找、更新仍为 O(log N)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两者的有序不变量相同，插删都可能旋转；红黑树还要染色。AVL 的高度约束更紧，可能有较短的查找路径；不能据此断言每次 AVL 更新都比红黑树慢，也不能把红黑树的“较宽松平衡”理解成没有高度保证。Java 21 TreeMap 采用红黑树；ConcurrentSkipListMap 是具有自身并发算法的有序容器，其单次操作预期对数性能与并发语义不能移植给一个普通教学跳表。把共享指针改成 volatile，也没有自动解决多步发布、删除协作与内存生命周期。LevelDB 1.23 的跳表要求写入由外部同步保护，读取期间对象不能被销毁；节点通过 arena 分配，直到跳表销毁前不逐个删除。这样的生命周期前提与 Java 并发容器不同，也不是这份可删除节点的单线程示例自带的能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "B+ 树的强项来自访问单位：一个内部页容纳多个分隔键和子页指针，一次页读就能选择很多子范围；较高扇出降低页访问层数，叶页按键序连接有利于范围扫描。InnoDB 8.4 以页和 buffer pool 组织常规索引，访问目标与这种布局相配。代价还有页内移动、分裂/合并、页空闲、锁竞争、日志和恢复。常驻内存的 ZSet 没有相同的磁盘页目标，跳表是合理的工程选择，但内存 B+ 树仍可能表现很好，跳表也并非不能用于持久化系统。"
+    },
+    {
+      "type": "paragraph",
+      "text": "空间也不能凭结构名称判定。B+ 树有内部键、目录、页填充和主键传播等成本；跳表有随机层、节点分配和索引元数据。比较时应固定键值宽度、指针宽度、页填充率与访问分布，分别测全热/缺页点查、范围局部性、写入分裂或分配、并发冲突、恢复代价和尾延迟。LSM 的 memtable 可以用跳表接收内存写入，再 flush 为有序文件，说明同一个存储系统也会按介质和阶段选不同结构。多层跳表与 HNSW 看起来都“分层”，也不代表查询目标或算法相同。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十、Java：手写搜索、插入、删除的简单跳表"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个 int→int 映射便于把搜索路径、随机塔高和局部接链讲清。重复 key 更新 value，不增加 size，也不重新抽层高；head 的 key 不参与比较，所以支持 Integer.MIN_VALUE 与 Integer.MAX_VALUE。它是单线程模型，p=1/2、最高 32 层，每个业务节点只保存一份 key/value，next 数组长度就是该节点实际塔高。"
+    },
+    {
+      "type": "paragraph",
+      "text": "插入 10、30，再插 20：各层先记住位于 20 前面的前驱；底层接成 10→20→30，20 升到的层才接入它。删除 20 时把这些层的前驱连向 20 原来的后继；顶层空掉后把有效层数降下来。搜索只需一个游标，修改需要长度为最大层数 L 的前驱数组。如果要支持重复值，可以把 key 映射为 count，或者用 (key,唯一序号) 建立总序，并分别定义删除一次还是删除全部；不能把这个重复 key 只覆盖 value 的映射当成多重集合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在独立几何提升且层上限合适时，查、增、删期望 O(log N)，最坏 O(N+L)；节点指针期望 O(N)，最坏 O(NL)。固定 L 时不能对无限规模坚持对数界：此处 p=1/2 的期望导航还受 O(L+N/2^(L−1)) 这类上限截断项影响。代码不包含 span、backward 或 rank，所以它并不实现 Redis 的对数级按排名查询；前面的 span 维护规则是扩展这份算法时必须补上的不变量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "main 中的 TreeMap 是独立有序映射对照，检查 30000 次插入、覆盖、删除与查询；还检查每层次序、同一塔与底层 Node 的身份、size、整数极值，以及删除全部节点后回到一层。结构测试不会证明随机算法永不退化，也不能当成 Redis 服务的吞吐测试。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\n\n/** Single-threaded int-to-int map, geometric p=1/2 towers, not a concurrent map. */\npublic final class SimpleSkipList {\n    private static final int MAX_LEVEL = 32;\n    private static final class Node {\n        final int key; int value; final Node[] next;\n        Node(int key, int value, int level) { this.key=key; this.value=value; next=new Node[level]; }\n    }\n    private final Node head = new Node(0,0,MAX_LEVEL);\n    private final Random random;\n    private int levels=1, size;\n    public SimpleSkipList(Random random) { this.random=Objects.requireNonNull(random); }\n    public int size() { return size; }\n    public OptionalInt get(int key) {\n        Node p=head;\n        for (int l=levels-1;l>=0;l--) while (p.next[l]!=null && p.next[l].key<key) p=p.next[l];\n        p=p.next[0];\n        return p!=null && p.key==key ? OptionalInt.of(p.value) : OptionalInt.empty();\n    }\n    public boolean put(int key,int value) {\n        Node[] before=new Node[MAX_LEVEL]; Node p=head;\n        for (int l=levels-1;l>=0;l--) {\n            while (p.next[l]!=null && p.next[l].key<key) p=p.next[l];\n            before[l]=p;\n        }\n        Node old=p.next[0];\n        if (old!=null && old.key==key) { old.value=value; return false; }\n        int height=1;\n        while (height<MAX_LEVEL && random.nextBoolean()) height++;\n        if (height>levels) {\n            for (int l=levels;l<height;l++) before[l]=head;\n            levels=height;\n        }\n        Node x=new Node(key,value,height);\n        for (int l=0;l<height;l++) { x.next[l]=before[l].next[l]; before[l].next[l]=x; }\n        size++; return true;\n    }\n    public boolean remove(int key) {\n        Node[] before=new Node[MAX_LEVEL]; Node p=head;\n        for (int l=levels-1;l>=0;l--) {\n            while (p.next[l]!=null && p.next[l].key<key) p=p.next[l];\n            before[l]=p;\n        }\n        Node x=p.next[0];\n        if (x==null || x.key!=key) return false;\n        for (int l=0;l<x.next.length;l++) before[l].next[l]=x.next[l];\n        while (levels>1 && head.next[levels-1]==null) levels--;\n        size--; return true;\n    }\n    private void verify(TreeMap<Integer,Integer> oracle) {\n        List<Node> bottom=new ArrayList<>();\n        Iterator<Map.Entry<Integer,Integer>> expected=oracle.entrySet().iterator();\n        for (Node n=head.next[0];n!=null;n=n.next[0]) {\n            if (!expected.hasNext()) throw new AssertionError(\"extra node\");\n            Map.Entry<Integer,Integer> e=expected.next();\n            if (n.key!=e.getKey() || n.value!=e.getValue()) throw new AssertionError(\"contents\");\n            bottom.add(n);\n        }\n        if (expected.hasNext() || size!=oracle.size()) throw new AssertionError(\"size\");\n        for (int l=0;l<MAX_LEVEL;l++) {\n            Node p=head.next[l];\n            for (Node n:bottom) if (n.next.length>l) {\n                if (p!=n) throw new AssertionError(\"tower identity\");\n                p=p.next[l];\n            }\n            if (p!=null) throw new AssertionError(\"extra tower\");\n        }\n        if (levels>1 && head.next[levels-1]==null) throw new AssertionError(\"empty top level\");\n    }\n    public static void main(String[] args) {\n        SimpleSkipList map=new SimpleSkipList(new Random(1386));\n        TreeMap<Integer,Integer> oracle=new TreeMap<>(); Random r=new Random(1391);\n        for (int t=0;t<30000;t++) {\n            int key=t==0?Integer.MIN_VALUE:t==1?Integer.MAX_VALUE:r.nextInt(2001)-1000;\n            if (t<2 || r.nextBoolean()) {\n                int v=r.nextInt(); boolean inserted=!oracle.containsKey(key); oracle.put(key,v);\n                if (map.put(key,v)!=inserted) throw new AssertionError();\n            } else if (map.remove(key)!=(oracle.remove(key)!=null)) throw new AssertionError();\n            Integer v=oracle.get(key);\n            if (!map.get(key).equals(v==null?OptionalInt.empty():OptionalInt.of(v))) throw new AssertionError();\n            if (t%33==0) map.verify(oracle);\n        }\n        map.verify(oracle);\n        for (int key:new ArrayList<>(oracle.keySet())) { map.remove(key); oracle.remove(key); }\n        map.verify(oracle);\n        if (map.levels!=1 || map.remove(0) || map.get(0).isPresent()) throw new AssertionError();\n        System.out.println(\"PASS 30000 operations vs TreeMap; all tower identity/order invariants; updates/extremes/full deletion/top shrink\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "1"
+}

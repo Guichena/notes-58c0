@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s8342",
+  "entryId": "handwrite-69",
+  "expectedOriginalHash": "d5683aba213b21d60fce7cc8d9bfa0dc020a6c7d580b33723b2ce24842443788",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.1 Workflow 原子性体现在哪些边界，跨服务失败怎样处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "Workflow把可原子提交的状态放进本地事务，跨域步骤用持久义务、幂等、未知结果核对与补偿衔接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：工作流的原子性体现在哪里；跨服务失败如何回滚；补偿是否等于数据库回滚。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "原子性必须限定到明确的状态集合和提交域，跨服务或外部工具不能被一个本地事务自动覆盖。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先问原子的是哪一组操作"
+    },
+    {
+      "type": "paragraph",
+      "text": "工作流的原子性要分三层回答。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "本地事务：同一个数据库里的任务状态、业务修改和outbox一起提交，或者一起回滚。",
+        "节点提交：协调器接受某次结果时，执行带version/attempt检查的条件状态转移。",
+        "整条流程：一旦跨独立数据库、文件、邮件或外部支付，前两层都不能保证所有步骤同时成功，更不能保证所有效果都能物理撤销。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "例子：生成报告后登记完成。对象存储成功、数据库提交失败时文件可能成为孤儿；数据库先写完成、对象还没传完则用户读到不存在产物。可先写不可变临时产物并校验，再事务登记可见版本，失败的孤儿异步回收；可见性切换是原子的，但存储空间回收不是同一事务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可靠步骤和补偿"
+    },
+    {
+      "type": "paragraph",
+      "text": "可靠步骤先把责任记下来：操作ID、输入版本、状态、结果引用，以及失败后该做什么。能在同一数据库提交的动作放进一个事务；远端调用依靠幂等接口和结果查询，确认成功后再持久记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨业务步骤可用Saga补偿，例如取消已提交的预留，或为已扣款建立退款义务。但补偿本身是一次新的业务操作。已经发出的邮件，不能通过回滚让收件人从未收到。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCC适合能定义Try预留、Confirm消费和Cancel释放的资源，必须处理重复Confirm/Cancel、空回滚和Cancel先于迟到Try的悬挂。XA/AT等选择还受参与者和SQL限制。不要把工作流引擎的durable execution或自动重试表述为任意外部副作用exactly-once。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "故障推演与证明范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果远端已执行但响应丢失，步骤进入UNKNOWN/PENDING_VERIFICATION，按稳定操作ID查询，不能直接重建新ID再发。补偿也可能失败，要持久化补偿待办、退避、告警和对账，直到成功或进入业务可处理终态。取消流程时先阻止新节点启动，再处理在途和已完成动作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验收应逐个提交窗口杀进程：本地事务前后、远端成功回包前、检查点保存前和补偿请求后。断言同一操作不重复产生不可接受效果，未完成义务不会消失，终态与实际业务一致。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.2 CR Agent 怎样持久化检查点并在失败后续跑"
+    },
+    {
+      "type": "paragraph",
+      "text": "可恢复任务把检查点、步骤收据和出站义务持久化，领取与提交校验租约代际，未知外部结果先核对再续跑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：CR Agent重启怎样继续；检查点里保存什么；旧执行器恢复后怎么防覆盖。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "检查点必须足以恢复任务状态、输入版本和外部操作责任；模型如何收敛是另一个评测问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "检查点必须包含恢复所需信息"
+    },
+    {
+      "type": "paragraph",
+      "text": "检查点要让另一台执行器拿到后，知道任务是谁、做到哪一步、还欠哪些动作。至少保存taskId、输入/仓库版本、planVersion、已完成节点、下一步骤、attempt和失败状态；产物用哈希定位，外部操作保留原操作ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "产物先按不可变版本可靠存储，再提交引用。中途输出尚未校验，不能当成可用检查点。恢复依据最后一条已提交事实继续，不去猜崩溃前的内存变量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CR若指代码审查，可把目标commit、文件diff范围、已审查文件和结果版本持久化；仓库变更后继续审查旧commit还是重新开始必须明确。已完成读取/纯计算可复用，外部副作用必须先查询同操作ID结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "租约、fencing与本地事务的可执行最小模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的H2模型只解决一件事：让检查点和本地effect表一起提交。领取任务时，用条件UPDATE产生新epoch；推进时先锁任务行，再核对owner、epoch和租约。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一步骤重放，只接受相同payload。测试在事务中注入异常时，effect和step一起回滚；发生租约接管后，旧epoch不能继续推进。"
+    },
+    {
+      "type": "paragraph",
+      "text": "逻辑时间由测试传入便于确定性验证，真实部署不能信任任意worker自报时间，应使用权威时间/租约服务并处理时钟故障。此模型验证同一H2数据库中的局部效果，不涵盖外部支付、文件或工具调用，也没有实现完整终态、续租、取消、清理或分布式工作流产品。业务流程仍需在其上定义这些状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java 与 H2 本地事务示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "伴随示例采用Java 21与H2 2.5.252运行时JDBC依赖，只用于隔离的本地教学数据库。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "025/TaskLeaseStore.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Real local H2 transactions; the injected logical clock is for deterministic tests. */\npublic final class TaskLeaseStore {\n    private final String url;\n    public record Lease(String owner, long epoch) {}\n    public TaskLeaseStore(String url) { this.url = url; }\n    private Connection open() throws SQLException { return DriverManager.getConnection(url); }\n    public void create() throws SQLException {\n        try (Connection c = open(); Statement s = c.createStatement()) {\n            s.execute(\"CREATE TABLE IF NOT EXISTS task(id VARCHAR PRIMARY KEY, state VARCHAR NOT NULL, owner VARCHAR, epoch BIGINT NOT NULL, lease_end BIGINT NOT NULL, step_no INT NOT NULL)\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS effect(task_id VARCHAR, step_no INT, payload VARCHAR NOT NULL, PRIMARY KEY(task_id, step_no))\");\n        }\n    }\n    public void submit(String id) throws SQLException {\n        try (Connection c = open(); PreparedStatement p = c.prepareStatement(\"INSERT INTO task VALUES (?, 'READY', NULL, 0, 0, 0)\")) {\n            p.setString(1, id); p.executeUpdate();\n        }\n    }\n    public Lease claim(String id, String owner, long now, long ttl) throws SQLException {\n        if (owner == null || owner.isBlank() || ttl <= 0) throw new IllegalArgumentException();\n        long end = Math.addExact(now, ttl);\n        try (Connection c = open()) {\n            c.setAutoCommit(false);\n            try (PreparedStatement p = c.prepareStatement(\"UPDATE task SET state='RUNNING', owner=?, epoch=epoch+1, lease_end=? WHERE id=? AND (state='READY' OR (state='RUNNING' AND lease_end<=?))\")) {\n                p.setString(1, owner); p.setLong(2, end); p.setString(3, id); p.setLong(4, now);\n                if (p.executeUpdate() != 1) { c.rollback(); return null; }\n                try (PreparedStatement q = c.prepareStatement(\"SELECT epoch FROM task WHERE id=?\")) {\n                    q.setString(1, id);\n                    try (ResultSet rs = q.executeQuery()) { rs.next(); Lease l = new Lease(owner, rs.getLong(1)); c.commit(); return l; }\n                }\n            } catch (SQLException | RuntimeException e) { rollbackPreserving(c, e); throw e; }\n        }\n    }\n    public boolean checkpoint(String id, Lease l, int step, String payload, long now, boolean fail) throws SQLException {\n        try (Connection c = open()) {\n            c.setAutoCommit(false);\n            try (PreparedStatement p = c.prepareStatement(\"SELECT state,owner,epoch,lease_end,step_no FROM task WHERE id=? FOR UPDATE\")) {\n                p.setString(1, id);\n                int done;\n                try (ResultSet rs = p.executeQuery()) {\n                    if (!rs.next() || !rs.getString(1).equals(\"RUNNING\") || !Objects.equals(rs.getString(2), l.owner()) ||\n                        rs.getLong(3) != l.epoch() || rs.getLong(4) <= now) { c.rollback(); return false; }\n                    done = rs.getInt(5);\n                }\n                if (step <= done) {\n                    try (PreparedStatement q = c.prepareStatement(\"SELECT payload FROM effect WHERE task_id=? AND step_no=?\")) {\n                        q.setString(1, id); q.setInt(2, step);\n                        try (ResultSet rs = q.executeQuery()) {\n                            if (!rs.next() || !Objects.equals(rs.getString(1), payload)) throw new IllegalArgumentException(\"payload conflict\");\n                        }\n                    }\n                    c.commit(); return true;\n                }\n                if (step != done + 1) throw new IllegalArgumentException(\"step gap\");\n                try (PreparedStatement e = c.prepareStatement(\"INSERT INTO effect VALUES (?,?,?)\")) {\n                    e.setString(1, id); e.setInt(2, step); e.setString(3, payload); e.executeUpdate();\n                }\n                if (fail) throw new SQLException(\"injected before checkpoint\");\n                try (PreparedStatement u = c.prepareStatement(\"UPDATE task SET step_no=? WHERE id=?\")) {\n                    u.setInt(1, step); u.setString(2, id); u.executeUpdate();\n                }\n                c.commit(); return true;\n            } catch (SQLException | RuntimeException e) { rollbackPreserving(c, e); throw e; }\n        }\n    }\n    public int effects() throws SQLException {\n        try (Connection c = open(); Statement s = c.createStatement(); ResultSet r = s.executeQuery(\"SELECT COUNT(*) FROM effect\")) { r.next(); return r.getInt(1); }\n    }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        String url = \"jdbc:h2:\" + args[0] + \";LOCK_TIMEOUT=10000\";\n        TaskLeaseStore a = new TaskLeaseStore(url); a.create(); a.submit(\"t\");\n        Lease first = a.claim(\"t\", \"A\", 100, 10); check(first.epoch() == 1);\n        check(a.claim(\"t\", \"B\", 109, 10) == null);\n        try { a.checkpoint(\"t\", first, 1, \"x\", 105, true); throw new AssertionError(); }\n        catch (SQLException expected) { check(expected.getMessage().contains(\"injected\")); }\n        check(a.effects() == 0);\n        check(a.checkpoint(\"t\", first, 1, \"x\", 106, false));\n        check(a.checkpoint(\"t\", first, 1, \"x\", 106, false)); check(a.effects() == 1);\n        TaskLeaseStore reopened = new TaskLeaseStore(url); // all prior JDBC connections were closed\n        check(reopened.effects() == 1);\n        Lease second = reopened.claim(\"t\", \"B\", 110, 20); check(second.epoch() == 2);\n        check(!a.checkpoint(\"t\", first, 2, \"old\", 111, false));\n        check(reopened.checkpoint(\"t\", second, 2, \"new\", 111, false));\n        try { reopened.checkpoint(\"t\", second, 2, \"conflict\", 112, false); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) { }\n        try { reopened.checkpoint(\"t\", second, 4, \"gap\", 112, false); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) { }\n        check(!reopened.checkpoint(\"t\", second, 3, \"late\", 130, false));\n        ExecutorService pool = Executors.newFixedThreadPool(10);\n        try {\n            List<Callable<Lease>> jobs = new ArrayList<>();\n            for (int i = 0; i < 30; i++) { final String owner = \"C\" + i; jobs.add(() -> reopened.claim(\"t\", owner, 130, 100)); }\n            int wins = 0;\n            for (Future<Lease> f : pool.invokeAll(jobs)) if (f.get() != null) wins++;\n            check(wins == 1); check(reopened.effects() == 2);\n        } finally { pool.shutdownNow(); }\n        System.out.println(\"PASS TaskLeaseStore: rollback, replay, persistence reopen, stale fencing, payload conflict, step gap, exact expiry, 30 racing claims\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "恢复时序与验证范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "恢复过程可以沿着两个执行者推演。A领取epoch1，提交步骤1的本地事务后进程退出；换新连接或新Store对象，仍能读到检查点。租约到期后B领取epoch2，A迟到的步骤2被拒绝，B继续推进。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看事务中途失败：步骤1的effect已经写入，但检查点写入前注入异常，两者一起回滚。恢复重试不会留下“有效果、无检查点”的半状态。如果真实远端效果无法与这张表放进同一事务，仍须目的端幂等或结果查询。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试覆盖回滚、相同步骤重放、文件数据库全部连接关闭后重新打开、租约精确到期、旧owner拒写、相同ID不同payload、步骤跳号以及30并发领取仅1成功。没有模拟断电/磁盘损坏或运行真实Agent平台。每次领取/提交涉及有限行与唯一索引操作，但同一任务串行是有意的；横向扩展来自不同任务分片，不来自让一个检查点无限并发。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

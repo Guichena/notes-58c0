@@ -1,0 +1,101 @@
+{
+  "entries": [
+    {
+      "id": "handwrite-56",
+      "number": 11,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第三章：Java 并发与任务调度",
+      "flat": false,
+      "title": "手写阻塞队列/生产者消费者",
+      "questionHtml": "<p class=\"md-p\">实现一个固定容量的阻塞队列，支持多个生产者调用 <code class=\"tok-inline\">put</code>，多个消费者调用 <code class=\"tok-inline\">take</code>。队列满时生产者阻塞，队列空时消费者阻塞。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察并发基本功。核心不是写一个 <code class=\"tok-inline\">List</code>，而是同时解决互斥和线程协作。</p>\n<p class=\"md-p\">互斥：队列内部状态同一时刻只能被一个线程修改。</p>\n<p class=\"md-p\">协作：队列满时生产者等待，队列空时消费者等待；状态变化后要精准唤醒对方。</p>\n<p class=\"md-p\">面试官常追问 <code class=\"tok-inline\">if</code> 和 <code class=\"tok-inline\">while</code> 的区别、<code class=\"tok-inline\">signal</code> 和 <code class=\"tok-inline\">signalAll</code> 的选择、异常时是否释放锁、能否支持多生产者多消费者。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">ReentrantLock</code>：显式锁，必须在 <code class=\"tok-inline\">finally</code> 中释放。",
+        "<code class=\"tok-inline\">Condition</code>：一个锁可以创建多个等待队列，如 <code class=\"tok-inline\">notFull</code> 和 <code class=\"tok-inline\">notEmpty</code>。",
+        "虚假唤醒：等待条件必须用 <code class=\"tok-inline\">while</code> 反复检查，不能用 <code class=\"tok-inline\">if</code>。",
+        "通知粒度：生产后通知消费者，消费后通知生产者。",
+        "工程替代：生产中优先使用 JDK 的 <code class=\"tok-inline\">ArrayBlockingQueue</code>、<code class=\"tok-inline\">LinkedBlockingQueue</code>。"
+      ],
+      "answerHtml": "<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.ArrayDeque;\nimport java.util.Queue;\nimport java.util.concurrent.locks.Condition;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic class MyBlockingQueue&lt;T&gt; {\n    private final Queue&lt;T&gt; queue = new ArrayDeque&lt;&gt;();\n    private final int capacity;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notFull = lock.newCondition();\n    private final Condition notEmpty = lock.newCondition();\n\n    public MyBlockingQueue(int capacity) {\n        if (capacity &lt;= 0) {\n            throw new IllegalArgumentException(&quot;capacity must be positive&quot;);\n        }\n        this.capacity = capacity;\n    }\n\n    public void put(T value) throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while (queue.size() == capacity) {\n                notFull.await();\n            }\n            queue.offer(value);\n            notEmpty.signal();\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public T take() throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            while (queue.isEmpty()) {\n                notEmpty.await();\n            }\n            T value = queue.poll();\n            notFull.signal();\n            return value;\n        } finally {\n            lock.unlock();\n        }\n    }\n}</pre></div></section>\n<p class=\"md-p\">如果面试官要求支持超时，可以使用 <code class=\"tok-inline\">awaitNanos</code> 实现 <code class=\"tok-inline\">offer(value, timeout)</code> 和 <code class=\"tok-inline\">poll(timeout)</code>。如果要求高吞吐，数组环形队列比链表更稳定，能减少对象分配和 GC。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么必须用 <code class=\"tok-inline\">while</code>？</strong></p>\n<p class=\"md-p\">分析：线程被唤醒不代表条件一定满足，可能是虚假唤醒，也可能被其他线程先抢到锁并消费了条件。答案：<code class=\"tok-inline\">await</code> 返回后必须重新检查队列状态。</p>\n<p class=\"md-p\"><strong>变体 2：<code class=\"tok-inline\">signal</code> 和 <code class=\"tok-inline\">signalAll</code> 怎么选？</strong></p>\n<p class=\"md-p\">分析：有两个独立条件队列时，生产只唤醒消费者，消费只唤醒生产者，<code class=\"tok-inline\">signal</code> 通常足够。如果条件复杂或一个状态变化可能满足多类等待者，用 <code class=\"tok-inline\">signalAll</code> 更稳但会带来惊群。</p>\n<p class=\"md-p\"><strong>变体 3：手写一个无锁队列可以吗？</strong></p>\n<p class=\"md-p\">分析：可以用 CAS + 链表实现 Michael-Scott Queue，但要处理 ABA、内存可见性和空队列竞争。Java 工程中通常使用 <code class=\"tok-inline\">ConcurrentLinkedQueue</code>，阻塞语义则用 <code class=\"tok-inline\">BlockingQueue</code>。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "并发与任务调度"
+    },
+    {
+      "id": "handwrite-57",
+      "number": 12,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第三章：Java 并发与任务调度",
+      "flat": false,
+      "title": "100 个任务最大并发 3",
+      "questionHtml": "<p class=\"md-p\">给定 100 个任务 ID，调用外部接口处理每个任务，要求任意时刻最多 3 个任务并发执行，并等待所有任务结束。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题本质是并发度控制。面试官想看你是否理解线程池、信号量、任务完成等待和异常隔离。</p>\n<p class=\"md-p\">如果直接在循环里 <code class=\"tok-inline\">new Thread</code>，线程数量不可控；如果只用 <code class=\"tok-inline\">Semaphore</code> 但不处理释放许可，异常时可能导致后续任务永远卡住。</p>",
+      "knowledge": [
+        "固定线程池：通过工作线程数量限制并发。",
+        "<code class=\"tok-inline\">CountDownLatch</code>：等待一批任务完成。",
+        "<code class=\"tok-inline\">Future</code>/<code class=\"tok-inline\">CompletableFuture</code>：收集执行结果和异常。",
+        "超时控制：外部接口必须有连接超时、读超时和整体任务超时。",
+        "资源隔离：不同下游接口最好使用不同线程池，避免互相拖垮。"
+      ],
+      "answerHtml": "<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.CountDownLatch;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\n\npublic class TaskRunner {\n    public void run(List&lt;Integer&gt; taskIds) throws InterruptedException {\n        ExecutorService pool = Executors.newFixedThreadPool(3);\n        CountDownLatch latch = new CountDownLatch(taskIds.size());\n        List&lt;Throwable&gt; errors = new ArrayList&lt;&gt;();\n        Object errorLock = new Object();\n\n        for (Integer id : taskIds) {\n            pool.submit(() -&gt; {\n                try {\n                    callRemote(id);\n                } catch (Throwable e) {\n                    synchronized (errorLock) {\n                        errors.add(e);\n                    }\n                } finally {\n                    latch.countDown();\n                }\n            });\n        }\n\n        latch.await();\n        pool.shutdown();\n        if (!errors.isEmpty()) {\n            throw new RuntimeException(&quot;some tasks failed: &quot; + errors.size());\n        }\n    }\n\n    private void callRemote(Integer id) {\n        System.out.println(&quot;processing &quot; + id);\n    }\n}</pre></div></section>\n<p class=\"md-p\">工程上不要直接使用 <code class=\"tok-inline\">Executors.newFixedThreadPool</code> 的默认无界队列承接无限任务。生产环境推荐显式创建 <code class=\"tok-inline\">ThreadPoolExecutor</code>，设置有界队列、线程名、拒绝策略和监控指标。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：如果每个任务还要限 QPS 怎么办？</strong></p>\n<p class=\"md-p\">分析：并发数限制只能控制同时执行数量，不能控制单位时间请求量。答案：在线程池外再加令牌桶或滑动窗口限流。</p>\n<p class=\"md-p\"><strong>变体 2：一个任务卡死会怎样？</strong></p>\n<p class=\"md-p\">分析：会占住线程导致整体吞吐下降。答案：外部调用必须配置超时；等待结果时用 <code class=\"tok-inline\">Future.get(timeout)</code>；必要时隔离慢接口线程池。</p>\n<p class=\"md-p\"><strong>变体 3：如何拿到每个任务的返回值并保持顺序？</strong></p>\n<p class=\"md-p\">分析：提交任务时保存 <code class=\"tok-inline\">Future</code> 列表，按原顺序遍历 <code class=\"tok-inline\">future.get()</code>；或者使用 <code class=\"tok-inline\">CompletableFuture</code> 后再按任务 ID 汇总。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "并发与任务调度"
+    },
+    {
+      "id": "handwrite-58",
+      "number": 13,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第三章：Java 并发与任务调度",
+      "flat": false,
+      "title": "线程池参数设计",
+      "questionHtml": "<p class=\"md-p\">设计一个线程池处理异步任务。如何设置核心线程数、最大线程数、队列大小、拒绝策略？为什么不建议直接用 <code class=\"tok-inline\">Executors</code>？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是 Java 后端大厂高频。面试官想看你是否理解线程池不是“随便 newFixedThreadPool”，而是资源隔离、背压和故障保护。</p>\n<p class=\"md-p\"><code class=\"tok-inline\">Executors.newFixedThreadPool</code> 默认使用无界队列，任务堆积时可能 OOM。<code class=\"tok-inline\">newCachedThreadPool</code> 最大线程数接近无限，可能创建过多线程。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">corePoolSize</code>：常驻核心线程。",
+        "<code class=\"tok-inline\">maximumPoolSize</code>：队列满后可扩展的最大线程。",
+        "<code class=\"tok-inline\">workQueue</code>：任务缓冲区，应有界。",
+        "<code class=\"tok-inline\">keepAliveTime</code>：非核心线程空闲回收时间。",
+        "拒绝策略：Abort、CallerRuns、Discard、DiscardOldest、自定义。",
+        "CPU 密集型：线程数接近 CPU 核数。",
+        "IO 密集型：线程数可大于 CPU 核数，但要压测和限流。"
+      ],
+      "answerHtml": "<p class=\"md-p\">显式创建线程池：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.concurrent.ArrayBlockingQueue;\nimport java.util.concurrent.ThreadPoolExecutor;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.AtomicInteger;\n\npublic class Pools {\n    public static ThreadPoolExecutor build() {\n        AtomicInteger index = new AtomicInteger();\n        return new ThreadPoolExecutor(\n                8,\n                16,\n                60,\n                TimeUnit.SECONDS,\n                new ArrayBlockingQueue&lt;&gt;(1000),\n                runnable -&gt; {\n                    Thread t = new Thread(runnable);\n                    t.setName(&quot;index-worker-&quot; + index.incrementAndGet());\n                    return t;\n                },\n                new ThreadPoolExecutor.CallerRunsPolicy()\n        );\n    }\n}</pre></div></section>\n<p class=\"md-p\">回答参数时要结合任务类型：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>CPU 密集型：<code class=\"tok-inline\">corePoolSize ≈ CPU 核数</code>，避免上下文切换。</li><li>IO 密集型：可按 <code class=\"tok-inline\">CPU 核数 * (1 + IO等待时间/CPU计算时间)</code> 估算，再压测调整。</li><li>队列大小：根据下游承载、内存和可接受延迟设置，有界队列用于背压。</li><li>拒绝策略：核心链路可以快速失败；削峰任务可 CallerRuns 降低提交速度；不能静默丢弃重要任务。</li></ul></div>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：线程池执行流程是什么？</strong></p>\n<p class=\"md-p\">问题分析：考察源码级理解。</p>\n<p class=\"md-p\">知识点：核心线程、队列、最大线程、拒绝。</p>\n<p class=\"md-p\">答案：任务提交后，线程数小于 core 则创建核心线程；否则入队；队列满且线程数小于 max 则创建非核心线程；再满则执行拒绝策略。</p>\n<p class=\"md-p\"><strong>变体 2：如何监控线程池？</strong></p>\n<p class=\"md-p\">问题分析：线上线程池需要可观测。</p>\n<p class=\"md-p\">知识点：活跃线程、队列长度、拒绝数、耗时。</p>\n<p class=\"md-p\">答案：监控 activeCount、poolSize、queueSize、completedTaskCount、reject count、任务执行耗时和排队耗时。</p>\n<p class=\"md-p\"><strong>变体 3：不同业务能共用一个线程池吗？</strong></p>\n<p class=\"md-p\">问题分析：共用会互相影响。</p>\n<p class=\"md-p\">知识点：资源隔离。</p>\n<p class=\"md-p\">答案：核心业务、慢下游、批处理任务应使用独立线程池，避免慢任务占满线程拖垮其他业务。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "并发与任务调度"
+    },
+    {
+      "id": "handwrite-59",
+      "number": 14,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第三章：Java 并发与任务调度",
+      "flat": false,
+      "title": "手写定时任务调度器",
+      "questionHtml": "<p class=\"md-p\">手写一个简易定时任务调度器，支持提交任务和延迟时间，到期后执行任务。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察优先队列、等待唤醒和并发控制。工程中优先使用 <code class=\"tok-inline\">ScheduledThreadPoolExecutor</code>，但手撕时可用小顶堆按执行时间排序。</p>\n<p class=\"md-p\">难点是：队首任务还没到时间时，工作线程要等待剩余时间；新提交的任务如果更早，要唤醒工作线程重新计算等待时间。</p>",
+      "knowledge": [
+        "小顶堆：按执行时间排序。",
+        "<code class=\"tok-inline\">wait(timeout)</code>：等待到期或被新任务唤醒。",
+        "时间源：用 <code class=\"tok-inline\">System.currentTimeMillis</code> 可受系统时间调整影响；更稳是 <code class=\"tok-inline\">System.nanoTime</code>。",
+        "工程替代：<code class=\"tok-inline\">ScheduledThreadPoolExecutor</code>、DelayQueue。"
+      ],
+      "answerHtml": "<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.PriorityQueue;\n\npublic class SimpleScheduler {\n    private final PriorityQueue&lt;ScheduledTask&gt; queue = new PriorityQueue&lt;&gt;(\n            (a, b) -&gt; Long.compare(a.deadline, b.deadline)\n    );\n\n    public SimpleScheduler() {\n        Thread worker = new Thread(this::loop, &quot;simple-scheduler&quot;);\n        worker.setDaemon(true);\n        worker.start();\n    }\n\n    public void schedule(Runnable task, long delayMillis) {\n        synchronized (queue) {\n            queue.offer(new ScheduledTask(System.currentTimeMillis() + delayMillis, task));\n            queue.notifyAll();\n        }\n    }\n\n    private void loop() {\n        while (true) {\n            Runnable taskToRun = null;\n            synchronized (queue) {\n                while (queue.isEmpty()) {\n                    waitQuietly(0);\n                }\n                long now = System.currentTimeMillis();\n                ScheduledTask first = queue.peek();\n                long waitMillis = first.deadline - now;\n                if (waitMillis &gt; 0) {\n                    waitQuietly(waitMillis);\n                    continue;\n                }\n                taskToRun = queue.poll().task;\n            }\n            try {\n                taskToRun.run();\n            } catch (Throwable ignored) {\n            }\n        }\n    }\n\n    private void waitQuietly(long millis) {\n        try {\n            queue.wait(millis);\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n        }\n    }\n\n    private static class ScheduledTask {\n        long deadline;\n        Runnable task;\n\n        ScheduledTask(long deadline, Runnable task) {\n            this.deadline = deadline;\n            this.task = task;\n        }\n    }\n}</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：任务执行很慢会怎样？</strong></p>\n<p class=\"md-p\">问题分析：单工作线程会阻塞后续任务。</p>\n<p class=\"md-p\">知识点：调度线程和执行线程分离。</p>\n<p class=\"md-p\">答案：调度线程只负责取到期任务，真正执行交给业务线程池。</p>\n<p class=\"md-p\"><strong>变体 2：如何支持周期任务？</strong></p>\n<p class=\"md-p\">问题分析：执行后要重新入队。</p>\n<p class=\"md-p\">知识点：fixed-rate、fixed-delay。</p>\n<p class=\"md-p\">答案：任务执行完成后根据周期计算下一次 deadline 再入队。fixed-rate 按计划时间推进，fixed-delay 按完成时间加延迟。</p>\n<p class=\"md-p\"><strong>变体 3：为什么 JDK 有 DelayQueue？</strong></p>\n<p class=\"md-p\">问题分析：DelayQueue 封装了延迟元素等待逻辑。</p>\n<p class=\"md-p\">知识点：阻塞队列、优先级。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">DelayQueue</code> 内部按到期时间排序，<code class=\"tok-inline\">take()</code> 会阻塞到队首元素到期，适合实现延迟任务。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "并发与任务调度"
+    }
+  ]
+}

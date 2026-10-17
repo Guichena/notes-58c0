@@ -1,0 +1,96 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">结合你的生产事件触达平台：业务数据写 MySQL 后要发送 MQ。如何保证数据库更新和消息发送最终一致？如何设计幂等消费表？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这是本地事务与消息一致性的教学设计，不据题干推断个人实习职责。面试官关注点是：本地事务和 MQ 不在一个事务管理器里，如何避免“库写了但消息没发”或“消息发了但库没写”。</p>
+<p class="md-p">Outbox 模式是标准答案：业务表和消息事件表在同一个本地事务中提交，再由后台发布器可靠发送消息。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>本地消息表/Outbox。</li><li>事务内写业务数据和事件数据。</li><li>发布器扫描待发送事件，发送成功后更新状态。</li><li>唯一业务键保证幂等。</li><li>消费端幂等表避免重复处理。</li><li>补偿扫描处理中间态和超时状态。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">Outbox 表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE event_outbox (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    event_id VARCHAR(64) NOT NULL,
+    aggregate_type VARCHAR(64) NOT NULL,
+    aggregate_id VARCHAR(64) NOT NULL,
+    topic VARCHAR(128) NOT NULL,
+    payload JSON NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    next_retry_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_event_id (event_id),
+    KEY idx_status_retry (status, next_retry_at)
+);</pre></div></section>
+<p class="md-p">业务事务：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">START TRANSACTION;
+
+INSERT INTO notify_task(task_id, user_id, content, status, created_at)
+VALUES (?, ?, ?, 'INIT', NOW());
+
+INSERT INTO event_outbox(event_id, aggregate_type, aggregate_id, topic, payload, status, next_retry_at, created_at, updated_at)
+VALUES (?, 'notify_task', ?, 'notify.created', CAST(? AS JSON), 'NEW', NOW(), NOW(), NOW());
+
+COMMIT;</pre></div></section>
+<p class="md-p">发布器逻辑：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT *
+FROM event_outbox
+WHERE status IN ('NEW', 'RETRY')
+  AND next_retry_at &lt;= NOW()
+ORDER BY id
+LIMIT 100;</pre></div></section>
+<p class="md-p">发送成功后：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">UPDATE event_outbox
+SET status = 'SENT',
+    updated_at = NOW()
+WHERE event_id = ?
+  AND status IN ('NEW', 'RETRY');</pre></div></section>
+<p class="md-p">消费幂等表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE consume_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    event_id VARCHAR(64) NOT NULL,
+    consumer_group VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_event_consumer (event_id, consumer_group)
+);</pre></div></section>
+<p class="md-p">消费者在同一事务插入唯一收据、执行业务并记录成功，提交后才 ACK。仅确认该键已提交完成且载荷一致时才视为重放；处理中、错误或未知提交不能直接 ACK。<code class="tok-inline"></code></p><p class="md-p">这些 SQL 是 MySQL 8.4 参数模板，非完整迁移：notify_task 须另有 task_id/user_id/content/status/created_at；与下一题同名任务表是独立模型，不可混建。上面的扫描+标SENT是允许重复的最小轮询模型，收到符合合同的 broker 确认才标记；没有领取/租约就不能声称避免并发重复。多发布者版本见补充与任务专题，event_id 恒定、目标端幂等。时间分区受 MySQL 所有唯一键必须包含分区列等限制，不能直接给原DDL加日期分区仍声称 event_id 全局唯一。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：Outbox 表会越来越大怎么办？</strong></p>
+<p class="md-p">问题分析：事件表是持续写入的。</p>
+<p class="md-p">知识点：归档、冷热分离、分区、清理策略。</p>
+<p class="md-p">答案：<code class="tok-inline">SENT</code> 状态保留一段审计时间后归档；按时间分区或迁移到历史表；在线表只保留待发送和近期事件。</p>
+<p class="md-p"><strong>变体 2：发布器多实例如何避免重复发送？</strong></p>
+<p class="md-p">问题分析：多个发布器可能扫描到同一行。</p>
+<p class="md-p">知识点：状态抢占、乐观更新、<code class="tok-inline">SKIP LOCKED</code>。</p>
+<p class="md-p">答案：先用条件更新把 <code class="tok-inline">NEW</code> 改成 <code class="tok-inline">SENDING</code>，影响行数为 1 才发送；或使用 <code class="tok-inline">SELECT ... FOR UPDATE SKIP LOCKED</code> 抢任务。</p>
+<p class="md-p"><strong>变体 3：消费者处理成功但更新 consume_log 失败怎么办？</strong></p>
+<p class="md-p">问题分析：幂等表状态可能不准确。</p>
+<p class="md-p">知识点：业务幂等优先、状态补偿。</p>
+<p class="md-p">答案：本地业务效果与 consume_log 完成必须同事务，更新失败就整笔回滚；提交应答未知按稳定事件键回查。外部副作用不受此事务回滚保护，需目的端幂等/结果查询及对账。<code class="tok-inline"></code></p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-distributed-s1830">分布式手册：完整机制、条件与故障推演</h2><h2 class="md-h md-h2">Outbox与Inbox如何关闭双写窗口</h2><p class="md-p">把业务变化与出站义务放在同一本地事务，把消费收据与业务效果放在同一本地事务，允许重复投递而避免同一事件重复生效。</p><p class="md-p">常见问法：先提交数据库再发MQ有什么问题；发布确认丢失怎样恢复；数据库成功但offset失败怎么办；去重记录要留多久。</p><p class="md-p">数据库和 MQ 分两步写，无论先后都可能留下空档。先提交订单再发消息，进程中途退出，会有订单没消息；先发消息再提交，数据库若回滚，又会有消息没订单。</p><p class="md-p">try/catch 只处理程序实际走到的异常，afterCommit 也挡不住提交后的硬退出。所以需要持久记录“必须发送”的义务，不能只留一段准备执行的回调。</p><p class="md-p">下面是MySQL 8.4/InnoDB风格的最小表结构，业务表另行定义。它展示唯一约束和索引，不是完整生产迁移脚本；租户命名空间、租约列、重试和归档策略需按部署补齐。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">006/fence-006.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE s6_request (
+  request_id VARCHAR(64) PRIMARY KEY,
+  payload_hash CHAR(64) NOT NULL,
+  order_id BIGINT NULL,
+  result_json JSON NULL
+) ENGINE=InnoDB;
+CREATE TABLE s6_outbox (
+  event_id VARCHAR(64) PRIMARY KEY,
+  aggregate_id BIGINT NOT NULL,
+  aggregate_version BIGINT NOT NULL,
+  event_type VARCHAR(40) NOT NULL,
+  payload JSON NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  sent_at DATETIME(6) NULL,
+  UNIQUE KEY uk_event (aggregate_id,aggregate_version,event_type),
+  KEY ix_pending (sent_at,created_at,event_id)
+) ENGINE=InnoDB;
+CREATE TABLE s6_inbox (
+  consumer_name VARCHAR(64) NOT NULL,
+  event_id VARCHAR(64) NOT NULL,
+  handled_at DATETIME(6) NOT NULL,
+  PRIMARY KEY (consumer_name,event_id)
+) ENGINE=InnoDB;
+
+</pre></div></div><p class="md-p">生产事务依次登记request_id，校验并修改业务表，插入唯一event_id的outbox，保存稳定响应后提交。请求占位、订单和结果必须同事务完成，不能提前提交空占位后永久阻塞重试。同request_id同规范化参数返回已有结果，不同参数报冲突；payload摘要需包含租户、主体、金额、数量和语义版本等真正决定效果的字段。</p><p class="md-p">Relay 的成功点，是收到符合可靠性合同的 Broker 确认后再标已发。它可通过轮询或 CDC 取待发事件；如果发布已成功、标记前却退出，恢复时重发同 event_id，这是协议允许的重复。</p><p class="md-p">多 Relay 可以按租约领取，但还要处理租约过期和旧回包，用条件更新保护状态。领取成功不等于发布成功，事件保留期与最老待发年龄也要可观察。</p><p class="md-p">消费去重要和业务效果一起提交。消费者开启本地事务，插入 (consumer_name, event_id) 收据，更新业务，提交后才 ACK 或推进消费进度；业务失败时，收据也回滚。</p><p class="md-p">只有确认属于唯一键冲突，才能认定已处理。磁盘满、SQL 错误、提交未知都不能吞成重复。先 Redis SETNX 再 MySQL 扣款，会留下标记已写、效果未发生的崩溃窗口，反而永久挡住重试。</p><p class="md-p">逐个画失败窗口：生产提交前重试同请求；生产提交后未发靠待办补发；Broker已收但确认或标记丢失重发同事件；消费者提交前全部回滚；消费者提交后ACK丢失，重投命中同事务收据。这套协议保障的是本地一次业务效果，不是网络物理只传一次。</p><p class="md-p">event_id 判断是不是同一件事，实体 version 判断事实新旧，两个字段不能互换。版本 8 的完整快照可以覆盖更旧状态；但增量事件缺了 9、先来了 10，不能顺手把 9 永远丢掉，应补齐、缓冲或从权威快照重建。</p><p class="md-p">即使多个发布者把同 key 都发进同一分区，也不自动证明业务版本按顺序到达。</p><p class="md-p">去重保留期必须覆盖最长重试、回放和灾备恢复窗口。上游能回放七天，下游只保留一天收据，旧事件会再次生效；无限历史重放需永久业务唯一约束、版本语义或隔离重建策略。外部支付、邮件或文件发布不在本地事务内，仍需目的端幂等与结果查询。</p><p class="md-p">Kafka事务可以协调特定Kafka输入位移与输出消息，却不会自动提交或回滚外部MySQL。端到端保证最终依赖恢复器继续工作、必要记录尚未过期以及故障可解除；永久业务错误应形成可查询失败或待人工处理，而不承诺永远自动成功。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-distributed-guide">学习路线、版本与验证范围</a></li></ul></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

@@ -1,0 +1,492 @@
+{
+  "entries": [
+    {
+      "id": "p-design",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "设计题（LRU/LFU/Trie/栈队列） · 专题",
+      "number": "专题",
+      "summary": "设计题是把哈希表、双向链表、栈或前缀树拼成满足给定接口和复杂度的结构。这个专题处理平均 O(1) 的 LRU/LFU、沿字符 O(L) 的 Trie，以及栈与队列互模拟、并 O(1) 取最值。",
+      "recognize": [
+        "get 和 put 都要求平均 O(1)，容量一满就要丢掉一个键。",
+        "淘汰规则是最久没被访问，或访问次数最少、同次数再比谁更旧。",
+        "栈在 push/pop/top 之外还要每次 O(1) 给出当前最小值或最大值。",
+        "只允许用栈的 push/pop，或只允许用队列的 offer/poll，对外却要另一种结构的语义。",
+        "同一批字符串要支持插入、判断完整单词、判断前缀，三次都从根沿字符向下走。",
+        "追问哈希冲突和扩容，或缓存怎样在不加整表锁时并发读写。"
+      ],
+      "notApplicable": [
+        "下一个更大元素、每日温度、柱状图最大矩形维护的是下标单调性，用单调栈。",
+        "滑动窗口最大值和 0-1 BFS 按坐标淘汰候选项，用双端队列，不需要把 key 映射回链表节点。",
+        "没有容量上限、也没有单次 O(1) 要求的模拟，用数组或一条 Deque 即可。"
+      ],
+      "templates": [
+        {
+          "name": "哈希表 + 双向链表 LRU",
+          "when": "容量固定，get/put 平均 O(1)，满时淘汰最久未被 get 或 put 的键。代表题 LC 146。",
+          "java": "static class LRUCache {\n    // 哨兵 head 的右边是刚用过的，哨兵 tail 的左边是最久没用的。换题时改容量和键值类型即可。\n    static class Node {\n        int key, val;\n        Node prev, next;\n        Node(int k, int v) { key = k; val = v; }\n    }\n\n    private final int cap;\n    private final java.util.Map<Integer, Node> map = new java.util.HashMap<>();\n    private final Node head = new Node(0, 0);\n    private final Node tail = new Node(0, 0);\n\n    public LRUCache(int capacity) {\n        cap = capacity; // LC 146 保证 capacity >= 1\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public int get(int key) {\n        Node n = map.get(key);\n        if (n == null) return -1;\n        unlink(n);\n        addAfterHead(n);\n        return n.val;\n    }\n\n    public void put(int key, int value) {\n        Node n = map.get(key);\n        if (n != null) { // 已存在只改值并刷新位置，不能再走淘汰\n            n.val = value;\n            unlink(n);\n            addAfterHead(n);\n            return;\n        }\n        if (map.size() == cap) {\n            Node eldest = tail.prev;\n            unlink(eldest);\n            map.remove(eldest.key);\n        }\n        Node born = new Node(key, value);\n        map.put(key, born);\n        addAfterHead(born);\n    }\n\n    private void unlink(Node n) {\n        n.prev.next = n.next;\n        n.next.prev = n.prev;\n    }\n\n    private void addAfterHead(Node n) {\n        n.prev = head;\n        n.next = head.next;\n        head.next.prev = n;\n        head.next = n;\n    }\n}",
+          "demo": "LC 146 LRU 缓存",
+          "demoMain": "LRUCache lru = new LRUCache(2);\nlru.put(1, 1);\nlru.put(2, 2);\nSystem.out.println(lru.get(1));\nlru.put(3, 3);\nSystem.out.println(lru.get(2));\nlru.put(4, 4);\nSystem.out.println(lru.get(1));\nSystem.out.println(lru.get(3));\nSystem.out.println(lru.get(4));",
+          "expected": "1\n-1\n-1\n3\n4\n"
+        },
+        {
+          "name": "频次桶 + 双向链表 LFU",
+          "when": "容量固定，get/put 平均 O(1)，先淘汰访问次数最少的键，次数相同再淘汰最久没用的。代表题 LC 460。",
+          "java": "static class LFUCache {\n    static class Node {\n        int key, val, freq;\n        Node prev, next;\n        Node(int k, int v) { key = k; val = v; freq = 1; }\n    }\n\n    // 每个频次一条链表：头侧是该频次里刚用过的，尾侧是该频次里最久没用的\n    static class Bucket {\n        Node head = new Node(0, 0);\n        Node tail = new Node(0, 0);\n        int size;\n        Bucket() {\n            head.next = tail;\n            tail.prev = head;\n        }\n        void addFront(Node n) {\n            n.prev = head;\n            n.next = head.next;\n            head.next.prev = n;\n            head.next = n;\n            size++;\n        }\n        void remove(Node n) {\n            n.prev.next = n.next;\n            n.next.prev = n.prev;\n            size--;\n        }\n        Node removeLast() {\n            Node n = tail.prev;\n            remove(n);\n            return n;\n        }\n    }\n\n    private final int cap;\n    private int minFreq;\n    private final java.util.Map<Integer, Node> map = new java.util.HashMap<>();\n    private final java.util.Map<Integer, Bucket> buckets = new java.util.HashMap<>();\n\n    public LFUCache(int capacity) { cap = capacity; }\n\n    public int get(int key) {\n        Node n = map.get(key);\n        if (n == null) return -1;\n        bump(n);\n        return n.val;\n    }\n\n    public void put(int key, int value) {\n        if (cap == 0) return;\n        Node n = map.get(key);\n        if (n != null) {\n            n.val = value;\n            bump(n);\n            return;\n        }\n        if (map.size() == cap) {\n            Node victim = buckets.get(minFreq).removeLast();\n            map.remove(victim.key);\n            // 下面新键以频率 1 插入，并把 minFreq 置回 1\n        }\n        Node born = new Node(key, value);\n        map.put(key, born);\n        bucket(1).addFront(born);\n        minFreq = 1;\n    }\n\n    private void bump(Node n) {\n        Bucket old = buckets.get(n.freq);\n        old.remove(n);\n        if (old.size == 0 && n.freq == minFreq) minFreq++;\n        n.freq++;\n        bucket(n.freq).addFront(n);\n    }\n\n    private Bucket bucket(int f) {\n        Bucket b = buckets.get(f);\n        if (b == null) {\n            b = new Bucket();\n            buckets.put(f, b);\n        }\n        return b;\n    }\n}",
+          "demo": "LC 460 LFU 缓存",
+          "demoMain": "LFUCache lfu = new LFUCache(2);\nlfu.put(1, 1);\nlfu.put(2, 2);\nSystem.out.println(lfu.get(1));\nlfu.put(3, 3);\nSystem.out.println(lfu.get(2));\nSystem.out.println(lfu.get(3));\nlfu.put(4, 4);\nSystem.out.println(lfu.get(1));\nSystem.out.println(lfu.get(3));\nSystem.out.println(lfu.get(4));",
+          "expected": "1\n-1\n3\n-1\n3\n4\n"
+        },
+        {
+          "name": "26 叉前缀树",
+          "when": "要同时插入单词、判断完整单词、判断前缀，操作次数与字符串长度成正比。代表题 LC 208，字符集是小写英文。",
+          "java": "static class Trie {\n    // 换题时若字符不是 a-z，把 son 改成 Map<Character, Node>，去掉 - 'a'。\n    // 支持 '.' 通配（LC 211）时，遇到 '.' 就枚举 26 个孩子分别向下走。\n    static class Node {\n        Node[] son = new Node[26];\n        boolean end;\n    }\n\n    private final Node root = new Node();\n\n    public void insert(String word) {\n        Node cur = root;\n        for (int i = 0; i < word.length(); i++) {\n            int c = word.charAt(i) - 'a';\n            if (cur.son[c] == null) cur.son[c] = new Node();\n            cur = cur.son[c];\n        }\n        cur.end = true;\n    }\n\n    public boolean search(String word) {\n        Node n = walk(word);\n        return n != null && n.end;\n    }\n\n    public boolean startsWith(String prefix) {\n        return walk(prefix) != null;\n    }\n\n    private Node walk(String s) {\n        Node cur = root;\n        for (int i = 0; i < s.length(); i++) {\n            int c = s.charAt(i) - 'a';\n            if (cur.son[c] == null) return null;\n            cur = cur.son[c];\n        }\n        return cur;\n    }\n}",
+          "demo": "LC 208 实现 Trie（前缀树）",
+          "demoMain": "Trie trie = new Trie();\ntrie.insert(\"apple\");\nSystem.out.println(trie.search(\"apple\"));\nSystem.out.println(trie.search(\"app\"));\nSystem.out.println(trie.startsWith(\"app\"));\ntrie.insert(\"app\");\nSystem.out.println(trie.search(\"app\"));",
+          "expected": "true\nfalse\ntrue\ntrue\n"
+        },
+        {
+          "name": "两栈队列与最小栈",
+          "when": "只用栈实现队列的摊还 O(1) 出入队（LC 232），或在栈上增加 O(1) 的 getMin（LC 155）。下面两个类各自独立，样例跑的是队列。",
+          "java": "static class MyQueue {\n    // in 收新元素，out 的栈顶是队头。每个元素最多从 in 倒进 out 一次，所以均摊 O(1)。\n    // LC 225 改成两个队列：push 后把队里原有元素依次搬到新元素后面，使新元素留在队头。\n    private final java.util.Deque<Integer> in = new java.util.ArrayDeque<>();\n    private final java.util.Deque<Integer> out = new java.util.ArrayDeque<>();\n\n    public void push(int x) { in.push(x); }\n\n    public int pop() {\n        pour();\n        return out.pop();\n    }\n\n    public int peek() {\n        pour();\n        return out.peek();\n    }\n\n    public boolean empty() {\n        return in.isEmpty() && out.isEmpty();\n    }\n\n    private void pour() {\n        if (out.isEmpty()) {\n            while (!in.isEmpty()) out.push(in.pop());\n        }\n    }\n}\n\nstatic class MinStack {\n    // 辅助栈栈顶始终是数据栈当前最小值。相等也要压入，否则连续两个相同最小值会少记一次。\n    private final java.util.Deque<Integer> data = new java.util.ArrayDeque<>();\n    private final java.util.Deque<Integer> mins = new java.util.ArrayDeque<>();\n\n    public void push(int val) {\n        data.push(val);\n        if (mins.isEmpty() || val <= mins.peek()) mins.push(val);\n    }\n\n    public void pop() {\n        int val = data.pop();\n        if (val == mins.peek()) mins.pop();\n    }\n\n    public int top() { return data.peek(); }\n\n    public int getMin() { return mins.peek(); }\n}",
+          "demo": "LC 232 用栈实现队列",
+          "demoMain": "MyQueue q = new MyQueue();\nq.push(1);\nq.push(2);\nSystem.out.println(q.peek());\nSystem.out.println(q.pop());\nSystem.out.println(q.empty());",
+          "expected": "1\n1\nfalse\n"
+        }
+      ],
+      "variants": [
+        "LRU 改用库：new LinkedHashMap<Integer,Integer>(cap, 0.75f, true)，重写 removeEldestEntry 为 return size() > cap。第三个参数 true，get/put 才会把节点挪到表尾。",
+        "LRU 改环形双向链表：头表示最近使用、尾表示最久未使用，两端互指，省掉哨兵。空表和只剩一个节点时 prev/next 指向自己，这两支要单独写。",
+        "LFU 与 LRU 的结合就是 460 本身：每个频次桶内部仍按最近使用排列，淘汰 minFreq 桶的尾部。若次数只统计最近 K 次访问，全局 freq++ 会过期，要改成带时间顺序的计数。",
+        "LC 225 用两个队列实现栈：元素 offer 进 q1 后，把 q1 里原来的 n-1 个依次 poll 再 offer 回队尾，新元素留在队头，pop 直接 poll。把 O(n) 固定在 push 或固定在 pop 的一边。",
+        "普通栈加 getMin 用模板里的 MinStack。还要 getMax 时，按同一规则再挂一条最大值栈，push/pop 与数据栈一起动。",
+        "两栈队列要删中间元素：给每个元素递增编号，哈希从编号映射到双向链表节点，删除就是 O(1) 摘掉；pop/peek 若队头编号已作废就继续弹。栈没有按下标删除的接口。"
+      ],
+      "pitfalls": [
+        "LRU 对已有 key 再次 put 只更新值和位置。把它当成新键再淘汰，会多删一个热键，size 也会错。",
+        "双向链表改指针要 prev、next 两侧一起写，淘汰的是 tail 前面的数据节点。环形写法漏掉单节点分支时，容易把链表收成自环。",
+        "LFU 同频次还要分得出谁更旧。该频次链表因访问升频被搬空时，minFreq 要加一；新插入的键从频率 1 重新计，并把 minFreq 置回 1。",
+        "最小栈辅助栈只用严格小于。连续压入两个相同最小值，弹出一个之后 getMin 会错。相等时也要入辅助栈。",
+        "两栈队列在 out 仍有元素时就把 in 倒进去，后入队的元素会压到先入队的上面，队头不再是最早的那个。",
+        "Trie 的 search 要看到单词结束标记，startsWith 只要路径走得到。手写 HashMap 桶下标依赖容量为 2 的幂，扩容后按新掩码重挂，旧下标不能原样拷贝。"
+      ],
+      "groups": [
+        {
+          "name": "O(1) 缓存淘汰",
+          "note": "哈希负责定位，双向链表负责使用顺序；LFU 再按频次分桶，桶内仍按最久未用淘汰。环形链表和带哨兵的双向链表差别在边界，不在复杂度。",
+          "items": [
+            [
+              "#/e/146",
+              "146. LRU 缓存"
+            ],
+            [
+              "#/e/460",
+              "460. LFU 缓存"
+            ],
+            [
+              "#/e/nonlc-4-0",
+              "环形链表和双向链表实现 LRU 有什么区别？你写的 LRU 放到生产里会有什么问题？"
+            ],
+            [
+              "#/e/nonlc-4-2",
+              "LFU 怎么实现？有什么问题？能不能和 LRU 结合？"
+            ]
+          ]
+        },
+        {
+          "name": "栈队列模拟与 O(1) 最值",
+          "note": "用受限的栈或队列模拟另一种容器，靠辅助栈或整段搬移摊还。一旦要删中间元素，就改成编号加双向链表。",
+          "items": [
+            [
+              "#/e/155",
+              "155. 最小栈"
+            ],
+            [
+              "#/e/225",
+              "225. 用队列实现栈（模拟栈）"
+            ],
+            [
+              "#/e/lc-face-extra-23",
+              "用栈实现队列"
+            ],
+            [
+              "#/e/nonlc-5-3",
+              "如果在“两栈实现队列”的基础上要求支持删除中间元素，该怎么做？"
+            ]
+          ]
+        },
+        {
+          "name": "前缀树",
+          "note": "多叉树共享前缀。完整单词和前缀的差别只是节点上有没有结束标记。",
+          "items": [
+            [
+              "#/e/208",
+              "208. 实现 Trie（前缀树）"
+            ]
+          ]
+        },
+        {
+          "name": "哈希表实现与并发",
+          "note": "手写可扩容 HashMap 要讲清桶、负载因子、2 的幂容量和扩容重挂。并发场景可用分段锁、桶头 CAS 或读写锁，迭代通常是弱一致的。",
+          "items": [
+            [
+              "#/e/nonlc-1-9",
+              "手撕一个可扩容的 HashMap，核心思路是什么？"
+            ],
+            [
+              "#/e/nonlc-4-1",
+              "除了 ConcurrentHashMap 和加锁，还有什么方案解决 LRU 的多线程问题？除了多线程，LRU 还有什么问题？有没有更好的淘汰策略？"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "专题精讲 · LC 146 LRU 缓存",
+          "html": "<p class=\"md-p\">考点：设计数据结构。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>使用哈希表实现 <code class=\"tok-inline\">O(1)</code> 按 key 查找。</li><li>使用双向链表实现 <code class=\"tok-inline\">O(1)</code> 删除和移动节点。</li><li>头尾设置 dummy 节点，简化插入删除的边界处理。</li><li><code class=\"tok-inline\">get</code> 操作访问后要将节点移到链表头部（最近使用位置）。</li><li><code class=\"tok-inline\">put</code> 操作容量满时淘汰尾部节点（最久未使用）。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">get</code> 也是写操作，会改变节点在链表中的位置，面试时必须强调。</li><li><code class=\"tok-inline\">put</code> 更新已存在的 key 时，只更新值并移到头部，不要重复插入。</li><li>删除尾部节点时要同时从哈希表中移除对应 key。</li><li>双向链表的 <code class=\"tok-inline\">remove</code> 操作要同时更新 <code class=\"tok-inline\">prev</code> 和 <code class=\"tok-inline\">next</code> 两个方向。</li></ul></div>\n<p class=\"md-p\">线程安全追问：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>简单方案：所有 <code class=\"tok-inline\">get/put</code> 加同一把锁。</li><li>高并发方案：分段锁或使用成熟缓存库，但 LRU 的访问顺序维护会让读操作也需要同步。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">链表总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    // 双向链表节点\n    static class Node {\n        int key, val;\n        Node prev, next;\n        Node(int key, int val) { this.key = key; this.val = val; }\n    }\n\n    static class LRUCache {\n        private final int capacity;\n        private final Map&lt;Integer, Node&gt; map = new HashMap&lt;&gt;();\n        private final Node head = new Node(0, 0); // dummy head\n        private final Node tail = new Node(0, 0); // dummy tail\n\n        public LRUCache(int capacity) {\n            this.capacity = capacity;\n            head.next = tail;\n            tail.prev = head;\n        }\n\n        public int get(int key) {\n            Node node = map.get(key);\n            if (node == null) return -1;\n            moveToHead(node);\n            return node.val;\n        }\n\n        public void put(int key, int value) {\n            Node node = map.get(key);\n            if (node != null) {\n                node.val = value;\n                moveToHead(node);\n                return;\n            }\n            Node added = new Node(key, value);\n            map.put(key, added);\n            addToHead(added);\n            if (map.size() &gt; capacity) {\n                // 淘汰尾部节点（最久未使用）\n                Node removed = tail.prev;\n                removeNode(removed);\n                map.remove(removed.key);\n            }\n        }\n\n        private void moveToHead(Node node) {\n            removeNode(node);\n            addToHead(node);\n        }\n\n        private void addToHead(Node node) {\n            node.prev = head;\n            node.next = head.next;\n            head.next.prev = node;\n            head.next = node;\n        }\n\n        private void removeNode(Node node) {\n            node.prev.next = node.next;\n            node.next.prev = node.prev;\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        // 输入格式：\n        // 第一行：一个整数 capacity\n        // 后续每行一条操作：\n        //   get key\n        //   put key value\n        // 输入结束以 EOF 或空行终止\n        int capacity = Integer.parseInt(sc.nextLine().trim());\n        LRUCache cache = new LRUCache(capacity);\n        while (sc.hasNextLine()) {\n            String line = sc.nextLine().trim();\n            if (line.isEmpty()) break;\n            String[] parts = line.split(&quot;\\\\s+&quot;);\n            if (parts[0].equals(&quot;get&quot;)) {\n                int key = Integer.parseInt(parts[1]);\n                System.out.println(cache.get(key));\n            } else if (parts[0].equals(&quot;put&quot;)) {\n                int key = Integer.parseInt(parts[1]);\n                int val = Integer.parseInt(parts[2]);\n                cache.put(key, val);\n            }\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 146 LRU 缓存",
+          "html": "<p class=\"md-p\">考点：哈希表 + 双向链表。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>哈希表定位节点。</li><li>双向链表维护最近使用顺序。</li><li>get 后移动到头部。</li><li>put 超容量时删除尾部。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行为容量 capacity，第二行为操作次数 n，接下来 n 行为操作（put key value / get key）。 输出格式：对 get 操作输出对应结果，不存在输出 -1。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    // 双向链表节点\n    static class Node {\n        int key, value;\n        Node prev, next;\n        Node(int key, int value) {\n            this.key = key;\n            this.value = value;\n        }\n    }\n\n    static Map&lt;Integer, Node&gt; map = new HashMap&lt;&gt;();\n    static Node head = new Node(-1, -1); // 哨兵头\n    static Node tail = new Node(-1, -1); // 哨兵尾\n    static int capacity;\n\n    // 将节点移到头部（最近使用）\n    static void moveToHead(Node node) {\n        removeNode(node);\n        addToHead(node);\n    }\n\n    // 删除节点\n    static void removeNode(Node node) {\n        node.prev.next = node.next;\n        node.next.prev = node.prev;\n    }\n\n    // 在头部插入节点\n    static void addToHead(Node node) {\n        node.next = head.next;\n        node.prev = head;\n        head.next.prev = node;\n        head.next = node;\n    }\n\n    // 删除尾部节点（最久未使用）\n    static Node removeTail() {\n        Node last = tail.prev;\n        removeNode(last);\n        return last;\n    }\n\n    static int get(int key) {\n        if (!map.containsKey(key)) return -1;\n        Node node = map.get(key);\n        moveToHead(node);\n        return node.value;\n    }\n\n    static void put(int key, int value) {\n        if (map.containsKey(key)) {\n            Node node = map.get(key);\n            node.value = value;\n            moveToHead(node);\n        } else {\n            Node node = new Node(key, value);\n            map.put(key, node);\n            addToHead(node);\n            if (map.size() &gt; capacity) {\n                Node removed = removeTail();\n                map.remove(removed.key);\n            }\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        capacity = Integer.parseInt(sc.nextLine().trim());\n        head.next = tail;\n        tail.prev = head;\n        int n = Integer.parseInt(sc.nextLine().trim());\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; n; i++) {\n            String line = sc.nextLine().trim();\n            String[] parts = line.split(&quot; &quot;);\n            if (parts[0].equals(&quot;get&quot;)) {\n                sb.append(get(Integer.parseInt(parts[1]))).append(&quot;\\n&quot;);\n            } else {\n                put(Integer.parseInt(parts[1]), Integer.parseInt(parts[2]));\n            }\n        }\n        System.out.print(sb);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 146 LRU 缓存",
+          "html": "<p class=\"md-p\">考点：哈希定位节点。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">HashMap&lt;Integer, Node&gt;</code> 负责 O(1) 查找。</li><li>双向链表负责 O(1) 移动和删除。</li><li>get 也会改变访问顺序。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>put 已有 key 时只更新值并移到头部，不要重复创建节点。</li><li>超出容量删除的是 tail.prev（最久未使用），不是 head.next。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">哈希总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">输入格式：第一行 capacity，第二行操作数 n，接下来 n 行，每行 get key 或 put key value\n输出格式：每次 get 输出对应 value 或 -1，每次 put 无输出</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">哈希总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    // 双向链表节点\n    static class Node {\n        int key, val;\n        Node prev, next;\n        Node(int k, int v) { key = k; val = v; }\n    }\n\n    static class LRUCache {\n        int capacity;\n        Map&lt;Integer, Node&gt; map; // key -&gt; Node，O(1) 定位\n        Node head, tail;        // 虚拟头尾哨兵\n\n        public LRUCache(int cap) {\n            capacity = cap;\n            map = new HashMap&lt;&gt;();\n            head = new Node(0, 0);\n            tail = new Node(0, 0);\n            head.next = tail;\n            tail.prev = head;\n        }\n\n        // 将节点移到链表头部（最近使用）\n        private void moveToHead(Node node) {\n            removeNode(node);\n            addToHead(node);\n        }\n\n        private void removeNode(Node node) {\n            node.prev.next = node.next;\n            node.next.prev = node.prev;\n        }\n\n        private void addToHead(Node node) {\n            node.next = head.next;\n            node.prev = head;\n            head.next.prev = node;\n            head.next = node;\n        }\n\n        public int get(int key) {\n            if (!map.containsKey(key)) return -1;\n            Node node = map.get(key);\n            // 访问后移到头部\n            moveToHead(node);\n            return node.val;\n        }\n\n        public void put(int key, int value) {\n            if (map.containsKey(key)) {\n                // 已存在则更新值并移到头部\n                Node node = map.get(key);\n                node.val = value;\n                moveToHead(node);\n            } else {\n                Node node = new Node(key, value);\n                map.put(key, node);\n                addToHead(node);\n                if (map.size() &gt; capacity) {\n                    // 超出容量，删除尾部节点（最久未使用）\n                    Node lru = tail.prev;\n                    removeNode(lru);\n                    map.remove(lru.key);\n                }\n            }\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int capacity = sc.nextInt();\n        int n = sc.nextInt();\n        LRUCache cache = new LRUCache(capacity);\n        for (int i = 0; i &lt; n; i++) {\n            String op = sc.next();\n            if (op.equals(&quot;get&quot;)) {\n                int key = sc.nextInt();\n                System.out.println(cache.get(key));\n            } else {\n                int key = sc.nextInt();\n                int val = sc.nextInt();\n                cache.put(key, val);\n            }\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 460 LFU 缓存",
+          "html": "<p class=\"md-p\">考点：频次 + 最近性。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">key -&gt; node</code></li><li><code class=\"tok-inline\">freq -&gt; 双向链表</code></li><li><code class=\"tok-inline\">minFreq</code> 记录当前最小频次。</li><li>访问时节点频次加一，移动到新频次链表。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行为容量 capacity，第二行为操作次数 n，接下来 n 行为操作（put key value / get key）。 输出格式：对 get 操作输出对应结果，不存在输出 -1。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    // LFU 节点\n    static class Node {\n        int key, value, freq;\n        Node prev, next;\n        Node(int key, int value) {\n            this.key = key;\n            this.value = value;\n            this.freq = 1;\n        }\n    }\n\n    // 双向链表，用于同一频次下的节点（按访问时间排序）\n    static class DoublyLinkedList {\n        Node head = new Node(-1, -1), tail = new Node(-1, -1);\n        int size = 0;\n        DoublyLinkedList() {\n            head.next = tail;\n            tail.prev = head;\n        }\n        void addFirst(Node node) {\n            node.next = head.next;\n            node.prev = head;\n            head.next.prev = node;\n            head.next = node;\n            size++;\n        }\n        void remove(Node node) {\n            node.prev.next = node.next;\n            node.next.prev = node.prev;\n            size--;\n        }\n        Node removeLast() {\n            if (size == 0) return null;\n            Node last = tail.prev;\n            remove(last);\n            return last;\n        }\n    }\n\n    static Map&lt;Integer, Node&gt; keyMap = new HashMap&lt;&gt;();\n    static Map&lt;Integer, DoublyLinkedList&gt; freqMap = new HashMap&lt;&gt;();\n    static int capacity, minFreq;\n\n    static void updateFreq(Node node) {\n        int oldFreq = node.freq;\n        DoublyLinkedList oldList = freqMap.get(oldFreq);\n        oldList.remove(node);\n        if (oldFreq == minFreq &amp;&amp; oldList.size == 0) {\n            minFreq++;\n        }\n        node.freq++;\n        freqMap.computeIfAbsent(node.freq, k -&gt; new DoublyLinkedList()).addFirst(node);\n    }\n\n    static int get(int key) {\n        if (!keyMap.containsKey(key)) return -1;\n        Node node = keyMap.get(key);\n        updateFreq(node);\n        return node.value;\n    }\n\n    static void put(int key, int value) {\n        if (capacity == 0) return;\n        if (keyMap.containsKey(key)) {\n            Node node = keyMap.get(key);\n            node.value = value;\n            updateFreq(node);\n        } else {\n            if (keyMap.size() == capacity) {\n                DoublyLinkedList minList = freqMap.get(minFreq);\n                Node removed = minList.removeLast();\n                keyMap.remove(removed.key);\n            }\n            Node node = new Node(key, value);\n            keyMap.put(key, node);\n            minFreq = 1;\n            freqMap.computeIfAbsent(1, k -&gt; new DoublyLinkedList()).addFirst(node);\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        capacity = Integer.parseInt(sc.nextLine().trim());\n        minFreq = 0;\n        int n = Integer.parseInt(sc.nextLine().trim());\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; n; i++) {\n            String line = sc.nextLine().trim();\n            String[] parts = line.split(&quot; &quot;);\n            if (parts[0].equals(&quot;get&quot;)) {\n                sb.append(get(Integer.parseInt(parts[1]))).append(&quot;\\n&quot;);\n            } else {\n                put(Integer.parseInt(parts[1]), Integer.parseInt(parts[2]));\n            }\n        }\n        System.out.print(sb);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 155 最小栈",
+          "html": "<p class=\"md-p\">考点：辅助栈。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>一个栈存所有元素。</li><li>一个栈存当前最小值。</li><li>push 时同步压入最小值，pop 时同步弹出。</li></ul></div>\n<p class=\"md-p\">输入格式：多行操作指令，第一行为操作次数 n，接下来 n 行为操作（push x / pop / top / getMin）。 输出格式：对 top 和 getMin 操作输出对应结果。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = Integer.parseInt(sc.nextLine().trim());\n        Deque&lt;Integer&gt; stack = new ArrayDeque&lt;&gt;();\n        Deque&lt;Integer&gt; minStack = new ArrayDeque&lt;&gt;();\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; n; i++) {\n            String line = sc.nextLine().trim();\n            if (line.startsWith(&quot;push&quot;)) {\n                int x = Integer.parseInt(line.split(&quot; &quot;)[1]);\n                stack.push(x);\n                // 最小栈压入当前最小值\n                if (minStack.isEmpty()) {\n                    minStack.push(x);\n                } else {\n                    minStack.push(Math.min(x, minStack.peek()));\n                }\n            } else if (line.equals(&quot;pop&quot;)) {\n                stack.pop();\n                minStack.pop();\n            } else if (line.equals(&quot;top&quot;)) {\n                sb.append(stack.peek()).append(&quot;\\n&quot;);\n            } else if (line.equals(&quot;getMin&quot;)) {\n                sb.append(minStack.peek()).append(&quot;\\n&quot;);\n            }\n        }\n        System.out.print(sb);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 225 用队列实现栈",
+          "html": "<p class=\"md-p\">考点：队列模拟。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>用一个队列，push 时将之前所有元素重新排到队尾。</li></ul></div>\n<p class=\"md-p\">输入格式：多行操作（push x / pop / top）。 输出格式：pop 和 top 输出对应值。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static class MyStack {\n        Queue&lt;Integer&gt; queue = new LinkedList&lt;&gt;();\n\n        public void push(int x) {\n            int size = queue.size();\n            queue.offer(x);\n            // 将之前的元素移到新元素后面\n            for (int i = 0; i &lt; size; i++) {\n                queue.offer(queue.poll());\n            }\n        }\n\n        public int pop() { return queue.poll(); }\n        public int top() { return queue.peek(); }\n        public boolean empty() { return queue.isEmpty(); }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = Integer.parseInt(sc.nextLine().trim());\n        MyStack stack = new MyStack();\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; n; i++) {\n            String line = sc.nextLine().trim();\n            if (line.startsWith(&quot;push&quot;)) {\n                stack.push(Integer.parseInt(line.split(&quot; &quot;)[1]));\n            } else if (line.equals(&quot;pop&quot;)) {\n                sb.append(stack.pop()).append(&quot;\\n&quot;);\n            } else if (line.equals(&quot;top&quot;)) {\n                sb.append(stack.top()).append(&quot;\\n&quot;);\n            }\n        }\n        System.out.print(sb);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 208 实现 Trie（前缀树）",
+          "html": "<p class=\"md-p\">考点：Trie 树的插入、查找和前缀匹配。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>每个节点有 26 个子节点和一个 isEnd 标记。</li><li>insert 沿路径创建节点。</li><li>search 和 startsWith 沿路径查找，search 要求终点 isEnd。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">图论总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static class Trie {\n        Trie[] children = new Trie[26];\n        boolean isEnd;\n        void insert(String word) {\n            Trie node = this;\n            for (char c : word.toCharArray()) {\n                int idx = c - 'a';\n                if (node.children[idx] == null) node.children[idx] = new Trie();\n                node = node.children[idx];\n            }\n            node.isEnd = true;\n        }\n        boolean search(String word) {\n            Trie node = this;\n            for (char c : word.toCharArray()) {\n                int idx = c - 'a';\n                if (node.children[idx] == null) return false;\n                node = node.children[idx];\n            }\n            return node.isEnd;\n        }\n        boolean startsWith(String prefix) {\n            Trie node = this;\n            for (char c : prefix.toCharArray()) {\n                int idx = c - 'a';\n                if (node.children[idx] == null) return false;\n                node = node.children[idx];\n            }\n            return true;\n        }\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        Trie trie = new Trie();\n        for (int i = 0; i &lt; n; i++) {\n            String op = sc.next();\n            String word = sc.next();\n            if (op.equals(&quot;insert&quot;)) trie.insert(word);\n            else if (op.equals(&quot;search&quot;)) System.out.println(trie.search(word));\n            else if (op.equals(&quot;startsWith&quot;)) System.out.println(trie.startsWith(word));\n        }\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 208 实现 Trie",
+          "html": "<p class=\"md-p\">考点：前缀树。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>TrieNode 有 26 个子节点和 isEnd 标记。</li></ul></div>\n<p class=\"md-p\">输入格式：多行操作（insert word / search word / startsWith prefix）。 输出格式：search 和 startsWith 输出 true/false。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    static class Trie {\n        static class TrieNode {\n            TrieNode[] children = new TrieNode[26];\n            boolean isEnd;\n        }\n        TrieNode root = new TrieNode();\n\n        public void insert(String word) {\n            TrieNode cur = root;\n            for (char c : word.toCharArray()) {\n                int idx = c - 'a';\n                if (cur.children[idx] == null) cur.children[idx] = new TrieNode();\n                cur = cur.children[idx];\n            }\n            cur.isEnd = true;\n        }\n\n        public boolean search(String word) {\n            TrieNode cur = root;\n            for (char c : word.toCharArray()) {\n                int idx = c - 'a';\n                if (cur.children[idx] == null) return false;\n                cur = cur.children[idx];\n            }\n            return cur.isEnd;\n        }\n\n        public boolean startsWith(String prefix) {\n            TrieNode cur = root;\n            for (char c : prefix.toCharArray()) {\n                int idx = c - 'a';\n                if (cur.children[idx] == null) return false;\n                cur = cur.children[idx];\n            }\n            return true;\n        }\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = Integer.parseInt(sc.nextLine().trim());\n        Trie trie = new Trie();\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i &lt; n; i++) {\n            String line = sc.nextLine().trim();\n            String[] parts = line.split(&quot; &quot;);\n            if (parts[0].equals(&quot;insert&quot;)) {\n                trie.insert(parts[1]);\n            } else if (parts[0].equals(&quot;search&quot;)) {\n                sb.append(trie.search(parts[1])).append(&quot;\\n&quot;);\n            } else {\n                sb.append(trie.startsWith(parts[1])).append(&quot;\\n&quot;);\n            }\n        }\n        System.out.print(sb);\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "number": 146,
+      "title": "LRU 缓存",
+      "slug": "lru-cache",
+      "category": "链表",
+      "time": "O(1)",
+      "space": "O(capacity)",
+      "idea": "cache 用 HashMap 把 key 映射到双向链表 Node，Node 同时保存 key 和 value；head、tail 两个哨兵把真实结点夹在中间，靠近 head 的是最近使用。get 命中后 moveToFront：先 remove 再 addFirst。put 若 key 已存在，只改 value 并同样移到前面；否则新建结点放入 cache 并 addFirst。插入后若 cache.size() 大于 capacity，取 lru=tail.prev，摘掉该结点再 cache.remove(lru.key)。",
+      "code": "import java.util.*; // 提供 HashMap 与 Map\n\nclass LRUCache {\n    // 结点保存 key：淘汰时要用它从 cache 里删对应项\n    private static class Node {\n        int key;\n        int value;\n        Node prev;\n        Node next;\n\n        Node(int key, int value) {\n            this.key = key;\n            this.value = value;\n        }\n    }\n\n    private final int capacity;\n    private final Map<Integer, Node> cache = new HashMap<>();\n    private final Node head = new Node(0, 0); // 哨兵，后面紧挨最近使用的结点\n    private final Node tail = new Node(0, 0); // 哨兵，前面紧挨最久未使用的结点\n\n    public LRUCache(int capacity) {\n        this.capacity = capacity;\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public int get(int key) {\n        Node node = cache.get(key);\n        if (node == null) return -1;\n\n        // 访问过就要变成最近使用，否则淘汰顺序会错\n        moveToFront(node);\n        return node.value;\n    }\n\n    public void put(int key, int value) {\n        if (cache.containsKey(key)) {\n            Node node = cache.get(key);\n            node.value = value;\n            moveToFront(node);\n            return;\n        }\n\n        Node node = new Node(key, value);\n        cache.put(key, node);\n        addFirst(node);\n\n        // 先插入再看长度，超容量时 tail 前驱就是最久未使用项\n        if (cache.size() > capacity) {\n            Node lru = tail.prev;\n            remove(lru);\n            cache.remove(lru.key);\n        }\n    }\n\n    private void moveToFront(Node node) {\n        remove(node);\n        addFirst(node);\n    }\n\n    // 插到 head 与原第一个真实结点之间\n    private void addFirst(Node node) {\n        node.next = head.next;\n        node.prev = head;\n        head.next.prev = node;\n        head.next = node;\n    }\n\n    // 只改前后指针，任意位置都能 O(1) 摘下\n    private void remove(Node node) {\n        node.prev.next = node.next;\n        node.next.prev = node.prev;\n    }\n}",
+      "description": "实现一个 LRU 缓存，支持 get 与 put。容量已满时，淘汰最久没有被访问的键。",
+      "source": "",
+      "id": "146",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "链表",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "simple": {
+        "statement": "实现一个 LRU 缓存，支持 get 与 put。容量已满时，淘汰最久没有被访问的键。",
+        "req": [
+          "get 和 put 都需要平均 O(1)",
+          "容量满时淘汰最久没有被访问的键"
+        ],
+        "analysis": "cache 用 HashMap 把 key 映射到双向链表 Node，Node 同时保存 key 和 value；head、tail 两个哨兵把真实结点夹在中间，靠近 head 的是最近使用。get 命中后 moveToFront：先 remove 再 addFirst。put 若 key 已存在，只改 value 并同样移到前面；否则新建结点放入 cache 并 addFirst。插入后若 cache.size() 大于 capacity，取 lru=tail.prev，摘掉该结点再 cache.remove(lru.key)。",
+        "cx": "时间 O(1)，空间 O(capacity)",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      },
+      "oldCat": "链表"
+    },
+    {
+      "id": "460",
+      "number": 460,
+      "title": "LFU 缓存",
+      "slug": "lfu-cache",
+      "category": "链表",
+      "source": "面经补充",
+      "time": "get/put 平均 O(1)",
+      "space": "O(capacity)",
+      "idea": "nodes 用 key 找到带 freq 的 Node；freqKeys 的每个频率对应一个 LinkedHashSet，插入顺序就是该频率下从最久到最近。get 命中后 touch。put 在 capacity 为 0 时直接返回；key 已存在则改 value 再 touch；满了就取 freqKeys.get(minFreq) 迭代器的第一个键淘汰。新键的 freq 默认为 1，加入频率 1 的集合并把 minFreq 设为 1。touch 先从旧频率集合删除，集合空且等于 minFreq 时 minFreq++，再把结点 freq 加一后加到新集合末尾。",
+      "description": "设计 LFU 缓存，get 与 put 都要求平均 O(1)。容量满时优先淘汰访问频率最低的键；若多个键频率相同，再淘汰其中最久未使用的键。",
+      "code": "import java.util.*;\n\nclass LFUCache {\n    static class Node {\n        int key;\n        int value;\n        int freq = 1;\n\n        Node(int key, int value) {\n            this.key = key;\n            this.value = value;\n        }\n    }\n\n    private final int capacity;\n    private int minFreq = 0;\n    private final Map<Integer, Node> nodes = new HashMap<>();\n    // 同一频率用插入顺序表示从最久到最近\n    private final Map<Integer, LinkedHashSet<Integer>> freqKeys = new HashMap<>();\n\n    public LFUCache(int capacity) {\n        this.capacity = capacity;\n    }\n\n    public int get(int key) {\n        Node node = nodes.get(key);\n        if (node == null) return -1;\n        touch(node);\n        return node.value;\n    }\n\n    public void put(int key, int value) {\n        if (capacity == 0) return;\n\n        if (nodes.containsKey(key)) {\n            Node node = nodes.get(key);\n            node.value = value;\n            touch(node);\n            return;\n        }\n\n        if (nodes.size() == capacity) {\n            // 迭代器第一个是该最低频率里最久没被访问的键\n            LinkedHashSet<Integer> keys = freqKeys.get(minFreq);\n            int evictKey = keys.iterator().next();\n            keys.remove(evictKey);\n            nodes.remove(evictKey);\n            if (keys.isEmpty()) freqKeys.remove(minFreq);\n        }\n\n        Node node = new Node(key, value);\n        nodes.put(key, node);\n        freqKeys.computeIfAbsent(1, f -> new LinkedHashSet<>()).add(key);\n        minFreq = 1;\n    }\n\n    private void touch(Node node) {\n        int oldFreq = node.freq;\n        LinkedHashSet<Integer> oldKeys = freqKeys.get(oldFreq);\n        oldKeys.remove(node.key);\n\n        // 这一档被拿空且正是全局最低频，最低频才要加一\n        if (oldKeys.isEmpty()) {\n            freqKeys.remove(oldFreq);\n            if (minFreq == oldFreq) minFreq++;\n        }\n\n        node.freq++;\n        // 加到新频率集合末尾，表示该频率下最近使用\n        freqKeys.computeIfAbsent(node.freq, f -> new LinkedHashSet<>()).add(node.key);\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "链表",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "simple": {
+        "statement": "设计 LFU 缓存，get 与 put 都要求平均 O(1)。容量满时优先淘汰访问频率最低的键；若多个键频率相同，再淘汰其中最久未使用的键。",
+        "req": [
+          "get 和 put 都要求平均 O(1)",
+          "容量满时优先淘汰访问频率最低的键",
+          "频率相同则淘汰其中最久未使用的键"
+        ],
+        "analysis": "nodes 用 key 找到带 freq 的 Node；freqKeys 的每个频率对应一个 LinkedHashSet，插入顺序就是该频率下从最久到最近。get 命中后 touch。put 在 capacity 为 0 时直接返回；key 已存在则改 value 再 touch；满了就取 freqKeys.get(minFreq) 迭代器的第一个键淘汰。新键的 freq 默认为 1，加入频率 1 的集合并把 minFreq 设为 1。touch 先从旧频率集合删除，集合空且等于 minFreq 时 minFreq++，再把结点 freq 加一后加到新集合末尾。",
+        "cx": "时间 get/put 平均 O(1)，空间 O(capacity)",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      },
+      "oldCat": "链表"
+    },
+    {
+      "id": "nonlc-4-0",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "环形链表和双向链表实现 LRU 有什么区别？你写的 LRU 放到生产里会有什么问题？",
+      "number": "缓1",
+      "description": "比较用环形链表和双向链表实现 LRU 的差别，以及手写的 LRU 直接放进生产会遇到什么问题。",
+      "idea": "标准写法是 HashMap 加双向链表：头尾放哨兵后，插入接到头部、容量满了删尾部、命中时把中间节点摘下来再接到头部。环形链表能少一些判空，但和 HashMap、淘汰、并发写在一起后更难读、也更难查。上生产还要同时保住链表和 map 的并发状态，扛住大量节点分配、GC 和锁竞争，并面对扫描流量冲掉热点；过期时间、权重、指标、序列化、持久化和分段都不是这条链表本身能提供的。",
+      "code": "",
+      "progressKey": "nonlc-4#0",
+      "faceParent": "nonlc-4",
+      "faceIdx": 0,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "比较用环形链表和双向链表实现 LRU 的差别，以及手写的 LRU 直接放进生产会遇到什么问题。",
+        "req": [],
+        "analysis": "标准写法是 HashMap 加双向链表：头尾放哨兵后，插入接到头部、容量满了删尾部、命中时把中间节点摘下来再接到头部。环形链表能少一些判空，但和 HashMap、淘汰、并发写在一起后更难读、也更难查。上生产还要同时保住链表和 map 的并发状态，扛住大量节点分配、GC 和锁竞争，并面对扫描流量冲掉热点；过期时间、权重、指标、序列化、持久化和分段都不是这条链表本身能提供的。",
+        "cx": "",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      }
+    },
+    {
+      "id": "nonlc-4-2",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "LFU 怎么实现？有什么问题？能不能和 LRU 结合？",
+      "number": "缓3",
+      "description": "LFU 如何实现，它有哪些问题，以及能不能和 LRU 结合起来。",
+      "idea": "用 key 到 node 的映射、freq 到双向链表的映射，再记当前最小频次 minFreq。每次访问把该 key 的频次加一，从旧频次链表摘下，挂到新频次链表上。淘汰时从 minFreq 那条链表删最旧的节点，于是先按最少次数，同次数再按最近最少使用。纯 LFU 迁移更重，很早以前的高频 key 会一直占着位置，频次也会一直涨，所以常见做法是同频次内按 LRU 淘汰，或用 TinyLFU 加 Window LRU。",
+      "code": "",
+      "progressKey": "nonlc-4#2",
+      "faceParent": "nonlc-4",
+      "faceIdx": 2,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "LFU 如何实现，它有哪些问题，以及能不能和 LRU 结合起来。",
+        "req": [],
+        "analysis": "用 key 到 node 的映射、freq 到双向链表的映射，再记当前最小频次 minFreq。每次访问把该 key 的频次加一，从旧频次链表摘下，挂到新频次链表上。淘汰时从 minFreq 那条链表删最旧的节点，于是先按最少次数，同次数再按最近最少使用。纯 LFU 迁移更重，很早以前的高频 key 会一直占着位置，频次也会一直涨，所以常见做法是同频次内按 LRU 淘汰，或用 TinyLFU 加 Window LRU。",
+        "cx": "",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      }
+    },
+    {
+      "number": 155,
+      "title": "最小栈",
+      "slug": "min-stack",
+      "category": "栈",
+      "time": "O(1)",
+      "space": "O(n)",
+      "idea": "push 时不只存 val：栈空则 currentMin 就是 val，否则取 Math.min(val, stack.peek()[1])，再压入 int[]{val, currentMin}。pop 扔掉当前这一帧，上一帧自己的最小值还在。top 读栈顶的 [0]，getMin 读栈顶的 [1]。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass MinStack {\n    // 每帧存 [当前值, 入栈后的最小值]，弹出后上一帧的最小值仍在。\n    private final Deque<int[]> stack = new ArrayDeque<>();\n\n    public MinStack() {\n    }\n\n    public void push(int val) {\n        int currentMin = stack.isEmpty()\n                ? val\n                : Math.min(val, stack.peek()[1]);\n        stack.push(new int[]{val, currentMin});\n    }\n\n    public void pop() {\n        stack.pop();\n    }\n\n    public int top() {\n        return stack.peek()[0];\n    }\n\n    public int getMin() {\n        // 最小值已写在栈顶帧的第二项，不用再扫描。\n        return stack.peek()[1];\n    }\n}",
+      "description": "设计一个栈，支持 push、pop、top，并且能在 O(1) 时间内查询当前栈中的最小值。",
+      "source": "",
+      "id": "155",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数据结构（栈 / 堆 / 设计）",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "simple": {
+        "statement": "设计一个栈，支持 push、pop、top，并且能在 O(1) 时间内查询当前栈中的最小值。",
+        "req": [
+          "getMin 必须在 O(1) 时间内返回当前最小值"
+        ],
+        "analysis": "push 时不只存 val：栈空则 currentMin 就是 val，否则取 Math.min(val, stack.peek()[1])，再压入 int[]{val, currentMin}。pop 扔掉当前这一帧，上一帧自己的最小值还在。top 读栈顶的 [0]，getMin 读栈顶的 [1]。",
+        "cx": "时间 O(1)，空间 O(n)",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      },
+      "oldCat": "栈"
+    },
+    {
+      "id": "225",
+      "number": 225,
+      "title": "用队列实现栈（模拟栈）",
+      "slug": "implement-stack-using-queues",
+      "category": "栈",
+      "source": "面经补充",
+      "time": "push O(n)，pop/top O(1)",
+      "space": "O(n)",
+      "idea": "MyStack 里只有一条 ArrayDeque。push 先用 oldSize 记下入队前的长度，再 offer(x)，然后循环 oldSize 次，把队首 poll 出来再 offer 回队尾，旧元素就都排到 x 后面，x 停在队首。pop 用 remove、top 用 element，都只碰队首；empty 直接看队列是否为空。",
+      "description": "只使用队列的基本操作实现一个后进先出栈，并支持 push、pop、top 和 empty。",
+      "code": "import java.util.*;\n\nclass MyStack {\n    // 单队列模拟栈，栈顶始终保持在队首。\n    private final Queue<Integer> queue = new ArrayDeque<>();\n\n    public void push(int x) {\n        int oldSize = queue.size();\n        queue.offer(x);\n\n        // 只旋转入队前的旧元素，让 x 留在队首。\n        for (int i = 0; i < oldSize; i++) {\n            queue.offer(queue.poll());\n        }\n    }\n\n    public int pop() {\n        return queue.remove(); // 队首即栈顶。\n    }\n\n    public int top() {\n        return queue.element();\n    }\n\n    public boolean empty() {\n        return queue.isEmpty();\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数据结构（栈 / 堆 / 设计）",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "simple": {
+        "statement": "只使用队列的基本操作实现一个后进先出栈，并支持 push、pop、top 和 empty。",
+        "req": [
+          "只使用队列的基本操作",
+          "支持 push、pop、top、empty"
+        ],
+        "analysis": "MyStack 里只有一条 ArrayDeque。push 先用 oldSize 记下入队前的长度，再 offer(x)，然后循环 oldSize 次，把队首 poll 出来再 offer 回队尾，旧元素就都排到 x 后面，x 停在队首。pop 用 remove、top 用 element，都只碰队首；empty 直接看队列是否为空。",
+        "cx": "时间 push O(n)，pop/top O(1)，空间 O(n)",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      },
+      "oldCat": "栈"
+    },
+    {
+      "id": "lc-face-extra-23",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "用栈实现队列",
+      "number": "232",
+      "description": "只用栈实现一个队列，支持入队 push、出队 pop、查看队首 peek，以及判断队列是否为空 empty。",
+      "idea": "push 只把元素压进 inStack。pop 和 peek 先调用 moveIfNeeded：仅当 outStack 为空时，才把 inStack 逐个弹出并压入 outStack，这样原先的队首会落到 outStack 的栈顶，再对 outStack 做 pop 或 peek。empty 在两个栈都空时返回 true。每个元素最多从 inStack 倒进 outStack 一次，单次操作均摊是常数。",
+      "code": "import java.util.ArrayDeque;\nimport java.util.Deque;\n\nclass MyQueue {\n    private final Deque<Integer> inStack = new ArrayDeque<>();\n    private final Deque<Integer> outStack = new ArrayDeque<>();\n\n    public void push(int x) {\n        // 入队只写 inStack，不碰出队栈\n        inStack.push(x);\n    }\n\n    public int pop() {\n        moveIfNeeded();\n        return outStack.pop();\n    }\n\n    public int peek() {\n        moveIfNeeded();\n        return outStack.peek();\n    }\n\n    public boolean empty() {\n        // 两边都空，队列里才没有元素\n        return inStack.isEmpty() && outStack.isEmpty();\n    }\n\n     private void moveIfNeeded() {\n         // 出队栈还有数就保持原顺序，避免重复倒\n         if (outStack.isEmpty()) {\n             while (!inStack.isEmpty()) {\n                 // 再压一次把队首翻到 outStack 栈顶\n                 outStack.push(inStack.pop());\n             }\n         }\n     }\n }",
+      "progressKey": "lc-face-extra#23",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 23,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "只用栈实现一个队列，支持入队 push、出队 pop、查看队首 peek，以及判断队列是否为空 empty。",
+        "req": [],
+        "analysis": "push 只把元素压进 inStack。pop 和 peek 先调用 moveIfNeeded：仅当 outStack 为空时，才把 inStack 逐个弹出并压入 outStack，这样原先的队首会落到 outStack 的栈顶，再对 outStack 做 pop 或 peek。empty 在两个栈都空时返回 true。每个元素最多从 inStack 倒进 outStack 一次，单次操作均摊是常数。",
+        "cx": "时间均摊 O(1)，空间 O(n)",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      },
+      "lc": "232"
+    },
+    {
+      "id": "nonlc-5-3",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "如果在“两栈实现队列”的基础上要求支持删除中间元素，该怎么做？",
+      "number": "补4",
+      "description": "在两个栈实现队列的基础上，还要支持删除队列中间的元素，该如何实现。",
+      "idea": "两栈只维护队头和队尾：入队进一个栈，出队时把元素倒到另一个栈再弹出。要删中间元素，只能把栈临时倒空找到目标再塞回去，每次删除都是 O(n)。若同时要队列顺序和按下标删除，应改用双向链表加下标映射、LinkedHashMap，或平衡树、跳表，也可以把“按序进出”和“按位置删除”拆成两个结构。",
+      "code": "",
+      "progressKey": "nonlc-5#3",
+      "faceParent": "nonlc-5",
+      "faceIdx": 3,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "在两个栈实现队列的基础上，还要支持删除队列中间的元素，该如何实现。",
+        "req": [],
+        "analysis": "两栈只维护队头和队尾：入队进一个栈，出队时把元素倒到另一个栈再弹出。要删中间元素，只能把栈临时倒空找到目标再塞回去，每次删除都是 O(n)。若同时要队列顺序和按下标删除，应改用双向链表加下标映射、LinkedHashMap，或平衡树、跳表，也可以把“按序进出”和“按位置删除”拆成两个结构。",
+        "cx": "",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      }
+    },
+    {
+      "number": 208,
+      "title": "实现 Trie（前缀树）",
+      "slug": "implement-trie-prefix-tree",
+      "category": "图论",
+      "time": "O(L)",
+      "space": "O(总字符数)",
+      "idea": "每个 TrieNode 用长度 26 的 children 表示字母边，isWord 标记单词在此结束。insert 从 root 按字符下标 c-'a' 走，缺边就 new TrieNode，走完把当前节点 isWord 设为 true。search 用 find 走到末尾，还要求 isWord 为真；startsWith 只要 find 不是 null。find 中途遇到空孩子就返回 null。",
+      "code": "import java.util.*; // Java 常用集合、队列、堆与数组工具\n\nclass Trie {\n    private static class TrieNode {\n        TrieNode[] children = new TrieNode[26];\n        boolean isWord;\n    }\n\n    private final TrieNode root = new TrieNode();\n\n    public Trie() {\n    }\n\n    public void insert(String word) {\n        TrieNode node = root;\n        for (char c : word.toCharArray()) {\n            int index = c - 'a';\n            // 这条字母边还没有，就补一个节点再往下走\n            if (node.children[index] == null) {\n                node.children[index] = new TrieNode();\n            }\n            node = node.children[index];\n        }\n        // 路径只说明前缀在，isWord 才表示单词在这里结束\n        node.isWord = true;\n    }\n\n    public boolean search(String word) {\n        TrieNode node = find(word);\n        // 必须走到末尾，并且该节点是单词结尾\n        return node != null && node.isWord;\n    }\n\n    public boolean startsWith(String prefix) {\n        return find(prefix) != null;\n    }\n\n    private TrieNode find(String text) {\n        TrieNode node = root;\n        for (char c : text.toCharArray()) {\n            int index = c - 'a';\n            if (node.children[index] == null) return null;\n            node = node.children[index];\n        }\n        return node;\n    }\n}",
+      "description": "实现 Trie 前缀树，支持插入单词、查询完整单词是否存在，以及查询某个前缀是否存在。公共前缀落在同一条路径上。",
+      "source": "",
+      "id": "208",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "图论",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "simple": {
+        "statement": "实现 Trie 前缀树，支持插入单词、查询完整单词是否存在，以及查询某个前缀是否存在。公共前缀落在同一条路径上。",
+        "req": [
+          "支持插入单词",
+          "支持查询完整单词是否存在",
+          "支持查询指定前缀是否存在"
+        ],
+        "analysis": "每个 TrieNode 用长度 26 的 children 表示字母边，isWord 标记单词在此结束。insert 从 root 按字符下标 c-'a' 走，缺边就 new TrieNode，走完把当前节点 isWord 设为 true。search 用 find 走到末尾，还要求 isWord 为真；startsWith 只要 find 不是 null。find 中途遇到空孩子就返回 null。",
+        "cx": "时间 O(L)，空间 O(总字符数)",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      },
+      "oldCat": "图论"
+    },
+    {
+      "id": "nonlc-1-9",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "手撕一个可扩容的 HashMap，核心思路是什么？",
+      "number": "通10",
+      "description": "手写一个可扩容的 HashMap，讲清核心结构：用数组做桶，冲突用链表处理，完成 put、get、remove 的下标计算，并在负载因子达到阈值后扩容、把元素重新放进新桶。",
+      "idea": "基础版本用数组加链表节点：哈希算出桶下标，冲突就挂到该桶的链表上，get 和 remove 沿同一条链查找。元素个数超过容量与负载因子的乘积就扩容，新建更长的桶数组，把旧链表节点按新长度重新算下标搬过去。数组长度翻倍时，节点要么留在原下标，要么移到原下标加旧容量。时间不够时先把这套结构和 resize 主线写对。",
+      "code": "",
+      "progressKey": "nonlc-1#9",
+      "faceParent": "nonlc-1",
+      "faceIdx": 9,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "手写一个可扩容的 HashMap，讲清核心结构：用数组做桶，冲突用链表处理，完成 put、get、remove 的下标计算，并在负载因子达到阈值后扩容、把元素重新放进新桶。",
+        "req": [
+          "用数组做桶，冲突使用链地址法（链表）",
+          "支持 put、get、remove，以及负载达到阈值后的扩容",
+          "扩容后按新的数组长度把旧桶中的元素重新分布"
+        ],
+        "analysis": "基础版本用数组加链表节点：哈希算出桶下标，冲突就挂到该桶的链表上，get 和 remove 沿同一条链查找。元素个数超过容量与负载因子的乘积就扩容，新建更长的桶数组，把旧链表节点按新长度重新算下标搬过去。数组长度翻倍时，节点要么留在原下标，要么移到原下标加旧容量。时间不够时先把这套结构和 resize 主线写对。",
+        "cx": "",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      }
+    },
+    {
+      "id": "nonlc-4-1",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "设计题（LRU/LFU/Trie/栈队列）",
+      "title": "除了 ConcurrentHashMap 和加锁，还有什么方案解决 LRU 的多线程问题？除了多线程，LRU 还有什么问题？有没有更好的淘汰策略？",
+      "number": "缓2",
+      "description": "除了 ConcurrentHashMap 和加锁，还有哪些办法处理 LRU 的多线程访问；除了多线程，LRU 本身还有哪些问题，以及有没有更好的淘汰策略。",
+      "idea": "可以把缓存拆成多个 shard，每个分片自己维护链表和锁，把锁粒度降下来；也可以读路径只记访问事件，由后台批量整理淘汰队列；或者直接用 Caffeine 这类已经做好并发、统计和淘汰的库。纯 LRU 会被一次性顺序扫过、之后不再读的数据把热点挤掉，而且它只看最近一次访问、不看访问次数。更常配合的是 LFU、LRU 加 TTL、分层缓存，或像 Caffeine 那样把最近性和频率合在一起的近似策略。",
+      "code": "",
+      "progressKey": "nonlc-4#1",
+      "faceParent": "nonlc-4",
+      "faceIdx": 1,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "除了 ConcurrentHashMap 和加锁，还有哪些办法处理 LRU 的多线程访问；除了多线程，LRU 本身还有哪些问题，以及有没有更好的淘汰策略。",
+        "req": [],
+        "analysis": "可以把缓存拆成多个 shard，每个分片自己维护链表和锁，把锁粒度降下来；也可以读路径只记访问事件，由后台批量整理淘汰队列；或者直接用 Caffeine 这类已经做好并发、统计和淘汰的库。纯 LRU 会被一次性顺序扫过、之后不再读的数据把热点挤掉，而且它只看最近一次访问、不看访问次数。更常配合的是 LFU、LRU 加 TTL、分层缓存，或像 Caffeine 那样把最近性和频率合在一起的近似策略。",
+        "cx": "",
+        "topic": "p-design",
+        "topicName": "设计题（LRU/LFU/Trie/栈队列）"
+      }
+    }
+  ]
+}

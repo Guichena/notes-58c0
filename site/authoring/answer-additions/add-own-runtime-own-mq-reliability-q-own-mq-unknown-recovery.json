@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-own-mq-reliability-q-own-mq-unknown-recovery",
+  "entryId": "own-mq-reliability",
+  "questionId": "q-own-mq-unknown-recovery",
+  "expectedOriginalHash": "de4ec66b2e9191c553ab55e93fb9a674e09788946860ec203742ebb363b633a9",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "07 锁 租约 fencing 与资源版本各解决什么问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 锁控制当前竞争，租约让故障 Worker 的所有权能过期回收，fencing token 阻止旧 Worker 在恢复后写回，资源版本 CAS 防止基于旧输入覆盖新数据。它们处理不同问题。只持有一个 Redis 锁不能保证远端写入安全，真正提交结果的存储或服务必须检查有效所有权和版本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "最容易遗漏的暂停时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "Worker A 领取任务，token=7；A 长时间 GC 或网络分区，租约过期；B 领取 token=8 并完成；A 恢复后拿旧结果提交。如果接收方只检查 A 自己认为有锁，就会覆盖 B。提交条件应包含任务、Worker、epoch/token、计划版本、租约是否有效和资源 expected version。"
+    },
+    {
+      "type": "paragraph",
+      "text": "token 递增要由权威存储原子完成，并且其单调范围与受保护资源一致。若只在业务数据库验证 token，却把真实写操作发到不支持 token 的外部服务，fencing 只能保护本地结果合并，不能阻止外部重复副作用。此时需要服务端幂等或单独对账，不能扩大保证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "CAS 与租约的配合"
+    },
+    {
+      "type": "paragraph",
+      "text": "A、B 都读取配置 v7。A 携带 expected_version=7 更新为 v8；B 的条件更新影响 0 行，返回冲突。B 重新读 v8，基于新事实生成差异和验证，不可直接把旧整文件覆盖上去。CAS 检测数据变化；租约减少重复计算，两者可以一起用。高冲突热点会使乐观重算成本升高，改用资源单写者、队列化或更细粒度对象可能更划算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "续租必须在未过期条件下检查旧 token，避免死而复生。租约长度要覆盖正常尾延迟并留心跳余量；太短导致误回收，太长导致故障恢复慢。服务端时钟决定过期，Worker 本地单调时钟用于剩余时间计算。心跳只说明活跃，不证明进展，应另设无进展检测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个资源锁按稳定顺序获取；等待锁时不要占用昂贵模型并发槽。审批等待释放 Worker 租约，用户批准后重新领取并验证版本。凭据和租约不是审批凭证，不可互相替代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 多个 Agent 同时修改文件如何避免冲突？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果多个Agent同时修改同一个文件，如何避免冲突？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 多个 Agent 同时修改共享任务状态，如何避免写覆盖和状态分叉？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 乐观锁和任务 Token 分别解决什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 异步任务的过期时间或租约时间如何设置？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- CAS 是什么意思？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 文档并发更新时，使用哪个字段控制版本？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请举例说明两个线程并发更新同一文档时，乐观锁如何生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么选择乐观锁，而不是分布式锁？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 热点文档频繁访问和修改时，乐观锁可能产生什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 分布式锁设置了过期时间，等过期时间之后再发一次请求，还能保持幂等性吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 如果是完全一样的请求，能保证幂等性吗？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ],
+  "targetOrigin": "authored"
+}

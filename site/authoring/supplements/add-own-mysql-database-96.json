@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-96",
+  "entryId": "database-96",
+  "expectedOriginalHash": "f20d06d0e9b5cece7c48f4b427b42f3e07baf45586617530e67865995f834c93",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "类似ChatGPT的对话系统怎样设计会话表、消息表及生成状态？"
+    },
+    {
+      "type": "paragraph",
+      "text": "对话系统把会话、消息、分支和生成运行分开，身份、顺序、请求幂等与流式完成状态各有独立约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：类似ChatGPT的对话系统怎样设计会话表、消息表及生成状态？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是对话产品的关系模型设计题，不代表任何具体聊天产品的内部表结构。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "会话与消息分开，先确定查询路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "conversation保存tenant、conversation_id、owner、标题、状态、version和创建/更新时间；按用户列会话是(tenant,owner,status,updated_at,id)访问。conversation_message保存稳定message_id、会话外键、role、内容、state、创建时间、client_request_id；按会话读取消息用(tenant,conversation,branch,seq,id)索引。正文较大时与列表元数据隔离，附件用不可变对象key、长度和hash，不把附件字节都塞入会话列表。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时间戳可能相同且受时钟影响，不能单独作为消息唯一ID或绝对顺序。seq_no是会话/分支内的逻辑顺序，稳定message_id是身份，client_request_id是一次逻辑提交的幂等键，三者职责不同。全局ID可用经过评估的分布式ID方案；会话局部序号需事务内锁定计数器或CAS分配，不能并发SELECT MAX(seq)+1。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "修改、重新生成与分支不是覆盖一条历史"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户编辑旧消息或重新生成回答时，可创建新message/branch并用parent_message_id指向依赖消息，保留旧版本及生成来源。线性会话可以只用一个branch；示例把公共前缀通过parent链引用，单branch列表SQL只列该分支自有消息，显示完整路径还要有界遍历/物化祖先链，不能假设分支ID过滤自动补齐共享前缀。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用必须校验parent属于同一会话、祖先无环、最大深度、分支写权限。复合外键防跨租户/跨会话引用，但不证明无环；若只允许插入新ID并引用已经提交的祖先、禁止修改parent，可降低成环风险。删除用户内容时定义硬删、墓碑和审计保留，不能因有历史分支就永久保留全部敏感原文。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "流式生成需要独立运行状态和可重放边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "generation_run关联输出message、model_version、状态、last_chunk_seq和version。先事务创建用户消息/待生成回答/任务或outbox，再异步调用模型；数据库事务不跨数十秒模型流。按run_id和递增chunk_seq去重流式片段，可分块持久化并周期推进水位，完成后发布complete；失败保留failed与可恢复位置，不能把半条回答说成成功结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若持久化chunk，另建(run_id,chunk_seq)唯一明细及payload hash，同序号不同内容报冲突；确认落库后再确认消费。示例仅给run水位表，不包含模型调用、chunk写入器或“外部模型恰好一次”实现。客户端重连从已确认序号续读，重跑模型可能产生不同文本，应创建新run而非盲接旧尾部。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "事务、幂等、权限与扩展"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建/追加时以(tenant,conversation,client_request_id)唯一约束挡重复，命中已有请求还需核对payload/身份，不能把不同请求内容误认成功。会话与消息写入、version推进应在一笔本地事务；并发编辑用expected version拒绝覆盖。每次读取先查会话ACL，所有SQL绑定tenant，不能只因知道conversation_id便读取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "主要访问按会话聚合时可把同会话消息落一分片，用户会话列表维护独立目录；按message_id均匀散开会增加读整段对话的扇出。大租户/超长会话要考虑按段冷热归档、上下文窗口/摘要和保留期。向量索引是可重建检索投影，不等于对话事实和权限权威库。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 conversation_schema.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/conversation_schema.sql",
+      "value": "-- Independent relational model, not a claim about ChatGPT internal storage.\nCREATE TABLE conversation (\n tenant_id BIGINT NOT NULL, conversation_id BIGINT NOT NULL, owner_id BIGINT NOT NULL,\n title VARCHAR(200) NOT NULL, status VARCHAR(16) NOT NULL,\n version BIGINT NOT NULL CHECK(version>=0), created_us BIGINT NOT NULL,\n updated_us BIGINT NOT NULL, PRIMARY KEY(tenant_id,conversation_id)\n);\nCREATE INDEX ix_conversation_owner ON conversation(tenant_id,owner_id,status,updated_us,conversation_id);\nCREATE TABLE conversation_message (\n tenant_id BIGINT NOT NULL, conversation_id BIGINT NOT NULL, message_id BIGINT NOT NULL,\n parent_message_id BIGINT, branch_id BIGINT NOT NULL, seq_no BIGINT NOT NULL CHECK(seq_no>=0),\n role VARCHAR(16) NOT NULL CHECK(role IN ('user','assistant','system','tool')),\n body TEXT NOT NULL, state VARCHAR(16) NOT NULL CHECK(state IN ('pending','streaming','complete','failed','deleted')),\n client_request_id VARCHAR(100) NOT NULL, created_us BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,conversation_id,message_id),\n UNIQUE(tenant_id,conversation_id,branch_id,seq_no),\n UNIQUE(tenant_id,conversation_id,client_request_id),\n FOREIGN KEY(tenant_id,conversation_id) REFERENCES conversation(tenant_id,conversation_id),\n FOREIGN KEY(tenant_id,conversation_id,parent_message_id) REFERENCES conversation_message(tenant_id,conversation_id,message_id)\n);\nCREATE INDEX ix_message_branch ON conversation_message(tenant_id,conversation_id,branch_id,seq_no,message_id);\nCREATE TABLE generation_run (\n tenant_id BIGINT NOT NULL, conversation_id BIGINT NOT NULL, run_id BIGINT NOT NULL,\n output_message_id BIGINT NOT NULL, model_version VARCHAR(100) NOT NULL,\n state VARCHAR(16) NOT NULL, last_chunk_seq BIGINT NOT NULL CHECK(last_chunk_seq>=-1),\n version BIGINT NOT NULL CHECK(version>=0), PRIMARY KEY(tenant_id,conversation_id,run_id),\n FOREIGN KEY(tenant_id,conversation_id,output_message_id) REFERENCES conversation_message(tenant_id,conversation_id,message_id)\n);\n-- Bind tenant/owner from authenticated identity; never trust an opaque ID as authorization.\nSELECT conversation_id,title,updated_us FROM conversation\n WHERE tenant_id=? AND owner_id=? AND status='active'\n ORDER BY updated_us DESC,conversation_id DESC LIMIT ?;\nSELECT message_id,parent_message_id,role,body,state,seq_no FROM conversation_message\n WHERE tenant_id=? AND conversation_id=? AND branch_id=? AND seq_no>?\n ORDER BY seq_no,message_id LIMIT ?;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "对话表应拒绝跨租户引用、同会话重复请求号和重复序号；分支列表只读取固定会话与分支，生成水位用条件更新推进。图 checkpoint、对外流事件与最终消息的持久水位应分别检查，不能把其中一个成功替代另外两个。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Agent流式response怎样存储，什么时候合并，应该选什么数据库？"
+    },
+    {
+      "type": "paragraph",
+      "text": "流式回复应保存可重放的分块事件和最终快照，只有结束标记与完整连续序列都满足时才发布完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：Agent流式response怎样存储，什么时候合并，应该选什么数据库？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "背景为 Java、LangGraph 和 AG-UI；下述 sequence/epoch 是教学账本协议，需要适配真实事件规范。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先决定数据契约与确认语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "每次生成用新的run_id，事件带tenant/conversation/message身份、writer epoch、递增sequence、event_type和payload。文本delta只追加到对应文本通道；工具调用参数、状态、错误、usage等事件不能按到达顺序当正文拼接。协议自身ID/序号规则若不同，应在适配层明确映射，不把本参考序号假装AG-UI规范字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "展示给浏览器、服务器收到chunk、持久化提交和最终complete是四个时点。若先展示后异步落库，崩溃可能丢最后一段，要明确允许窗口；若承诺可恢复则确认消费/推进恢复游标须在持久化后。HTTP/SSE断开不等于模型没有继续生成，重试模型也可能产生不同文本，通常开新run并保留旧run失败状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "选择分块日志加最终快照，合并有两个层次"
+    },
+    {
+      "type": "paragraph",
+      "text": "“合并”有两个时点。UI 可以收到连续 delta 就逐步展示；数据库则可按时间或字节上限攒小批提交，减少每 token 一事务的连接和日志开销，但缓冲必须有界并能背压。要发布最终消息，还得等 run 的结束标记，并确认 0..N-1 全部存在、无冲突、无缺口，再按序合并。暂时没新 token 或 SSE 断开，都不能证明生成结束；没有 end 就只能标 partial/failed。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每块用 (run,seq) 唯一标识：同序号同内容是重放，同序号异内容是冲突。乱序块可暂存等缺口，但要限制总时长、总字节和事件数。网络分片还可能切在一个 UTF-8 多字节字符中间，应用应增量解码后保存完整字符串，或存原始字节再按流解码；逐片替换“非法字节”再拼接，会把原本合法的正文损坏。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据库按正确性与规模选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "中等规模可MySQL/PostgreSQL事务表保存run状态、chunk和最终文本，方便幂等/权限/会话查询；超长正文可对象存储不可变chunk/manifest，事务库发布索引与状态，但要处理对象已写DB未登记的孤儿和未知结果。Redis可缓存实时窗口，不把未持久缓存当唯一恢复来源；大量分析事件可另投日志/分析库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LangGraph checkpoint记录图状态/节点恢复边界，不天然逐token保存所有对外流事件；需要把已完成消息及run引用纳入状态，同时维护上述事件账本。多writer换主用epoch/fencing并在最终存储条件验证，客户端内存锁不能协调其他实例。持久历史做加密、访问控制、保留与删除，trace不默认保存全部敏感正文。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 账本与适用范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "StreamLedger是独立 JDBC文本delta账本。run行短事务FOR UPDATE串行化append/end，检测writer epoch；单块<=4096 UTF-8字节、每run<=1MiB/10000块，支持先收到end再补缺块，只有连续且足量才complete。已有块永不覆盖，所以历史同序号冲突也能查出；提交失败回滚并关闭连接，提交结果未知需按稳定run/seq查询重放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最终合并保留在有界内存，最多扫描10000块；end之后每次append可能重新扫描，最坏有二次工作量，不是高吞吐生产实现。未实现租约分配、失败/取消API、SSE、模型或LangGraph适配，仅预留epoch校验。生产可维护连续前缀、按块哈希和外部manifest以减扫描，但需独立证明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 StreamLedger.java。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/data/code/StreamLedger.java",
+      "value": "import java.nio.charset.StandardCharsets;\nimport java.sql.Connection;\nimport java.sql.DriverManager;\nimport java.sql.PreparedStatement;\nimport java.sql.ResultSet;\nimport java.sql.SQLException;\nimport java.sql.Statement;\nimport java.util.Objects;\n\n/** Bounded JDBC text-delta ledger; no model, SSE, or external storage client. */\npublic final class StreamLedger {\n    private StreamLedger() {}\n    private static void closeConnection(Connection c,Exception primary) throws SQLException {\n        try {c.close();}\n        catch(SQLException | RuntimeException close) {\n            if(primary==null)throw close;\n            if(primary!=close)primary.addSuppressed(close);\n        }\n    }\n    public static final int MAX_CHUNKS=10000, MAX_CHUNK_BYTES=4096, MAX_RUN_BYTES=1048576;\n    public record Snapshot(String state, Integer expected, int bytes, String body) {}\n    public static void init(String url) throws SQLException {\n        try(Connection c=DriverManager.getConnection(url); Statement s=c.createStatement()) {\n            s.execute(\"CREATE TABLE stream_run(tenant BIGINT NOT NULL,id BIGINT NOT NULL,epoch BIGINT NOT NULL,state VARCHAR(12) NOT NULL,expected INT,byte_count INT NOT NULL,body LONGTEXT,PRIMARY KEY(tenant,id))\");\n            s.execute(\"CREATE TABLE stream_chunk(tenant BIGINT NOT NULL,run_id BIGINT NOT NULL,seq INT NOT NULL,payload VARCHAR(4096) NOT NULL,PRIMARY KEY(tenant,run_id,seq),FOREIGN KEY(tenant,run_id) REFERENCES stream_run(tenant,id))\");\n        }\n    }\n    public static void create(String url,long tenant,long run,long epoch) throws SQLException {\n        if(tenant<=0 || run<=0 || epoch<1) throw new IllegalArgumentException();\n        try(Connection c=DriverManager.getConnection(url); PreparedStatement p=c.prepareStatement(\"INSERT INTO stream_run VALUES(?,?,?,'OPEN',NULL,0,NULL)\")) {\n            p.setLong(1,tenant);p.setLong(2,run);p.setLong(3,epoch);p.executeUpdate();\n        }\n    }\n    private static Snapshot read(Connection c,long tenant,long run,boolean lock,long epoch) throws SQLException {\n        try(PreparedStatement p=c.prepareStatement(\"SELECT state,expected,byte_count,body,epoch FROM stream_run WHERE tenant=? AND id=?\"+(lock?\" FOR UPDATE\":\"\"))) {\n            p.setLong(1,tenant);p.setLong(2,run);\n            try(ResultSet r=p.executeQuery()) {\n                if(!r.next()) throw new IllegalArgumentException(\"unknown run\");\n                if(lock && r.getLong(5)!=epoch) throw new IllegalStateException(\"stale writer epoch\");\n                return new Snapshot(r.getString(1),(r.getObject(2)==null?null:((Number)r.getObject(2)).intValue()),r.getInt(3),r.getString(4));\n            }\n        }\n    }\n    public static Snapshot get(String url,long tenant,long run) throws SQLException {\n        try(Connection c=DriverManager.getConnection(url)) { return read(c,tenant,run,false,0); }\n    }\n    private static void finishIfReady(Connection c,long tenant,long run) throws SQLException {\n        Snapshot s=read(c,tenant,run,false,0);\n        if(s.expected()==null || s.state().equals(\"COMPLETE\")) return;\n        StringBuilder body=new StringBuilder();int next=0;\n        try(PreparedStatement p=c.prepareStatement(\"SELECT seq,payload FROM stream_chunk WHERE tenant=? AND run_id=? ORDER BY seq\")) {\n            p.setLong(1,tenant);p.setLong(2,run);\n            try(ResultSet r=p.executeQuery()) {\n                while(r.next()) { if(r.getInt(1)!=next) return;body.append(r.getString(2));next++; }\n            }\n        }\n        if(next!=s.expected()) return;\n        try(PreparedStatement p=c.prepareStatement(\"UPDATE stream_run SET state='COMPLETE',body=? WHERE tenant=? AND id=?\")) {\n            p.setString(1,body.toString());p.setLong(2,tenant);p.setLong(3,run);p.executeUpdate();\n        }\n    }\n    public static Snapshot append(String url,long tenant,long run,long epoch,int seq,String text,boolean fail)\n            throws SQLException {\n        Objects.requireNonNull(text);\n        byte[] encoded=text.getBytes(StandardCharsets.UTF_8);\n        if(seq<0 || seq>=MAX_CHUNKS || encoded.length>MAX_CHUNK_BYTES\n                || !new String(encoded,StandardCharsets.UTF_8).equals(text)) throw new IllegalArgumentException(\"bad text delta\");\n        Connection c=DriverManager.getConnection(url);\n        Exception primary=null;\n        try {\n            c.setAutoCommit(false);\n            try {\n                Snapshot state=read(c,tenant,run,true,epoch);\n                boolean exists=false;\n                try(PreparedStatement p=c.prepareStatement(\"SELECT payload FROM stream_chunk WHERE tenant=? AND run_id=? AND seq=?\")) {\n                    p.setLong(1,tenant);p.setLong(2,run);p.setInt(3,seq);\n                    try(ResultSet r=p.executeQuery()) {\n                        if(r.next()) { exists=true;if(!r.getString(1).equals(text)) throw new IllegalArgumentException(\"same sequence different payload\"); }\n                    }\n                }\n                if(!exists) {\n                    if(!state.state().equals(\"OPEN\") && !state.state().equals(\"ENDING\")) throw new IllegalStateException(\"run closed\");\n                    if(state.expected()!=null && seq>=state.expected()) throw new IllegalArgumentException(\"past declared end\");\n                    if(encoded.length>MAX_RUN_BYTES-state.bytes()) throw new IllegalArgumentException(\"run byte limit\");\n                    try(PreparedStatement p=c.prepareStatement(\"INSERT INTO stream_chunk VALUES(?,?,?,?)\")) {\n                        p.setLong(1,tenant);p.setLong(2,run);p.setInt(3,seq);p.setString(4,text);p.executeUpdate();\n                    }\n                    try(PreparedStatement p=c.prepareStatement(\"UPDATE stream_run SET byte_count=byte_count+? WHERE tenant=? AND id=?\")) {\n                        p.setInt(1,encoded.length);p.setLong(2,tenant);p.setLong(3,run);p.executeUpdate();\n                    }\n                }\n                finishIfReady(c,tenant,run);\n                if(fail) throw new SQLException(\"injected before commit\");\n                Snapshot result=read(c,tenant,run,false,0);c.commit();return result;\n            } catch(SQLException | RuntimeException e) {\n                try { c.rollback(); } catch(SQLException x) { if(e!=x)e.addSuppressed(x); }\n                throw e;\n            }\n        } catch(SQLException | RuntimeException e) {primary=e;throw e;}\n        finally {closeConnection(c,primary);}\n    }\n    public static Snapshot end(String url,long tenant,long run,long epoch,int count) throws SQLException {\n        if(count<0 || count>MAX_CHUNKS) throw new IllegalArgumentException(\"bad final count\");\n        Connection c=DriverManager.getConnection(url);\n        Exception primary=null;\n        try {\n            c.setAutoCommit(false);\n            try {\n                Snapshot state=read(c,tenant,run,true,epoch);\n                if(state.expected()!=null && state.expected()!=count) throw new IllegalArgumentException(\"conflicting final count\");\n                try(PreparedStatement p=c.prepareStatement(\"SELECT MAX(seq) FROM stream_chunk WHERE tenant=? AND run_id=?\")) {\n                    p.setLong(1,tenant);p.setLong(2,run);\n                    try(ResultSet r=p.executeQuery()) { r.next();Integer max=(r.getObject(1)==null?null:((Number)r.getObject(1)).intValue());if(max!=null && max>=count) throw new IllegalArgumentException(\"existing delta past end\"); }\n                }\n                if(!state.state().equals(\"COMPLETE\")) {\n                    if(!state.state().equals(\"OPEN\") && !state.state().equals(\"ENDING\")) throw new IllegalStateException(\"run closed\");\n                    try(PreparedStatement p=c.prepareStatement(\"UPDATE stream_run SET state='ENDING',expected=? WHERE tenant=? AND id=?\")) {\n                        p.setInt(1,count);p.setLong(2,tenant);p.setLong(3,run);p.executeUpdate();\n                    }\n                }\n                finishIfReady(c,tenant,run);Snapshot result=read(c,tenant,run,false,0);c.commit();return result;\n            } catch(SQLException | RuntimeException e) {\n                try { c.rollback(); } catch(SQLException x) { if(e!=x)e.addSuppressed(x); }\n                throw e;\n            }\n        } catch(SQLException | RuntimeException e) {primary=e;throw e;}\n        finally {closeConnection(c,primary);}\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "流账本的反例包括乱序、重复同内容、同序号异内容、缺口、end 先到或后到、旧 epoch、跨租户以及提交前故障。Unicode 要覆盖中文、emoji 与不配对代理字符；字节限制须检查恰好 1 MiB 和多一个字节。并发重复 delta 只能保留一份，重开数据库后仍应按稳定 run/seq 继续查询，而不是重建一个新运行掩盖未知结果。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

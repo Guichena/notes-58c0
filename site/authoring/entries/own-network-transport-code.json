@@ -1,0 +1,297 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-network-transport-code",
+  "kind": "doc",
+  "module": "code",
+  "part": "计算机网络",
+  "category": "教学程序与阅读参考",
+  "title": "网络传输：完整 Java 与跨语言教学程序",
+  "tags": [
+    "网络",
+    "教学边界"
+  ],
+  "sections": [
+    {
+      "id": "s-354",
+      "title": "反码和与 IPv4 UDP 伪首部完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "按下面文件名保存即可编译或运行；练习的边界由代码中的检查与说明给出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：InternetChecksum.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/InternetChecksum.java",
+          "value": "import java.util.Arrays;\nimport java.util.Random;\n\npublic final class InternetChecksum {\n    private int sum;\n    private int high = -1;\n\n    public void update(byte[] bytes, int off, int len) {\n        java.util.Objects.checkFromIndexSize(off, len, bytes.length);\n        for (int i = off; i < off + len; i++) {\n            int value = bytes[i] & 255;\n            if (high < 0) high = value;\n            else {\n                sum += (high << 8) | value;\n                sum = (sum & 65535) + (sum >>> 16);\n                high = -1;\n            }\n        }\n    }\n    // Non-destructive: a later update still pairs a pending high byte correctly.\n    public int value() {\n        int s = sum + (high < 0 ? 0 : high << 8);\n        while ((s >>> 16) != 0) s = (s & 65535) + (s >>> 16);\n        return (~s) & 65535;\n    }\n    public static int checksum(byte[] bytes) {\n        InternetChecksum c = new InternetChecksum();\n        c.update(bytes, 0, bytes.length);\n        return c.value();\n    }\n    public static byte[] ipv4UdpCheckedBytes(byte[] src, byte[] dst,\n                                            int sport, int dport, byte[] payload) {\n        if (src.length != 4 || dst.length != 4 || sport < 0 || sport > 65535\n                || dport < 0 || dport > 65535 || payload.length > 65507)\n            throw new IllegalArgumentException(\"ordinary IPv4/UDP bounds\");\n        int length = 8 + payload.length;\n        byte[] b = new byte[12 + length];\n        System.arraycopy(src, 0, b, 0, 4);\n        System.arraycopy(dst, 0, b, 4, 4);\n        b[9] = 17;\n        put16(b, 10, length);\n        put16(b, 12, sport);\n        put16(b, 14, dport);\n        put16(b, 16, length);\n        System.arraycopy(payload, 0, b, 20, payload.length);\n        int c = checksum(b);\n        put16(b, 18, c == 0 ? 65535 : c);\n        return b; // Pseudo-header plus UDP segment: not an IP packet for transmission.\n    }\n    static void put16(byte[] b, int p, int value) {\n        b[p] = (byte)(value >>> 8); b[p + 1] = (byte)value;\n    }\n    static int reference(byte[] b) {\n        long s = 0;\n        for (int i = 0; i < b.length; i += 2)\n            s += ((b[i] & 255) << 8) | (i + 1 < b.length ? b[i + 1] & 255 : 0);\n        while (s > 65535) s = (s & 65535) + (s >>> 16);\n        return (int)(~s & 65535);\n    }\n    static int checks;\n    static void check(boolean b) { if (!b) throw new AssertionError(); checks++; }\n    static void bad(Runnable r) {\n        try { r.run(); throw new AssertionError(\"expected rejection\"); }\n        catch (IllegalArgumentException | IndexOutOfBoundsException e) { checks++; }\n    }\n    public static void main(String[] args) {\n        check(checksum(new byte[0]) == 65535);\n        check(checksum(new byte[]{1}) == 0xfeff);\n        check(checksum(new byte[]{0,1,(byte)0xf2,3,(byte)0xf4,(byte)0xf5,(byte)0xf6,(byte)0xf7}) == 0x220d);\n        check(checksum(new byte[]{-1,-1}) == 0);\n        Random random = new Random(8293);\n        for (int n = 0; n < 500; n++) {\n            byte[] b = new byte[random.nextInt(2049)]; random.nextBytes(b);\n            int expected = reference(b);\n            check(checksum(b) == expected);\n            for (int trial = 0; trial < 20; trial++) {\n                int cut = random.nextInt(b.length + 1);\n                InternetChecksum c = new InternetChecksum();\n                c.update(b, 0, cut); c.value();\n                c.update(b, cut, b.length - cut);\n                check(c.value() == expected);\n            }\n        }\n        byte[] src = {(byte)192,0,2,1}, dst = {(byte)198,51,100,2};\n        byte[] packet = ipv4UdpCheckedBytes(src, dst, 1234, 5678, new byte[]{'h','i','!'});\n        check(checksum(packet) == 0);\n        for (int i = 0; i < packet.length; i++) for (int bit = 0; bit < 8; bit++) {\n            byte[] changed = packet.clone(); changed[i] ^= (byte)(1 << bit);\n            check(checksum(changed) != 0);\n        }\n        byte[] zero = ipv4UdpCheckedBytes(src,dst,1,2,new byte[2]);\n        Arrays.fill(zero,18,20,(byte)0);\n        int adjustment = checksum(zero);\n        byte[] p = {(byte)(adjustment >>> 8),(byte)adjustment};\n        byte[] mapped = ipv4UdpCheckedBytes(src,dst,1,2,p);\n        check((mapped[18] & 255) == 255 && (mapped[19] & 255) == 255);\n        check(checksum(mapped) == 0);\n        check(checksum(ipv4UdpCheckedBytes(src,dst,0,65535,new byte[65507])) == 0);\n        bad(() -> ipv4UdpCheckedBytes(src,dst,1,2,new byte[65508]));\n        bad(() -> ipv4UdpCheckedBytes(new byte[16],dst,1,2,new byte[0]));\n        bad(() -> ipv4UdpCheckedBytes(src,dst,-1,2,new byte[0]));\n        bad(() -> new InternetChecksum().update(new byte[1],0,2));\n        System.out.println(\"InternetChecksum PASS \" + checks + \"; arithmetic only, no packets sent\");\n    }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-817",
+      "title": "应用并发准入完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "这是单进程教学控制核心，准入、完成和更新由同一监视器保护。只有真正释放受控资源时才 finish，一张 permit 只释放一次；旧代次完成只释放资源，不推动新代次增长。QPS、排队、重试、未确认的远端残留请求与全局配额仍由调用者管理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：AdaptiveLimit.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/AdaptiveLimit.java",
+          "value": "import java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicInteger;\n\n/** Bounded local permit/feedback core, not an HTTP client or production controller. */\npublic final class AdaptiveLimit {\n    public enum Signal { HEALTHY, OVERLOADED, NEUTRAL }\n    public static final class Permit {\n        private final AdaptiveLimit owner;\n        private final long epoch;\n        private boolean ended;\n        private Permit(AdaptiveLimit owner, long epoch) { this.owner = owner; this.epoch = epoch; }\n    }\n    private final int min, max, minSamples;\n    private final long interval;\n    private int limit, inFlight, samples;\n    private boolean overloaded, saturated;\n    private long epoch, lastUpdate, lastObserved;\n    public AdaptiveLimit(int min, int initial, int max, int minSamples, long interval) {\n        if (min < 1 || min > initial || initial > max || max > 100_000 ||\n                minSamples < 1 || minSamples > 100_000 || interval < 1)\n            throw new IllegalArgumentException();\n        this.min = min; this.limit = initial; this.max = max;\n        this.minSamples = minSamples; this.interval = interval;\n    }\n    public synchronized Permit tryAcquire() {\n        if (inFlight >= limit) { saturated = true; return null; }\n        inFlight++; saturated |= inFlight >= limit;\n        return new Permit(this, epoch);\n    }\n    /** Invoke only when this attempt has actually released its tracked resource. */\n    public synchronized boolean finish(Permit p, Signal signal) {\n        if (p == null || p.owner != this || signal == null) throw new IllegalArgumentException();\n        if (p.ended) return false;\n        p.ended = true; inFlight--;\n        if (p.epoch == epoch && signal != Signal.NEUTRAL) {\n            if (samples < Integer.MAX_VALUE) samples++;\n            overloaded |= signal == Signal.OVERLOADED;\n        }\n        return true;\n    }\n    /** Relative monotonic nanoseconds. The caller supplies the sampling clock. */\n    public synchronized int update(long now) {\n        if (now < lastObserved || now < 0) throw new IllegalArgumentException();\n        lastObserved = now;\n        if (now - lastUpdate < interval || samples < minSamples) return limit;\n        if (epoch == Long.MAX_VALUE) throw new IllegalStateException(\"epoch exhausted\");\n        if (overloaded) limit = Math.max(min, limit / 2);\n        else if (saturated && limit < max) limit++;\n        epoch++; lastUpdate = now; samples = 0; overloaded = false;\n        saturated = inFlight >= limit;\n        return limit;\n    }\n    public synchronized int limit() { return limit; }\n    public synchronized int inFlight() { return inFlight; }\n    private static int checks;\n    private static void check(boolean ok) { if (!ok) throw new AssertionError(); checks++; }\n    private static List<Permit> fill(AdaptiveLimit c) {\n        List<Permit> ps = new ArrayList<>(); Permit p;\n        while ((p = c.tryAcquire()) != null) ps.add(p);\n        return ps;\n    }\n    public static void main(String[] args) throws Exception {\n        AdaptiveLimit c = new AdaptiveLimit(1, 4, 8, 1, 100);\n        List<Permit> ps = fill(c); check(ps.size() == 4); check(c.inFlight() == 4);\n        check(c.update(100) == 4); // no completion: no growth\n        check(c.finish(ps.get(0), Signal.OVERLOADED));\n        check(!c.finish(ps.get(0), Signal.HEALTHY));\n        check(c.limit() == 4); check(c.update(100) == 2);\n        check(c.inFlight() == 3); check(c.tryAcquire() == null);\n        for (int i = 1; i < ps.size(); i++) check(c.finish(ps.get(i), Signal.HEALTHY));\n        check(c.inFlight() == 0); check(c.update(200) == 2); // old epoch successes ignored\n        for (int round = 0; round < 10; round++) {\n            ps = fill(c); for (Permit p : ps) c.finish(p, Signal.HEALTHY);\n            int before = c.limit(); check(c.update(300 + round * 100L) == Math.min(8, before + 1));\n        }\n        for (int round = 0; round < 10; round++) {\n            ps = fill(c); for (Permit p : ps) c.finish(p, Signal.OVERLOADED);\n            int before = c.limit(); check(c.update(1400 + round * 100L) == Math.max(1, before / 2));\n        }\n        c = new AdaptiveLimit(1, 4, 8, 2, 100);\n        Permit p = c.tryAcquire(); c.finish(p, Signal.HEALTHY);\n        check(c.update(100) == 4); // insufficient samples\n        p = c.tryAcquire(); c.finish(p, Signal.HEALTHY); check(c.update(100) == 4); // app limited\n        try { c.update(99); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) { checks++; }\n        p = c.tryAcquire(); c.finish(p, Signal.NEUTRAL); check(c.update(200) == 4);\n        try { c.finish(new AdaptiveLimit(1, 1, 1, 1, 1).tryAcquire(), Signal.HEALTHY); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) { checks++; }\n        try { new AdaptiveLimit(0, 1, 2, 1, 1); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) { checks++; }\n        AdaptiveLimit shared = new AdaptiveLimit(1, 7, 7, 4, 100);\n        AtomicInteger active = new AtomicInteger(), peak = new AtomicInteger(), finished = new AtomicInteger();\n        ExecutorService pool = Executors.newFixedThreadPool(16);\n        try {\n            List<Future<?>> fs = new ArrayList<>();\n            for (int t = 0; t < 16; t++) fs.add(pool.submit(() -> {\n                for (int n = 0; n < 2000; n++) {\n                    Permit permit = shared.tryAcquire();\n                    if (permit == null) { Thread.yield(); continue; }\n                    int a = active.incrementAndGet(); peak.accumulateAndGet(a, Math::max);\n                    if (a > 7) throw new AssertionError(\"capacity exceeded\");\n                    try { Thread.yield(); } finally {\n                        active.decrementAndGet();\n                        if (!shared.finish(permit, Signal.HEALTHY)) throw new AssertionError();\n                        if (shared.finish(permit, Signal.HEALTHY)) throw new AssertionError();\n                        finished.incrementAndGet();\n                    }\n                }\n            }));\n            for (Future<?> f : fs) f.get(10, TimeUnit.SECONDS);\n        } finally {\n            pool.shutdownNow(); if (!pool.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError();\n        }\n        check(peak.get() >= 1 && peak.get() <= 7); check(finished.get() > 0);\n        check(shared.inFlight() == 0); check(active.get() == 0);\n        System.out.println(\"PASS \" + checks + \" deterministic assertions; \" + finished.get() +\n                \" real concurrent permit lifecycles, peak=\" + peak.get() + \"; no downstream requests\");\n    }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-1752",
+      "title": "状态机为什么比一次 readFully 更适合事件循环",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "拆帧器每条连接只需记住当前进度，不必为了等完整消息一直阻塞。保存四类状态：头读了几个字节、正文读了几个字节、当前正文数组，以及帧的起始时间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "头不足四字节就等后续输入；头齐了先校验长度，再分配正文。正文收齐后交给消费者，回到读头状态继续。因此一轮输入可能产出多帧，也可能暂时一帧都没有。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有五个容易漏掉的边界："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "先校验再分配。 不能先 new byte[length] 再检查；长度加头部时还要防整数溢出。",
+            "限输出频率。 大量零长度帧不会占正文内存，却能长期霸占事件循环，因此既有 byte budget，也有 frame budget。",
+            "等完整帧也有截止时间。 从该帧第一个字节开始计时，不因每隔一段时间来一个字节而无限续期；即使没有新数据，也由定时器检查。",
+            "EOF 有语义。 整帧边界的 EOF 可以干净结束；头或正文只收到一部分时 EOF 是截断。read()==0 不是 EOF，read()==-1 才是输入结束。",
+            "回调失败不能重放。 消费者可能已经发生部分业务副作用；不能留着原帧下次重新调用。异常后终止解码，业务恢复由上层幂等机制承担。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "下面是完整解码器，配套文件同名，可直接编译。now 是调用方给出的非负单调经过时间，例如统一以 System.nanoTime() - start 为基准；不要传会被校时回拨的墙上时钟。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/BoundedFrameDecoder.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.util.Objects;\nimport java.util.function.Consumer;\n\n/**\n * Wire format: signed 32-bit big-endian byte length, then 0..1024 body bytes.\n * One connection, one serial owner; no reentrant callbacks.\n * No socket, text decoding, output queue or business acknowledgement is included.\n */\npublic final class BoundedFrameDecoder {\n    public static final int MAX_BODY = 1024;\n    private final byte[] header = new byte[4];\n    private final long frameTimeoutNanos;\n    private int headerBytes, bodyBytes;\n    private byte[] body;\n    private boolean closed, feeding, partial;\n    private long startedAt, lastNow;\n\n    // Time is nonnegative elapsed monotonic time supplied by the caller.\n    public BoundedFrameDecoder(long frameTimeoutNanos) {\n        if (frameTimeoutNanos <= 0) throw new IllegalArgumentException(\"timeout must be positive\");\n        this.frameTimeoutNanos = frameTimeoutNanos;\n    }\n\n    /**\n     * Consumes at most byteBudget bytes and emits at most frameBudget frames.\n     * Unconsumed input remains at its new position for the owner to reschedule.\n     * Each output array transfers to sink and is never reused by this decoder.\n     */\n    public int feed(ByteBuffer input, int frameBudget, int byteBudget,\n                    long now, Consumer<byte[]> sink) {\n        ensureOpen();\n        if (feeding) throw new IllegalStateException(\"reentrant call\");\n        Objects.requireNonNull(input); Objects.requireNonNull(sink);\n        if (frameBudget < 1 || byteBudget < 1) throw new IllegalArgumentException(\"positive budgets required\");\n        feeding = true;\n        try {\n            tick(now);\n            int emitted = 0, remaining = byteBudget;\n            while (input.hasRemaining() && remaining > 0 && emitted < frameBudget) {\n                if (!partial) { partial = true; startedAt = now; }\n                if (body == null) {\n                    int count = Math.min(Math.min(input.remaining(), 4 - headerBytes), remaining);\n                    input.get(header, headerBytes, count);\n                    headerBytes += count; remaining -= count;\n                    if (headerBytes != 4) break;\n                    int length = ((header[0] & 255) << 24) | ((header[1] & 255) << 16)\n                               | ((header[2] & 255) << 8) | (header[3] & 255);\n                    if (length < 0 || length > MAX_BODY)\n                        throw new IllegalArgumentException(\"invalid body length: \" + length);\n                    body = new byte[length]; // No allocation based on an unchecked wire length.\n                    headerBytes = 0;\n                }\n                int count = Math.min(Math.min(input.remaining(), body.length - bodyBytes), remaining);\n                input.get(body, bodyBytes, count);\n                bodyBytes += count; remaining -= count;\n                if (bodyBytes == body.length) {\n                    byte[] complete = body;\n                    body = null; bodyBytes = 0; partial = false;\n                    emitted++;\n                    sink.accept(complete); // May have side effects: failure must never replay the frame.\n                }\n            }\n            return emitted;\n        } catch (RuntimeException | Error failure) {\n            poison();\n            throw failure;\n        } finally {\n            feeding = false;\n        }\n    }\n\n    /** Called by the owner's timer even when no further bytes arrive. */\n    public void checkTimeout(long now) {\n        ensureOpen();\n        if (feeding) throw new IllegalStateException(\"reentrant call\");\n        try { tick(now); }\n        catch (RuntimeException failure) { poison(); throw failure; }\n    }\n\n    /** Call for SocketChannel.read == -1, after all buffered input has been fed. */\n    public void endOfInput(long now) {\n        ensureOpen();\n        if (feeding) throw new IllegalStateException(\"reentrant call\");\n        try {\n            tick(now);\n            if (partial) throw new IllegalStateException(\"EOF inside a frame\");\n        } finally { poison(); }\n    }\n\n    public void close() {\n        if (feeding) throw new IllegalStateException(\"reentrant call\");\n        poison();\n    }\n    public boolean isClosed() { return closed; }\n    public int retainedBodyCapacity() { return body == null ? 0 : body.length; }\n    public int bufferedBytes() { return headerBytes + bodyBytes; }\n    private void tick(long now) {\n        if (now < 0 || now < lastNow) throw new IllegalArgumentException(\"monotonic elapsed time required\");\n        lastNow = now;\n        if (partial && now - startedAt >= frameTimeoutNanos)\n            throw new IllegalStateException(\"incomplete frame deadline exceeded\");\n    }\n    private void ensureOpen() {\n        if (closed) throw new IllegalStateException(\"decoder closed\");\n    }\n    private void poison() {\n        closed = true; body = null; bodyBytes = headerBytes = 0; partial = false;\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-1907",
+      "title": "JSON 编码字节数完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "文件名：JsonByteSize.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/JsonByteSize.java",
+          "value": "import java.nio.charset.StandardCharsets;\n\npublic final class JsonByteSize {\n    private JsonByteSize() {}\n    public static int utf8Bytes(String serializedJson) {\n        return serializedJson.getBytes(StandardCharsets.UTF_8).length;\n    }\n    public static void main(String[] args) {\n        // Fixed serialized texts, not a general JSON serializer.\n        String[] json = {\"{\\\"x\\\":1}\", \"{\\\"x\\\":\\\"中\\\"}\", \"{\\\"x\\\":\\\"\\\\u4e2d\\\"}\",\n                         \"{\\\"x\\\":\\\"😀\\\"}\", \"{\\\"x\\\":\\\"\\\\\\\"\\\\\\\\\\\\n\\\"}\", \"{ \\\"x\\\": 1 }\"};\n        int[] expected = {7,11,14,12,14,10};\n        for (int i=0;i<json.length;i++) {\n            int bytes=utf8Bytes(json[i]);\n            if(bytes!=expected[i]) throw new AssertionError(json[i]+\": \"+bytes);\n            System.out.println(json[i]+\" -> UTF-8 bytes=\"+bytes+\", Java UTF-16 units=\"+json[i].length());\n        }\n        System.out.println(\"JsonByteSize: 6 fixed-encoding examples passed.\");\n    }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-1937",
+      "title": "Java 大端编码完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "文件名：ByteOrderDemo.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/ByteOrderDemo.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.nio.ByteOrder;\nimport java.util.Arrays;\nimport java.util.HexFormat;\n\npublic final class ByteOrderDemo {\n    static byte[] big(int x) { return new byte[]{(byte)(x >>> 24),(byte)(x >>> 16),(byte)(x >>> 8),(byte)x}; }\n    static int read(byte[] b) {\n        if (b == null || b.length != 4) throw new IllegalArgumentException(\"four bytes required\");\n        return ((b[0]&255)<<24) | ((b[1]&255)<<16) | ((b[2]&255)<<8) | (b[3]&255);\n    }\n    static int checks;\n    static void check(boolean b) { if (!b) throw new AssertionError(); checks++; }\n    public static void main(String[] args) {\n        if (args.length == 1 && args[0].equals(\"vectors\")) {\n            int x = 17;\n            for (int i=0;i<1000;i++) { x=x*1664525+1013904223; System.out.println(HexFormat.of().formatHex(big(x))); }\n            return;\n        }\n        check(Arrays.equals(big(0x12345678), new byte[]{0x12,0x34,0x56,0x78}));\n        check(ByteBuffer.allocate(4).order() == ByteOrder.BIG_ENDIAN);\n        check(ByteBuffer.wrap(big(0x12345678)).order(ByteOrder.LITTLE_ENDIAN).getInt() == 0x78563412);\n        int[] edges = {0,1,-1,Integer.MIN_VALUE,Integer.MAX_VALUE,0x12345678,0x80000001};\n        for (int x : edges) { check(read(big(x)) == x); check(ByteBuffer.wrap(big(x)).getInt() == x); }\n        int x=17;\n        for (int i=0;i<10000;i++) {\n            x=x*1664525+1013904223;\n            check(read(big(x)) == x);\n            check(Arrays.equals(big(x),ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN).putInt(x).array()));\n            byte[] little=ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(x).array();\n            check(ByteBuffer.wrap(little).order(ByteOrder.LITTLE_ENDIAN).getInt() == x);\n        }\n        try { read(new byte[3]); throw new AssertionError(); } catch (IllegalArgumentException expected) { checks++; }\n        System.out.println(\"PASS \" + checks + \"; nativeOrder=\" + ByteOrder.nativeOrder() + \"; explicit wire order=BIG_ENDIAN\");\n    }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-1983",
+      "title": "C++ 大端编码完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "文件名：byte_order.cpp。"
+        },
+        {
+          "type": "code",
+          "language": "c++",
+          "label": "transport/code/byte_order.cpp",
+          "value": "#include <arpa/inet.h>\n#include <array>\n#include <climits>\n#include <cstdint>\n#include <cstring>\n#include <iomanip>\n#include <iostream>\n#include <stdexcept>\n#include <string>\n\nusing Bytes = std::array<std::uint8_t, 4>;\nstatic_assert(CHAR_BIT == 8 && sizeof(std::uint32_t) == 4, \"octet and uint32 required\");\nBytes big(std::uint32_t x) {\n    return {static_cast<std::uint8_t>(x >> 24), static_cast<std::uint8_t>(x >> 16),\n            static_cast<std::uint8_t>(x >> 8), static_cast<std::uint8_t>(x)};\n}\nstd::uint32_t read(const Bytes& b) {\n    return (std::uint32_t{b[0]} << 24) | (std::uint32_t{b[1]} << 16)\n         | (std::uint32_t{b[2]} << 8) | std::uint32_t{b[3]};\n}\nint checks = 0;\nvoid check(bool b) { if (!b) throw std::runtime_error(\"check failed\"); ++checks; }\nint main(int argc, char** argv) {\n    std::uint32_t x=17;\n    if (argc == 2 && std::string(argv[1]) == \"vectors\") {\n        for (int i=0;i<1000;++i) {\n            x=x*1664525u+1013904223u;\n            for (auto b : big(x)) std::cout << std::hex << std::setw(2) << std::setfill('0') << unsigned(b);\n            std::cout << '\\n';\n        }\n        return 0;\n    }\n    check(big(0x12345678u) == Bytes{0x12,0x34,0x56,0x78});\n    const std::uint32_t marker=0x01020304u; Bytes native{};\n    std::memcpy(native.data(), &marker, sizeof(marker));\n    const bool little=native == Bytes{4,3,2,1}, large=native == Bytes{1,2,3,4};\n    check(little || large); // This test environment supports a conventional byte order.\n    for (int i=0;i<10000;++i) {\n        x=x*1664525u+1013904223u;\n        check(read(big(x)) == x);\n        const std::uint32_t network=htonl(x); Bytes raw{};\n        std::memcpy(raw.data(), &network, sizeof(network));\n        check(raw == big(x)); check(ntohl(network) == x);\n    }\n    std::cout << \"PASS \" << checks << \"; nativeOrder=\" << (little ? \"LITTLE_ENDIAN\" : \"BIG_ENDIAN\") << '\\n';\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2039",
+      "title": "最简拆帧状态机完整对照",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "这个简版只用于与上面的有界解码器比较状态转换，没有主实现的整帧期限和每轮调度预算。不要用它替代主实现的生产边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：FrameDecoderDemo.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/FrameDecoderDemo.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.nio.charset.StandardCharsets;\nimport java.util.*;\nimport java.util.function.Consumer;\n\n/** Length-prefixed byte frames. One decoder per connection, single event-loop owner. */\npublic final class FrameDecoderDemo {\n    static final class Decoder {\n        private final int maximum;\n        private final ByteBuffer header = ByteBuffer.allocate(4); // Big endian by default.\n        private ByteBuffer body;\n        private boolean closed;\n        Decoder(int maximum) {\n            if (maximum < 0) throw new IllegalArgumentException(\"negative maximum\");\n            this.maximum = maximum;\n        }\n        void feed(ByteBuffer input, Consumer<byte[]> sink) {\n            if (closed) throw new IllegalStateException(\"decoder closed\");\n            Objects.requireNonNull(input); Objects.requireNonNull(sink);\n            try {\n                while (input.hasRemaining()) {\n                    if (body == null) {\n                        transfer(input, header);\n                        if (header.hasRemaining()) return; // Preserve partial header.\n                        header.flip(); int length = header.getInt(); header.clear();\n                        if (length < 0 || length > maximum)\n                            throw new IllegalArgumentException(\"invalid frame length: \" + length);\n                        body = ByteBuffer.allocate(length); // Allocate only AFTER validation.\n                    }\n                    transfer(input, body);\n                    if (!body.hasRemaining()) {\n                        byte[] result = body.array();\n                        body = null; // Reset before delivery; callback must not re-enter decoder.\n                        sink.accept(result); // Ownership passes to caller, no retained output list.\n                    }\n                }\n            } catch (RuntimeException ex) {\n                closed = true; body = null; // Fail closed: discard this connection after protocol failure.\n                throw ex;\n            }\n        }\n        void endOfInput() {\n            if (closed) throw new IllegalStateException(\"decoder closed\");\n            closed = true;\n            if (header.position() != 0 || body != null) {\n                body = null;\n                throw new IllegalStateException(\"truncated frame\");\n            }\n        }\n        private static void transfer(ByteBuffer from, ByteBuffer to) {\n            int count = Math.min(from.remaining(), to.remaining());\n            int limit = from.limit();\n            from.limit(from.position() + count);\n            to.put(from); // Copies exactly count bytes, advances both positions.\n            from.limit(limit);\n        }\n    }\n    static int assertions;\n    static void check(String label, boolean condition) {\n        if (!condition) throw new AssertionError(label);\n        assertions++;\n    }\n    static byte[] frame(String value) {\n        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);\n        return ByteBuffer.allocate(4 + bytes.length).putInt(bytes.length).put(bytes).array();\n    }\n    static byte[] joined(byte[]... frames) {\n        int size = Arrays.stream(frames).mapToInt(a -> a.length).sum();\n        ByteBuffer all = ByteBuffer.allocate(size);\n        for (byte[] frame : frames) all.put(frame);\n        return all.array();\n    }\n    static List<String> decodeChunks(byte[] bytes, int width) {\n        Decoder decoder = new Decoder(1024); List<String> output = new ArrayList<>();\n        for (int start = 0; start < bytes.length; start += width) {\n            decoder.feed(ByteBuffer.wrap(bytes, start, Math.min(width, bytes.length - start)),\n                    b -> output.add(new String(b, StandardCharsets.UTF_8)));\n        }\n        decoder.endOfInput(); return output;\n    }\n    public static void main(String[] args) {\n        byte[] bytes = joined(frame(\"甲🙂\"), frame(\"\"), frame(\"OK\"));\n        for (int width = 1; width <= bytes.length; width++)\n            check(\"chunk width \" + width, decodeChunks(bytes, width).equals(List.of(\"甲🙂\", \"\", \"OK\")));\n        Decoder empty = new Decoder(0); empty.feed(ByteBuffer.allocate(0), b -> {}); empty.endOfInput();\n        check(\"empty stream\", true);\n        Decoder zero = new Decoder(0); List<byte[]> zeroOut = new ArrayList<>();\n        zero.feed(ByteBuffer.wrap(frame(\"\")), zeroOut::add); zero.endOfInput();\n        check(\"zero maximum permits empty frame\", zeroOut.size() == 1 && zeroOut.getFirst().length == 0);\n        for (int length : new int[]{-1, 1025, Integer.MAX_VALUE}) {\n            Decoder d = new Decoder(1024); boolean bad = false;\n            try { d.feed(ByteBuffer.allocate(4).putInt(length).flip(), b -> {}); }\n            catch (IllegalArgumentException expected) { bad = true; }\n            check(\"reject invalid length \" + length, bad);\n            boolean closed = false;\n            try { d.feed(ByteBuffer.allocate(0), b -> {}); }\n            catch (IllegalStateException expected) { closed = true; }\n            check(\"bad stream remains closed \" + length, closed);\n        }\n        for (int prefix = 1; prefix < frame(\"OK\").length; prefix++) {\n            Decoder d = new Decoder(10); d.feed(ByteBuffer.wrap(Arrays.copyOf(frame(\"OK\"), prefix)), b -> {});\n            boolean bad = false;\n            try { d.endOfInput(); } catch (IllegalStateException expected) { bad = true; }\n            check(\"EOF at prefix \" + prefix, bad);\n        }\n        Decoder max = new Decoder(2); List<byte[]> maxOut = new ArrayList<>();\n        max.feed(ByteBuffer.wrap(frame(\"OK\")), maxOut::add); max.endOfInput();\n        check(\"exact maximum\", maxOut.size() == 1 && maxOut.getFirst().length == 2);\n        Decoder failSink = new Decoder(2); boolean propagated = false;\n        try { failSink.feed(ByteBuffer.wrap(frame(\"OK\")), b -> { throw new IllegalArgumentException(\"sink full\"); }); }\n        catch (IllegalArgumentException expected) { propagated = true; }\n        check(\"delivery failure propagates\", propagated);\n        System.out.println(\"FrameDecoderDemo ASSERTIONS \" + assertions);\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2163",
+      "title": "有界拆帧器的完整离线驱动",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "与前面的 BoundedFrameDecoder 保存到同一目录，驱动覆盖确定性切片、非法长度、EOF、预算与时钟。它只使用本地字节，不验证真实链路或业务提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：BoundedFrameDecoderTest.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/BoundedFrameDecoderTest.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.nio.charset.StandardCharsets;\nimport java.util.*;\n\npublic final class BoundedFrameDecoderTest {\n    private static long assertions;\n    private static void check(boolean value, String message) {\n        if (!value) throw new AssertionError(message);\n        assertions++;\n    }\n    private static void throwsType(Class<? extends Throwable> type, Runnable run) {\n        try { run.run(); throw new AssertionError(\"expected \" + type); }\n        catch (Throwable t) {\n            if (!type.isInstance(t)) throw new AssertionError(\"wrong exception\", t);\n            assertions++;\n        }\n    }\n    private static byte[] frame(byte[] body) {\n        return ByteBuffer.allocate(4 + body.length).putInt(body.length).put(body).array();\n    }\n    private static byte[] concat(List<byte[]> frames) {\n        int size = frames.stream().mapToInt(a -> a.length).sum();\n        ByteBuffer b = ByteBuffer.allocate(size); for (byte[] f : frames) b.put(f);\n        return b.array();\n    }\n    private static void consume(BoundedFrameDecoder d, ByteBuffer in, List<byte[]> out,\n                                int frames, int bytes, long now) {\n        int originalLimit = in.limit();\n        while (in.hasRemaining()) {\n            int before = in.position(), count = out.size();\n            int emitted = d.feed(in, frames, bytes, now, out::add);\n            check(in.position() > before, \"progress\");\n            check(in.position() - before <= bytes, \"byte budget\");\n            check(emitted <= frames && out.size() - count == emitted, \"frame budget\");\n            check(in.limit() == originalLimit, \"input limit unchanged\");\n            check(d.retainedBodyCapacity() <= 1024, \"bounded allocation\");\n        }\n    }\n    private static void equal(List<byte[]> got, List<byte[]> expected) {\n        check(got.size() == expected.size(), \"frame count\");\n        for (int i = 0; i < got.size(); i++) check(Arrays.equals(got.get(i), expected.get(i)), \"payload \" + i);\n    }\n    public static void main(String[] args) {\n        List<byte[]> expected = List.of(\"甲🙂\".getBytes(StandardCharsets.UTF_8), new byte[0], new byte[]{0,-1,10}, new byte[1024]);\n        List<byte[]> wireFrames = new ArrayList<>(); for (byte[] b : expected) wireFrames.add(frame(b));\n        byte[] wire = concat(wireFrames);\n        // Every two-way split, including empty head/tail, and every byte individually.\n        for (int cut = 0; cut <= wire.length; cut++) {\n            BoundedFrameDecoder d = new BoundedFrameDecoder(1000); List<byte[]> out = new ArrayList<>();\n            consume(d, ByteBuffer.wrap(wire, 0, cut), out, 2, 19, 0);\n            consume(d, ByteBuffer.wrap(wire, cut, wire.length - cut).asReadOnlyBuffer(), out, 2, 19, 1);\n            d.endOfInput(2); equal(out, expected);\n        }\n        Random random = new Random(20261011);\n        for (int trial = 0; trial < 300; trial++) {\n            List<byte[]> payloads = new ArrayList<>(), encoded = new ArrayList<>();\n            for (int f = 0; f < 12; f++) {\n                byte[] b = new byte[random.nextInt(1025)]; random.nextBytes(b); payloads.add(b); encoded.add(frame(b));\n            }\n            byte[] all = concat(encoded); List<byte[]> got = new ArrayList<>();\n            BoundedFrameDecoder d = new BoundedFrameDecoder(10000);\n            for (int i = 0; i < all.length;) {\n                int count = Math.min(1 + random.nextInt(79), all.length - i);\n                ByteBuffer buf = ByteBuffer.allocateDirect(count + 6); buf.position(3); buf.put(all, i, count).flip(); buf.position(3);\n                consume(d, buf.asReadOnlyBuffer(), got, 1 + random.nextInt(4), 1 + random.nextInt(70), 0); i += count;\n            }\n            d.endOfInput(1); equal(got, payloads);\n        }\n        for (int bad : new int[]{-1, Integer.MIN_VALUE, 1025, Integer.MAX_VALUE}) {\n            BoundedFrameDecoder d = new BoundedFrameDecoder(100);\n            ByteBuffer b = ByteBuffer.allocate(6).putInt(bad).putShort((short)7).flip();\n            throwsType(IllegalArgumentException.class, () -> d.feed(b, 9, 99, 0, ignored -> {}));\n            check(b.position() == 4 && d.retainedBodyCapacity() == 0 && d.isClosed(), \"reject before allocating/body\");\n            throwsType(IllegalStateException.class, () -> d.feed(ByteBuffer.allocate(0), 1, 1, 0, ignored -> {}));\n        }\n        byte[] f = frame(new byte[]{1,2,3});\n        for (int n = 1; n < f.length; n++) {\n            BoundedFrameDecoder d = new BoundedFrameDecoder(100);\n            d.feed(ByteBuffer.wrap(Arrays.copyOf(f, n)), 1, 20, 0, ignored -> {});\n            throwsType(IllegalStateException.class, () -> d.endOfInput(1)); check(d.isClosed(), \"EOF terminal\");\n        }\n        BoundedFrameDecoder empty = new BoundedFrameDecoder(1);\n        check(empty.feed(ByteBuffer.allocate(0),1,1,0, ignored -> {}) == 0, \"zero input is not EOF\");\n        empty.checkTimeout(500); empty.endOfInput(500); check(empty.isClosed(), \"clean EOF\");\n        // Header-only budget must still deliver a legal empty frame.\n        BoundedFrameDecoder zero = new BoundedFrameDecoder(100); List<byte[]> zeros = new ArrayList<>();\n        ByteBuffer manyZero = ByteBuffer.wrap(concat(Collections.nCopies(100,frame(new byte[0]))));\n        check(zero.feed(manyZero, 3, 1000, 0, zeros::add) == 3 && manyZero.position() == 12, \"empty-frame fairness\");\n        consume(zero, manyZero, zeros, 1, 4, 1); zero.endOfInput(2); check(zeros.size() == 100, \"empty frames all emitted\");\n        // Fixed total deadline: additional bytes do not reset the frame's start.\n        BoundedFrameDecoder slow = new BoundedFrameDecoder(10);\n        slow.feed(ByteBuffer.wrap(new byte[]{0}),1,1,3, ignored -> {});\n        slow.feed(ByteBuffer.wrap(new byte[]{0}),1,1,12, ignored -> {});\n        throwsType(IllegalStateException.class, () -> slow.checkTimeout(13)); check(slow.isClosed(), \"timer closes idle partial\");\n        BoundedFrameDecoder reset = new BoundedFrameDecoder(10);\n        reset.feed(ByteBuffer.wrap(frame(new byte[0])),1,4,0, ignored -> {});\n        reset.checkTimeout(100); reset.feed(ByteBuffer.wrap(new byte[]{0}),1,1,101, ignored -> {}); reset.checkTimeout(110);\n        throwsType(IllegalStateException.class, () -> reset.checkTimeout(111));\n        BoundedFrameDecoder callback = new BoundedFrameDecoder(100);\n        int[] deliveries = {0};\n        throwsType(IllegalArgumentException.class, () -> callback.feed(ByteBuffer.wrap(f),1,20,0, b -> { deliveries[0]++; throw new IllegalArgumentException(\"sink failure\"); }));\n        check(callback.isClosed() && deliveries[0] == 1, \"callback failure no replay\");\n        BoundedFrameDecoder reentry = new BoundedFrameDecoder(100);\n        throwsType(IllegalStateException.class, () -> reentry.feed(ByteBuffer.wrap(f),1,20,0, b -> reentry.feed(ByteBuffer.allocate(0),1,1,0,x -> {})));\n        check(reentry.isClosed(), \"uncaught callback reentry closes outer decoder\");\n        BoundedFrameDecoder backwards = new BoundedFrameDecoder(100); backwards.checkTimeout(5);\n        throwsType(IllegalArgumentException.class, () -> backwards.checkTimeout(4)); check(backwards.isClosed(), \"bad clock terminal\");\n        throwsType(IllegalArgumentException.class, () -> new BoundedFrameDecoder(0));\n        BoundedFrameDecoder invalidBudget = new BoundedFrameDecoder(100);\n        throwsType(IllegalArgumentException.class, () -> invalidBudget.feed(ByteBuffer.wrap(f),0,1,0,b -> {}));\n        check(!invalidBudget.isClosed(), \"precondition does not consume protocol state\");\n        invalidBudget.close(); invalidBudget.close();\n        System.out.println(\"BoundedFrameDecoderTest PASS assertions=\" + assertions + \"; deterministic local bytes only\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2371",
+      "title": "Channel Buffer Selector 完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "文件名：NioComponents.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/NioComponents.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.nio.channels.Pipe;\nimport java.nio.channels.SelectionKey;\nimport java.nio.channels.Selector;\nimport java.nio.charset.StandardCharsets;\n\npublic final class NioComponents {\n    private static int checks;\n    private static void check(boolean condition) {\n        if(!condition)throw new AssertionError(\"check \"+checks);checks++;\n    }\n    public static void main(String[] args) throws Exception {\n        ByteBuffer b=ByteBuffer.allocate(8);\n        check(b.position()==0 && b.limit()==8 && b.capacity()==8);\n        b.put(new byte[]{10,20,30});check(b.position()==3);\n        b.flip();check(b.position()==0 && b.limit()==3);\n        check(b.get()==10);\n        b.compact();check(b.position()==2 && b.limit()==8);\n        b.put((byte)40).flip();check(b.get()==20 && b.get()==30 && b.get()==40);\n        b.clear();check(b.position()==0 && b.limit()==8);\n        check(b.get(0)==20); // clear does not erase bytes.\n        Pipe pipe=Pipe.open();\n        try(var source=pipe.source();var sink=pipe.sink();var selector=Selector.open()) {\n            source.configureBlocking(false);\n            var key=source.register(selector,SelectionKey.OP_READ);\n            check(source.read(ByteBuffer.allocate(1))==0); // Not EOF.\n            ByteBuffer outgoing=StandardCharsets.UTF_8.encode(\"OK\");\n            while(outgoing.hasRemaining())sink.write(outgoing);\n            long deadline=System.nanoTime()+2_000_000_000L;\n            while(selector.select(100)==0 && System.nanoTime()<deadline) { }\n            check(selector.selectedKeys().contains(key) && key.isReadable());\n            selector.selectedKeys().remove(key);\n            ByteBuffer incoming=ByteBuffer.allocate(2);\n            while(incoming.hasRemaining() && System.nanoTime()<deadline)source.read(incoming);\n            incoming.flip();check(StandardCharsets.UTF_8.decode(incoming).toString().equals(\"OK\"));\n            sink.close();deadline=System.nanoTime()+2_000_000_000L;int n=0;\n            while(n==0 && System.nanoTime()<deadline)n=source.read(ByteBuffer.allocate(1));\n            check(n==-1);\n        }\n        System.out.println(\"NioComponents: \"+checks+\" checks passed; Buffer states and real local Pipe/Selector readiness, not network-server integration.\");\n    }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2423",
+      "title": "Buffer 存储与视图完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "文件名：BufferStorage.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "transport/code/BufferStorage.java",
+          "value": "import java.nio.ByteBuffer;\nimport java.nio.ReadOnlyBufferException;\n\npublic final class BufferStorage {\n    private static int checks;\n    private static void check(boolean condition) {\n        checks++; if (!condition) throw new AssertionError(checks);\n    }\n    public static void main(String[] args) {\n        byte[] bytes = {1, 2, 3, 4};\n        ByteBuffer heap = ByteBuffer.wrap(bytes);\n        check(heap.hasArray() && heap.array() == bytes);\n        heap.put(0, (byte) 9);\n        check(bytes[0] == 9 && heap.position() == 0);\n        heap.position(1);\n        ByteBuffer duplicate = heap.duplicate();\n        duplicate.position(3);\n        check(heap.position() == 1 && duplicate.position() == 3);\n        duplicate.put(2, (byte) 8);\n        check(heap.get(2) == 8);\n        ByteBuffer slice = heap.slice();\n        check(slice.arrayOffset() == 1 && slice.capacity() == 3);\n        slice.put(0, (byte) 7);\n        check(bytes[1] == 7);\n        ByteBuffer readOnly = heap.asReadOnlyBuffer();\n        check(readOnly.isReadOnly() && !readOnly.hasArray());\n        boolean rejected = false;\n        try { readOnly.put((byte) 5); } catch (ReadOnlyBufferException expected) { rejected = true; }\n        check(rejected);\n        ByteBuffer direct = ByteBuffer.allocateDirect(8);\n        check(direct.isDirect() && !direct.hasArray());\n        rejected = false;\n        try { direct.array(); } catch (UnsupportedOperationException expected) { rejected = true; }\n        check(rejected);\n        direct.putInt(42); direct.flip();\n        check(direct.limit() == 4 && direct.getInt() == 42 && !direct.hasRemaining());\n        System.out.println(\"PASS \" + checks + \" checks; heap, direct, slice, duplicate, read-only\");\n    }\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2472",
+      "title": "LT 与 ET 的完整本地管道练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "文件名：epoll_modes.c。"
+        },
+        {
+          "type": "code",
+          "language": "c",
+          "label": "transport/code/epoll_modes.c",
+          "value": "#define _GNU_SOURCE\n#include <sys/epoll.h>\n#include <unistd.h>\n#include <fcntl.h>\n#include <errno.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\nstatic int checks;\nstatic void check(int ok) { if (!ok) { perror(\"epoll demonstration\"); exit(1); } checks++; }\nstatic int ready(int ep, int timeout) {\n    struct epoll_event event; int n;\n    do { n = epoll_wait(ep, &event, 1, timeout); } while (n < 0 && errno == EINTR);\n    check(n >= 0); return n;\n}\nstatic void demo(int edge) {\n    int p[2]; check(pipe2(p, O_NONBLOCK | O_CLOEXEC) == 0);\n    int ep = epoll_create1(EPOLL_CLOEXEC); check(ep >= 0);\n    struct epoll_event e; memset(&e, 0, sizeof e);\n    e.events = EPOLLIN | (edge ? EPOLLET : 0); e.data.fd = p[0];\n    check(epoll_ctl(ep, EPOLL_CTL_ADD, p[0], &e) == 0);\n    check(write(p[1], \"ABCD\", 4) == 4); check(ready(ep, 100) == 1);\n    char b[8]; check(read(p[0], b, 2) == 2); check(b[0] == 'A' && b[1] == 'B');\n    check(ready(ep, 0) == (edge ? 0 : 1)); // LT remains ready; ET needs more work locally.\n    check(read(p[0], b, sizeof b) == 2); check(b[0] == 'C' && b[1] == 'D');\n    check(read(p[0], b, sizeof b) == -1 && errno == EAGAIN);\n    check(ready(ep, 0) == 0);\n    check(write(p[1], \"E\", 1) == 1); check(ready(ep, 100) == 1);\n    check(read(p[0], b, sizeof b) == 1 && b[0] == 'E');\n    check(close(p[1]) == 0); check(ready(ep, 100) == 1);\n    check(read(p[0], b, sizeof b) == 0); // EOF is not EAGAIN.\n    check(close(p[0]) == 0); check(close(ep) == 0);\n}\nint main(void) {\n    for (int i = 0; i < 100; i++) { demo(0); demo(1); }\n    printf(\"PASS %d checks in 100 LT and 100 ET real local pipe trials; no Redis benchmark\\n\", checks);\n    return 0;\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2520",
+      "title": "多客户端 poll 回显完整练习",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "仅用于 Linux loopback 教学：最多 32 个客户端，LF 帧含分隔符最多 256 字节，每连接输出队列最多 4096 字节，运行最多 15 秒。未包含 TLS、认证、独立空闲期限或生产优雅停机。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：poll_echo.cpp。"
+        },
+        {
+          "type": "code",
+          "language": "c++",
+          "label": "transport/code/poll_echo.cpp",
+          "value": "#include <arpa/inet.h>\n#include <cerrno>\n#include <chrono>\n#include <cstdio>\n#include <iostream>\n#include <map>\n#include <poll.h>\n#include <stdexcept>\n#include <string>\n#include <sys/socket.h>\n#include <unistd.h>\n#include <vector>\n\nstruct Client { std::string input, output; bool eof = false; };\n// Teaching server: loopback only, LF frames <=256 bytes including LF,\n// <=32 clients and <=4096 queued output bytes per client. No TLS/auth.\nint main() {\n    int listener = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);\n    if (listener < 0) { perror(\"socket\"); return 1; }\n    sockaddr_in addr{}; addr.sin_family = AF_INET;\n    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); addr.sin_port = 0;\n    if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 || listen(listener,32) < 0) {\n        perror(\"bind/listen\"); close(listener); return 1;\n    }\n    socklen_t length = sizeof(addr);\n    if (getsockname(listener,reinterpret_cast<sockaddr*>(&addr),&length) < 0) {\n        perror(\"getsockname\"); close(listener); return 1;\n    }\n    std::cout << ntohs(addr.sin_port) << std::endl;\n    std::map<int,Client> clients;\n    auto end = std::chrono::steady_clock::now() + std::chrono::seconds(15);\n    int status = 0;\n    while (std::chrono::steady_clock::now() < end) {\n        std::vector<pollfd> ready{{listener,POLLIN,0}};\n        for (const auto& [fd,c] : clients)\n            ready.push_back({fd,static_cast<short>((c.eof?0:POLLIN) | (c.output.empty()?0:POLLOUT)),0});\n        if (poll(ready.data(),ready.size(),100) < 0) {\n            if(errno==EINTR) continue;\n            perror(\"poll\"); status=1; break;\n        }\n        if (ready[0].revents & POLLIN) {\n            for(int attempts=0;attempts<32;attempts++) {\n                int fd=accept4(listener,nullptr,nullptr,SOCK_NONBLOCK|SOCK_CLOEXEC);\n                if(fd<0) { if(errno==EINTR) continue; break; }\n                if(clients.size()>=32) close(fd); else clients.emplace(fd,Client{});\n            }\n        }\n        for(std::size_t i=1;i<ready.size();i++) {\n            int fd=ready[i].fd; auto it=clients.find(fd); if(it==clients.end()) continue;\n            auto& c=it->second; bool bad=(ready[i].revents & (POLLERR|POLLNVAL))!=0;\n            if(!bad && !c.eof && (ready[i].revents & (POLLIN|POLLHUP))) {\n                for(int reads=0;reads<4;reads++) {\n                    char data[64]; ssize_t n=recv(fd,data,sizeof(data),0);\n                    if(n>0) {\n                        c.input.append(data,static_cast<std::size_t>(n));\n                        std::size_t at;\n                        while((at=c.input.find('\\n'))!=std::string::npos) {\n                            if(at+1>256 || c.output.size()+at+1>4096) {bad=true;break;}\n                            c.output.append(c.input,0,at+1);c.input.erase(0,at+1);\n                        }\n                        if(c.input.size()>255) bad=true;\n                        if(bad) break;\n                    } else if(n==0) {c.eof=true;if(!c.input.empty())bad=true;break;}\n                    else if(errno==EINTR) continue;\n                    else {if(errno!=EAGAIN && errno!=EWOULDBLOCK)bad=true;break;}\n                }\n            }\n            if(!bad && !c.output.empty()) {\n                ssize_t n=send(fd,c.output.data(),c.output.size(),MSG_NOSIGNAL);\n                if(n>0)c.output.erase(0,static_cast<std::size_t>(n));\n                else if(n<0 && errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR)bad=true;\n            }\n            if(bad || (c.eof && c.output.empty())) {close(fd);clients.erase(it);}\n        }\n    }\n    for(auto& [fd,c]:clients)close(fd);\n    close(listener);return status;\n}\n\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2608",
+      "title": "poll 回显的完整本地驱动",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "此驱动与 poll_echo.cpp 放在同一目录，先把服务编译为 build/poll_echo；所有连接都发往 127.0.0.1。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：test_poll.py。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "transport/code/test_poll.py",
+          "value": "\"\"\"Loopback-only compatibility checks for the accompanying bounded C++ server.\"\"\"\nimport concurrent.futures, socket, subprocess\nchecks=0\np=subprocess.Popen(['./build/poll_echo'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)\ndef check(v):\n    global checks\n    assert v\n    checks+=1\ndef connect():\n    return socket.create_connection(('127.0.0.1',port),timeout=2)\ndef exact(s,n):\n    out=b''\n    while len(out)<n:\n        b=s.recv(n-len(out))\n        if not b: break\n        out+=b\n    return out\ntry:\n    port=int(p.stdout.readline().strip())\n    with connect() as a, connect() as b:\n        a.sendall(b'one'); b.sendall(b'two\\n')\n        check(exact(b,4)==b'two\\n');a.sendall(b'\\n');check(exact(a,4)==b'one\\n')\n        a.sendall(b'x\\ny\\nz\\n');check(exact(a,6)==b'x\\ny\\nz\\n')\n        a.sendall(b'a'*255+b'\\n');check(exact(a,256)==b'a'*255+b'\\n')\n        a.sendall(b'end\\n');a.shutdown(socket.SHUT_WR);check(exact(a,4)==b'end\\n');check(a.recv(1)==b'')\n    for bad in [b'x'*256,b'incomplete']:\n        with connect() as s:\n            s.sendall(bad);s.shutdown(socket.SHUT_WR)\n            try: data=s.recv(1)\n            except ConnectionResetError: data=b''\n            check(data==b'')\n    def client(i):\n        data=('client-'+str(i)+'\\n').encode()\n        with connect() as s:\n            for b in data:s.sendall(bytes([b]))\n            return exact(s,len(data))==data\n    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:\n        for ok in pool.map(client,range(8)):check(ok)\n    check(p.poll() is None)\n    print(f'PollEcho PASS {checks} loopback assertions; not a throughput or fault-injection benchmark')\nfinally:\n    if p.poll() is None:p.terminate()\n    try:p.wait(timeout=2)\n    except subprocess.TimeoutExpired:p.kill();p.wait(timeout=2)\n    error=p.stderr.read()\n    if error:print(error)\n"
+        }
+      ]
+    },
+    {
+      "id": "s-2663",
+      "title": "全部练习的运行入口",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "将传输篇各章标明文件名的完整代码保存在 transport/code/ 目录，需要 Linux、JDK 21、Python 3、gcc 与 g++。从本书包根目录运行 bash transport/code/run-local.sh，生成文件只写入 transport/code/build；回显练习使用短暂的本地端口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件名：run-local.sh。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "transport/code/run-local.sh",
+          "value": "#!/usr/bin/env bash\nset -euo pipefail\ncd \"$(dirname \"$0\")\"\nmkdir -p build\njava -version\njava -m jdk.compiler/com.sun.tools.javac.Main -encoding UTF-8 -d build *.java\nfor main in BoundedFrameDecoderTest FrameDecoderDemo JsonByteSize NioComponents BufferStorage InternetChecksum ByteOrderDemo AdaptiveLimit; do\n  java -cp build \"$main\"\ndone\ng++ -std=c++17 -Wall -Wextra -Werror byte_order.cpp -o build/byte_order\n./build/byte_order\ngcc -std=c11 -Wall -Wextra -Werror epoll_modes.c -o build/epoll_modes\n./build/epoll_modes\ng++ -std=c++17 -Wall -Wextra -Werror poll_echo.cpp -o build/poll_echo\npython3 test_poll.py\njava -cp build ByteOrderDemo vectors > build/java-vectors.txt\n./build/byte_order vectors > build/cpp-vectors.txt\npython3 - <<'PY'\nfrom pathlib import Path\nx=17; expected=[]\nfor _ in range(1000):\n    x=(x*1664525+1013904223)&0xffffffff\n    expected.append(x.to_bytes(4,'big').hex())\nassert Path('build/java-vectors.txt').read_text().splitlines()==expected\nassert Path('build/cpp-vectors.txt').read_text().splitlines()==expected\nprint('CrossLanguageByteOrder PASS 1000 fixed vectors in Java C++ and Python')\nPY\n"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "完整索引、目录隔离与教学限制"
+    }
+  ]
+}

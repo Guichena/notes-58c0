@@ -1,0 +1,223 @@
+
+    
+    <div class="qa-toolbar"><span class="lb">答案显示</span><div class="seg" id="qa-mode">
+      <button type="button" data-m="q" class="" title="只看题目，自测后再翻答案">只看题目</button>
+      <button type="button" data-m="lead" class="" title="先看答题提纲：本质一句 + 要点骨架">先答一句</button>
+      <button type="button" data-m="full" class="on">全部展开</button></div>
+      <button type="button" class="btn ghost" data-act="qa-random">抽一题</button>
+      <span class="grow"></span><span class="stat" id="qa-stat"></span></div>
+    <div class="qa-list" data-mode="full"><div class="qa s0" id="q-1" data-key="hwqa-1:0">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">1</span><div class="qa-q">如果让你现场设计一个分布式限流系统，会怎么展开？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>分布式限流的本质是入口大于下游承载：口径一致、延迟低、规则可调，且组件本身不能成单点。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>四个目标 / 算法取舍 / Lua原子窗口 / 粒度与兜底</p></div><div class="qa-rest"><p class="md-p">我从目标、算法、原子实现、工程配套四层讲。</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>四个目标</b>：分布式下规则口径一致；主链路延迟要低；规则能动态调整；限流组件自己不能成为单点。常见于秒杀、登录、短信发送、支付防刷、第三方模型 API 调用。</li><li><b>算法取舍</b>：固定窗口简单，窗口边界会突刺；滑动窗口更平滑，状态更复杂；令牌桶允许一定突发，工程上很常用；漏桶更适合严格控速。题目没强调严格匀速时，我优先讲滑动窗口或令牌桶，再落到 Redis + Lua。</li><li><b>Lua 原子窗口</b>：把删旧数据、统计窗口内请求数、判断是否放行、记录本次请求做成 Redis 内部原子操作。</li><li><b>粒度与兜底</b>：粒度按接口、用户、IP、租户、资源 ID；规则由配置中心动态下发；触发后统一错误码、埋点和告警；Redis 异常时按授权的fail-open/fail-closed策略降级；本地额度会随副本数放大，除非预分配守恒总预算，不能声称维持原全局限额。</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="file-label">Main.java</span></div><button class="copy-button md-copy" type="button">复制</button></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.scripting.support.ResourceScriptSource;
+
+import java.util.Arrays;
+
+/** UNSAFE historical counterexample; use the linked reviewed RedisSlidingWindow implementation. */
+public class DistributedRateLimiter {
+    private final StringRedisTemplate redisTemplate;
+    private final DefaultRedisScript&lt;Long&gt; script;
+
+    public DistributedRateLimiter(StringRedisTemplate redisTemplate) {
+        this.redisTemplate = redisTemplate;
+        this.script = new DefaultRedisScript&lt;&gt;();
+        this.script.setResultType(Long.class);
+        this.script.setScriptSource(
+                new ResourceScriptSource(new ClassPathResource("limit.lua"))
+        );
+    }
+
+    public boolean allow(String key, long windowMs, int maxCount) {
+        long now = System.currentTimeMillis();
+        Long result = redisTemplate.execute(
+                script,
+                Arrays.asList(key, key + ":seq"),
+                String.valueOf(now),
+                String.valueOf(windowMs),
+                String.valueOf(maxCount)
+        );
+        return result != null &amp;&amp; result == 1L;
+    }
+}</pre></div></section>
+<p class="md-p">对应 <code class="tok-inline">limit.lua</code> 用 <code class="tok-inline">ZSet</code> 做滑动窗口：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="file-label">lua</span></div><button class="copy-button md-copy" type="button">复制</button></div><div class="code-scroll"><pre class="md-pre" data-lang="lua">-- UNSAFE historical counterexample, not the canonical runnable limiter.
+local rateKey = KEYS[1]
+local seqKey = KEYS[2]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local maxCount = tonumber(ARGV[3])
+
+redis.call('ZREMRANGEBYSCORE', rateKey, 0, now - window)
+
+local current = redis.call('ZCARD', rateKey)
+if current &gt;= maxCount then
+    return 0
+end
+
+local seq = redis.call('INCR', seqKey)
+local member = tostring(now) .. '-' .. tostring(seq)
+
+redis.call('ZADD', rateKey, now, member)
+redis.call('PEXPIRE', rateKey, window)
+redis.call('PEXPIRE', seqKey, window)
+
+return 1</pre></div></section><div class="qa-end"><p class="md-p sx-pit"><span class="sx-tag pit">易错</span>先把问题模型和四个目标说清楚，再落到 Redis + Lua，避免只报中间件。</p><p class="md-p qa-sum"><span class="sx-tag sum">口径</span>口径一致、低延迟、规则可调、组件非单点，再加上原子窗口和异常兜底。</p></div><p class="md-p">上面客户端时间+seq两key的旧实现仅作为反例保留：Cluster不保证同slot、参数/类型未校验、时间回拨与超时语义未闭合，不得作为正确生产实现。完整修正版集中在 <a href="#/e/handwrite-60">分布式限流主答案</a>（limit.lua与RedisSlidingWindow.java）；使用该实现与其统一时钟、同slot及UNKNOWN合同，不再维护第二份分叉源码。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-2" data-key="hwqa-1:1">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">2</span><div class="qa-q">除了滑动窗口，你还知道哪些限流算法？分别适合什么场景？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>四种限流算法的差别在平滑程度、实现复杂度、突发容忍度和资源成本，没有绝对更高级的一种。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>固定窗口 / 滑动窗口 / 令牌桶 / 漏桶</p></div><div class="qa-rest"><div class="sx-tbl-wrap"><table class="sx-tbl"><thead><tr><th>算法</th><th>特点</th><th>适合场景</th></tr></thead><tbody><tr><td>固定窗口</td><td>实现最简单，窗口边界容易突刺</td><td>成本敏感、精度要求没那么高</td></tr><tr><td>滑动窗口</td><td>统计更平滑，要保证任意连续时间段都不超</td><td>接口级 QPS、登录、短信、第三方 API 调用</td></tr><tr><td>令牌桶</td><td>允许一定突发流量，工程上很常见</td><td>平时稳态、偶尔有短时突发</td></tr><tr><td>漏桶</td><td>更像强控速，输出速率比较稳定</td><td>希望输出速率稳定的链路</td></tr></tbody></table></div><div class="qa-end"><p class="md-p qa-sum"><span class="sx-tag sum">口径</span>把平滑程度、实现复杂度、突发容忍度和资源成本这些 trade-off 讲出来。</p></div><h2 class="md-h md-h2" id="add-own-distributed-s4076">分布式手册：完整机制、条件与故障推演</h2><h2 class="md-h md-h2">6.4 固定窗口、滑动窗口、令牌桶和漏桶怎样选与实现</h2><p class="md-p">固定窗口成本低但边界突发大，滑动窗口约束更精确，令牌桶允许受控突发，漏桶排队整形平滑输出。</p><p class="md-p">常见问法：四种限流算法怎么选；令牌桶能否保证每秒绝不超r；漏桶和并发限制有什么区别。</p><h3 class="md-h md-h3">适用条件</h3><p class="md-p">先定义受限维度、时间区间和超额行为；单位时间请求量与同时在途数不同，Semaphore不能代替速率算法。</p><h3 class="md-h md-h3">四种算法的精确契约</h3><p class="md-p">固定窗口：按floor(time/W)分桶，原子检查计数并增加，每个固定区间最多N次。仅O(1)状态，但上一窗口末尾N次加下一窗口开头N次可在极短时间放近2N。它没有违反固定窗口契约，只是不满足任意滑动区间N次。</p><p class="md-p">滑动日志：保存获准时间，清理t≤now−W，再判断剩余条数是否小于N，加入本次唯一尝试。它对(now−W,now]窗口精确，管理成本取决于窗口记录数；分桶滑动计数用多个时间片近似，误差由粒度决定。</p><p class="md-p">令牌桶允许受控突发，漏桶整形让请求排队后平滑出去。令牌桶以速率 r 补充，上限 B，请求花 c 个令牌，不足就拒绝或等候；空闲最多攒 B，因此任意长 Δ 区间的接受额度上界约 B+rΔ，不是严格每秒最多 r，长期速率才受 r 约束。</p><p class="md-p">漏桶整形把请求放进有界队列，按固定速率出队，代价是等待；队满或超过 deadline 必须拒绝。如果所谓漏桶只做合规判定，要说明它并没真正帮调用方排队执行。</p><h3 class="md-h md-h3">整数令牌桶实现</h3><p class="md-p">下面每interval时间单位补一个令牌，用“一个令牌=interval信用值”保存小数补充，避免浮点漂移。请求检查和扣减在同一个synchronized区间，容量乘积校验溢出，回拨时保守使用last，不重复补令牌。它是单进程示例，不是跨机器共享限流器。</p><h3 class="md-h md-h3">完整 Java 教学实现</h3><p class="md-p">示例采用Java 21，并提供并发边界测试。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">009/TokenBucket.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.util.*;
+import java.util.concurrent.*;
+
+/** One process, synchronized; one token per interval time units, with fractional credits. */
+public final class TokenBucket {
+    private final long interval, maxCredit;
+    private long credit, last;
+    public TokenBucket(long capacity, long interval, long now) {
+        if (capacity &lt;= 0 || interval &lt;= 0 || now &lt; 0) throw new IllegalArgumentException();
+        this.interval = interval;
+        this.maxCredit = Math.multiplyExact(capacity, interval);
+        this.credit = maxCredit;
+        this.last = now;
+    }
+    public synchronized boolean allow(long now, long tokens) {
+        if (now &lt; 0 || tokens &lt;= 0) throw new IllegalArgumentException();
+        if (tokens &gt; maxCredit / interval) return false;
+        long effectiveNow = Math.max(now, last); // conservative backwards-clock handling
+        long elapsed = effectiveNow - last; // both nonnegative, no overflow
+        long room = maxCredit - credit;
+        credit += Math.min(elapsed, room); // cap before addition, preventing overflow
+        last = effectiveNow;
+        long cost = tokens * interval; // bounded above by maxCredit
+        if (credit &lt; cost) return false;
+        credit -= cost;
+        return true;
+    }
+    private static void check(boolean b) { if (!b) throw new AssertionError(); }
+    public static void main(String[] args) throws Exception {
+        TokenBucket b = new TokenBucket(3, 10, 0);
+        check(b.allow(0, 3)); check(!b.allow(0, 1));
+        check(!b.allow(9, 1)); check(b.allow(10, 1));
+        check(!b.allow(5, 1)); check(!b.allow(19, 1)); check(b.allow(20, 1));
+        check(b.allow(1000, 3)); check(!b.allow(1000, 1));
+        check(!b.allow(1000, 4));
+        TokenBucket huge = new TokenBucket(1, Long.MAX_VALUE, 0);
+        check(huge.allow(0, 1)); check(huge.allow(Long.MAX_VALUE, 1));
+        try { new TokenBucket(2, Long.MAX_VALUE, 0); throw new AssertionError(); }
+        catch (ArithmeticException expected) { }
+        TokenBucket concurrent = new TokenBucket(7, 100, 0);
+        ExecutorService pool = Executors.newFixedThreadPool(12);
+        try {
+            List&lt;Callable&lt;Boolean&gt;&gt; jobs = new ArrayList&lt;&gt;();
+            for (int i = 0; i &lt; 100; i++) jobs.add(() -&gt; concurrent.allow(0, 1));
+            int accepted = 0;
+            for (Future&lt;Boolean&gt; f : pool.invokeAll(jobs)) if (f.get()) accepted++;
+            check(accepted == 7);
+        } finally { pool.shutdownNow(); }
+        System.out.println(&quot;PASS TokenBucket: burst, fractional refill, exact boundary, backward time, capacity cap, overflow, 100 racing requests allow 7&quot;);
+    }
+}
+</pre></div></div><h3 class="md-h md-h3">分布式实现与过载保护</h3><p class="md-p">跨实例严格共享额度需要一个权威原子状态，例如Redis短Lua脚本或按key单写者；时间使用统一来源仍需处理回拨、重启和状态过期。每实例独立N额度会使总额度约变实例数×N。可下发配额提高吞吐，但必须分析租约、未用额度和故障时超发上界，不能称无损替代。</p><p class="md-p">限流存储超时有结果未知，重试是否重复计费需明确attemptId与业务requestId的区别。fail-open保障可用性却可能压垮下游，fail-closed保护容量但增加拒绝；退化为本地并发限制只是一层保险，不能再声称满足原全局窗口。CPU/连接并发、队列长度和总deadline仍需独立约束。</p><h3 class="md-h md-h3">复杂度、边界与验证</h3><p class="md-p">令牌桶单键操作O(1)、状态O(1)，本例synchronized会串行同一桶，按主体分桶可扩展但需限制桶数量与回收。滑动日志空间与窗口内成功请求数相关，清理一批旧记录会产生尾延迟；漏桶还要保存排队载荷并处理取消。</p><p class="md-p">测试包括初始突发、9/10时间临界、小数信用累计、时间回拨、长空闲容量封顶、单次超额、Long边界/乘积溢出和100并发仅7个通过。Redis集群切换与真实时钟故障仍需专门验证。选型测试应同时看拒绝率、下游p99、热点key和攻击者换身份绕过，不能用一个全局大锁换来表面准确却不可服务的限流。</p><h3 class="md-h md-h3">Redis固定窗口为什么容易差一次</h3><p class="md-p">固定窗口先明确计数对象是所有尝试还是成功准入。若从0开始，原子执行INCR后，返回值小于等于N才放行，第N次仍允许，第N+1次拒绝；写成小于N就少放一次。此实现会继续累计被拒绝的尝试，计数不能拿去当成功请求数。如果只统计准入，应在同一权威临界区先检查used+cost≤limit，再更新；cost需为正整数，并用避免溢出的比较。</p><p class="md-p">固定窗口的计数和到期要一起建立。INCR 成功、EXPIRE 没执行，会留下不清零的键，所以首次创建与设到期必须在同一个原子协议里。</p><p class="md-p">自然分钟窗口用明确窗口编号与边界到期，不能每次请求都重新 EXPIRE，把固定窗口变成续期。边界前后各 N 次，仍可能短时形成 2N 突发，这是窗口语义，修比较符号也消不掉。</p><h3 class="md-h md-h3">ZSet滑动日志的区间、唯一身份与内存</h3><p class="md-p">如果定义有效窗口为(now−W, now]，清理应移除score≤now−W，再统计剩余记录，数量小于N才插入此次准入。把下界写成小于会多保留恰好位于边界的请求。删除、计数、判定、插入必须在同一脚本或等价权威临界区完成；拆成几次网络往返会被并发穿透。时间应来自可信一致的口径，并明确回拨时拒绝、钳制还是暂停，不能让客户端任意提交未来时间驱逐别人的额度。</p><p class="md-p">score保存时间，member保存唯一attemptId；不能只把毫秒时间戳同时作为member，否则同毫秒不同请求互相覆盖，实际放行量被低估。重试是否复用attemptId、是否复用已准入结果，应由计费和幂等合同决定；重复ZADD只更新同一成员，不会自动为一次新尝试扣新额度。保存逐请求日志的空间为窗口内记录数O(N)，清理成本随删除数量增长，大窗口和大额度可能更适合分桶近似或令牌桶。</p><p class="md-p">ZSet score使用双精度浮点数，只有绝对值不超过2^53的整数能保证逐整数精确；不能任意放入64位纳秒时间戳。Lua数字比较也需约束精确整数范围，Redis INCR支持的有符号64位整数范围不意味着转成Lua数后仍逐位精确。脚本应先检查参数、key类型、窗口、额度与代价范围，再做写入。</p><h3 class="md-h md-h3">多维额度与脚本失败仍有系统边界</h3><p class="md-p">Redis Cluster的多key脚本要求这些key在同一hash slot，可用同一业务域的hash tag；不是仅放在同一台机器就够，也不是所有业务共用一个标签越集中越好。跨槽的用户/租户/供应商全局额度，需选择共同权威、分配子额度或承认非原子窗口，不能把多个独立脚本说成全有或全无。</p><p class="md-p">Redis Lua 原子执行，不等于失败会回滚。原子性指执行期间不和其他客户端命令交错；后续命令报错，前面成功的写仍可能保留，redis.pcall 捕获错误也不会撤销。</p><p class="md-p">因此尽量先校验，再写入，并为资源耗尽、脚本超时和连接中断设计失败策略。调用超时可能已经扣额，只是回包丢了，查询或重试要结合准入操作身份。脚本成功也不证明复制切换不会丢状态，或供应商实际窗口与本地相同。</p><p class="md-p">边界测试至少包含第N与N+1次、cost&gt;1、同毫秒多请求、恰好now−W、窗口切换、空键TTL、不同slot、参数与类型错误、超时后重试、时钟回拨和额度下调。若选择fail-open，应量化最多超额多少；若选择fail-closed，应解释对可用性的影响。</p><h2 class="md-h md-h2">6.11 令牌桶和漏桶怎样区分，手写真正匀速出队的漏桶</h2><p class="md-p">令牌桶积累额度允许突发，漏桶整形按固定节奏释放队列元素，以增加等待换取平滑出流。</p><p class="md-p">常见问法：令牌桶与漏桶怎么区分；手写真正匀速出队的漏桶；队列满和取消怎么办。</p><h3 class="md-h md-h3">适用条件</h3><p class="md-p">此处实现有界排队加定时释放的整形器，拒绝超额请求的计数判定器不是同一个契约。</p><h3 class="md-h md-h3">允许突发与平滑释放是不同契约</h3><p class="md-p">令牌桶存最多B个token，长期以r补充，空闲后允许最多B突发；漏桶整形保存请求，以间隔Δ=1/r释放一个。入口突发变为队列等待，容量C满拒绝；若所有请求必须立即返回，则更接近限流合规判定而非排队整形。两种机制可组合，但应分别定义拒绝、等待和结果查询。</p><p class="md-p">FIFO顺序以成功入队顺序为准，同一到达时刻的多线程并无墙钟绝对先后。每条有deadline，教学核心在offer/release时移除达到或超过deadline的排队项，cancel按ID移除；现有Optional返回值只表示本次是否释放了一项，并不返回被清理项或超时结果。生产适配器需另做持久到期扫描，或扩展核心接口返回过期项，再逐项保存终态和发出超时通知。单纯定时睡眠却无限积压会耗光内存。</p><h3 class="md-h md-h3">代码怎样防补发突刺</h3><p class="md-p">真正平滑释放，暂停后就不能补发一串积攒的 tick。每次实际释放设 next=now+interval，而不是 next+=interval 循环追赶；因此线程暂停一秒再恢复，也只释放一个，不立刻突发一秒额度。</p><p class="md-p">代价是暂停期间的容量空耗，长期可用吞吐降低，这是严格平滑采取的保守选择。时间用单调时钟，不能让客户端自报当前时间。</p><p class="md-p">源码使用同步保护FIFO/时钟/next，release一次最多返回一个Request；真实部署由单一调度循环驱动，将返回任务交给有界执行器。释放节奏不保证业务完成节奏或最大在途数，慢请求还需要semaphore/并发舱壁。执行器拒绝后任务按明确策略标失败或持久重试，不能无条件放回队头而违背deadline/顺序。</p><h3 class="md-h md-h3">边界、复杂度与分布式</h3><p class="md-p">此教学实现每次清理全队列过期项并检查重复ID，offer/release/cancel最坏O(C)、状态O(C)，不是宣称所有操作O(1)。容量较大可用双索引/懒取消优化，但要限制垃圾项和额外状态。这里只对尚排队ID去重，已释放重试的业务幂等另做；队列未持久化，进程退出任务会丢，要求可靠受理时需持久任务账。</p><p class="md-p">逻辑时间限定非负且now+interval不溢出，回拨拒绝；System.nanoTime适合短持续间隔，示例实际定时测试用now−start，未声称跨292年回绕也支持。多个实例各一队会倍增总速率，严格全局应统一调度或保守分配不会重复发放的配额。</p><h3 class="md-h md-h3">实际测试</h3><p class="md-p">测试包括FIFO、队满、排队重复ID、取消、精确deadline、延迟恢复不补发、回拨/溢出、100并发入队只接受7；另用真实ScheduledExecutor释放5条，观测相邻实际释放至少20ms。测试没有固定上界准时保证，也不是网络分布式压测。</p><h3 class="md-h md-h3">完整Java实现</h3><p class="md-p">实现包含独立边界测试，运行环境与保证范围按上述合同。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">012/PacedLeakyBucket.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
+/** Single-authority FIFO shaper. Logical monotonic nanoseconds, bounded horizon. */
+public final class PacedLeakyBucket {
+  record Request(long id, long deadline) {}
+  private final int capacity;
+  private final long interval;
+  private final ArrayDeque&lt;Request&gt; queue = new ArrayDeque&lt;&gt;();
+  private long last = -1, next = 0;
+  PacedLeakyBucket(int capacity, long interval) {
+    if (capacity &lt;= 0 || interval &lt;= 0) throw new IllegalArgumentException();
+    this.capacity = capacity; this.interval = interval;
+  }
+  private void clock(long now) {
+    if (now &lt; 0 || now &lt; last || now &gt; Long.MAX_VALUE - interval)
+      throw new IllegalArgumentException(&quot;non-monotonic/out-of-range clock&quot;);
+    last = now;
+  }
+  synchronized boolean offer(long id, long deadline, long now) {
+    clock(now);
+    // Expired/cancelled entries cannot retain scarce queue slots.
+    queue.removeIf(r -&gt; r.deadline &lt;= now);
+    if (deadline &lt;= now || queue.size() &gt;= capacity) return false;
+    if (queue.stream().anyMatch(r -&gt; r.id == id)) return false;
+    queue.addLast(new Request(id, deadline)); return true;
+  }
+  synchronized boolean cancel(long id) { return queue.removeIf(r -&gt; r.id == id); }
+  synchronized Optional&lt;Request&gt; release(long now) {
+    clock(now);
+    queue.removeIf(r -&gt; r.deadline &lt;= now);
+    if (queue.isEmpty() || now &lt; next) return Optional.empty();
+    Request r = queue.removeFirst();
+    next = now + interval; // No accumulated catch-up burst after a long pause.
+    return Optional.of(r);
+  }
+  synchronized int size() { return queue.size(); }
+  static void check(boolean ok) { if (!ok) throw new AssertionError(); }
+  public static void main(String[] args) throws Exception {
+    var q = new PacedLeakyBucket(3, 10);
+    check(q.offer(1, 1000, 0) &amp;&amp; q.offer(2, 1000, 0) &amp;&amp; q.offer(3, 1000, 0));
+    check(!q.offer(4, 1000, 0) &amp;&amp; !q.offer(2, 1000, 0));
+    check(q.release(0).orElseThrow().id == 1 &amp;&amp; q.release(9).isEmpty());
+    check(q.cancel(2)); check(q.release(10).orElseThrow().id == 3);
+    check(q.offer(5, 20, 10)); check(q.release(20).isEmpty()); // exact deadline
+    check(q.offer(6, 1000, 20) &amp;&amp; q.offer(7, 1000, 20));
+    check(q.release(500).orElseThrow().id == 6 &amp;&amp; q.release(500).isEmpty());
+    check(q.release(510).orElseThrow().id == 7);
+    try { q.release(509); throw new AssertionError(); } catch (IllegalArgumentException expected) {}
+    try { q.release(Long.MAX_VALUE); throw new AssertionError(); } catch (IllegalArgumentException expected) {}
+    var race = new PacedLeakyBucket(7, 1);
+    try (var pool = Executors.newFixedThreadPool(20)) {
+      List&lt;Future&lt;Boolean&gt;&gt; fs = new ArrayList&lt;&gt;();
+      for (int i=0;i&lt;100;i++) { final int id=i; fs.add(pool.submit(() -&gt; race.offer(id, 1000, 0))); }
+      int accepted=0; for (var f:fs) if(f.get()) accepted++;
+      check(accepted==7 &amp;&amp; race.size()==7);
+    }
+    // Real timer smoke test; logical model above is the exact correctness test.
+    var real = new PacedLeakyBucket(5, 20_000_000);
+    for (int i=0;i&lt;5;i++) check(real.offer(i, 2_000_000_000L, 0));
+    long start=System.nanoTime(); List&lt;Long&gt; released=new ArrayList&lt;&gt;();
+    try (var timer=Executors.newSingleThreadScheduledExecutor()) {
+      CountDownLatch done=new CountDownLatch(5);
+      AtomicReference&lt;Throwable&gt; failure=new AtomicReference&lt;&gt;();
+      var task=timer.scheduleWithFixedDelay(() -&gt; {
+        try { long now=System.nanoTime()-start;
+          if(real.release(now).isPresent()) { released.add(now);done.countDown(); }
+        } catch(Throwable t) { failure.set(t); while(done.getCount()&gt;0) done.countDown(); }
+      },0,1,TimeUnit.MILLISECONDS);
+      check(done.await(3,TimeUnit.SECONDS));task.cancel(false);
+      if(failure.get()!=null) throw new AssertionError(failure.get());
+    }
+    check(released.size()==5);
+    for(int i=1;i&lt;released.size();i++) check(released.get(i)-released.get(i-1)&gt;=20_000_000);
+    System.out.println(&quot;PASS FIFO/capacity/cancel/deadline/no-catchup/backward/overflow; 100 offers accept 7; real timer releases 5 at &gt;=20ms gaps&quot;);
+  }
+}
+</pre></div></div><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-distributed-guide">学习路线、版本与验证范围</a></li></ul></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-3" data-key="hwqa-1:2">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">3</span><div class="qa-q">为什么这次限流会优先选滑动窗口？它的缺点是什么？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>滑动窗口的本质是卡住任意连续时段的请求数，比固定窗口更平滑更严，但状态成本更高。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>避免边界突刺 / 状态成本更高 / 并发越密越贵 / 突发改令牌桶</p></div><div class="qa-rest"><p class="md-p">目标是严格控制最近一段时间内的请求数。规则若是 1 秒最多 100 次，固定窗口可能在上一秒最后一瞬和下一秒开头连续放接近 200 次；滑动窗口更接近任意连续 1 秒内都不超过 100 次。接口限流、登录限流、短信限流这类场景约束感更强。</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>状态成本更高</b>：按时间戳精确记录时，Redis 内存和命令开销都比固定窗口大。</li><li><b>并发越密越贵</b>：窗口内数据越密，清理旧数据和统计窗口请求数的成本也会上来。</li><li><b>突发改令牌桶</b>：业务其实允许一定突发时，令牌桶有时更合适。</li></ol></div><div class="qa-end"><p class="md-p sx-pit"><span class="sx-tag pit">易错</span>把它讲成更平滑、更严格但状态成本更高的方案，不要默认适合所有场景。</p></div></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-4" data-key="hwqa-1:3">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">4</span><div class="qa-q">这套 Redis + Lua 滑动窗口限流，一次请求会访问几次 Redis？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>应用看 Redis 通常只往返一次：整段判断在同一个 Lua 里；服务器内部仍是多条命令原子串行。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>网络往返一次 / 内部多条命令 / 原子且省开销</p></div><div class="qa-rest"><div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>缓存已加载且无重定向/重试时通常一次脚本往返：</b>删旧数据、统计、判断、写入、设过期都放在同一个 Lua 脚本里。应用层只发一次脚本执行，原子性和网络开销都比较好。</li><li><b>内部多条命令</b>：从 Redis 服务器内部看不止一条，这里会做 <code class="tok-inline">ZREMRANGEBYSCORE</code>、<code class="tok-inline">ZCARD</code>、<code class="tok-inline">INCR</code>、<code class="tok-inline">ZADD</code>、<code class="tok-inline">PEXPIRE</code>。网络层是一趟，内部是多条命令原子串行执行。</li></ol></div><div class="qa-end"><p class="md-p sx-pit"><span class="sx-tag pit">易错</span>网络层一趟，不等于 Redis 内部只有一条命令，这个区别要主动讲出来。</p></div><p class="md-p">EVALSHA遇NOSCRIPT可能先失败再加载/改用EVAL，Cluster重定向与客户端重试也增加往返；Lua错误不回滚已执行写入，连接超时可能结果未知。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div></div>
+    
+    <section><h2>同专题其它小节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

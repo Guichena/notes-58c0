@@ -1,0 +1,543 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-reading-presence",
+  "order": 144,
+  "question": "阅读时长与在线人数怎样处理重复、乱序、多设备和高流量？",
+  "shortAnswer": "先定义可信时间和会话身份，再累计或合并区间；分桶固定路由，窗口提交与重放幂等，在线数使用明确的活跃截止。",
+  "commonPhrasings": [
+    "心跳累计与区间并集怎样选？",
+    "旧 close 怎样避免清掉重连会话？",
+    "分桶、窗口关闭与数据库入库如何衔接？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "阅读时长与在线状态聚合：先把时间算对，再把流量摊开"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一、先给面试官一个完整结论"
+    },
+    {
+      "type": "paragraph",
+      "text": "阅读时长的难点，是把可信事件变成不重不漏的时间贡献，再做分桶累加和可恢复结算；在线人数的难点，是先定义“在线”，再用可信的最近活动时间、会话代际和一致的窗口边界维护状态。Redis负责快速投影，不会替我们定义业务事实，也不会自动把客户端、消息系统和数据库变成一个事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会分四步回答：先约定时长与在线口径；再处理重复、乱序、多设备和失联；然后按真正能独立计算的身份分片；最后解释迟到、过期、宕机、重放和最终入库。先说这些，再选INCRBY或ZSet，方案才有可检验的含义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这组问题可以这样问："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Redis聚合阅读时长时，如何应对高流量？",
+        "Redis热Key如何分片？如果这个热Key是文章的阅读时长总数呢？",
+        "Redis怎么统计在线用户？"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "进一步可以追问：心跳重发会不会多算？消息倒序到达怎么办？手机退出后电脑仍在线怎么统计？一分钟的窗口到底按哪个时间划分？Redis清空后能否恢复？以下用这些追问展开一个假设方案，不预设任何业务的实际流量、心跳间隔或部署参数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二、什么叫“阅读了一分钟”"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试官问：“客户端每隔一段时间报一次心跳，来了就加上那个间隔，不就行了？”"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会先问：统计的是页面停留时长、前台活跃阅读时长、单设备阅读时长，还是同一用户跨设备去重后的有效时长？页面在后台、切换标签、屏幕锁定、播放器运行、离线补报，各自算不算？这几个定义会产生不同结果。即使服务端精确保存了每一条心跳，也不能据此证明人在认真阅读。"
+    },
+    {
+      "type": "paragraph",
+      "text": "至少分清三种上报协议："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "累计值：一个session从开始到现在累计有效阅读多少毫秒。连续上报1000、2000、3000，不能加成6000；可信累计量的最终贡献是3000。",
+        "独立增量：这一事件新增多少毫秒。只有事件身份稳定，而且不同事件之间的时间贡献本来就不重叠，才可以去重后相加。",
+        "时间区间：这次认为用户在[start,end)活跃。此时同一统计身份下的重叠区间必须取并集，事件ID不同不代表时间不重叠。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "统一用整数毫秒保存持续时间。一分钟等于60秒，也就是60,000毫秒；窗口宽度、心跳周期、离线阈值和保留期都要注明单位，不能把分钟数直接减在毫秒时间戳上。展示到秒或分钟时再统一取整，不能把每条短心跳分别向下取整后再求和。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持续时间窗口采用左闭右开，例如[60,000,120,000)。时刻恰好为120,000的活动归下一个窗口；一个区间跨越边界，就按交集长度分摊。自然日还涉及业务时区和夏令时，不能把任意自然日都硬写成固定86,400,000毫秒；如果题目只要固定分钟桶，就使用明确起点的固定宽度窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的“精确”是相对于经过验证的事件与约定口径精确。丢掉的客户端信号、伪造的活动、没有记录的中间状态，不会因为用了Redis而自动恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三、累计时长怎样处理重复、乱序和缺报"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会把会话身份定义为租户、用户、内容、session和generation的组合。generation区分重启或重新开始的会话，不能把新会话清零后的累计值接到旧会话后面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在一个不重置的会话内，如果累计值应当随sequence单调不减，维护已验证的最大累计值C，新值c带来的总量增量就是max(0,c-C)。例如先收到sequence=3、累计3000，再收到sequence=1、累计1000，不应该减回1000，更不能另加1000。重发sequence=3不会新增贡献。更晚收到sequence=2、累计3500，它却排在sequence=3、累计3000之前，违反累计值随序号不减的约束，应当拒绝或隔离核查，而不是静默拼出一个账本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重身份可以是不可变event_id，也可以是同一代际内的(session,sequence)。身份还要绑定内容：同一event_id重试时duration、窗口分配、路由版本等不得变更。同一个sequence出现两个不同累计值也是冲突。简单“见过就丢弃”会把上游改写事件的问题藏起来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的最大值保证最终会话总量不受合法样本顺序影响，却不保证每条事件分到的增量相同。先处理累计3000再处理1000，两条贡献是3000和0；换一个顺序，就是1000和2000。因此，原事件ID固定还不够，计算出的增量也必须按后面的可靠归一化契约固定下来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里有两个容易漏掉的边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一，最大累计值只能解决会话总量，不能凭空恢复分钟归属。 如果只收到第一个和第三个累计样本，可以知道截至第三个样本的总量，却未必知道新增的两秒分别发生在哪一分钟。如果产品允许按接收时间记账或均匀摊分，必须把它明确为估计规则；要求按事件时间精确分窗时，需要区间或足够细的原始事件。不能拿“高水位增量正确”证明“每分钟分布正确”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二，最大值不是反作弊。 一个不可信客户端报了异常大值，max会永久抬高基线。应先校验非负、单次最大有效间隔、会话允许长度、sequence推进与时间变化是否合理，再让事件进入正式聚合。异常事件要能审计，拒绝不能伪装成正常零增量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若上报的是独立增量而不是累计值，漏掉一条便少一段，后续心跳不一定能补齐。必须从可靠采集或明确的客户端重传协议找回，不能把两条心跳之间的全部空白都视作持续阅读。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四、时间区间、部分窗口和多设备怎样合并"
+    },
+    {
+      "type": "paragraph",
+      "text": "区间口径下，我会先决定去重域。例如统计“同一用户对同一文章的实际经过时间”，手机和电脑重叠阅读只能计一次，就按(租户,用户,文章)做跨session区间并集；如果产品定义的是设备使用量，则按session分别累计，再相加。这是两个合法但不同的指标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "举一个纯教学算例：设备A上报[59,000,61,000)，设备B上报[60,500,62,500)。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "按用户去重，并集为[59,000,62,500)，共3500毫秒",
+        "第一个分钟桶分到1000毫秒，第二个分到2500毫秒",
+        "若按设备使用量相加，则是2000+2000=4000毫秒",
+        "查询[60,000,60,500)只应得到500毫秒，不能把整个分钟或完整原事件加进来"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，“给每个event_id去重再把duration相加”只解决事件重复，不解决不同事件的时间重叠。对于跨设备并集，不能先把每台设备分到互不协调的计数器，再把计数相加，寄希望于Redis替你消掉交集。需要先把同一去重域路由到同一合并者，或保留可合并的区间状态做后续归并，再生成不重叠贡献。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若只有周期心跳而没有可信区间，也可以选择“相邻可信心跳间隔不超过阈值才计入，单段最多计入一个上限”的规则。页面意外关闭后，最后一个心跳到真正关闭之间的尾巴通常无法精确知道；首个心跳之前也未必有足够证据。计零、计到上限、等待闭合事件，各有低估或高估风险，规则要一致，不可以为了凑整把所有残缺段补成完整周期。"
+    },
+    {
+      "type": "paragraph",
+      "text": "乱序和重叠可用排序合并理解：先裁剪到查询窗口，再按起点排序，把相交或相接区间合并，最后累加长度。一次处理n段的教学实现是O(n log n)时间、O(n)额外空间。长期服务不能无限保存所有区间，应在允许迟到的范围内压缩合并，关闭后的历史用持久数据和修订版本处理。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "五、事件时间、接收时间和处理时间不能混用"
+    },
+    {
+      "type": "paragraph",
+      "text": "阅读时长的事件时间，是被描述的活动发生时间；接收时间，是服务端收到信号的可信时间；处理时间，是消费任务真正执行聚合的时间。积压可能让处理时间远晚于接收时间，离线补报又可能让接收时间远晚于事件时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果用户昨天阅读，今天补报，按事件时间的报表应修正昨天，不能因为消费者今天处理就加到今天。相反，“最近是否还有连接活动”通常更适合基于可信接收时间，而不是客户端随便填的时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个假设阅读事件至少需要：租户、用户与文章身份、会话及代际、不可变事件ID或序号、事件时间或区间、有效duration、服务端接收时间、口径版本。正式受理之前验证登录与会话状态、时间范围、负值、异常跳增、最大段长，以及身份和内容一致性。客户端时间可以作为待验证材料，不能无条件当服务器时钟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果聚合要用于可靠报表，先把原事件放进有明确持久性和保留期的采集日志或事实表，Redis只是可重放的投影。入口何时答复“已受理”，应绑定这一可靠写入契约。客户端永远没有送达的事件并不属于系统已受理账本，不能在正确性声明里假装它已经存在。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "六、高流量怎样分桶，才真的把写压力摊开"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会先问热的是哪个资源：少数文章的单Key命令量高，还是一个Key本身很大、操作一次需要处理很多成员？热点是访问集中，大Key是数据体积或元素量大，二者可以同时存在。观察按Key采样的请求分布、单命令耗时、内存和网卡/CPU、消费积压，再决定分桶、缩小单次操作还是限流；不能只看到延迟就盲目加机器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对已经标准化为可相加贡献的阅读时长，可按(文章,时间窗口,路由版本,bucket)设置计数桶，再用INCRBY或HINCRBY累加整数毫秒。原始累计事件要先算合法增量；需要区间并集的事件要先合并。加法只是最后一步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "bucket可以由稳定的session身份或其他合适的聚合身份哈希得到。选择依据是状态依赖：累计量需要同一session的前序状态；跨设备并集需要同一用户与文章的共同状态。只有已经独立去重、互不重叠的贡献，才适合进一步按event_id分散写入。切得太早会打散正确性依赖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在Redis Cluster里，一个Key属于一个槽，不能通过“把这个总Key复制成多份，每份都加同一个数”来扩容，那会重复统计。不同桶要有机会分布到不同槽及不同主节点；不能全部套同一个{article}标签，否则分了多个Key仍集中在一个槽。不同标签也不保证不同槽，更不保证不同节点，需要检查实际映射及热点分布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个桶的计数与去重状态若要用一个Lua脚本联动，应放在同槽原子域；不同桶则用不同原子域。脚本在单次执行期间不被其他命令交错，但没有自动回滚和跨外部数据库提交的能力。必须先检查类型、数值范围和身份冲突，再产生写入；即使做了检查，也要为运行时错误、内存问题和连接中断准备可核对的重试协议，不能把一个两步脚本当成持久账本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扩桶需要路由版本。第一次可靠受理事件时确定并保存(version,bucket)，之后重试沿用它，不能用“当前桶数”重新哈希。旧版本在重试、迟到和重放期间继续可识别；读侧按有效版本汇总，迁移时避免同时把旧投影和新投影都当作新增事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "区间跨多个窗口，一条事件就会生成多个子贡献。这里明确采用一个假设方案：先在同一聚合域内串行处理，或用状态版本控制并发；然后在同一个持久事务里做完三件事，即保存输入处理标记、更新累计高水位或区间并集状态、记录不可变的归一化贡献及待发布记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每份子贡献都有稳定身份，包含投影版本、聚合域、原事件身份、口径版本和窗口，并绑定duration与路由。事务提交后才能确认原事件；同一输入再次到达，读取已经保存的贡献，不按当前状态重新算增量。待发布记录可以重复发送，下游按同一贡献身份防重。这里的持久事务是该假设方案的必要前提，不是Redis脚本提供的跨系统能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为什么要一起保存？如果高水位已经推进，贡献还没保存就崩溃，重试可能只算出0，把该加的时长漏掉；如果贡献已发出但状态没推进，重试又可能算出另一份。区间并集也有顺序问题：在[60,000,120,000)窗口内，先处理A=[59,000,61,000)再处理B=[60,500,62,500)，两条新增贡献是1000和1500；反过来则是2000和500。总量都是2500，但同一原事件的新增贡献变了。不能重算一遍就用原幂等ID覆盖旧内容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个已保存的子贡献不能因为重试换ID、换内容或换路由；若下游只完成了部分窗口便宕机，就重发这些不可变贡献，补缺失部分而不重加已完成部分。窗口归属需要修正时，另建修订身份或新的投影版本，不能悄悄改写原贡献。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "七、分桶之后，还要控制批量、积压和读放大"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以按固定时间上限或事件数上限做有限批处理，减少命令数和网络往返。Pipeline把多条命令连续发送，不能保证整个批次原子成功；连接断开时可能一部分执行、一部分未执行。重试仍要靠稳定事件身份，不应重新生成一组ID。批次也不能无限大，否则排队时间、客户端内存和Redis处理延迟都可能变差。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果文章有B个计数桶，最直接的汇总要取B份贡献，读取与管理成本至少随B增长。并行查询降低等待时间，不会产生跨槽瞬时快照。各分片在不同处理进度、不同复制延迟下返回的数据，可以作为标注更新时间的近实时仪表盘；不能宣称是同一瞬间的严格全局结算值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在线人数分桶尤其要按稳定user身份划分，使一个用户只归一个统计分片。按session或按每次事件随机分片后直接相加，会把跨设备用户算多次。迁移时还要定义唯一归属代际，否则旧分片和新分片同时出现也会重计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "高峰回压要保护已受理数据。可以限制入口速率、合并同一会话的可合并样本、调节消费并发、降低仪表盘刷新频率；若丢弃或采样，必须说明改变的是哪种指标、误差如何呈现。不能默默丢弃“已承诺可靠”的阅读账目。对只有最后累计值有意义的总量，可有条件合并中间累计心跳；对需要精确窗口分布的区间事件，合并时不能丢掉分窗信息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "心跳入口量可以从“活跃会话数÷心跳周期”起估，再加重试和峰值裕量；这是估算式，实际还要测分布偏斜、网络抖动、批次大小与持久存储能力。选择桶数需要压测证据，没有哪个固定B天然对应某个QPS。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "八、窗口关闭、持久入库和重放怎样形成闭环"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试官问：“定时把Redis的数读出来，清零，再写数据库可以吗？”"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会画两个失败点：先清零后落库，进程在中间崩溃会丢账；先落库后清零，崩溃重试可能再次落同一批。GETDEL只把Redis内的一次读删合起来，不能把外部数据库提交也包进来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个更清楚的假设链路是："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "可靠保存不可变原事件，记录可信身份、口径和固定路由信息",
+        "在归一化事务中一起提交输入处理标记、聚合域状态和不可变贡献及待发布记录，提交后才确认原事件",
+        "重复发布已保存的贡献；Redis在线投影按贡献身份幂等更新，不能反过来充当唯一的归一化账本",
+        "持久汇总消费者在同一个事务内检查贡献唯一身份、核对内容并更新聚合和处理状态，提交后确认该贡献；确认丢失时重投仍使用原身份和原内容",
+        "重放已保存的贡献恢复当前投影；需要从原事件重算时，使用独立的新投影版本，核对后再切换"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "也可以用稳定batch_id，但必须保证同一批身份始终对应同一内容与范围。若故障恢复后重新分批，仅靠batch_id就可能让同一事件进两个批次，因此更稳妥的是同时保存事件级唯一性，或者严格固定不可重叠的分区范围。批次成功不应被误解为消息系统与数据库实现了全局exactly-once。"
+    },
+    {
+      "type": "paragraph",
+      "text": "结算版本必须绑定明确的输入切面。多个分区可以记录各自已确认的offset组成向量，但它只描述输入范围，不会自动固定同一聚合域的处理顺序，也不会证明状态和输出已同时提交。恢复当前投影时，我会重放归一化账本中已经固定的贡献，不用另一种原事件顺序重新分配旧贡献ID。若要从原事件重新计算，则固定输入范围、验证与迟到规则、口径版本，并按明确的聚合域顺序重建一个新的投影版本；新版本的计数和去重空间都与旧版隔离，核对后切换，不能把新旧结果相加。事件时间watermark表示在约定乱序策略下处理到的时间进度，本身不是“此后绝不会再收到更早事件”的保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "窗口结束后仍可保留允许迟到期，迟到事件到来后发布新版本或补偿差额；超过允许期，进入审计或离线重算，不应直接丢弃却仍声称精确。一个窗口全量重算的结果与旧结果求差额时，也要以修订身份幂等写入，避免修复本身重复加账。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久化、副本和备份各有作用，但单次Redis命令成功并不等于所有故障下数据零丢失。RDB、AOF的恢复点与刷盘策略不同，主从异步复制也有失败窗口。先定义能够容忍的丢失与恢复时间，再配置与演练。对必须守恒的指标，以可靠输入重建比依赖“Redis应该一直在”更容易说明正确性。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "九、过期、溢出和恢复边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "INCRBY和HINCRBY按有符号64位整数处理数值，溢出应当作为错误，不是自动回绕。Java侧同样使用long并用Math.addExact检查加法，不能先溢出成负数再写入。累积毫秒不使用double；Redis ZSet的score另有浮点表示边界，不能混为一谈。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计数、去重、累计高水位、区间合并状态和会话代际的保留期要一起设计。计数还在但去重先过期，会让重试重复加；累计高水位先消失，会把新样本整个累计值再加一次；关闭会话的代际墓碑过早消失，旧心跳可能复活连接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保留期至少覆盖承诺接受的迟到、重试和故障恢复范围，并预留处理延迟。TTL从什么时刻开始、是否续期也要说清。不能靠无限延长TTL来掩盖无限积压，应监控最老未处理事件、待结算窗口和去重状态规模。当重放跨度超过在线保留范围时，走独立重建版本或持久去重账本，避免旧事件重新创建过期桶后被当作新增业务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL删除不是可靠的结算触发器。 过期通知存在时机与交付限制，也没有与持久库提交的事务关系。应由可恢复的窗口状态和任务调度驱动结算，重复调度可以幂等执行。过期负责回收已经可安全重建或不再需要的状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "恢复验证不能只看“进程启动了”：还要核对输入进度、已提交窗口版本、去重状态与桶路由，确认重放不会丢尾巴或重复加。持续积压下如果输入一直快于处理，系统不会自然追平；要削峰、扩充有效处理能力或明确降级边界。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十、在线人数首先是一个有时间条件的定义"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试官问：“在线用户，用一个Set，登录加进去，退出删掉，不就行了？”"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会说：正常登出只是一个信号。网页崩溃、手机断电、断网，都可能没有logout；token仍有效也不代表人仍在线。必须区分："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "最近W毫秒有过受验证活动的独立用户数",
+        "当前仍有效的连接或session数",
+        "至少还有一条有效连接的独立用户数"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "这三种指标不互换。本节的活动窗口先定义为lastSeen在[now-W,now]内，两个端点都包含；W以毫秒计。心跳周期H应小于W，并为网络抖动、重试与处理延迟留空间。增大W减少短暂掉线误判，也增加真实离线后的显示滞后；减小W更敏感，但更容易误报。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在这个定义下，ZSet能精确统计“已接受观察值中满足窗口条件的用户”，对真实物理连接是否还活着仍然只是带超时阈值的估计。网络中断和远端崩溃不能靠一个迟迟没到的包瞬间区分，不能承诺全球所有连接断开的同一瞬间就得到准确离线人数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十一、ZSet怎样维护最近活动，时间从哪里来"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果选择“最近活动用户数”，可以让member是租户内唯一user身份，score是这个用户的最大可信lastSeen。手机和电脑都更新同一个user，保留较大的接收时间，因此不会按设备重复计人。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里选用服务端验证会话后记录的接收时间，消费积压时仍带着这个接收时间往下走，不能把一小时前收到的心跳因为现在才消费就伪装成刚刚在线。对于网络上延迟到达的旧客户端包，还需要sequence、会话代际和可接受陈旧度限制；服务端接收时间可信，只证明何时收到，不能证明客户端此刻一定还活着。"
+    },
+    {
+      "type": "paragraph",
+      "text": "使用Redis OSS 7.2.6所具备的命令能力，可以采用下面的命令形式："
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "value": "ZADD presence GT trustedLastSeen userId\nZCOUNT presence cutoff now\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "其中cutoff=now-W。GT自Redis 6.2开始可用；旧版本要用受控原子比较等方式实现“只前进不后退”。GT会更新更大的score，也会新增不存在的成员，不等于验证登录，更不会识别旧代际。只想更新现存成员时可考虑XX，但新会话注册仍需要单独契约，不能把XX当成完整鉴权方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZSet的score使用double。整数在[-2^53,2^53]范围内可精确表示，范围外不保证；以毫秒记录常规Unix时间戳时应在允许的整数范围内做校验，不能把纳秒整数或任意超大long直接转成score而认为不会丢精度。权限、封禁和会话撤销要查权威状态，presence仅用于统计或展示，不能作为访问授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "乱序心跳不能使score倒退。未来时间也不能无条件接受：异常大score可能让用户在后续窗口中长时间保持不正确状态，在带上界的查询里还可能暂时被排除。服务端时钟同样会漂移或回拨，需要统一可信时间策略、偏差监测和异常处理。单机单调时钟适合测间隔，但不能直接当成所有节点共享的Unix时间轴。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只保存最大lastSeen还有一个限制：它服务的是当前窗口，不保留任意历史时刻的完整活跃轨迹。如果用户在目标历史时刻之后又活动过，最大值已经覆盖旧值；固定now参数并不使它变成历史快照。需要回溯或严格结算时，保留事件或按快照屏障形成版本，不能只查询当前ZSet冒充历史在线数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十二、多设备退出、重连与旧close怎样处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "对于“最近W内活跃过”的定义，一个设备logout并不抹掉它刚刚发生过的活动，也不能删除另一设备的贡献。我会让用户级活动记录自然滑出窗口，不对每个logout直接ZREM user。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果业务要求尽快体现“目前仍有有效连接”，就要另建session生命周期。每条连接按(sessionId,generation)识别，重连后是新代际。心跳只有在代际匹配且连接仍开放时才能续期；close也必须比较代际，避免旧连接的迟到close删除新连接。关闭后的墓碑或权威代际检查要保留足够久，不能让旧心跳借“成员不存在”重新注册。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个用户两条有效连接，连接数是2，用户数是1；关闭其中一条后，连接数变1，用户数仍是1。若只保存这个用户所有设备lastSeen的最大值，而最新的设备关闭，剩余设备的有效截止时间可能更早，不能继续沿用已关闭设备的最大值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以在同用户原子域内维护有效session集合和各自截止时间，退出或超时后重新求剩余session最大截止，再更新用户视图。是否允许用户数延迟更新、如何传播到总分片、是否要为用户视图加版本，取决于读写代价与一致性要求。直接把session ZSet的ZCOUNT当用户数是不对的；周期去重汇总也要公开更新时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使有close，真实断网仍靠超时发现；“立即离线”只能指及时处理已到达并验证过的关闭事件，不能许诺瞬间获知没有发出的关闭信号。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十三、计数不等于清理，先取再删会产生竞态"
+    },
+    {
+      "type": "paragraph",
+      "text": "窗口计数直接ZCOUNT即可，不必先清理再ZCARD。否则清理与读取之间插入一条心跳，或者两步使用不同时间点，会让行为更难解释。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果查询包含cutoff边界，清理必须只删严格小于cutoff的score。命令参数形式为："
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "value": "ZREMRANGEBYSCORE presence -inf (cutoff\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "实际调用时把cutoff替换成数值，并把左括号作为该参数的一部分传入，例如cutoff=2000时上界参数是“(2000”。这是Redis的开区间记法，不是脚本表达式。不要查询包含2000，又把等于2000的成员删掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "更隐蔽的错误是：先取出待删user列表，过一会儿无条件ZREM。在两步之间该user可能已经被新心跳续期，清理任务仍会删除它。直接按执行时score范围删除可以避开这一种竞争；如果必须分页取名单后逐个清理，就比较当前score/代际是否仍与取样时一致，并再次检查是否已过期。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZCOUNT的文档复杂度是O(log N)；ZREMRANGEBYSCORE是O(log N+M)，M为删除量。后者没有LIMIT参数，不能想当然地把一次大范围删除当成有界批次。可以拆统计分桶、推进较小时间段，或分批取候选并原子条件删除；即使时间段很小，也可能集中大量同分成员，仍需监测和限制工作量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求“更新这条心跳后立即得到同一个Key上的计数”，可以用有界脚本在一个原子域内更新和计数。原子性仅说明执行期间不被其他命令交错，不包含跨分片快照、故障切换后的零丢失，也不允许长脚本无限扫描。"
+    },
+    {
+      "type": "paragraph",
+      "text": "清理应根据固定支持的最大窗口和保留期，而不是任意查询传来的小W。今天按一分钟查询就删除一分钟前的所有状态，下一次想查五分钟便无法恢复。生产接口应限制可查询范围；下面的教学模型也要求调用方让保留期覆盖所有查询窗口。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十四、Bitmap、HLL以及缓存重启之后怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "若用户ID可紧凑映射到稠密整数，按时间桶存Bitmap，再对涉及窗口的桶做OR，能得到这些桶覆盖的去重活跃用户。位本身是精确的，近似来自时间桶边界：把相交的整桶都纳入，会把窗口外但桶内的活动一起算进去；只取完整落在窗口内的桶则会漏掉边缘。位移上界决定空间，稀疏大ID不等于省内存；大offset还可能触发明显分配成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "HLL用于近似去重基数。它不保存可枚举用户清单，也不能对任意一个用户做精确删除，因此不能直接做即时在线名册。时间桶HLL合并仍有时间粒度误差与基数估计误差；需要枚举、封禁联动或精确退出时，换成适合这些操作的状态结构，而不是强行套一个计数草图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单个巨大ZSet也可能成为热点；稳定按user哈希分片后可以汇总各分片计数，但要固定统一查询时间、记录每片进度与失败情况。即使cutoff一致，不同分片在不同瞬间读取的状态也未必对应一个同时快照。某片超时不能默认为0后显示“精确总数”，应返回不完整状态或使用明确标注的旧快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis重启后，在线数据可以按下一轮心跳逐步恢复，期间应显示“恢复中/可能低估”，而不是把空集合解释成所有用户都离线。如果重放旧心跳，使用原可信接收时间，不能把重放时间写成新的lastSeen。阅读时长账本则需要从可靠事件恢复，不能像presence一样仅等下一轮心跳就认为旧账已经补齐。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十五、怎样做有说服力的验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会先写不变量，再测故障时序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "阅读时长至少验证：重复同一事件不增量；同ID不同内容被发现；乱序累计结果等于每个会话合法最大值之和；区间结果等于有效区间并集；各不相交窗口之和等于查询范围内总量；跨设备是否去重符合口径；负值、异常跳增和溢出不产生半写入；扩桶后同一事件路由不漂移；重复batch或重新分批不重复结算；部分窗口失败可恢复；迟到修订与离线重建不重加。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在线状态至少验证：同用户多设备只计一人；乱序心跳不倒退；窗口边界恰好相等仍计入；未来时间拒绝；一个设备退出不误删另一个；旧close不能关新代际；关闭后的旧心跳不能复活；续期与清理并发不误删；时钟回拨有明确行为；分片缺失不装成完整结果；缓存恢复不把历史心跳当新活动。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的Java 21实现是可编译的本地语义模型：区间裁剪并集、累计序列、固定路由、原子提交模型和双视图presence。使用排序合并以外的逐毫秒枚举作区间oracle，使用打乱且重复的累计序列、并发任务和受控清理时序验证边界。它使用JVM同步保护本地状态，数据全部在内存里，不能据此声称已经验证Redis脚本、数据库事务、消息确认、主从切换、持久化或吞吐量。上线前还需在目标Redis版本和真实依赖上测试超时、切主、断电恢复、跨槽路由、重复投递、积压与资源上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现有意保留几处教学边界：累计模型只还原会话总量；interval的union函数假定调用方已经按正确用户/文章域组织事件；路由对象需要由真正的可靠存储固定。累计模型、区间函数和内存账本是分开的教学组件，没有实现归一化状态与不可变输出的持久原子提交，不能把一次accept的返回值直接交给另一个组件，就声称完成了可恢复流水线。内存账本只接收已固定的非负贡献，模拟提交前失败与幂等，不实现数据库落盘、事务性待发布记录、负向修订或完整事件时间结算；反例测试用于说明这些边界。presence拒绝可信处理时钟回拨，且只支持向前查询，不提供历史快照；会话墓碑和样本列表需要生产环境另定有界保留策略。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十六、怎样自然联系真实项目"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试官问：“你实际项目里用过类似思路吗？”"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先讲实习中的可靠通知链路：“我的实习里，渠道出口用Redis Lua令牌桶控速，为P0预留配额，并按积压做滞回降级；设备抖动与重复催办用告警轮次、状态去重和摘要合并处理。可靠发布采用Transactional Outbox配合RabbitMQ的Publisher Confirm/Return，消费侧用数据库账本与处理轮次防重，渠道调用前保存稳定请求号，超时先对账再决策。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "接着再把迁移边界说清：“如果让我设计阅读时长聚合，我会借用其中的稳定业务身份、幂等账本、积压治理和故障恢复思路。但阅读事件还增加了区间重叠、事件时间分窗和迟到修订，不能直接把通知令牌桶换个Key名就当作时长服务。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave的真实经历可以这样连接：“我在NoteWeave里把解析、切片、向量化和索引构建拆成Kafka异步任务，并通过任务幂等和失败恢复推进长链路。如果扩展资料阅读统计，我会另外定义阅读事件、采集可靠性和时间口径，再设计独立聚合投影。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的联系落在已经做过的可靠性机制，以及明确标为“如果”的新设计上。阅读时长、在线人数的实现与效果不应写成已经完成的项目经历；通知渠道受理也不等于用户在线或已阅读。被追问具体数据库、桶参数、Redis部署、Kafka分区与offset策略时，应按实际实现回答，不能用示例参数填补事实。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十七、完整Java 21语义模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "将以下代码保存为ActivityMetrics.java，并使用Java 21编译。它不依赖第三方库，也不自带main入口；可以编写调用代码，按前面的边界场景检查返回值和状态。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\n\n/** Java 21 executable specification. No Redis client, database, broker or durable storage. */\npublic final class ActivityMetrics {\n    private ActivityMetrics() {}\n    public record Interval(long startMs, long endMs) {\n        public Interval {\n            if (startMs < 0 || endMs < startMs) throw new IllegalArgumentException(\"interval\");\n        }\n    }\n    /** Half-open intervals, clipped first, then unioned. O(n log n), O(n) extra space. */\n    public static long unionMillis(List<Interval> intervals, long fromMs, long toMs) {\n        new Interval(fromMs, toMs);\n        List<Interval> clipped = new ArrayList<>();\n        for (Interval i : intervals) {\n            long a = Math.max(i.startMs(), fromMs), b = Math.min(i.endMs(), toMs);\n            if (a < b) clipped.add(new Interval(a, b));\n        }\n        clipped.sort(Comparator.comparingLong(Interval::startMs));\n        long total = 0, start = 0, end = 0;\n        boolean pending = false;\n        for (Interval i : clipped) {\n            if (!pending) { start = i.startMs(); end = i.endMs(); pending = true; }\n            else if (i.startMs() <= end) end = Math.max(end, i.endMs());\n            else { total = Math.addExact(total, end - start); start = i.startMs(); end = i.endMs(); }\n        }\n        return pending ? Math.addExact(total, end - start) : 0;\n    }\n    /** Window start -> union milliseconds. Explicit finite range; no per-report rounding. */\n    public static Map<Long, Long> windows(List<Interval> intervals, long fromMs, long toMs, long widthMs) {\n        new Interval(fromMs, toMs);\n        if (widthMs <= 0) throw new IllegalArgumentException(\"width\");\n        Map<Long, Long> out = new LinkedHashMap<>();\n        if (fromMs == toMs) return out;\n        long base = (fromMs / widthMs) * widthMs;\n        while (base < toMs) {\n            long end = widthMs > Long.MAX_VALUE - base ? Long.MAX_VALUE : base + widthMs;\n            out.put(base, unionMillis(intervals, Math.max(base, fromMs), Math.min(end, toMs)));\n            if (end == Long.MAX_VALUE) break;\n            base = end;\n        }\n        return out;\n    }\n    public record Session(String tenant, String user, String article, String session, long generation) {\n        public Session {\n            Objects.requireNonNull(tenant); Objects.requireNonNull(user);\n            Objects.requireNonNull(article); Objects.requireNonNull(session);\n            if (generation < 0) throw new IllegalArgumentException(\"generation\");\n        }\n    }\n    public record Sample(Session session, String eventId, long sequence, long cumulativeMs) {\n        public Sample {\n            Objects.requireNonNull(session); Objects.requireNonNull(eventId);\n            if (sequence < 0 || cumulativeMs < 0) throw new IllegalArgumentException(\"sample\");\n        }\n    }\n    private record EventKey(Session session, String eventId) {}\n    /** Session totals only; returned deltas depend on arrival order.\n     * No atomic durable handoff to AtomicLedger and no event-time window reconstruction. */\n    public static final class Cumulative {\n        private final long maximumSessionMs;\n        private final Map<EventKey, Sample> seen = new HashMap<>();\n        private final Map<Session, NavigableMap<Long, Long>> samples = new HashMap<>();\n        private long total;\n        public Cumulative(long maximumSessionMs) {\n            if (maximumSessionMs < 0) throw new IllegalArgumentException(\"maximum\");\n            this.maximumSessionMs = maximumSessionMs;\n        }\n        public synchronized long accept(Sample s) {\n            if (s.cumulativeMs() > maximumSessionMs) throw new IllegalArgumentException(\"cap\");\n            EventKey key = new EventKey(s.session(), s.eventId());\n            Sample old = seen.get(key);\n            if (old != null) {\n                if (!old.equals(s)) throw new IllegalArgumentException(\"event identity conflict\");\n                return 0;\n            }\n            NavigableMap<Long, Long> existing = samples.get(s.session());\n            NavigableMap<Long, Long> next = existing == null ? new TreeMap<>() : new TreeMap<>(existing);\n            Long same = next.get(s.sequence());\n            if (same != null && same != s.cumulativeMs()) throw new IllegalArgumentException(\"sequence conflict\");\n            var lower = next.lowerEntry(s.sequence());\n            var higher = next.higherEntry(s.sequence());\n            if (lower != null && lower.getValue() > s.cumulativeMs()\n                    || higher != null && higher.getValue() < s.cumulativeMs())\n                throw new IllegalArgumentException(\"non-monotone cumulative sequence\");\n            long previous = next.isEmpty() ? 0 : next.lastEntry().getValue();\n            next.put(s.sequence(), s.cumulativeMs());\n            long delta = next.lastEntry().getValue() - previous;\n            long newTotal = Math.addExact(total, delta); // validate before any mutation\n            samples.put(s.session(), next); seen.put(key, s); total = newTotal;\n            return delta;\n        }\n        public synchronized long total() { return total; }\n    }\n    public record Route(int version, int bucket) {\n        public Route { if (version < 0 || bucket < 0) throw new IllegalArgumentException(\"route\"); }\n    }\n    /** The returned route must be persisted with the canonical event, never recomputed on retry. */\n    public static Route assignRoute(String aggregationIdentity, int version, int bucketCount) {\n        Objects.requireNonNull(aggregationIdentity);\n        if (bucketCount <= 0) throw new IllegalArgumentException(\"bucket count\");\n        return new Route(version, Math.floorMod(aggregationIdentity.hashCode(), bucketCount));\n    }\n    public record Contribution(String eventId, String counter, Route route, long deltaMs) {\n        public Contribution {\n            Objects.requireNonNull(eventId); Objects.requireNonNull(counter); Objects.requireNonNull(route);\n            if (deltaMs < 0) throw new IllegalArgumentException(\"delta\");\n        }\n    }\n    public record Counter(String name, Route route) {}\n    /** Models a single atomic commit with global event identity. It is NOT a persistent DB transaction. */\n    public static final class AtomicLedger {\n        private Map<String, Contribution> events = new HashMap<>();\n        private Map<String, List<Contribution>> batches = new HashMap<>();\n        private Map<Counter, Long> totals = new HashMap<>();\n        public synchronized void apply(String batchId, List<Contribution> input, boolean failBeforeCommit) {\n            Objects.requireNonNull(batchId);\n            List<Contribution> batch = List.copyOf(input);\n            List<Contribution> prior = batches.get(batchId);\n            if (prior != null) {\n                if (!prior.equals(batch)) throw new IllegalArgumentException(\"batch identity conflict\");\n                return;\n            }\n            Map<String, Contribution> e = new HashMap<>(events);\n            Map<Counter, Long> t = new HashMap<>(totals);\n            for (Contribution c : batch) {\n                Contribution old = e.putIfAbsent(c.eventId(), c);\n                if (old != null) {\n                    if (!old.equals(c)) throw new IllegalArgumentException(\"event identity conflict\");\n                    continue;\n                }\n                Counter k = new Counter(c.counter(), c.route());\n                t.put(k, Math.addExact(t.getOrDefault(k, 0L), c.deltaMs()));\n            }\n            if (failBeforeCommit) throw new IllegalStateException(\"simulated pre-commit failure\");\n            Map<String, List<Contribution>> b = new HashMap<>(batches); b.put(batchId, batch);\n            events = e; totals = t; batches = b;\n        }\n        public synchronized Map<Counter, Long> snapshot() { return Map.copyOf(totals); }\n        public synchronized int eventCount() { return events.size(); }\n    }\n    private record Connection(String user, String session) {}\n    private record Lease(long generation, boolean open, long lastSeenMs) {}\n    /** Recent activity and open connections are intentionally distinct views. */\n    public static final class Presence {\n        private final Map<Connection, Lease> leases = new HashMap<>();\n        private final Map<String, Long> userLastSeen = new HashMap<>();\n        private long clock;\n        private void now(long nowMs) {\n            if (nowMs < clock) throw new IllegalArgumentException(\"trusted clock regressed\");\n            clock = nowMs;\n        }\n        public synchronized void open(String user, String session, long generation) {\n            Objects.requireNonNull(user); Objects.requireNonNull(session);\n            if (generation < 0) throw new IllegalArgumentException(\"generation\");\n            Connection k = new Connection(user, session); Lease old = leases.get(k);\n            if (old != null && generation <= old.generation()) throw new IllegalArgumentException(\"old generation\");\n            leases.put(k, new Lease(generation, true, -1));\n        }\n        /** seenMs is trusted receipt time, not arbitrary client time. nowMs is processing time. */\n        public synchronized boolean heartbeat(String user, String session, long generation,\n                                               long seenMs, long nowMs) {\n            if (seenMs < 0 || seenMs > nowMs) throw new IllegalArgumentException(\"future/invalid receipt\");\n            now(nowMs);\n            Connection k = new Connection(user, session); Lease old = leases.get(k);\n            if (old == null || !old.open() || old.generation() != generation) return false;\n            leases.put(k, new Lease(generation, true, Math.max(old.lastSeenMs(), seenMs)));\n            userLastSeen.merge(user, seenMs, Math::max);\n            return true;\n        }\n        public synchronized boolean close(String user, String session, long generation) {\n            Connection k = new Connection(user, session); Lease old = leases.get(k);\n            if (old == null || !old.open() || old.generation() != generation) return false;\n            leases.put(k, new Lease(generation, false, old.lastSeenMs()));\n            return true; // tombstone remains; recent activity remains\n        }\n        private long cutoff(long nowMs, long windowMs) {\n            if (windowMs < 0) throw new IllegalArgumentException(\"window\");\n            now(nowMs); return windowMs > nowMs ? 0 : nowMs - windowMs;\n        }\n        public synchronized long recentUsers(long nowMs, long windowMs) {\n            long c = cutoff(nowMs, windowMs);\n            return userLastSeen.values().stream().filter(t -> t >= c && t <= nowMs).count();\n        }\n        public synchronized long activeConnections(long nowMs, long windowMs) {\n            long c = cutoff(nowMs, windowMs);\n            return leases.values().stream().filter(l -> l.open() && l.lastSeenMs() >= c\n                    && l.lastSeenMs() <= nowMs).count();\n        }\n        public synchronized long connectedUsers(long nowMs, long windowMs) {\n            long c = cutoff(nowMs, windowMs); Set<String> users = new HashSet<>();\n            leases.forEach((k,l) -> { if (l.open() && l.lastSeenMs() >= c && l.lastSeenMs() <= nowMs) users.add(k.user()); });\n            return users.size();\n        }\n        /** Fixed configured retention must be >= every supported query window. */\n        public synchronized void cleanupRecent(long nowMs, long retentionMs) {\n            long c = cutoff(nowMs, retentionMs);\n            userLastSeen.entrySet().removeIf(e -> e.getValue() < c); // exclusive old boundary\n        }\n    }\n\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

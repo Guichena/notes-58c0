@@ -1,0 +1,2 @@
+# Backend 11 frozen initial review
+12 entries, 35 questions, full supplements. 9 guarded leaf replacements. Use staged-leaf-replacements.json, source-span-map.json and immutable entry snapshots. All source IDs, anchors, images and archive identities preserved. Compiled render smoke passed for every candidate with the live compiled renderer in isolated Node VM; this is not browser visual QA or full integration. No live source changes, external writes or heavy tests. Later findings must be separate addenda.

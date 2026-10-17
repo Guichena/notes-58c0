@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-serving",
+  "kind": "qa",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "推理服务与解码",
+  "title": "推理服务与解码",
+  "tags": [
+    "AI 原理",
+    "面试推导"
+  ],
+  "questions": [
+    {
+      "id": "q-own-theory-pd-mooncake",
+      "order": 105,
+      "question": "PD 分离与 Mooncake 怎样交接 KV、背压和恢复？",
+      "shortAnswer": "P/D 调度同时考虑缓存与容量，KV 带请求、版本、布局和 READY 状态；直传 connector 与分布式缓存是不同路径。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "6 PD 分离与 Mooncake 的完整数据流"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 为什么做 PD 分离？业界方案有什么代价？Mooncake 的 KV 是否外挂？一次请求的 KV 怎样到 Decode 节点？"
+        },
+        {
+          "type": "paragraph",
+          "text": "核心回答：PD 分离将不同资源特征的 Prefill 与 Decode 放到不同执行资源，代价是 KV 传输和更复杂调度。 它可分别控制 TTFT/ITL、减少长输入干扰，但不是任何工作负载都必然提高吞吐。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一次请求可以沿“选节点、交 KV、回输出”讲完整。网关先校验模型/adapter/tokenizer 和请求预算；调度器结合 P 队列、输入长度与前缀本地性选择 P，同时核对 D 的 KV 容量和解码负载。"
+        },
+        {
+          "type": "paragraph",
+          "text": "P 生成 KV 后，发布传输描述，带上 request ID、模型版本、token 范围、布局/并行切片、块 ID 和 READY 状态。D 接收或拉取兼容块，才能继续 Decode；输出再按序列位置回到原连接。复述时逐项指出这些元数据防止的是请求、版本、位置还是布局混淆。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不能只先轮询一台 P 再轮询一台 D。缓存命中要和热点/排队平衡，D 没容量时应向 P 施加背压。首 token 由哪端产生、是否需要重算最后位置，取决于实际引擎交接协议，不能手工串两次 API 就保证无重复漏 token。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PD 分离省下的干扰，需要和搬运 KV 的时间比较。传输最低时间受 KV 字节/有效带宽限制，实际还要加排队、注册、拷贝和协议开销。RDMA 可以减少某些路径开销，却不能消除网络拥塞和拓扑问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "控制元数据与大张量数据面应分开；按块流水可以与计算重叠，但接收端只能消费已经完成、版本一致的块。不能为了重叠执行而提前读取未就绪状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Mooncake 的 PD 直传 connector 与分布式 KV Store 是不同能力路径；后者可提供共享/分层缓存，所谓“外挂 KV”必须问是跨 P/D 直传，还是 GPU 外 CPU/磁盘/分布式池。接口与兼容性依所选版本，不把当前支持反推某个旧项目已经启用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "故障恢复先守住两件事：使用中的 KV 不能被回收，已交付的输出不能随意重放。引用计数或租约负责前一项；D 确认前，P 不能过早释放恢复所需状态。节点退出后可以重传或重算，但必须同时考虑输出已经交付到哪里。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试覆盖 P/D 崩溃、缺块、D 内存满、版本滚动、请求取消、重复 ID 和流断线，检查无串数据、无泄漏、无重复输出。推演时可只改变故障点发生在 D 确认前还是确认后，说明哪些状态仍需保留；这属于设计检查，不能冒充完成了故障注入。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-theory-inference-guide",
+          "label": "来源使用与验证边界"
+        },
+        {
+          "entryId": "own-theory-inference-code",
+          "label": "完整 CUDA 与 NumPy：归一化、采样与分页参照"
+        }
+      ],
+      "tags": [
+        "AI 原理"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-theory-decoding",
+      "order": 323,
+      "question": "Top-k、Top-p、temperature 与可复现采样怎样定义？",
+      "shortAnswer": "先明确候选过滤顺序，再归一采样；温度零通常是贪心，但不保证跨内核、精度与硬件逐位复现。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "11 Decoding 与可复现采样"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法： top-k、top-p、temperature 分别做什么？手写采样，温度 0 是否绝对可复现？"
+        },
+        {
+          "type": "paragraph",
+          "text": "采样先决定候选范围和概率，再决定怎样选出下一个 token。 贪心直接选最大 logit；temperature 缩放 logits，改变分布的尖锐程度。top-k 保留概率最高的 k 项，top-p 保留累计概率至少达到 p 的最小前缀，之后再归一化采样。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两者一起使用时，必须声明顺序；下面实现先 top-k 后 top-p。Beam search 则保留多条候选路径，偏好较高联合概率，也需要长度和停止策略；这并不保证开放对话更自然或事实更准。读代码时可对照每一步正在改候选集合、概率还是最终选择。"
+        },
+        {
+          "type": "paragraph",
+          "text": "温度为 0 通常表示贪心，但贪心不等于跨环境位级复现。引擎、精度、batch、并行规约和版本不同，都可能影响结果；固定种子也只控制一部分随机性。重复惩罚、最大生成长度和停止 token 仍需结合任务验证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先用下面的测试核对 top-k/top-p 边界、温度为零、非法输入、固定种子与 KV 字节换算，再区分“这个实现的检查”与“换引擎仍完全一致”的主张。后者不能仅凭一次固定种子运行来证明。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "inference/sampling.py",
+          "value": "import numpy as np\n\ndef sample(logits, top_k=None, top_p=1., temperature=1., seed=0):\n    x=np.asarray(logits,dtype=np.float64)\n    if x.ndim!=1 or not x.size or not np.isfinite(x).all():\n        raise ValueError('finite nonempty one-dimensional logits required')\n    if temperature<0 or not np.isfinite(temperature) or not 0<top_p<=1:\n        raise ValueError('invalid temperature/top_p')\n    if top_k is not None and (type(top_k) is not int or top_k<1):\n        raise ValueError('top_k must be a positive integer')\n    if temperature==0:\n        return int(np.argmax(x))\n    x=(x-x.max())/temperature\n    order=np.argsort(-x,kind='stable')\n    if top_k is not None:\n        order=order[:min(top_k,len(order))]\n    p=np.exp(x[order]);p/=p.sum()\n    keep=(np.cumsum(p)-p)<top_p  # Keep the first token crossing the threshold.\n    order,p=order[keep],p[keep]\n    p/=p.sum()\n    return int(np.random.default_rng(seed).choice(order,p=p))\n\ndef kv_bytes(layers, batch, tokens, kv_heads, head_dim, element_bytes):\n    xs=(layers,batch,tokens,kv_heads,head_dim,element_bytes)\n    if any(type(x) is not int or x<1 for x in xs):\n        raise ValueError('positive integer dimensions required')\n    return 2*layers*batch*tokens*kv_heads*head_dim*element_bytes\n\ndef main():\n    assert sample([1,9,2],top_k=1)==1\n    assert sample([1,9,2],temperature=0)==1\n    assert sample([10,-10,-10],top_p=.01)==0\n    assert all(sample([0,1,2],top_k=2,seed=i) in [1,2] for i in range(30))\n    assert sample([10000,10001],seed=3)==sample([0,1],seed=3)\n    assert kv_bytes(32,1,4096,32,128,2)==2*1024**3\n    assert kv_bytes(80,1,4096,8,128,2)==1.25*1024**3\n    for args in [([],{}),([1],{'top_k':0}),([1],{'top_p':0}),([float('nan')],{})]:\n        try:sample(args[0],**args[1]);raise AssertionError()\n        except ValueError:pass\n    print('PASS top-k/top-p/temperature/invalid inputs; 7B-style 2GiB and GQA 1.25GiB KV examples')\nif __name__=='__main__':main()\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-theory-inference-guide",
+          "label": "来源使用与验证边界"
+        },
+        {
+          "entryId": "own-theory-inference-code",
+          "label": "完整 CUDA 与 NumPy：归一化、采样与分页参照"
+        }
+      ],
+      "tags": [
+        "AI 原理"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

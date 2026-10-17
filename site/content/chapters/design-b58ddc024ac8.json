@@ -1,0 +1,597 @@
+{
+  "entries": [
+    {
+      "id": "scenario-realtime-music-ranking",
+      "number": "场景 1",
+      "title": "实时歌曲播放量排行榜系统设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "系统设计面经",
+      "scenario": true,
+      "idea": "播放事件上报 → 接入层校验/幂等 → MQ 削峰 → 流式聚合 → Redis ZSet/分片榜单 → 异步持久化；查询侧只服务 TopN 的物化结果。",
+      "description": "设计一个实时歌曲播放量排行榜。截图中的追问包括：客户端上报、MQ 缓冲、实时聚合、批量写数据库、Redis ZSet 排行榜、如何去重和防刷；查询量很大时一个 Redis key 是否可行、只展示前 1000 时是否仍需把全部数据放在一个 key 中，以及除切分外还能做哪些查询优化。",
+      "metrics": "秒级可见；高写入吞吐；Top 1000 低延迟；允许短暂最终一致",
+      "components": "API Gateway / Kafka / Stream Aggregator / Redis ZSet / DB / Cache",
+      "requirements": [
+        "写路径要承受大量播放事件，排行榜变化最好在秒级可见。",
+        "同一播放事件不能因为客户端重试、MQ 重投而重复计数，同时需要对脚本刷量做风控。",
+        "读请求远多于写请求时，Top 1000 查询不能每次都扫描或排序全部歌曲。",
+        "原始播放事件与长期统计需要可追溯、可恢复，Redis 不能作为唯一持久化数据源。"
+      ],
+      "architecture": [
+        "客户端只上报“播放事实”而不是自己计算计数：event_id、user_id、song_id、play_ts、device_id、session_id、有效播放时长等。接入层做鉴权、参数校验和限流。",
+        "事件写入 Kafka/Pulsar 一类 MQ 削峰。按 song_id 或 song_id + bucket 做分区，使聚合消费者可以水平扩容；消费端按 100ms～1s 小窗口把同一歌曲的增量合并后批量更新。",
+        "实时榜单使用 Redis ZSet：member=song_id，score=累计播放量。低到中等规模可以单 ZSet；写 QPS 或歌曲规模继续上升时拆成多个排行榜分片，每个分片维护本地 TopK，再由聚合层归并成全局 TopK。",
+        "数据库保存按小时/天等粒度的 durable aggregates，必要时保留原始事件日志。消费者先形成可重放的聚合结果，再批量落库，Redis 只负责实时服务。",
+        "查询侧把“全局 Top 1000”进一步物化成短 TTL 缓存或本地缓存，绝大多数请求直接读物化榜单；只有后台刷新任务访问分片 ZSet。"
+      ],
+      "dataFlow": [
+        "客户端生成全局唯一 event_id → 上报播放事件。",
+        "接入服务先做快速幂等检查和基础风控，然后把事件写入 MQ。",
+        "流式消费者对 song_id 做增量聚合，以批次方式执行 ZINCRBY，并异步落库。",
+        "TopK Aggregator 周期性读取每个分片的 Top 1000，做一次 K 路归并得到全局 Top 1000。",
+        "查询服务优先返回秒级缓存的 Top 1000；需要歌曲详情时再批量补齐元数据，避免排行榜结构里塞入大对象。"
+      ],
+      "keyPoints": [
+        "去重：event_id + TTL 幂等表/状态存储。MQ 至少一次投递时，消费端也要能幂等；不要把“MQ 不重复”当保证。",
+        "防刷：有效播放时长阈值、单用户/设备/IP 速率限制、异常模式检测、风险分数。去重解决“同一事件重复”，风控解决“不同事件恶意刷量”，两者不是一回事。",
+        "一个 ZSet key 是否可行取决于歌曲基数与写 QPS，而不是“总播放事件数”。ZSet 只存每首歌一条 member，不会为每次播放都存一条。真正风险是热 key、单线程 Redis CPU、网络与内存。",
+        "只展示 Top 1000 时无需让所有查询都触达完整榜单。可维护专门的 Top1000 物化结果、本地缓存、读副本，并给榜单版本号；热点页面甚至可以通过 CDN/边缘缓存短暂缓存。",
+        "分片后的全局 TopK可以从每个分片取本地 TopK 后归并：任何全局 TopK 元素在自己所在分片中也不可能排在第 K 名之后。"
+      ],
+      "followups": [
+        "如果要求严格实时且一条播放都不能丢，如何处理 MQ 重试、消费者重启和 Redis/DB 部分失败？",
+        "热门歌曲成为超级热 key 时，是继续用 ZINCRBY，还是先在消费者内存/本地状态聚合再批量刷 Redis？",
+        "排行榜需要“日榜/周榜/实时 5 分钟榜”时，key 与数据过期策略如何设计？",
+        "如果后续发现某批播放是作弊流量，如何回滚或修正榜单？"
+      ],
+      "code": "// 伪代码：播放事件写入\nonPlay(event):\n    validate(event)\n    rateLimit(event.userId, event.deviceId)\n\n    if !dedup.tryMark(event.eventId, ttl = 24h):\n        return              // 客户端重试或 MQ 重放，不重复计数\n\n    mq.publish(\n        partitionKey = shard(event.songId),\n        payload = event\n    )\n\n// 伪代码：流式聚合消费者\nconsumeBatch(events):\n    delta = groupCountBySong(events)\n\n    for (songId, count) in delta:\n        redis.zincrby(rankKey(songId), count, songId)\n\n    db.batchUpsertHourlyCounter(delta)\n\n// 伪代码：全局 Top1000\nrefreshGlobalTop1000():\n    candidates = []\n    for shard in allRankShards:\n        candidates += shard.topK(1000)\n\n    globalTop = mergeTopK(candidates, 1000)\n    cache.set(\"music:global:top1000\", globalTop, ttl = 1s)",
+      "capacityPlan": [
+        "估算播放事件峰值 EPS、歌曲基数、TopN 查询 QPS、允许的榜单延迟。Redis ZSet 的 member 数≈歌曲数，而不是播放事件数。",
+        "若单 shard 写入成为热点，按 song_id 分片做局部 TopK，再周期归并全局 TopK；查询只读物化 Top1000。"
+      ],
+      "consistency": [
+        "播放事件采用 event_id 幂等，MQ 至少一次投递下消费者仍不能重复计数。",
+        "Redis 排名是实时派生视图，持久化聚合/原始日志才是可重放事实源；故障后可从日志重建。"
+      ],
+      "failureModes": [
+        "MQ 积压时允许榜单延迟上升但不丢 durable event；消费者扩容时要保持分区内顺序语义。",
+        "Redis 故障时可读最近物化榜单并继续落 durable aggregate，恢复后重建实时榜。"
+      ],
+      "observability": [
+        "监控 event ingest EPS、去重率、消费者 lag、榜单 freshness、Redis CPU/热 key、TopN 查询 P99。",
+        "风控单独监控异常播放占比，不要把“去重命中”误当成刷量识别。"
+      ],
+      "interviewAnswer": "我会把播放量当事件流而不是同步更新数据库：接入后先幂等和风控，进 MQ，流式聚合后批量更新 Redis ZSet 与持久化聚合。读侧只读 TopN 物化结果。单 ZSet 扛不住时做局部榜单分片并归并，Redis 不是唯一事实源。",
+      "tradeoffs": [
+        "单一 ZSet 查询简单、实时性高，但超级热点 key 的写吞吐受单 shard 限制；局部榜单分片能扩展，但全局榜存在秒级聚合延迟。",
+        "“强实时精确榜”成本远高于“秒级最终一致榜”；应先问产品是否真的需要每次播放后立刻全局精确重排。"
+      ],
+      "security": [
+        "播放事件需有用户/设备/会话标识、签名或服务端可信埋点，防伪造和重放；风控结果要可审计。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-hot-search",
+      "number": "场景 28",
+      "title": "热搜榜单设计（微博 / 抖音）",
+      "idea": "实时计算用 Flink/Storm，热度衰减用牛顿冷却定律，防刷用用户画像和设备指纹。难点在高并发、热度准确和防刷。",
+      "description": "设计热搜榜单：支持实时计算、热度衰减、防刷。要求高并发、低延迟、热度准确、防刷。",
+      "metrics": "QPS 100w+；延迟 < 1s；热度准确率 > 95%",
+      "components": "Flink / Redis / Kafka / Storm / ML",
+      "requirements": [
+        "实时计算：秒级更新",
+        "热度衰减：牛顿冷却定律",
+        "防刷：用户画像 + 设备指纹",
+        "多维度：热搜、要闻、娱乐、体育"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 人均行为 / 86400",
+        "存储 = 热搜词数 × (词 + 热度 + 元数据)"
+      ],
+      "architecture": [
+        "实时计算：Flink/Storm 消费 Kafka 事件流",
+        "热度公式：热度 = 基础分 × 时间衰减 × 用户权重",
+        "热度衰减：牛顿冷却定律 H = H0 × e^(-λt)",
+        "防刷：用户画像、设备指纹、IP 画像",
+        "多维度：按标签、地域、时间分别计算"
+      ],
+      "dataFlow": [
+        "用户行为 → Kafka → Flink → 实时计算 → Redis ZSet → 热搜榜",
+        "用户行为 → Kafka → Flink → 防刷过滤 → 实时计算",
+        "定时任务 → 热度衰减 → 更新 Redis ZSet"
+      ],
+      "consistency": [
+        "热搜榜最终一致：Flink 计算 → Redis 更新"
+      ],
+      "failureModes": [
+        "Flink 宕机 → 检查点恢复",
+        "Kafka 宕机 → 副本切换",
+        "Redis 宕机 → 主从切换"
+      ],
+      "keyPoints": [
+        "牛顿冷却定律是热搜衰减的经典模型",
+        "防刷要综合用户画像、设备指纹、IP 画像",
+        "热搜榜要支持多维度",
+        "实时计算用 Flink/Storm，离线计算用 Spark/Hive",
+        "热搜榜要支持人工干预"
+      ],
+      "observability": [
+        "监控 QPS、延迟、热度分布"
+      ],
+      "tradeoffs": [
+        "实时计算 vs 离线计算：实时计算延迟低但成本高",
+        "热度衰减系数 λ：越大衰减越快"
+      ],
+      "security": [
+        "防刷是关键",
+        "敏感词过滤"
+      ],
+      "followups": [
+        "牛顿冷却定律的 λ 怎么选？",
+        "如何防止热搜被刷？",
+        "如何设计多维度热搜？",
+        "实时计算和离线计算的区别？",
+        "如何设计人工干预？"
+      ],
+      "code": "// 热搜热度计算核心代码\npublic double calculateHotScore(long baseScore, long timestamp, double userWeight) {\n    long now = System.currentTimeMillis();\n    double hours = (now - timestamp) / 3600000.0;\n    double lambda = 0.1;\n    double timeDecay = Math.exp(-lambda * hours);\n    return baseScore * timeDecay * userWeight;\n}",
+      "interviewAnswer": "我会先明确热搜的核心是实时计算、热度衰减、防刷。然后给出方案：Flink 实时计算 Kafka 事件流，牛顿冷却定律做热度衰减，用户画像和设备指纹防刷。最后讨论多维度热搜和人工干预。关键要能说出牛顿冷却定律的公式和防刷的多种手段。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "热搜榜单",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-live-comment-system",
+      "number": "场景 2",
+      "title": "百万在线直播间评论系统设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "系统设计面经",
+      "scenario": true,
+      "idea": "评论接入与审核 → MQ 日志 → 时间窗口聚合/采样 → 分层广播 → WebSocket 网关本地扇出；普通评论允许丢弃，主播/主持人/管理员消息走高优先级全局通道。",
+      "description": "设计一个支持百万级用户同时在线的直播间评论系统。截图中的追问包括：如何推送消息、用户之间的消息如何广播；每秒推送仍需覆盖百万用户时如何分片；按 room_id 分片遇到超级大房间怎么办；不能全量推送时如何采样/丢弃；子房间后主播/主持人/管理员消息如何全局广播；客户端拉取和服务端推送各有什么优缺点，以及是否可以做混合方案。",
+      "metrics": "百万连接；评论可达千级/秒；端到端低延迟；允许普通评论有损降载",
+      "components": "WebSocket Gateway / MQ / Moderation / Window Aggregator / Fanout / Recent Message Store",
+      "requirements": [
+        "客户端发送评论后要快速得到发送结果，并在可接受延迟内看到被选中的评论。",
+        "百万在线意味着不能把每条普通评论都做“消息数 × 用户数”的逐用户服务端复制。",
+        "系统必须有背压策略：用户真正能阅读的评论条数远小于生产速度，普通评论可以采样，但管理类消息不能丢。",
+        "需要支持断线重连、最近消息回看，以及超级热门直播间带来的单 room_id 热点。"
+      ],
+      "architecture": [
+        "WebSocket Gateway 只负责长连接、鉴权、心跳和本机用户的发送；评论写入后先经过敏感词/风控/频率控制，再进入 MQ。",
+        "写入日志按 room_id + logical_bucket 分区，避免超级房间把单分区打爆。若业务要求房间内严格全序，可在接入或聚合层为通过筛选的消息分配单调 sequence；否则普通评论只保证近似时序即可。",
+        "Window Aggregator 以 100ms～1s 为窗口做聚合：主播/管理员消息全部保留；普通用户评论按频率、质量分、点赞、抽样概率等选出有限条数。因为人眼每秒能消费的信息有限，真正产品通常不会给每个用户展示 1000 条/秒。",
+        "Fanout 服务不按“每个用户一条 MQ 消息”广播，而是按 Gateway/连接分片建立房间订阅。每条入选评论只发送到有该房间连接的 Gateway，Gateway 再在本机内存中向本地连接批量写 socket。",
+        "最近几十秒/几百条评论放 Redis/内存环形缓冲区，历史消息异步批量持久化。断线重连携带 last_sequence，通过拉取补齐少量缺口。"
+      ],
+      "dataFlow": [
+        "用户 A → WebSocket Gateway → 审核/限流 → MQ。",
+        "MQ → 时间窗口聚合器 → 高优先级保留 + 普通评论采样/排序。",
+        "入选消息 → 房间 fanout channel → 所有订阅该房间的 Gateway 节点。",
+        "Gateway 在本机把同一消息批量写给属于该房间的连接；慢客户端使用有界发送队列。",
+        "重连或短暂掉线时，客户端根据 sequence 从 Recent Message Store 拉取缺失片段。"
+      ],
+      "keyPoints": [
+        "不能只按 room_id 做物理分片：超级房间只有一个 room_id，会形成单分片热点。连接层按 user_id/connection_id 一致性哈希分散，消息层再把同一房间映射到多个 fanout shard。",
+        "普通评论要“有损实时”：如果生产 1000 条/秒而客户端每秒最多展示 10～20 条，就应在服务端做窗口采样/排序，而不是把 1000 条全推过去再让客户端丢。",
+        "主播、主持人、管理员、系统公告应走独立高优先级 channel，并广播给该房间所有 fanout shard；普通用户评论才参与采样。",
+        "慢消费者必须有界：发送队列积压时丢弃旧的低优先级评论，保留关键消息；积压持续过大则断开并让客户端重连拉取，避免拖垮 Gateway。",
+        "纯推送实时性最好但长连接和广播成本高；纯拉取架构简单但实时性差且产生轮询流量。更合理的是“实时精选消息推送 + 断线/历史消息拉取”的混合模式。"
+      ],
+      "followups": [
+        "如果一个房间有 100 万用户，但只有 50 台 Gateway，每条消息应该复制 100 万份还是 50 份？为什么？",
+        "如何让不同 fanout shard 上的用户看到大致一致的评论顺序？严格全序与吞吐量之间如何取舍？",
+        "评论审核服务延迟升高时，能不能让消息旁路？哪些消息必须 fail-close？",
+        "如果做“千人千面评论流”，公共广播架构如何改造成公共候选池 + 用户侧个性化筛选？"
+      ],
+      "code": "// 伪代码：评论接入\nonComment(conn, comment):\n    user = authenticate(conn)\n    rateLimit(user, roomId)\n    moderation.preCheck(comment)\n    mq.publish(key = roomId + bucket(user.id), comment)\n\n// 伪代码：窗口选择\nevery 200ms for each hotRoom:\n    batch = readWindow(hotRoom)\n\n    critical = batch.filter(isHostOrAdmin)\n    normal   = batch.filter(isNormalUser)\n\n    selectedNormal = sampleAndRank(normal, limit = 10)\n    selected = assignSequence(critical + selectedNormal)\n\n    fanout.publishToRoomShards(hotRoom, selected)\n\n// 伪代码：Gateway 本地扇出\nonRoomMessage(roomId, messages):\n    for conn in localSubscribers(roomId):\n        if conn.sendQueue.isOverloaded():\n            conn.dropOldLowPriorityMessages()\n        conn.batchSend(messages)\n\n// 重连：客户端带 lastSequence，服务端仅拉取缺失的最近消息。",
+      "capacityPlan": [
+        "把“发言 QPS”和“下行 fanout 带宽”分开估算：百万在线并不意味着百万用户都在发言，但每条全量广播都可能放大成百万次发送。",
+        "先定义每用户可见评论上限，例如 10~20 条/秒，再据此反推窗口聚合、采样和 Gateway 下行带宽。"
+      ],
+      "consistency": [
+        "普通评论通常只要求近似时序/最终可见，主播与系统消息可分配严格 sequence 并走高优先级通道。",
+        "断线恢复用 last_sequence + 最近消息缓冲补洞，不追求把全部历史评论重新推送。"
+      ],
+      "failureModes": [
+        "Gateway 宕机后客户端重连其他节点；房间订阅应能从服务发现/路由状态恢复。",
+        "慢消费者必须有界队列并丢低优先级消息，否则少数慢连接就能拖垮进程内存。"
+      ],
+      "observability": [
+        "监控连接数、每房间 fanout QPS、发送队列长度、丢弃率、重连率、端到端评论延迟和审核延迟。",
+        "对超级房间单独做热点告警与容量隔离。"
+      ],
+      "interviewAnswer": "核心不是“把每条评论推给一百万人”，而是让写入日志化、普通评论窗口化筛选，按 Gateway 分片广播，再由 Gateway 本地扇出。关键消息走独立高优先级通道，慢消费者有界降级，断线通过序号拉取补偿。",
+      "tradeoffs": [
+        "全量广播语义最完整，但百万连接下带宽不可控；采样/窗口聚合牺牲普通评论完整性换可读性和系统稳定。",
+        "按 room_id 单分片简单但超级房间无法扩展；按 Gateway/fanout shard 拆分能横向扩展，但需要额外路由和关键消息全局广播。"
+      ],
+      "security": [
+        "WebSocket 建连鉴权、房间权限、禁言/封禁、内容审核、频控和敏感词是主链路能力；不要把用户文本直接信任后广播。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-feed-system",
+      "number": "场景 29",
+      "title": "Feed 流设计（朋友圈 / 微博时间线）",
+      "idea": "推模式（写扩散）适合普通用户（粉丝少，写扩散成本可控）；拉模式（读扩散）适合大 V（粉丝多，避免写放大）；推拉结合是生产首选。分页用游标（cursor）而不是 OFFSET，排序用时间戳 + 热度。",
+      "description": "设计 Feed 流系统：支持朋友圈、微博时间线。要求高并发、低延迟、支持海量用户、支持多种排序。",
+      "metrics": "QPS 100w+；延迟 < 100ms；支持 1 亿用户",
+      "components": "Redis / MySQL / MQ / CDN / ML",
+      "requirements": [
+        "推拉结合：普通用户用推，大 V 用拉",
+        "分页：游标（cursor）而不是 OFFSET",
+        "排序：时间戳 + 热度",
+        "过滤：广告、敏感词、黑名单"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 人均刷新 / 86400",
+        "存储 = 帖子数 × 帖子大小 × 副本数"
+      ],
+      "architecture": [
+        "推模式：发帖时推送到所有粉丝的收件箱",
+        "拉模式：读时聚合所有关注的人的最新帖子",
+        "推拉结合：普通用户用推，大 V 用拉，混合查询",
+        "分页：游标 = 最后一条的 ID + 时间戳",
+        "排序：时间戳 + 热度"
+      ],
+      "dataFlow": [
+        "发帖 → MQ → Feed 服务 → 推模式 → 粉丝收件箱",
+        "读 Feed → 拉模式 → 聚合关注的人的最新帖子",
+        "读 Feed → 混合查询 → 推 + 拉 → 排序 → 返回"
+      ],
+      "consistency": [
+        "Feed 流最终一致：MQ 异步推送"
+      ],
+      "failureModes": [
+        "MQ 宕机 → 副本切换",
+        "Redis 宕机 → 主从切换"
+      ],
+      "keyPoints": [
+        "推模式优点是读快，缺点是写慢（大 V 发帖要推送到千万粉丝）",
+        "拉模式优点是写快，缺点是读慢",
+        "推拉结合是生产首选",
+        "分页用游标而不是 OFFSET",
+        "排序要综合时间戳和热度"
+      ],
+      "observability": [
+        "监控 QPS、延迟、推送成功率"
+      ],
+      "tradeoffs": [
+        "推模式 vs 拉模式：推模式读快但写慢，拉模式写快但读慢"
+      ],
+      "security": [
+        "敏感词过滤",
+        "黑名单过滤"
+      ],
+      "followups": [
+        "推模式和拉模式的区别？",
+        "如何设计分页？",
+        "如何设计排序？",
+        "如何过滤广告和敏感词？",
+        "如何支持海量用户？"
+      ],
+      "code": "// Feed 流核心代码\npublic List<Feed> getFeed(String userId, String cursor, int limit) {\n    List<String> followees = followService.getFollowees(userId);\n    List<Feed> feeds = new ArrayList<>();\n    for (String followee : followees) {\n        feeds.addAll(feedDao.getLatestByUser(followee, cursor, limit));\n    }\n    List<Feed> inbox = feedDao.getInbox(userId, cursor, limit);\n    feeds.addAll(inbox);\n    feeds.sort((a, b) -> {\n        int timeCompare = Long.compare(b.getTimestamp(), a.getTimestamp());\n        if (timeCompare != 0) return timeCompare;\n        return Double.compare(b.getHotScore(), a.getHotScore());\n    });\n    return feeds.subList(0, Math.min(limit, feeds.size()));\n}",
+      "interviewAnswer": "我会先明确 Feed 流的核心是推拉结合、分页、排序。然后给出方案：普通用户用推模式，大 V 用拉模式，混合查询。分页用游标而不是 OFFSET，排序用时间戳 + 热度。最后讨论过滤和海量用户支持。关键要能说出推拉结合的优势和游标分页的原理。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "Feed 流",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-notification",
+      "number": "场景 27",
+      "title": "站内信 / 通知系统设计",
+      "idea": "读扩散（拉模式）适合低频大量用户；写扩散（推模式）适合高频少量用户。混合模式是生产首选。难点在海量用户和消息堆积。",
+      "description": "设计站内信系统：支持系统通知、私信、公告。要求高并发、低延迟、支持海量用户、支持消息类型扩展。",
+      "metrics": "QPS 10w+；延迟 < 100ms；支持 1 亿用户",
+      "components": "Redis / MySQL / MQ / WebSocket / Push",
+      "requirements": [
+        "消息类型：系统通知、私信、公告",
+        "读写扩散：读扩散适合低频，写扩散适合高频",
+        "已读状态：已读/未读标记",
+        "消息推送：在线 WebSocket，离线 Push"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 人均消息量 / 86400",
+        "存储 = 消息数 × 消息大小 × 副本数"
+      ],
+      "architecture": [
+        "读扩散：消息只存一份，用户拉取时聚合",
+        "写扩散：消息推送到每个用户的收件箱",
+        "混合模式：系统公告用读扩散，私人消息用写扩散",
+        "已读状态：Redis Hash 存储",
+        "消息推送：在线 WebSocket，离线厂商 Push"
+      ],
+      "dataFlow": [
+        "发送方 → MQ → 消息服务 → 写扩散 → 用户收件箱",
+        "用户 → 拉取收件箱 → 聚合消息 → 返回",
+        "用户 → 标记已读 → Redis → 异步落 DB"
+      ],
+      "consistency": [
+        "已读状态最终一致：Redis → 异步落 DB",
+        "消息不丢：MQ 持久化"
+      ],
+      "failureModes": [
+        "MQ 宕机 → 副本切换",
+        "Redis 宕机 → 主从切换",
+        "推送失败 → 重试 + 离线推送"
+      ],
+      "keyPoints": [
+        "读扩散优点是存储成本低，缺点是读取时要聚合",
+        "写扩散优点是读取快，缺点是存储成本高",
+        "混合模式是生产首选",
+        "已读状态用 Redis Hash",
+        "消息推送要支持离线推送"
+      ],
+      "observability": [
+        "监控 QPS、延迟、推送成功率"
+      ],
+      "tradeoffs": [
+        "读扩散 vs 写扩散：读扩散存储低但读慢，写扩散读快但存储高"
+      ],
+      "security": [
+        "私信加密存储",
+        "敏感词过滤"
+      ],
+      "followups": [
+        "读扩散和写扩散的区别？",
+        "如何设计已读状态？",
+        "如何支持海量用户？",
+        "如何设计消息推送？",
+        "如何防止消息丢失？"
+      ],
+      "code": "// 站内信核心代码\npublic void sendNotification(String userId, String type, String content) {\n    if (\"system\".equals(type)) {\n        notificationDao.insertSystemNotification(content);\n    } else {\n        String inboxKey = \"inbox:\" + userId;\n        redis.lpush(inboxKey, content);\n        redis.expire(inboxKey, 7 * 24 * 3600);\n        if (webSocketService.isOnline(userId)) {\n            webSocketService.push(userId, content);\n        } else {\n            pushService.push(userId, content);\n        }\n    }\n}",
+      "interviewAnswer": "我会先明确站内信的核心是读写扩散和消息类型。然后给出方案：系统公告用读扩散（存储成本低），私人消息用写扩散（读取快），已读状态用 Redis Hash。最后讨论消息推送和海量用户支持。关键要能说出读写扩散的区别和混合模式的优势。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "站内信",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-nearby",
+      "number": "场景 31",
+      "title": "附近的人设计（LBS）",
+      "idea": "GeoHash 把经纬度编码成字符串，前缀匹配表示附近；空间索引用 R-Tree 或 GeoHash；距离计算用 Haversine 公式。难点在高并发和精度。",
+      "description": "设计附近的人系统：支持查找附近 5km 内的用户。要求高并发（10w QPS）、低延迟（< 100ms）、精度高（误差 < 10m）。",
+      "metrics": "QPS 10w+；延迟 < 100ms；精度误差 < 10m",
+      "components": "GeoHash / Redis GEO / PostGIS / MongoDB",
+      "requirements": [
+        "GeoHash：经纬度编码成字符串，前缀匹配表示附近",
+        "空间索引：R-Tree 或 GeoHash",
+        "距离计算：Haversine 公式",
+        "高并发：10w QPS"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 人均查询 / 86400",
+        "存储 = 用户数 × (经纬度 + 元数据)"
+      ],
+      "architecture": [
+        "GeoHash：经纬度编码成字符串，前缀匹配表示附近",
+        "Redis GEO：基于 GeoHash，支持 GEOADD、GEORADIUS、GEODIST",
+        "PostGIS：PostgreSQL 的空间扩展，支持 R-Tree 索引",
+        "MongoDB：支持 2dsphere 索引"
+      ],
+      "dataFlow": [
+        "用户 → 上报位置 → GeoHash 编码 → 存储",
+        "用户 → 查找附近 → GeoHash 前缀匹配 → 距离计算 → 返回"
+      ],
+      "consistency": [
+        "位置最终一致：异步更新"
+      ],
+      "failureModes": [
+        "Redis 宕机 → 主从切换"
+      ],
+      "keyPoints": [
+        "GeoHash 的前缀匹配表示附近，但边界问题需要扩展 8 个邻居",
+        "Redis GEO 的 GEORADIUS 命令性能高，但内存占用大",
+        "PostGIS 的 R-Tree 索引支持复杂的空间查询",
+        "Haversine 公式计算球面距离，精度高但计算量大"
+      ],
+      "observability": [
+        "监控 QPS、延迟、精度"
+      ],
+      "tradeoffs": [
+        "Redis GEO vs PostGIS：Redis GEO 性能高但内存大，PostGIS 功能强但性能低"
+      ],
+      "security": [
+        "位置隐私保护",
+        "防止位置泄露"
+      ],
+      "followups": [
+        "GeoHash 的原理？",
+        "Redis GEO 和 PostGIS 的性能差异？",
+        "Haversine 公式的精度？",
+        "如何处理边界问题？",
+        "如何支持实时更新？"
+      ],
+      "code": "// 附近的人核心代码（Redis GEO）\npublic List<User> findNearby(double longitude, double latitude, double radiusKm) {\n    GeoRadiusCommandArgs args = GeoRadiusCommandArgs.newGeoRadiusArgs().includeCoordinates().includeDistance().sortAscending().count(100);\n    GeoResults<GeoCoordinate> results = redis.georadius(\"users:geo\", longitude, latitude, radiusKm, GeoUnit.KILOMETERS, args);\n    List<User> users = new ArrayList<>();\n    for (GeoResult<GeoCoordinate> result : results) {\n        double distance = haversine(longitude, latitude, result.getContent().getX(), result.getContent().getY());\n        if (distance <= radiusKm) users.add(new User(result.getContent().getName(), distance));\n    }\n    return users;\n}",
+      "interviewAnswer": "我会先明确附近的人的核心是 GeoHash、空间索引、距离计算。然后给出方案：Redis GEO 基于 GeoHash，支持 GEOADD、GEORADIUS、GEODIST。最后讨论边界问题和精度优化。关键要能说出 GeoHash 的前缀匹配和 Haversine 公式。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "附近的人",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-search-recommendation",
+      "number": "场景 35",
+      "title": "搜索推荐系统设计（Elasticsearch / 向量检索）",
+      "idea": "搜索推荐的核心是召回、精排、重排。召回用倒排索引和向量检索，精排用 LR/GBDT/深度学习，重排用规则和业务策略。难点在召回率和准确率。",
+      "description": "设计搜索推荐系统：支持全文检索、个性化推荐。要求高召回率、高准确率、低延迟。",
+      "metrics": "召回率 > 95%；准确率 > 90%；延迟 < 100ms",
+      "components": "Elasticsearch / Vector DB / ML / Feature Store",
+      "requirements": [
+        "全文检索：倒排索引",
+        "个性化推荐：向量检索",
+        "召回：多路召回",
+        "精排：LR/GBDT/深度学习",
+        "重排：规则和业务策略"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 人均搜索 / 86400",
+        "存储 = 文档数 × 文档大小 × 副本数"
+      ],
+      "architecture": [
+        "全文检索：Elasticsearch 倒排索引",
+        "个性化推荐：向量检索（HNSW）",
+        "召回：多路召回（全文 + 向量 + 热门）",
+        "精排：LR/GBDT/深度学习",
+        "重排：规则和业务策略"
+      ],
+      "dataFlow": [
+        "用户 → 搜索 → 召回 → 精排 → 重排 → 返回",
+        "用户 → 推荐 → 召回 → 精排 → 重排 → 返回"
+      ],
+      "consistency": [
+        "索引最终一致：异步更新"
+      ],
+      "failureModes": [
+        "ES 宕机 → 主从切换",
+        "向量数据库宕机 → 副本切换"
+      ],
+      "keyPoints": [
+        "倒排索引是全文检索的基础",
+        "向量检索是个性化推荐的基础",
+        "多路召回提高召回率",
+        "精排用深度学习提高准确率",
+        "重排用规则和业务策略"
+      ],
+      "observability": [
+        "监控 QPS、延迟、召回率、准确率"
+      ],
+      "tradeoffs": [
+        "召回率 vs 准确率：召回率高但准确率低，准确率高但召回率低"
+      ],
+      "security": [
+        "敏感词过滤",
+        "防止恶意搜索"
+      ],
+      "followups": [
+        "倒排索引的原理？",
+        "向量检索的原理？",
+        "如何设计多路召回？",
+        "如何设计精排？",
+        "如何设计重排？"
+      ],
+      "code": "// 搜索推荐核心代码\npublic List<Item> search(String query, String userId) {\n    List<Item> recall1 = esSearch(query);\n    List<Item> recall2 = vectorSearch(query, userId);\n    List<Item> recall3 = hotSearch();\n    List<Item> merged = merge(recall1, recall2, recall3);\n    List<Item> ranked = rank(merged, userId);\n    return rerank(ranked);\n}",
+      "interviewAnswer": "我会先明确搜索推荐的核心是召回、精排、重排。然后给出方案：Elasticsearch 全文检索，向量检索个性化推荐，多路召回提高召回率，深度学习精排提高准确率，规则和业务策略重排。最后讨论召回率和准确率的平衡。关键要能说出倒排索引和向量检索的原理。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "搜索推荐",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    },
+    {
+      "id": "scenario-cdn",
+      "number": "场景 34",
+      "title": "CDN 设计与缓存策略",
+      "idea": "CDN 的核心是边缘节点、缓存策略、回源。缓存策略用 LRU + TTL，回源用一致性哈希。难点在缓存命中率和回源压力。",
+      "description": "设计 CDN 系统：支持静态资源加速、动态内容加速。要求高缓存命中率、低回源压力、高可用。",
+      "metrics": "缓存命中率 > 95%；回源压力 < 5%；可用性 > 99.9%",
+      "components": "CDN / LRU / TTL / Consistent Hashing / Edge Node",
+      "requirements": [
+        "静态资源加速：图片、视频、CSS、JS",
+        "动态内容加速：API 响应",
+        "缓存策略：LRU + TTL",
+        "回源：一致性哈希"
+      ],
+      "capacityPlan": [
+        "带宽 = 用户峰值 × 平均资源大小",
+        "存储 = 资源数 × 资源大小 × 副本数"
+      ],
+      "architecture": [
+        "边缘节点：全球部署，就近访问",
+        "缓存策略：LRU + TTL",
+        "回源：一致性哈希",
+        "动态加速：TCP 优化、HTTP/2"
+      ],
+      "dataFlow": [
+        "用户 → 边缘节点 → 命中 → 返回",
+        "用户 → 边缘节点 → 未命中 → 回源 → 缓存 → 返回"
+      ],
+      "consistency": [
+        "缓存一致性：TTL + 主动刷新"
+      ],
+      "failureModes": [
+        "边缘节点宕机 → 调度到其他节点",
+        "回源失败 → 重试 + 降级"
+      ],
+      "keyPoints": [
+        "边缘节点就近访问，减少延迟",
+        "LRU + TTL 平衡缓存命中率和数据新鲜度",
+        "一致性哈希减少回源压力",
+        "HTTP/2 减少延迟"
+      ],
+      "observability": [
+        "监控缓存命中率、回源压力、可用性"
+      ],
+      "tradeoffs": [
+        "TTL 长短：长缓存命中率高但数据不新鲜，短缓存命中率低但数据新鲜"
+      ],
+      "security": [
+        "DDoS 防护",
+        "HTTPS 加密"
+      ],
+      "followups": [
+        "CDN 的原理？",
+        "如何设计缓存策略？",
+        "如何设计回源？",
+        "如何优化动态内容加速？",
+        "如何防 DDoS？"
+      ],
+      "code": "// CDN 缓存策略核心代码\npublic String getResource(String url) {\n    String cached = redis.get(\"cdn:\" + url);\n    if (cached != null) return cached;\n    String content = fetchFromOrigin(url);\n    redis.setex(\"cdn:\" + url, 3600, content);\n    return content;\n}",
+      "interviewAnswer": "我会先明确 CDN 的核心是边缘节点、缓存策略、回源。然后给出方案：边缘节点就近访问，LRU + TTL 缓存策略，一致性哈希回源。最后讨论缓存命中率和回源压力的平衡。关键要能说出 LRU + TTL 的缓存策略和一致性哈希的回源设计。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "CDN",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "实时、内容与推送"
+    }
+  ]
+}

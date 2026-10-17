@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2193",
+  "entryId": "scenario-redis-mysql-consistency",
+  "expectedOriginalHash": "e242a1b0809da0871f8472311d6e8248c26f09a5d47cde2cb9938fc04668b4a0",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.8 数据平台Redis锁与缓存链路出现不一致，怎样定位和恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "排查锁与缓存不一致应按提交、失效、旧回填、租约失效和恢复切换逐个窗口复现，修复以权威状态为准。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Redis锁为什么仍会不一致；缓存旧回填怎样发生；怎样安全恢复差异。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "先明确数据库、缓存、锁和业务状态的权威关系，不凭“不一致”三个字推断单一根因。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "重建同一实体的事实时间线"
+    },
+    {
+      "type": "paragraph",
+      "text": "判断不一致，先把同一实体的时间线对齐。固定 tenant/entityId、请求或事件 ID、版本、源日志位置和采样时间，对比同一水位下的权威 DB 与各投影，不能拿不同时间的截图就认定永久不一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再列出写 DB、事务提交、写或删缓存、发 MQ、消费、写下游和确认的顺序，并标出每一步能否重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见机制是DB提交后删cache失败、旧查询晚回填覆盖新值、异步副本滞后、消息漏发/重复/乱序、墓碑丢失、跨租户key碰撞或schema转换错误。Redis锁只协调遵守同key协议的临界区，租约过期旧owner继续写、锁粒度错误或另一路代码未加锁都可能越过它；有锁不等于DB+cache+MQ原子提交。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按差异类型修复"
+    },
+    {
+      "type": "paragraph",
+      "text": "先止住持续制造坏数据的路径，对关键写可降级到权威库或暂停有风险的投影更新，并保存故障样本。缓存可由权威重建，使用版本/CAS拒绝旧回填，批量失效要限速避免击穿；若缺消息从持久outbox/CDC位置补发，同eventId去重，不能生成一批新ID让重复变新增。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对错误变换已污染的数据，在固定源水位重算到隔离新版本并对账，再切换读取；缺删除要补墓碑，计数不应盲目用两个错误投影相减修正。金融/库存等事实不可直接拿缓存覆盖账本；有真实外部副作用先按业务流水核实并生成受控补偿。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "建立可持续证据"
+    },
+    {
+      "type": "paragraph",
+      "text": "每层保存足够的sourceVersion/processedPosition与失败责任，按范围比较主键集合、内容摘要与业务聚合。验证全量修复过程中仍有新增写、旧事件晚到和恢复后的二次重试，确保修复不会覆盖新事实。监控差异率、最老落后水位和修复积压，不只把某次对账归零当根因已除。实际复盘还应说明最终确认的根因、恢复证据与防止复发的措施。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

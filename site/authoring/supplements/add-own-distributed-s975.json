@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s975",
+  "entryId": "scenario-unique-id",
+  "expectedOriginalHash": "987d5e42bf1f5572b1c1e80bea0b15e2e7bcdc8aa0162ec9d19791304ac4f00e",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "全局ID的唯一性 有序性与故障边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "ID方案首先要在定义好的命名空间内防重复，其次才比较生成吞吐、存储局部性、可预测性和运维成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：UUID是否绝对唯一；Redis INCR是不是分布式ID；Snowflake如何处理时钟回拨；趋势递增和严格连续有何区别。"
+    },
+    {
+      "type": "paragraph",
+      "text": "UUID的格式和版本决定来源。随机UUID通过足够大的随机空间把碰撞概率压低，依赖可靠随机源，不是数学上绝不碰撞；数据库仍可用唯一约束作最终防线。时间排序型UUID改善大致有序性，但不能无条件代表全球严格生成先后，更不代表数据库提交顺序。标识符也不能自动当访问秘密，公开ID的不可预测性与鉴权是不同需求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库自增号由权威数据库协调并发，做法简单可靠，代价是吞吐、跨地域访问和故障切换。号段服务把协调摊到一批号码上：先持久分配不重叠区间，再由本地逐个使用，减少中心调用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程退出留下空洞可以接受，但无法证明未使用的余号不能回收重用。申请回包丢了，就用稳定申请 ID 查原号段，不能盲目退回高水位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis INCR只保证当前权威实例上的单键递增。异步副本切换、恢复旧快照、误删或淘汰发号key都可能回退并重号。INCRBY批取号段降低往返但不会消除这些风险。严格唯一需持久不回退的分配边界或受控新代际，同时防止旧节点继续发旧空间。多实例各自从零INCR不构成全局唯一。"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典Snowflake常用64位正数布局：1位符号、41位相对毫秒、10位节点、12位毫秒内序列。具体实现可调整位宽，容量和寿命随之变化。41位毫秒跨度约69.7年，12位序列每节点每毫秒最多4096个值；这是编码空间上限，不是网络服务必达性能。节点号必须独占，重启时高水位与时钟需要共同校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时钟回拨时，先保唯一性，再决定怎样承受不可用。可以拒绝直到恢复、受限等待，或切换持久逻辑时间，选择取决于业务要求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只取 max(last, now) 还不够：同一逻辑毫秒的序列可能耗尽，重启状态也可能丢失，直接清空 last 会重号。序列满了不能悄悄溢出到节点位；本例明确拒绝，由调用方在总期限内退避。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同节点的时钟有偏差，因此Snowflake通常只是趋势有序。严格全局递增需要更强的集中顺序或协调，严格无空洞又要定义取消、失败和事务提交后如何编号。订单号可以跳号，审计票据常需要保留作废记录而不是偷偷复用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java最小Snowflake实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面只保证同一个生成器存活期内的线程安全唯一性。节点独占由外部提供，没有持久化跨重启高水位；时钟回拨、序列耗尽、非法节点和时间越界都拒绝。单次计算O(1)，锁竞争等待不计为常数时间。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "002/SnowflakeInterview.java",
+      "value": "import java.util.HashSet;\nimport java.util.Set;\nimport java.util.function.LongSupplier;\n\npublic final class SnowflakeInterview {\n    private static final long MAX_DELTA = (1L << 41) - 1;\n    private final long epoch;\n    private final long nodeId;\n    private final LongSupplier clock;\n    private long lastMs = -1;\n    private int sequence;\n\n    public SnowflakeInterview(long epoch, long nodeId, LongSupplier clock) {\n        if (epoch < 0 || nodeId < 0 || nodeId >= 1024 || clock == null) {\n            throw new IllegalArgumentException(\"invalid epoch, nodeId or clock\");\n        }\n        this.epoch = epoch;\n        this.nodeId = nodeId;\n        this.clock = clock;\n    }\n\n    public synchronized long nextId() {\n        long now = clock.getAsLong();\n        if (now < epoch || now - epoch > MAX_DELTA) {\n            throw new IllegalStateException(\"timestamp out of range\");\n        }\n        if (now < lastMs) {\n            throw new IllegalStateException(\"clock moved backwards\");\n        }\n        int nextSequence = now == lastMs ? sequence + 1 : 0;\n        if (nextSequence >= 4096) {\n            throw new IllegalStateException(\"sequence exhausted; retry later\");\n        }\n        lastMs = now;\n        sequence = nextSequence;\n        return ((now - epoch) << 22) | (nodeId << 12) | sequence;\n    }\n\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试应覆盖同毫秒4096次、下一次拒绝、下一毫秒归零、回拨、不同节点、41位边界和并发唯一性。跨重启节点租约和真实时钟故障需要独立集成验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "UUID格式与代际位的继续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "UUID是128位，常见文本形式为32个十六进制数字加4个连字符，共36字符。v1可包含时间与节点标识，v4主要是随机位，v7采用Unix毫秒时间戳并结合随机或计数设计；不能说所有UUID都含MAC地址或所有UUID都无序。具体库行为应符合其采用的RFC 9562版本规则。随机分布和时间局部性影响B+树写入位置，但趋势有序也不承诺完全避免页分裂。"
+    },
+    {
+      "type": "paragraph",
+      "text": "拿位数换代际，是压缩其他空间，不是免费解决回拨。比如从 Snowflake 的 10 位节点中划出 3 位代际，节点只剩 7 位，最多 128 种；代际也只有 8 个值，初始值已经占一个。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回绕、重启丢状态、与旧时间区间重叠，仍可能碰撞，必须持久管理，耗尽时拒绝、等待或切到经证明安全的新空间。若从 12 位序列里划，每少一位，每毫秒容量减半，不能说改了位域就无条件解决若干次回拨。"
+    },
+    {
+      "type": "paragraph",
+      "text": "节点号通过etcd、ZooKeeper或配置发放时，旧进程暂停后恢复也不能与新进程共用。普通租约到期不会远程杀死旧进程，发号器需要在失权后停止且采用安全复用间隔、高水位或代际；仅“检测宕机后马上回收节点号”不足以证明唯一。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3.5 给其他服务器提供每秒十万以上分布式ID如何设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "高吞吐发号可用可靠号段批量分配后本地生成，或受控节点身份的Snowflake，唯一性首先取决于故障后不重用空间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：十万每秒分布式ID怎么设计；号段申请响应丢失怎么办；如何防溢出和切主重号。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "目标是向其他服务器提供十万次每秒以上的ID服务，本机生成速度不能证明网络服务达标。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把每ID往返改为可靠批量授权"
+    },
+    {
+      "type": "paragraph",
+      "text": "高吞吐发号，可以先减少每个 ID 都跑一次网络的成本。每个 ID 一次 RPC，10 万/s 就至少有同量请求响应和连接调度；可改成领取不重叠号段，再用本地 AtomicLong 或同步计数消费，接近阈值时预取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设一段 10000，10 万 ID/s 平均只需每秒 10 次号段申请。但突发、客户端数量和故障重启会提高申请频率，这只是平均算术。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库highwater行保存已分配最大值，事务SELECT FOR UPDATE读取h，检查h+size无溢出，更新上界并记录(ownerBootId,allocationRequestId,size,low,high)后提交。只有提交成功才能交付号段，同请求重复返回同范围、不同size拒绝。DB必须自身满足持久恢复不倒退；若恢复旧备份则必须隔离旧生成器并换安全代际/空间，不能继续从旧h发号。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "最容易遗漏的客户端重启规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一存活客户端用相同allocationRequestId重试只是找回同一次领取，只有一个本地分配者消费该段。两个客户端复制同owner/request后各自从low发号会重复；身份绑定、单实例所有权和bootId是协议条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端重启后，最怕拿着旧号段又从 low 开始。已经发到某值却丢失内存时，若没有可靠持久的消费高水位，最安全是丢掉旧段余量，用新 bootId 领新段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这会留下空洞，是用连续性换恢复简单。不要为了连续回收可能已被旧进程发过的号码。发号接口重试是否返回同一业务 ID，还要另设计请求幂等，不能与号段申请幂等混为一谈。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "预取、可用性和时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "双缓冲预取减少等待，段耗尽且中心不可用应明确排队/失败，不能绕过中心自己重用区间。按业务namespace分高水位行可并行，但全系统唯一需把namespace编码入ID或确保调用者只需域内唯一。号段保证不重叠却不保证全球严格按请求时间递增，不同机器可先发更大段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Snowflake可减少中心分段依赖，但节点号/租约、时钟与重启治理仍需Snowflake协议。若必须经统一HTTP/RPC服务返回每个ID，则需真正测序列化、网络、TLS、负载均衡和p99，容量由多层决定；不把100万本地调用/s等同服务承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实际代码与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "IdRangeStore使用真实H2文件事务，100个并发申请各1000个数，排序检验100000个数范围连续且互不重叠；30次同owner/request重试返回同范围，测payload冲突、提交前异常回滚、关闭重开和Long上限。没有实现客户端HTTP服务/预取器或测10万网络QPS；代码只证明分配协议局部不变量。生产同库不同隔离级别、死锁重试和灾备需额外演练。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现包含独立边界测试，运行环境与保证范围按上述合同。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "004/IdRangeStore.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n/** Reliable range allocation model; callers must never share a consumed range. */\npublic final class IdRangeStore {\n  record Range(long low, long high) {}\n  final String url;\n  IdRangeStore(String path) { url=\"jdbc:h2:file:\"+path+\";LOCK_TIMEOUT=15000\"; }\n  Connection connect() throws SQLException { return DriverManager.getConnection(url,\"sa\",\"\"); }\n  void init() throws SQLException {\n    try(var c=connect();var s=c.createStatement()) {\n      s.execute(\"CREATE TABLE highwater(name VARCHAR PRIMARY KEY, val BIGINT NOT NULL)\");\n      s.execute(\"INSERT INTO highwater VALUES('order',0)\");\n      s.execute(\"CREATE TABLE allocations(owner VARCHAR, request VARCHAR, amount BIGINT, lo BIGINT, hi BIGINT, PRIMARY KEY(owner,request))\");\n    }\n  }\n  Range allocate(String owner,String request,long size, boolean fail) throws SQLException {\n    if(owner==null||owner.isBlank()||request==null||request.isBlank()||size<=0) throw new IllegalArgumentException();\n    try(var c=connect()) {\n      c.setAutoCommit(false);\n      try {\n        long old;\n        try(var s=c.createStatement();var r=s.executeQuery(\"SELECT val FROM highwater WHERE name='order' FOR UPDATE\")) { r.next();old=r.getLong(1); }\n        try(var p=c.prepareStatement(\"SELECT amount,lo,hi FROM allocations WHERE owner=? AND request=?\")) {\n          p.setString(1,owner);p.setString(2,request);\n          try(var r=p.executeQuery()) { if(r.next()) {\n            if(r.getLong(1)!=size) throw new IllegalArgumentException(\"request payload conflict\");\n            Range saved=new Range(r.getLong(2),r.getLong(3));c.commit();return saved;\n          }}\n        }\n        long high=Math.addExact(old,size);long low=Math.addExact(old,1);\n        try(var p=c.prepareStatement(\"UPDATE highwater SET val=? WHERE name='order'\")) { p.setLong(1,high);p.executeUpdate(); }\n        try(var p=c.prepareStatement(\"INSERT INTO allocations VALUES(?,?,?,?,?)\")) {\n          p.setString(1,owner);p.setString(2,request);p.setLong(3,size);p.setLong(4,low);p.setLong(5,high);p.executeUpdate();\n        }\n        if(fail) throw new SQLException(\"injected precommit failure\");\n        c.commit();return new Range(low,high);\n      } catch(Throwable e) { rollbackPreserving(c, e); throw e; }\n    }\n  }\n  static void check(boolean ok){if(!ok)throw new AssertionError();}\n  public static void main(String[] args)throws Exception{\n    var db=new IdRangeStore(args[0]);db.init();\n    List<Range> ranges=new ArrayList<>();\n    try(var pool=Executors.newFixedThreadPool(12)){\n      List<Future<Range>> fs=new ArrayList<>();\n      for(int i=0;i<100;i++){final int id=i;fs.add(pool.submit(()->db.allocate(\"boot-\"+id,\"r\",1000,false)));}\n      for(var f:fs)ranges.add(f.get());\n    }\n    ranges.sort(Comparator.comparingLong(Range::low));\n    long next=1;for(var r:ranges){check(r.low==next && r.high-r.low==999);next=r.high+1;}\n    check(next==100001);\n    Range original=db.allocate(\"retry-boot\",\"stable\",17,false);\n    try(var pool=Executors.newFixedThreadPool(10)){\n      List<Future<Range>> fs=new ArrayList<>();\n      for(int i=0;i<30;i++)fs.add(pool.submit(()->db.allocate(\"retry-boot\",\"stable\",17,false)));\n      for(var f:fs)check(f.get().equals(original));\n    }\n    try{db.allocate(\"retry-boot\",\"stable\",18,false);throw new AssertionError();}catch(IllegalArgumentException expected){}\n    try{db.allocate(\"crash\",\"x\",9,true);throw new AssertionError();}catch(SQLException expected){}\n    var reopened=new IdRangeStore(args[0]);Range after=reopened.allocate(\"new-boot\",\"r\",9,false);\n    check(after.low==original.high+1);\n    try(var c=db.connect();var s=c.createStatement()){s.execute(\"UPDATE highwater SET val=\"+(Long.MAX_VALUE-1));}\n    try{db.allocate(\"overflow\",\"r\",2,false);throw new AssertionError();}catch(ArithmeticException expected){}\n    check(db.allocate(\"last\",\"r\",1,false).high==Long.MAX_VALUE);\n    System.out.println(\"PASS 100 concurrent disjoint ranges =100000 IDs; 30 idempotent retries; conflict/rollback/reopen/overflow\");\n  }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3.11 趋势递增订单号怎样选择Snowflake、Leaf号段和Redis INCRBY"
+    },
+    {
+      "type": "paragraph",
+      "text": "Snowflake适合受控时钟与节点身份下的本地生成，可靠号段降低中心交互，Redis分段自增则必须防故障回退重号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：趋势递增订单号怎样选；Leaf号段与Snowflake区别是什么；Redis INCRBY切主会不会重号。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一性、趋势有序和严格连续编号是不同目标，Snowflake、Leaf号段与Redis INCRBY按故障不重用机制比较。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先说递增的准确含义"
+    },
+    {
+      "type": "paragraph",
+      "text": "全局唯一、单节点单调、趋势有序、按实际发生时刻全局严格递增、无空洞是五种不同合同。订单通常可接受唯一且大致按时间排序、有空洞；若必须所有节点按统一线性化顺序递增，就需要一个可靠排序权威/共识序列并支付延迟和分区时可用性代价。"
+    },
+    {
+      "type": "paragraph",
+      "text": "号段先分出去，不代表号码也按同一顺序发出来。比如拿到大号段的机器先发 201，另一台随后发 102，唯一性没有破坏，但全球严格递增不成立。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Snowflake 也类似：时间字段带来趋势有序，同毫秒跨节点的大小仍由节点号和序列决定。若要求严格外部响应先后，重叠请求下还要明确排序点。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Snowflake的高性能来自本地发号及有限位域"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典时间/节点/序列分域，节点身份独占且跨重启不得重用已发时间段。回拨可限时等待或拒绝，逻辑时间/额外代际需证明持久性及空间耗尽；序列满后等待下一时刻或拒绝，不用溢出掩盖。节点租约过期的旧进程必须停发，否则新旧共用节点号会撞号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Snowflake完整Java只承诺同生成器存活期，不能把本地并发通过当跨重启证明；真实服务还需可靠节点ID分配、高水位/安全等待和灾备演练。全局长期唯一不靠“有雪花算法”四个字自动成立。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Leaf号段与Redis批量分配"
+    },
+    {
+      "type": "paragraph",
+      "text": "Leaf官方提供segment和snowflake两种模式；segment的leaf_alloc以biz_tag区分业务，并保存max_id、step等。核心是DB事务推进可靠高水位，发号服务消费不重叠号段，双缓冲/预取减少段耗尽等待。它仍依赖DB分配状态不回退、单段不被两个存活分配器重复消费，不能回收不确定已使用的号码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis INCRBY(n)也可一次划出区间，用更少网络往返换本地发号；原子自增只保护当前权威节点上的并发，复制故障切换/恢复旧快照会重发区间。必须采用可证明不回退的持久分配或隔离代际，否则不能以Redis快替代唯一性。第3.5节的H2实例验证可靠分配、重复申请和溢出，不等于Leaf服务或Redis集群压测。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "选择、重试和验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "选Snowflake看节点/时钟治理，选号段看中心DB可用性、预取与允许空洞，选Redis看能否接受/补齐其恢复边界；小规模可靠数据库序列可能最简单。同一次下单重试沿用原业务幂等键和已分配订单号，发号API的唯一不等于下单业务只执行一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试回拨、节点身份冲突、重启丢高水位、号段申请确认丢、复制落后切主、段耗尽中心不可用和64位边界；用数据库唯一约束做最终防线但冲突仍须发现/告警。吞吐目标应单独定义，不能把其他发号场景或历史压测的成绩作为本服务保证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

@@ -1,0 +1,928 @@
+{
+  "entries": [
+    {
+      "id": "p-math",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "数学 · 位运算 · 随机 · 几何 · 专题",
+      "number": "专题",
+      "summary": "把指数、整除、数位、位运算、博弈递推、均匀采样和平面位置关系统一成可证明的公式或 O(1)/O(log) 不变量，而不是模拟。覆盖快速幂与大整数边界、异或与投票、阶乘与字典序数位、约瑟夫与取物必胜、拒绝采样与按权抽样、矩形与多边形判定。",
+      "recognize": [
+        "指数很大、要 a^b 或 a^b mod m，线性连乘会超时，指数应按二进制拆。",
+        "除一个数外都恰好出现两次，或要 O(1) 统计字中 1 的个数，用异或或清最低位 1。",
+        "题面保证存在出现次数严格大于 n/2 的元素，用抵消而不是哈希计数。",
+        "只能用给定随机源造另一个均匀范围、按权重返回，或等概率打乱，关键是每个结果概率相同。",
+        "围成圈每 m 个删除、或轮流取 1..k 个且拿走最后一个赢，答案是递推或对模 k+1 的不变量。",
+        "给的是点、线段、矩形或简单多边形，要判断相交、内外或数正方形，用叉积、包围盒或对角线，不用浮点斜率。"
+      ],
+      "notApplicable": [
+        "其余数出现三次或任意次时，一次异或消不掉，要按位计数或通用哈希。",
+        "没有“严格大于 n/2”的保证时，摩尔投票的候选人可能不是众数，不能直接当答案。",
+        "RAND_MAX 不能被目标区间整除时，rand%n 以及把 rand7 直接 %10 都不是均匀分布。"
+      ],
+      "templates": [
+        {
+          "name": "快速幂（二进制拆指数）",
+          "when": "计算 x^n 或 a^b mod m，指数到 2^31 量级。负指数、MIN_VALUE 必须先变 long。",
+          "java": "// LC 50。换模幂时：底数先规范到 [0,mod)，ans 与 x 每步乘完再 % mod；负指数在模意义下改成乘逆元，不要直接 1/x。\nstatic double myPow(double x, int n) {\n    long e = n; // Integer.MIN_VALUE 取负会溢出，先提升到 long\n    if (e < 0) {\n        x = 1.0 / x;\n        e = -e;\n    }\n    double ans = 1.0;\n    while (e > 0) {\n        if ((e & 1L) == 1L) ans *= x; // 当前二进制位为 1 才乘进答案\n        x *= x;\n        e >>= 1;\n    }\n    return ans;\n}",
+          "demo": "LC 50 Pow(x, n)",
+          "demoMain": "System.out.println(myPow(2.0, 10));\nSystem.out.println(myPow(2.0, -2));",
+          "expected": "1024.0\n0.25"
+        },
+        {
+          "name": "异或抵消与清最低位 1",
+          "when": "每个数恰好出现两次、只有一个出现一次；或统计二进制里 1 的个数。出现三次要改成 32 位分别模 3。",
+          "java": "// LC 136：a^a=0，a^0=a，与顺序无关。若有两个只出现一次的数，先整体异或再按某一差异位分组。\nstatic int singleNumber(int[] nums) {\n    int x = 0;\n    for (int v : nums) x ^= v;\n    return x;\n}\n\n// LC 191：每次 n&(n-1) 去掉最低的那个 1，循环次数等于 1 的个数，负数也成立。\nstatic int hammingWeight(int n) {\n    int c = 0;\n    while (n != 0) {\n        n &= n - 1;\n        c++;\n    }\n    return c;\n}",
+          "demo": "LC 136 只出现一次的数字",
+          "demoMain": "System.out.println(singleNumber(new int[]{4, 1, 2, 1, 2}));\nSystem.out.println(hammingWeight(11));",
+          "expected": "4\n3"
+        },
+        {
+          "name": "约瑟夫环最后剩余编号",
+          "when": "n 个人编号 0..n-1，每次数到第 m 个删除，只问最后剩下谁。要完整出列顺序时改成队列模拟。",
+          "java": "// f(1)=0，f(i)=(f(i-1)+m)%i。编号从 1 开始时最后再 +1。\nstatic int lastRemaining(int n, int m) {\n    int f = 0;\n    for (int i = 2; i <= n; i++) f = (f + m) % i;\n    return f;\n}",
+          "demo": "LCR / Offer. 破冰游戏（约瑟夫环）",
+          "demoMain": "System.out.println(lastRemaining(5, 3));\nSystem.out.println(lastRemaining(10, 17));",
+          "expected": "3\n2"
+        },
+        {
+          "name": "射线法判断点与简单多边形",
+          "when": "顶点按顺序给出的简单多边形（可凹），查询点要分成内部、外部、边界。自交多边形此法无效。",
+          "java": "// 面试变体：点在多边形内。先用叉积+包围盒判边界；再向右发射线，边上端点只计一次（yi>y 与 yj>y 不同）。\nstatic String pointInPolygon(int[][] poly, int x, int y) {\n    int n = poly.length;\n    boolean inside = false;\n    for (int i = 0, j = n - 1; i < n; j = i++) {\n        int xi = poly[i][0], yi = poly[i][1];\n        int xj = poly[j][0], yj = poly[j][1];\n        long cross = (long) (x - xi) * (yj - yi) - (long) (y - yi) * (xj - xi);\n        if (cross == 0\n                && Math.min(xi, xj) <= x && x <= Math.max(xi, xj)\n                && Math.min(yi, yj) <= y && y <= Math.max(yi, yj)) {\n            return \"boundary\";\n        }\n        if ((yi > y) != (yj > y)) {\n            double xInt = xi + (double) (y - yi) * (xj - xi) / (double) (yj - yi);\n            if (x < xInt) inside = !inside;\n        }\n    }\n    return inside ? \"inside\" : \"outside\";\n}",
+          "demo": "面试变体 4. 判断点在多边形内部还是外部",
+          "demoMain": "int[][] poly = {{0, 0}, {2, 0}, {2, 2}, {0, 2}};\nSystem.out.println(pointInPolygon(poly, 1, 1));\nSystem.out.println(pointInPolygon(poly, 3, 3));\nSystem.out.println(pointInPolygon(poly, 0, 1));",
+          "expected": "inside\noutside\nboundary"
+        }
+      ],
+      "variants": [
+        "模幂：乘法和底数平方后都 % mod；Java 负数先 (a%mod+mod)%mod。负指数改乘模逆，不能用 double。",
+        "LC 29 两数相除：被除数里能减多少个除数也按倍增拆二进制，全程用 long；溢出时返回 Integer.MAX_VALUE，除法向 0 截断。",
+        "只要约瑟夫最后一人用上面的 O(n) 递推；要出列顺序就用队列，下标 (front+m-1)%size，时间 O(nm)。",
+        "取 1..k 个、拿最后一份的人赢：n%(k+1)==0 时后手必胜，否则先手第一次取 n%(k+1)。100 个球、每次 1..5 时模 6。",
+        "汉明重量若要求机器字 O(1)，用 SWAR（减、掩码、乘）而不是 n&=n-1 的循环。判断 2 的幂是 n>0 && (n&(n-1))==0。",
+        "数斜放正方形：枚举点对当对角线，用中点与半长做键，不能只扫水平边和竖直边。矩形相交用四边的区间重叠，先约定边相贴算不算。"
+      ],
+      "pitfalls": [
+        "乘法或取负前留在 int：Integer.MIN_VALUE 的相反数仍溢出。快速幂的指数、除法的移位计数都用 long。",
+        "Java 中 (-5)%3 == -2。数学非负余数要写成 (a%m+m)%m。比较与位运算优先级：必须写 (e&1)==1。",
+        "摩尔投票在题目不保证多数时必须再扫一遍计数。异或只能消偶数次，三次出现要按位模 3。",
+        "Fisher–Yates 每一轮只在尚未确定的下标里交换。拒绝采样要把 rand7 扩成 1..49 再丢掉 41..49，期望次数约 49/40。",
+        "n! 末尾 0 的个数是因子 5 的个数（25、125 再加）。去掉末尾 0 后的最后一位还要成对去掉 2 和 5，不能只看阶乘末位。",
+        "double 斜率会把共线点拆开；垂直线没有斜率。射线法若上下端点都计数，顶点会被算两次。多边形边界要单独返回。"
+      ],
+      "groups": [
+        {
+          "name": "快速幂与整数倍增",
+          "note": "指数或“减去除数的多少倍”都按二进制拆。字节题的操作是乘任意正整数与完全平方开方，要同时给最小可达值和最少步数，搜索空间按平方关系压缩，而不是逐个试乘。",
+          "items": [
+            [
+              "#/e/50",
+              "50. Pow(x, n)"
+            ],
+            [
+              "#/e/lc-face-extra-25",
+              "两数相除"
+            ],
+            [
+              "#/e/byte-smallest-n",
+              "字节 T1. 最小的 n：任意乘法 + 完全平方数开方"
+            ]
+          ]
+        },
+        {
+          "name": "位运算、投票与定长枚举",
+          "note": "136 用异或；169 用摩尔投票（题面已保证多数）；191 按字统计 1。五张牌的顺子：0 当癞子，先看非 0 有没有重复，再看 max-min<5。",
+          "items": [
+            [
+              "#/e/136",
+              "136. 只出现一次的数字"
+            ],
+            [
+              "#/e/169",
+              "169. 多数元素"
+            ],
+            [
+              "#/e/191",
+              "191. 位 1 的个数（O(1) 位宽解法）"
+            ],
+            [
+              "#/e/offer61",
+              "剑指 Offer 61. 扑克牌中的顺子"
+            ]
+          ]
+        },
+        {
+          "name": "数位、字典序与阶乘末位",
+          "note": "440 与 233 按位段或十叉树计数，n 到 1e9 不能排序。末尾 0 只数 5 的因子；去掉这些 0 之后还要跟踪剩余数字的末位。",
+          "items": [
+            [
+              "#/e/440",
+              "440. 字典序的第 K 小数字"
+            ],
+            [
+              "#/e/lc-face-extra-11",
+              "数字 1 的出现次数"
+            ],
+            [
+              "#/e/lc-face-extra-10",
+              "阶乘后的零"
+            ],
+            [
+              "#/e/nonlc-1-1",
+              "求 n! 末尾 0 的个数"
+            ],
+            [
+              "#/e/nonlc-1-2",
+              "求 n! 去掉末尾 0 后的最后一位有效数字"
+            ]
+          ]
+        },
+        {
+          "name": "环上递推与取物必胜",
+          "note": "只求最后编号用 f=(f+m)%i。要出列顺序就模拟。100 个球每次取 1..5：先手每次让双方合计取 6，面对 6 的倍数则输。",
+          "items": [
+            [
+              "#/e/josephus",
+              "LCR / Offer. 破冰游戏（约瑟夫环）"
+            ],
+            [
+              "#/e/nonlc-5-2",
+              "N 个人围成一圈报数，报到第 m 个出列，输出出列顺序。时间复杂度和空间复杂度是多少？还能怎么优化？"
+            ],
+            [
+              "#/e/game-100-pingpong",
+              "逻辑 1. 100 个乒乓球取球博弈（每次取 1~5 个）"
+            ]
+          ]
+        },
+        {
+          "name": "均匀随机与按权抽样",
+          "note": "470 用两次 rand7 拒绝采样。384 用 Fisher–Yates，reset 留原数组。未知 p 的有偏比特先配对 01/10 得到公平比特，再拼 [0,1)。按权用前缀和二分。",
+          "items": [
+            [
+              "#/e/470",
+              "470. 用 Rand7() 实现 Rand10()"
+            ],
+            [
+              "#/e/384",
+              "384. 打乱数组"
+            ],
+            [
+              "#/e/interview-biased-bit-uniform",
+              "面试变体 5. 非均匀 0/1 随机源生成 [0,1) 均匀随机数"
+            ],
+            [
+              "#/e/interview-weighted-random",
+              "面试概率题. 按概率随机返回元素（CDF / 前缀和二分）"
+            ]
+          ]
+        },
+        {
+          "name": "几何位置与圆周率",
+          "note": "正方形按对角线（含斜放）去重计数。点与多边形分内部、外部、边界。两矩形看 x、y 投影是否同时重叠。圆周率用级数、Machin 反正切、Gauss AGM 或蒙特卡洛，精度与收敛速度分开说。",
+          "items": [
+            [
+              "#/e/interview-count-squares",
+              "面试变体 2. 点集中可以组成多少个正方形"
+            ],
+            [
+              "#/e/interview-point-in-polygon",
+              "面试变体 4. 判断点在多边形内部还是外部"
+            ],
+            [
+              "#/e/nonlc-3-0",
+              "给定两个矩形，判断它们有没有相交。"
+            ],
+            [
+              "#/e/nonlc-1-8",
+              "圆周率一般有哪些计算方式？"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "原专题笔记 · 数学与位运算",
+          "html": "<h3 class=\"md-h md-h3\">1. 整数边界</h3>\n<p class=\"md-p\">数学题最容易错在边界：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">int</code> 溢出，乘法和取反前要转 <code class=\"tok-inline\">long</code>。</li><li><code class=\"tok-inline\">Integer.MIN_VALUE</code> 取绝对值仍会溢出。</li><li>除法向 0 取整。</li><li>负数取模在 Java 中可能仍为负。</li></ul></div>\n<h3 class=\"md-h md-h3\">2. 位运算基础</h3>\n<p class=\"md-p\">常用操作：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">x &amp; 1          // 判断奇偶\nx &amp; (x - 1)    // 去掉最低位的 1\nx ^ x = 0\nx ^ 0 = x</pre></div></section>\n<p class=\"md-p\">异或适合：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>成对抵消。</li><li>找只出现一次的数。</li><li>不使用额外空间交换或状态压缩。</li></ul></div>\n<h3 class=\"md-h md-h3\">3. 快速幂</h3>\n<p class=\"md-p\">核心：指数二进制拆分。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">while (n &gt; 0) {\n    if ((n &amp; 1) == 1) ans *= base;\n    base *= base;\n    n &gt;&gt;= 1;\n}</pre></div></section>\n<p class=\"md-p\">注意负指数要先转 <code class=\"tok-inline\">long</code>。</p>\n<h3 class=\"md-h md-h3\">4. 最大公约数</h3>\n<p class=\"md-p\">欧几里得算法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">int gcd(int a, int b) {\n    return b == 0 ? Math.abs(a) : gcd(b, a % b);\n}</pre></div></section>\n<p class=\"md-p\">用于：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>约分斜率。</li><li>最小公倍数。</li><li>判断可达性。</li></ul></div>\n<h3 class=\"md-h md-h3\">5. 随机与概率</h3>\n<p class=\"md-p\">随机题常见三类：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>拒绝采样：用 <code class=\"tok-inline\">rand7</code> 生成等概率范围，再拒绝多余值。</li><li>前缀和 + 二分：按权重随机。</li><li>蓄水池抽样：数据流等概率抽样。</li></ul></div><h3 class=\"md-h md-h3\">1. 快速幂与幂函数型</h3><p class=\"md-p\">目标：在 O(log n) 时间处理幂。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 50 Pow(x, n)</li><li>LC 372 超级次方</li><li>LC 69 x 的平方根</li></ul></div><h3 class=\"md-h md-h3\">2. 位运算抵消型</h3><p class=\"md-p\">目标：利用异或或二进制位统计找到特殊数字。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 136 只出现一次的数字</li><li>LC 137 只出现一次的数字 II</li><li>LC 260 只出现一次的数字 III</li><li>LC 268 丢失的数字</li><li>LC 191 位 1 的个数</li><li>LC 338 比特位计数</li></ul></div><h3 class=\"md-h md-h3\">3. 整数模拟型</h3><p class=\"md-p\">目标：按数学规则模拟，但要处理溢出和符号。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 7 整数反转</li><li>LC 8 字符串转换整数</li><li>LC 29 两数相除</li><li>LC 43 字符串相乘</li><li>LC 66 加一</li><li>LC 415 字符串相加</li></ul></div><h3 class=\"md-h md-h3\">4. 数字规律型</h3><p class=\"md-p\">目标：按位数、周期、分组规律定位答案。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 168 Excel 表列名称</li><li>LC 171 Excel 表列序号</li><li>LC 172 阶乘后的零</li><li>LC 202 快乐数</li><li>LC 233 数字 1 的个数</li><li>LC 400 第 N 位数字</li><li>LC 440 字典序的第 K 小数字</li><li>LC 264 丑数 II</li><li>LC 509 斐波那契数</li></ul></div><h3 class=\"md-h md-h3\">5. 多数投票与计数型</h3><p class=\"md-p\">目标：找超过一半或超过三分之一的元素。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 169 多数元素</li><li>LC 229 多数元素 II</li></ul></div><h3 class=\"md-h md-h3\">6. 随机采样型</h3><p class=\"md-p\">目标：保证概率均匀或按权重分布。</p>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 470 用 Rand7 实现 Rand10</li><li>LC 528 按权重随机选择</li><li>LC 384 打乱数组</li><li>LC 398 随机数索引</li></ul></div><h3 class=\"md-h md-h3\">7. 数位、字典序与快速枚举型</h3><p class=\"md-p\">目标：补齐“不是普通算术，而是按位数、前缀树形或十进制规则枚举”的题型。</p>\n<p class=\"md-p\">典型模式：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>字典序枚举：把数字看成十叉前序树，按前缀推进。</li><li>数位限制：按位构造或统计，常需要前缀合法性判断。</li><li>数值范围枚举：先算每一段能覆盖多少个数，再决定跳过还是深入。</li></ul></div>\n<p class=\"md-p\">对应题目：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>LC 386 字典序排数</li><li>LC 440 字典序的第 K 小数字</li><li>LC 902 最大为 N 的数字组合</li><li>LC 670 最大交换</li><li>LC 836 矩形重叠</li></ul></div>\n<p class=\"md-p\">补充要点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">386</code> 和 <code class=\"tok-inline\">440</code> 都是字典序树遍历。</li><li><code class=\"tok-inline\">902</code> 属于受限数位枚举，遇到前缀约束要按位推进。</li><li><code class=\"tok-inline\">670</code> 是数位贪心，和普通排列交换不同。</li><li><code class=\"tok-inline\">836</code> 用投影区间是否相交判断二维矩形是否重叠。</li></ul></div>"
+        },
+        {
+          "title": "专题精讲 · LC 50 Pow(x, n)",
+          "html": "<p class=\"md-p\">用快速幂。<code class=\"tok-inline\">n</code> 可能是 <code class=\"tok-inline\">Integer.MIN_VALUE</code>，所以要先转成 <code class=\"tok-inline\">long</code> 再取负。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static double solve(double x, long n) {\n        // 快速幂求 x^n\n        if (n == 0) return 1.0;\n        // 指数为负，取倒数后指数转正\n        if (n &lt; 0) {\n            x = 1.0 / x;\n            n = -n;\n        }\n        double ans = 1.0;\n        double base = x;\n        // 按指数的二进制位逐位乘\n        while (n &gt; 0) {\n            if ((n &amp; 1) == 1) ans *= base;\n            base *= base; // base 依次为 x, x^2, x^4, x^8, ...\n            n &gt;&gt;= 1;\n        }\n        return ans;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        double x = sc.nextDouble();\n        int n = sc.nextInt();\n        // n 可能是 Integer.MIN_VALUE，取负会溢出，先转 long\n        System.out.println(solve(x, (long) n));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 384 打乱数组",
+          "html": "<p class=\"md-p\">Fisher-Yates 洗牌算法：从后往前，每次随机选一个位置交换。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    static int[] original, shuffled;\n    static Random rand = new Random();\n    public static void init(int[] nums) {\n        original = nums.clone();\n        shuffled = nums.clone();\n    }\n    // Fisher-Yates 洗牌\n    public static int[] shuffle() {\n        for (int i = shuffled.length - 1; i &gt; 0; i--) {\n            int j = rand.nextInt(i + 1); // [0, i] 随机选一个\n            int tmp = shuffled[i];\n            shuffled[i] = shuffled[j];\n            shuffled[j] = tmp;\n        }\n        return shuffled;\n    }\n    // 重置为原始顺序\n    public static int[] reset() {\n        shuffled = original.clone();\n        return shuffled;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        init(nums);\n        // 演示：洗牌后输出，重置后再输出\n        int[] s = shuffle();\n        for (int i = 0; i &lt; s.length; i++) {\n            if (i &gt; 0) System.out.print(&quot; &quot;);\n            System.out.print(s[i]);\n        }\n        System.out.println();\n        int[] r = reset();\n        for (int i = 0; i &lt; r.length; i++) {\n            if (i &gt; 0) System.out.print(&quot; &quot;);\n            System.out.print(r[i]);\n        }\n        System.out.println();\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 470 用 Rand7 实现 Rand10",
+          "html": "<p class=\"md-p\">用 <code class=\"tok-inline\">(rand7() - 1) * 7 + rand7()</code> 生成 <code class=\"tok-inline\">1..49</code>。保留 <code class=\"tok-inline\">1..40</code>，映射到 <code class=\"tok-inline\">1..10</code>；超过 40 重试。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    // 模拟 rand7\n    static Random rand = new Random();\n    static int rand7() {\n        return rand.nextInt(7) + 1;\n    }\n    public static int solve() {\n        // 拒绝采样：用两次 rand7 生成 1~49 的均匀分布\n        // 只保留 1~40，映射到 1~10\n        int val;\n        do {\n            val = (rand7() - 1) * 7 + rand7(); // 1~49 均匀\n        } while (val &gt; 40); // 拒绝 41~49，保证均匀\n        return (val - 1) % 10 + 1;\n    }\n    public static void main(String[] args) {\n        // 输出一个 1~10 的随机数\n        System.out.println(solve());\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 136 只出现一次的数字",
+          "html": "<p class=\"md-p\">所有数异或，成对出现的会抵消。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int solve(int[] nums) {\n        // 异或：相同数异或为 0，0 异或任何数为本身\n        int res = 0;\n        for (int num : nums) {\n            res ^= num;\n        }\n        return res;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(solve(nums));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 136 只出现一次的数字",
+          "html": "<p class=\"md-p\">考点：异或 / 哈希。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>异或所有数，成对的抵消，剩下单独的那个。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>初始值 result 要设为 0，否则第一个元素不会被异或。</li><li>此题限定了只有一个元素出现一次，如果有多个则需用 Map。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，第二行 n 个整数。 输出格式：只出现一次的数字。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">哈希总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int solve(int[] nums) {\n        int result = 0;\n        // 异或：a ^ a = 0, a ^ 0 = a\n        for (int num : nums) {\n            result ^= num;\n        }\n        return result;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(solve(nums));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 169 多数元素",
+          "html": "<p class=\"md-p\">考点：Boyer-Moore 投票法。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>维护候选和计数，计数为零则换候选。</li><li>不同于候选则计数减一，相同则加一。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>不需要第二遍验证，因为题目保证多数元素一定存在。</li><li>循环从下标 1 开始，不要从 0 开始导致重复初始化。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，第二行 n 个整数。 输出格式：多数元素。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">哈希总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int solve(int[] nums) {\n        int candidate = nums[0], count = 1;\n        for (int i = 1; i &lt; nums.length; i++) {\n            if (count == 0) {\n                candidate = nums[i];\n                count = 1;\n            } else if (nums[i] == candidate) {\n                count++;\n            } else {\n                count--;\n            }\n        }\n        return candidate;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        System.out.println(solve(nums));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 440 字典序的第 K 小数字",
+          "html": "<p class=\"md-p\">把 <code class=\"tok-inline\">1..n</code> 看成十叉树前序遍历。每次计算当前前缀下有多少个数字，如果数量小于等于 k，就跳到下一个兄弟前缀；否则进入当前前缀的下一层。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int solve(int n, int k) {\n        long cur = 1; // 当前前缀\n        k--;          // 从 1 开始，已经算第 1 个，k 先减 1\n        while (k &gt; 0) {\n            // 计算以 cur 为前缀的子树中有多少个节点\n            long steps = countSteps(n, cur, cur + 1);\n            if (steps &lt;= k) {\n                // 不在当前子树，跳到兄弟前缀\n                k -= steps;\n                cur++;\n            } else {\n                // 在当前子树内，进入下一层\n                k--;\n                cur *= 10;\n            }\n        }\n        return (int) cur;\n    }\n    // 计算 [prefix, nextPrefix) 之间的节点数\n    static long countSteps(int n, long prefix, long nextPrefix) {\n        long steps = 0;\n        while (prefix &lt;= n) {\n            steps += Math.min(n + 1, nextPrefix) - prefix;\n            prefix *= 10;\n            nextPrefix *= 10;\n        }\n        return steps;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int k = sc.nextInt();\n        System.out.println(solve(n, k));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 191 位 1 的个数",
+          "html": "<p class=\"md-p\">每次 <code class=\"tok-inline\">n &amp;= n - 1</code> 去掉一个最低位 1，循环次数等于 1 的个数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数学与位运算总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static int solve(int n) {\n        // n &amp; (n-1) 去掉最低位的 1，循环次数即为 1 的个数\n        int count = 0;\n        while (n != 0) {\n            n &amp;= (n - 1);\n            count++;\n        }\n        return count;\n    }\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        System.out.println(solve(n));\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "id": "50",
+      "number": 50,
+      "title": "Pow(x, n)",
+      "slug": "powx-n",
+      "category": "分治",
+      "source": "",
+      "time": "O(log |n|)",
+      "space": "O(1)",
+      "idea": "先把 n 存进 long 型 exponent；若为负，则 x 改成 1.0/x，再把 exponent 取相反数，这样 -Integer.MIN_VALUE 不会在 int 里溢出。answer 从 1.0 开始，base 从 x 开始。exponent 最低位为 1 时把当前 base 乘进 answer，然后 base 自平方、exponent 右移，直到指数为 0，返回 answer。",
+      "description": "实现 x 的 n 次幂，n 是 32 位整数。计算需要比把 x 连乘 n 次更高效，并正确处理负指数和 Integer.MIN_VALUE。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public double myPow(double x, int n) {\n        // 用 long 存指数，-Integer.MIN_VALUE 才能取负而不溢出。\n        long exponent = n;\n\n        if (exponent < 0) {\n            x = 1.0 / x;\n            exponent = -exponent;\n        }\n\n        double answer = 1.0;\n        double base = x;\n\n        while (exponent > 0) {\n            // 最低位为 1 时，当前 base 正好是这一位要乘进答案的因子。\n            if ((exponent & 1L) == 1L) {\n                answer *= base;\n            }\n\n            base *= base;     // 指数减半后，下一位对应的底数是平方。\n            exponent >>= 1;\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "排序与选择",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "实现 x 的 n 次幂，n 是 32 位整数。计算需要比把 x 连乘 n 次更高效，并正确处理负指数和 Integer.MIN_VALUE。",
+        "req": [
+          "正确处理负指数",
+          "正确处理 n 为 Integer.MIN_VALUE 的情况"
+        ],
+        "analysis": "先把 n 存进 long 型 exponent；若为负，则 x 改成 1.0/x，再把 exponent 取相反数，这样 -Integer.MIN_VALUE 不会在 int 里溢出。answer 从 1.0 开始，base 从 x 开始。exponent 最低位为 1 时把当前 base 乘进 answer，然后 base 自平方、exponent 右移，直到指数为 0，返回 answer。",
+        "cx": "时间 O(log |n|)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "分治"
+    },
+    {
+      "id": "lc-face-extra-25",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "两数相除",
+      "number": "29",
+      "description": "给定被除数 dividend 和除数 divisor，求它们相除的商。计算过程不能使用乘法、除法和取模。",
+      "idea": "dividend 为 Integer.MIN_VALUE 且 divisor 为 -1 时，商超出 int 上界，直接返回 Integer.MAX_VALUE。其余情况先把两数转成 long 再取绝对值，并用异或的符号决定商是正还是负。while 中只要 a 仍不小于 b，就把 cur 和 count 不断左移，直到再左移会超过 a，相当于一次减去最大的 2^k 个除数，再把 count 累加进 ans。循环结束后按 sign 把 ans 转回 int。",
+      "code": "class Solution {\n    public int divide(int dividend, int divisor) {\n        // 最小 int 除以 -1 会超出 int 上界\n        if (dividend == Integer.MIN_VALUE && divisor == -1) {\n            return Integer.MAX_VALUE;\n        }\n\n        long a = Math.abs((long) dividend);\n        long b = Math.abs((long) divisor);\n        // 符号不同则商为负\n        int sign = ((dividend ^ divisor) < 0) ? -1 : 1;\n\n        long ans = 0;\n        while (a >= b) {\n            long cur = b;\n            long count = 1;\n            // 左移找到当前还能一次减掉的最大一块\n            while ((cur << 1) <= a) {\n                cur <<= 1;\n                count <<= 1;\n            }\n            a -= cur;\n            ans += count;\n        }\n\n        return sign > 0 ? (int) ans : (int) -ans;\n    }\n}",
+      "progressKey": "lc-face-extra#25",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 25,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "给定被除数 dividend 和除数 divisor，求它们相除的商。计算过程不能使用乘法、除法和取模。",
+        "req": [
+          "不能使用乘法、除法和取模"
+        ],
+        "analysis": "dividend 为 Integer.MIN_VALUE 且 divisor 为 -1 时，商超出 int 上界，直接返回 Integer.MAX_VALUE。其余情况先把两数转成 long 再取绝对值，并用异或的符号决定商是正还是负。while 中只要 a 仍不小于 b，就把 cur 和 count 不断左移，直到再左移会超过 a，相当于一次减去最大的 2^k 个除数，再把 count 累加进 ans。循环结束后按 sign 把 ans 转回 int。",
+        "cx": "时间 O(log^2 n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "lc": "29"
+    },
+    {
+      "id": "byte-smallest-n",
+      "number": "字节 T1",
+      "title": "最小的 n：任意乘法 + 完全平方数开方",
+      "slug": "",
+      "category": "数学与数论",
+      "source": "字节面试手撕盘点 · 截图 T1",
+      "time": "O(√n)",
+      "space": "O(log n)",
+      "idea": "试除得到每个质因子的指数，radical 把每个质因子乘一次，就是能留下的最小正整数。targetExponent 从 1 不断乘 2，直到不小于 maxExponent，乘的次数就是最少开方次数 sqrtCount。若某个指数不等于 targetExponent，needMultiply 为真，操作数是 sqrtCount 再加 1，否则只做 sqrtCount 次开方。",
+      "description": "给定正整数 n，可以重复执行两种操作：把 n 乘以任意正整数，或在 n 是完全平方数时把 n 变成 √n。求最终能得到的最小 n，以及达到这个最小值至少需要多少次操作。",
+      "code": "import java.util.*;\n\nclass Solution {\n    // 返回 {能够达到的最小值, 达到它的最少操作次数}。\n    public long[] minimize(long n) {\n        if (n <= 0) {\n            throw new IllegalArgumentException(\"n 必须是正整数\");\n        }\n        if (n == 1) {\n            return new long[]{1L, 0L};\n        }\n\n        long x = n;\n        long radical = 1L;\n        List<Integer> exponents = new ArrayList<>();\n\n        // 2 单独试除，避免后面只走奇数时漏掉偶因子。\n        if (x % 2 == 0) {\n            int exponent = 0;\n            while (x % 2 == 0) {\n                x /= 2;\n                exponent++;\n            }\n            radical *= 2;\n            exponents.add(exponent);\n        }\n\n        // 只枚举奇因子；factor <= x / factor 是为了不让 factor*factor 溢出。\n        for (long factor = 3; factor <= x / factor; factor += 2) {\n            if (x % factor != 0) continue;\n\n            int exponent = 0;\n            while (x % factor == 0) {\n                x /= factor;\n                exponent++;\n            }\n\n            radical *= factor;\n            exponents.add(exponent);\n        }\n\n        // 剩下的 x>1 必是质数，指数只能是 1，也要计入 radical。\n        if (x > 1) {\n            radical *= x;\n            exponents.add(1);\n        }\n\n        int maxExponent = 0;\n        for (int exponent : exponents) {\n            maxExponent = Math.max(maxExponent, exponent);\n        }\n\n        // 每次开方指数减半，目标指数必须是不小于最大指数的 2 的幂。\n        int targetExponent = 1;\n        int sqrtCount = 0;\n        while (targetExponent < maxExponent) {\n            targetExponent *= 2;\n            sqrtCount++;\n        }\n\n        // 指数不齐时，一次乘法就能把它们补到同一个 targetExponent。\n        boolean needMultiply = false;\n        for (int exponent : exponents) {\n            if (exponent != targetExponent) {\n                needMultiply = true;\n                break;\n            }\n        }\n\n        long operations = sqrtCount + (needMultiply ? 1 : 0);\n        return new long[]{radical, operations};\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定正整数 n，可以重复执行两种操作：把 n 乘以任意正整数，或在 n 是完全平方数时把 n 变成 √n。求最终能得到的最小 n，以及达到这个最小值至少需要多少次操作。",
+        "req": [
+          "n 为正整数",
+          "返回最终能得到的最小值，以及达到该值的最少操作次数"
+        ],
+        "analysis": "试除得到每个质因子的指数，radical 把每个质因子乘一次，就是能留下的最小正整数。targetExponent 从 1 不断乘 2，直到不小于 maxExponent，乘的次数就是最少开方次数 sqrtCount。若某个指数不等于 targetExponent，needMultiply 为真，操作数是 sqrtCount 再加 1，否则只做 sqrtCount 次开方。",
+        "cx": "时间 O(√n)，空间 O(log n)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "数学与数论"
+    },
+    {
+      "number": 136,
+      "title": "只出现一次的数字",
+      "slug": "single-number",
+      "category": "技巧",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "answer 从 0 开始，对每个 num 执行 answer ^= num。相同的数异或变成 0，0 再异或某个数仍是该数，所以成对出现的数会抵消。循环结束后 answer 只剩下出现一次的那个数。",
+      "code": "import java.util.*; // 模板导入，本题只对数组做异或。\n\nclass Solution {\n    public int singleNumber(int[] nums) {\n        int answer = 0;\n\n        for (int num : nums) {\n            // a^a 得 0，成对的数抵消，最后只留下出现一次的数。\n            answer ^= num;\n        }\n\n        return answer;\n    }\n}",
+      "description": "数组中除一个数字只出现一次外，其余数字都恰好出现两次。要求在线性时间和常数额外空间内找出这个只出现一次的数字。",
+      "source": "",
+      "id": "136",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "数组中除一个数字只出现一次外，其余数字都恰好出现两次。要求在线性时间和常数额外空间内找出这个只出现一次的数字。",
+        "req": [
+          "线性时间",
+          "常数额外空间",
+          "除一个数字外，其余数字都恰好出现两次"
+        ],
+        "analysis": "answer 从 0 开始，对每个 num 执行 answer ^= num。相同的数异或变成 0，0 再异或某个数仍是该数，所以成对出现的数会抵消。循环结束后 answer 只剩下出现一次的那个数。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "技巧"
+    },
+    {
+      "number": 169,
+      "title": "多数元素",
+      "slug": "majority-element",
+      "category": "技巧",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "candidate 与 count 一起扫描：count 为 0 时把 candidate 换成当前 num，表示之前的候选已被抵消完。随后相同则 count 加 1，不同则减 1。因为多数元素次数超过一半，抵消结束后 candidate 就是它，直接返回。",
+      "code": "import java.util.*; // 模板导入，投票只用 candidate 和 count。\n\nclass Solution {\n    public int majorityElement(int[] nums) {\n        int candidate = 0;\n        int count = 0;\n\n        for (int num : nums) {\n            // 票被抵消光后，当前元素重新作为候选。\n            if (count == 0) {\n                candidate = num;\n            }\n\n            count += (num == candidate) ? 1 : -1;\n        }\n\n        // 多数元素多到抵消不完，循环结束时它仍是 candidate。\n        return candidate;\n    }\n}",
+      "description": "数组中存在一个出现次数严格超过一半的多数元素，要求找出它。题目保证多数元素一定存在。",
+      "source": "",
+      "id": "169",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "数组中存在一个出现次数严格超过一半的多数元素，要求找出它。题目保证多数元素一定存在。",
+        "req": [
+          "多数元素出现次数严格超过一半",
+          "题目保证多数元素一定存在"
+        ],
+        "analysis": "candidate 与 count 一起扫描：count 为 0 时把 candidate 换成当前 num，表示之前的候选已被抵消完。随后相同则 count 加 1，不同则减 1。因为多数元素次数超过一半，抵消结束后 candidate 就是它，直接返回。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "技巧"
+    },
+    {
+      "id": "191",
+      "number": 191,
+      "title": "位 1 的个数（O(1) 位宽解法）",
+      "slug": "number-of-1-bits",
+      "category": "技巧",
+      "source": "本批手撕",
+      "time": "O(1)（32 位整数最多循环 32 次）",
+      "space": "O(1)",
+      "idea": "n &= (n-1) 会清掉 n 当前最低的那个 1：n-1 把该位变成 0、右侧的 0 变成 1，与 n 相与后更高位保持不变。while (n != 0) 每清一次就 count++，直到 n 变成 0，执行次数就是 1 的个数。32 位整数最多循环 32 次。",
+      "description": "给定一个 32 位无符号整数的二进制表示，统计其中 1 的个数。要求在固定 32 位机器字下用 O(1) 时间完成，循环次数不超过位数。",
+      "code": "class Solution {\n    public int hammingWeight(int n) {\n        int count = 0;\n        while (n != 0) {\n            // n-1 翻转最低的 1 及其右侧，相与后只去掉这一个 1。\n            n &= (n - 1);\n            count++;\n        }\n        return count;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定一个 32 位无符号整数的二进制表示，统计其中 1 的个数。要求在固定 32 位机器字下用 O(1) 时间完成，循环次数不超过位数。",
+        "req": [
+          "固定 32 位字，最多处理 32 个 bit",
+          "时间复杂度 O(1)"
+        ],
+        "analysis": "n &= (n-1) 会清掉 n 当前最低的那个 1：n-1 把该位变成 0、右侧的 0 变成 1，与 n 相与后更高位保持不变。while (n != 0) 每清一次就 count++，直到 n 变成 0，执行次数就是 1 的个数。32 位整数最多循环 32 次。",
+        "cx": "时间 O(1)（32 位整数最多循环 32 次），空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "技巧"
+    },
+    {
+      "id": "offer61",
+      "number": "剑指 Offer 61",
+      "title": "扑克牌中的顺子",
+      "slug": "bu-ke-pai-zhong-de-shun-zi-lcof",
+      "url": "https://leetcode.cn/problems/bu-ke-pai-zhong-de-shun-zi-lcof/",
+      "category": "技巧",
+      "source": "",
+      "time": "O(n log n)",
+      "space": "O(1)",
+      "idea": "Arrays.sort 后 0 都在前面，first 先跳过全部 0；若 first 等于数组长度，说明五张都是王牌，直接返回 true。其后若相邻非 0 牌相等就返回 false，因为普通牌不能重复。最后判断 nums[length-1] 与 nums[first] 之差是否小于 5，跨度小于 5 时缺口张数不超过王牌个数。",
+      "description": "给定 5 张牌，判断它们能否组成顺子。其中 0 表示大小王，可以代替任意数字。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public boolean isStraight(int[] nums) {\n        Arrays.sort(nums);\n\n        int first = 0;\n        // 0 是万能牌，先跳过，后面只检查真实牌面。\n        while (first < nums.length && nums[first] == 0) {\n            first++;\n        }\n\n        // 全是大小王，任意顺子都能凑出。\n        if (first == nums.length) {\n            return true;\n        }\n\n        for (int i = first + 1; i < nums.length; i++) {\n            // 非 0 牌重复就无法排成连续顺子。\n            if (nums[i] == nums[i - 1]) {\n                return false;\n            }\n        }\n\n        // 最大牌与最小非 0 牌跨度小于 5，缺口不超过 0 的个数。\n        return nums[nums.length - 1] - nums[first] < 5;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定 5 张牌，判断它们能否组成顺子。其中 0 表示大小王，可以代替任意数字。",
+        "req": [
+          "0 表示大小王，可以替代任意数字"
+        ],
+        "analysis": "Arrays.sort 后 0 都在前面，first 先跳过全部 0；若 first 等于数组长度，说明五张都是王牌，直接返回 true。其后若相邻非 0 牌相等就返回 false，因为普通牌不能重复。最后判断 nums[length-1] 与 nums[first] 之差是否小于 5，跨度小于 5 时缺口张数不超过王牌个数。",
+        "cx": "时间 O(n log n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "技巧"
+    },
+    {
+      "id": "440",
+      "number": 440,
+      "title": "字典序的第 K 小数字",
+      "slug": "k-th-smallest-in-lexicographical-order",
+      "category": "技巧",
+      "source": "字节面试手撕盘点",
+      "time": "O(log² n) 量级",
+      "space": "O(1)",
+      "idea": "current 从 1 开始，remaining = k-1 表示还要向后跳过多少个数。countSteps 统计前缀 current 与兄弟前缀 current+1 之间、且不超过 n 的个数：每层累加 min(n+1, next)-first，再把 first 和 next 乘 10 进入下一层。steps 不超过 remaining 时 current++ 并扣掉整棵子树，否则 current 乘 10 进入最左孩子，并让 remaining 减 1 吃掉当前节点。",
+      "description": "给定整数 n 和 k，返回区间 [1, n] 按字典序排列后的第 k 小整数。例如 n=13 时顺序为 1, 10, 11, 12, 13, 2, 3, …。",
+      "code": "class Solution {\n    public int findKthNumber(int n, int k) {\n        int current = 1;\n        long remaining = k - 1L; // 1 已占字典序第一位，还要再跳过 k-1 个数。\n\n        while (remaining > 0) {\n            long steps = countSteps(n, current, current + 1L);\n\n            if (steps <= remaining) {\n                // 目标不在这棵前缀子树，整棵跳过。\n                current++;\n                remaining -= steps;\n            } else {\n                // 目标在子树内，进入下一层最左孩子并吃掉当前节点。\n                current *= 10;\n                remaining--;\n            }\n        }\n        return current;\n    }\n\n    private long countSteps(int n, long first, long next) {\n        long steps = 0;\n        while (first <= n) {\n            // 本层落在 [first, next) 且不超过 n 的数字个数。\n            steps += Math.min((long) n + 1, next) - first;\n            first *= 10;\n            next *= 10;\n        }\n        return steps;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定整数 n 和 k，返回区间 [1, n] 按字典序排列后的第 k 小整数。例如 n=13 时顺序为 1, 10, 11, 12, 13, 2, 3, …。",
+        "req": [],
+        "analysis": "current 从 1 开始，remaining = k-1 表示还要向后跳过多少个数。countSteps 统计前缀 current 与兄弟前缀 current+1 之间、且不超过 n 的个数：每层累加 min(n+1, next)-first，再把 first 和 next 乘 10 进入下一层。steps 不超过 remaining 时 current++ 并扣掉整棵子树，否则 current 乘 10 进入最左孩子，并让 remaining 减 1 吃掉当前节点。",
+        "cx": "时间 O(log² n) 量级，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "技巧"
+    },
+    {
+      "id": "lc-face-extra-11",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "数字 1 的出现次数",
+      "number": "233",
+      "description": "给定非负整数 n，统计十进制下从 0 到 n 的所有整数里，数字 1 一共出现了多少次。",
+      "idea": "用 digit 表示当前位的权重，把 n 拆成高位 high、当前位 cur 和低位 low。当前位为 0 时，这一位上的 1 只来自更小的高位，贡献 high * digit；为 1 时还要加上低位能取到的 low + 1 个数；大于 1 时高位可以多取一位，贡献 (high + 1) * digit。每轮把当前位并进 low，再让 high、cur 整体右移一位，digit 乘 10，直到高位和当前位都处理完。",
+      "code": "class Solution {\n    public int countDigitOne(int n) {\n        long digit = 1, ans = 0;\n        // 从个位开始：high 是更高位，cur 是当前位，low 是更低位组成的数\n        long high = n / 10, cur = n % 10, low = 0;\n        while (high != 0 || cur != 0) {\n            if (cur == 0) {\n                // 当前位是 0：只有高位更小的数才会在这一位出现 1\n                ans += high * digit;\n            } else if (cur == 1) {\n                // 当前位正好是 1：高位更小的全部计入，高位相等时低位只能取到 low\n                ans += high * digit + low + 1;\n            } else {\n                // 当前位大于 1：高位取到 high 时这一位也已经出现过完整一轮 1\n                ans += (high + 1) * digit;\n            }\n            low += cur * digit;\n            cur = high % 10;\n            high /= 10;\n            digit *= 10; // 处理完当前位后，权重进到下一位\n        }\n        return (int) ans;\n    }\n}",
+      "progressKey": "lc-face-extra#11",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 11,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "给定非负整数 n，统计十进制下从 0 到 n 的所有整数里，数字 1 一共出现了多少次。",
+        "req": [],
+        "analysis": "用 digit 表示当前位的权重，把 n 拆成高位 high、当前位 cur 和低位 low。当前位为 0 时，这一位上的 1 只来自更小的高位，贡献 high * digit；为 1 时还要加上低位能取到的 low + 1 个数；大于 1 时高位可以多取一位，贡献 (high + 1) * digit。每轮把当前位并进 low，再让 high、cur 整体右移一位，digit 乘 10，直到高位和当前位都处理完。",
+        "cx": "时间 O(log n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "lc": "233"
+    },
+    {
+      "id": "lc-face-extra-10",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "阶乘后的零",
+      "number": "172",
+      "description": "给定非负整数 n，返回 n! 的十进制表示里末尾零的个数。",
+      "idea": "末尾的零来自因子 10，也就是 2×5，而阶乘里 2 的个数比 5 多，所以只数因子 5。循环中每次把 n 除以 5，并把商累加到 ans，相当于 n/5 + n/25 + n/125 + …。",
+      "code": "class Solution {\n    public int trailingZeroes(int n) {\n        int ans = 0;\n        while (n > 0) {\n            // 依次累加 n/5、n/25、n/125...\n            n /= 5;\n            ans += n;\n        }\n        return ans;\n    }\n}",
+      "progressKey": "lc-face-extra#10",
+      "faceParent": "lc-face-extra",
+      "faceIdx": 10,
+      "oldCat": "LeetCode 面经补充",
+      "source": "八股面经整理 · LeetCode 算法题",
+      "simple": {
+        "statement": "给定非负整数 n，返回 n! 的十进制表示里末尾零的个数。",
+        "req": [
+          "返回 n! 末尾零的个数"
+        ],
+        "analysis": "末尾的零来自因子 10，也就是 2×5，而阶乘里 2 的个数比 5 多，所以只数因子 5。循环中每次把 n 除以 5，并把商累加到 ans，相当于 n/5 + n/25 + n/125 + …。",
+        "cx": "时间 O(log n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "lc": "172"
+    },
+    {
+      "id": "nonlc-1-1",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "求 n! 末尾 0 的个数",
+      "number": "通2",
+      "description": "给定非负整数 n，求 n! 十进制表示末尾连续 0 的个数。",
+      "idea": "末尾的 0 由因子 10 产生，而 10 等于 2 乘 5。n! 里因子 2 比因子 5 多，所以只数因子 5 的个数。循环每次把 n 整除 5，再把得到的商加进 ans：第一次统计 5、10、15 这类数，之后每一轮对应 25、125 等更高次幂多出来的 5。n 变成 0 后返回 ans。",
+      "code": "public class TrailingZeroesOfFactorial {\n    public long trailingZeroes(long n) {\n        long ans = 0;\n\n        // 每一层商都是更高次幂 5 额外贡献的个数\n        while (n > 0) {\n            n /= 5;\n            ans += n;\n        }\n\n        return ans;\n    }\n}",
+      "progressKey": "nonlc-1#1",
+      "faceParent": "nonlc-1",
+      "faceIdx": 1,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "给定非负整数 n，求 n! 十进制表示末尾连续 0 的个数。",
+        "req": [],
+        "analysis": "末尾的 0 由因子 10 产生，而 10 等于 2 乘 5。n! 里因子 2 比因子 5 多，所以只数因子 5 的个数。循环每次把 n 整除 5，再把得到的商加进 ans：第一次统计 5、10、15 这类数，之后每一轮对应 25、125 等更高次幂多出来的 5。n 变成 0 后返回 ans。",
+        "cx": "时间 O(log n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      }
+    },
+    {
+      "id": "nonlc-1-2",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "求 n! 去掉末尾 0 后的最后一位有效数字",
+      "number": "通3",
+      "description": "给定非负整数 n，求 n! 去掉末尾全部 0 之后剩下的最后一位数字。",
+      "idea": "BASE 保存 0! 到 4! 的末位，n 小于 5 时直接返回。否则按 n/5 与 n%5 拆开：递归求出商的最后一位 leftPart，余数查 BASE 得到 remainPart，再用 pow2Mod10(quotient) 补上每组多出来的因子 2 的个位。三者相乘后对 10 取模。pow2Mod10 按 2 的幂个位循环取值，指数能被 4 整除且不为 0 时个位是 6，所以表从 6 开始，下标为 exp%4。",
+      "code": "public class LastNonZeroDigitOfFactorial {\n    // 小于 5 时没有尾零，末位可直接查表\n    private static final int[] BASE = {1, 1, 2, 6, 4};\n\n    public int lastNonZeroDigit(long n) {\n        if (n < 5) {\n            return BASE[(int) n];\n        }\n\n        // 每 5 个数抵消一组 10，商和余数分开算\n        long quotient = n / 5;\n        long remainder = n % 5;\n\n        int leftPart = lastNonZeroDigit(quotient);\n        int remainPart = BASE[(int) remainder];\n        // 每组多出来的 2 还要乘回去，只留个位\n        int extraTwo = pow2Mod10(quotient);\n\n        return leftPart * remainPart * extraTwo % 10;\n    }\n\n    private int pow2Mod10(long exp) {\n        if (exp == 0) {\n            return 1;\n        }\n\n        // 指数非 0 且被 4 整除时个位是 6，循环从 6 起\n        int[] cycle = {6, 2, 4, 8};\n        return cycle[(int) (exp % 4)];\n    }\n}",
+      "progressKey": "nonlc-1#2",
+      "faceParent": "nonlc-1",
+      "faceIdx": 2,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "给定非负整数 n，求 n! 去掉末尾全部 0 之后剩下的最后一位数字。",
+        "req": [],
+        "analysis": "BASE 保存 0! 到 4! 的末位，n 小于 5 时直接返回。否则按 n/5 与 n%5 拆开：递归求出商的最后一位 leftPart，余数查 BASE 得到 remainPart，再用 pow2Mod10(quotient) 补上每组多出来的因子 2 的个位。三者相乘后对 10 取模。pow2Mod10 按 2 的幂个位循环取值，指数能被 4 整除且不为 0 时个位是 6，所以表从 6 开始，下标为 exp%4。",
+        "cx": "时间 O(log n)，空间 O(log n)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      }
+    },
+    {
+      "id": "josephus",
+      "number": "LCR / Offer",
+      "title": "破冰游戏（约瑟夫环）",
+      "slug": "",
+      "category": "数学与数论",
+      "source": "字节面试手撕盘点",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "只剩 1 人时 answer 为 0。size 从 2 增到 n，每扩大一圈，被删位置使幸存者下标加上 m，再对当前 size 取模，所以 answer = (answer + m) % size。循环结束时 answer 就是 n 个人时留下的编号。",
+      "description": "n 个人编号 0～n-1 围成一圈，从 0 开始每次数到第 m 个人就删除，再从下一个人继续，直到只剩一人。返回最后留下的编号。",
+      "code": "class Solution {\n    public int lastRemaining(int n, int m) {\n        if (n <= 0 || m <= 0) {\n            throw new IllegalArgumentException(\"n 和 m 必须为正数\");\n        }\n\n        int answer = 0; // 只剩 1 人时，存活编号就是 0。\n\n        for (int size = 2; size <= n; size++) {\n            // 删掉一人后下标整体加 m，再映射回长度为 size 的圈。\n            answer = (answer + m) % size;\n        }\n\n        return answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "n 个人编号 0～n-1 围成一圈，从 0 开始每次数到第 m 个人就删除，再从下一个人继续，直到只剩一人。返回最后留下的编号。",
+        "req": [
+          "编号从 0 到 n-1",
+          "返回最后留下的那个人的编号"
+        ],
+        "analysis": "只剩 1 人时 answer 为 0。size 从 2 增到 n，每扩大一圈，被删位置使幸存者下标加上 m，再对当前 size 取模，所以 answer = (answer + m) % size。循环结束时 answer 就是 n 个人时留下的编号。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "数学与数论"
+    },
+    {
+      "id": "nonlc-5-2",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "N 个人围成一圈报数，报到第 m 个出列，输出出列顺序。时间复杂度和空间复杂度是多少？还能怎么优化？",
+      "number": "补3",
+      "description": "N 个人围成一圈报数，报到第 m 个的人出列，剩下的人继续报数，直到全部出列，输出出列顺序。",
+      "idea": "先把编号 1 到 n 放进 ArrayList。每一轮用 index = (index + m - 1) % people.size() 定位当前要出列的人，remove 后列表前移，原 index 正好是下一位，再记入 ans。列表空时返回出列顺序；ArrayList 每次删除要搬移元素，总共删 n 次。",
+      "code": "import java.util.ArrayList;\nimport java.util.List;\n\nclass Solution {\n    public List<Integer> josephus(int n, int m) {\n        List<Integer> people = new ArrayList<>();\n        // 按 1..n 入圈，下标即当前圈上的位置\n        for (int i = 1; i <= n; i++) {\n            people.add(i);\n        }\n        List<Integer> ans = new ArrayList<>();\n        int index = 0;\n        while (!people.isEmpty()) {\n            // 从上次删除后的位置再数 m-1 个人\n            index = (index + m - 1) % people.size();\n            // 删除后后续元素前移，index 已指向下一个人\n            ans.add(people.remove(index));\n        }\n        return ans;\n    }\n}",
+      "progressKey": "nonlc-5#2",
+      "faceParent": "nonlc-5",
+      "faceIdx": 2,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "N 个人围成一圈报数，报到第 m 个的人出列，剩下的人继续报数，直到全部出列，输出出列顺序。",
+        "req": [
+          "输出完整的出列顺序"
+        ],
+        "analysis": "先把编号 1 到 n 放进 ArrayList。每一轮用 index = (index + m - 1) % people.size() 定位当前要出列的人，remove 后列表前移，原 index 正好是下一位，再记入 ans。列表空时返回出列顺序；ArrayList 每次删除要搬移元素，总共删 n 次。",
+        "cx": "时间 O(n^2)，空间 O(n)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      }
+    },
+    {
+      "id": "game-100-pingpong",
+      "number": "逻辑 1",
+      "title": "100 个乒乓球取球博弈（每次取 1~5 个）",
+      "slug": "",
+      "category": "数学与数论",
+      "source": "本批逻辑题",
+      "time": "O(1)",
+      "space": "O(1)",
+      "idea": "move 等于 balls 对 6 取余，因为一轮里两人取球数可以凑成 6。余数为 0 时，先手取完后余数不再是 0，对手总能补回 6 的倍数，所以返回 -1。否则第一步就取走这个余数，留下 6 的倍数，之后对手取 k 个，先手取 6-k 个即可。",
+      "description": "桌上有 100 个乒乓球，甲乙轮流取球，每次可以取 1～5 个，取到最后一个球的人获胜。问甲作为先手怎样保证获胜。",
+      "code": "class Solution {\n    // 返回先手第一步应取多少个；返回 -1 表示面对完美对手无必胜首步。\n    public int firstMove(int balls) {\n        int move = balls % 6; // 一轮合计凑成 6，余数就是先手该先拿走的个数。\n        return move == 0 ? -1 : move;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "桌上有 100 个乒乓球，甲乙轮流取球，每次可以取 1～5 个，取到最后一个球的人获胜。问甲作为先手怎样保证获胜。",
+        "req": [
+          "每次取 1～5 个",
+          "取到最后一个球的人获胜",
+          "甲为先手"
+        ],
+        "analysis": "move 等于 balls 对 6 取余，因为一轮里两人取球数可以凑成 6。余数为 0 时，先手取完后余数不再是 0，对手总能补回 6 的倍数，所以返回 -1。否则第一步就取走这个余数，留下 6 的倍数，之后对手取 k 个，先手取 6-k 个即可。",
+        "cx": "时间 O(1)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "数学与数论"
+    },
+    {
+      "id": "470",
+      "number": 470,
+      "title": "用 Rand7() 实现 Rand10()",
+      "slug": "implement-rand10-using-rand7",
+      "category": "概率与随机",
+      "source": "字节面试手撕盘点",
+      "time": "期望 O(1)",
+      "space": "O(1)",
+      "idea": "循环里用 index = (rand7()-1)*7+rand7() 得到 1～49 的均匀编号。index<=40 时返回 (index-1)%10+1，因为 40 能被 10 整除，每个结果恰好对应 4 个编号。41～49 直接进入下一轮 while(true)，避免这 9 个状态让取模结果不均匀。",
+      "description": "已知 rand7() 能等概率返回 1～7 的整数，且不能调用其他随机 API。要求实现 rand10()，使 1～10 每个整数等概率返回。",
+      "code": "// 只使用题目提供的 SolBase.rand7()。\nclass Solution extends SolBase {\n    public int rand10() {\n        while (true) {\n            // 两次 rand7 铺成 49 个等概率编号，范围是 1～49。\n            int index = (rand7() - 1) * 7 + rand7();\n\n            if (index <= 40) {\n                // 40 能被 10 整除，每 4 个编号映射到同一个 1～10。\n                return (index - 1) % 10 + 1;\n            }\n\n            // 41～49 不能均分成 10 份，留下会偏，拒绝后重采样。\n        }\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "已知 rand7() 能等概率返回 1～7 的整数，且不能调用其他随机 API。要求实现 rand10()，使 1～10 每个整数等概率返回。",
+        "req": [
+          "只能使用 rand7()，不能调用其他随机 API",
+          "1～10 每个整数等概率返回"
+        ],
+        "analysis": "循环里用 index = (rand7()-1)*7+rand7() 得到 1～49 的均匀编号。index<=40 时返回 (index-1)%10+1，因为 40 能被 10 整除，每个结果恰好对应 4 个编号。41～49 直接进入下一轮 while(true)，避免这 9 个状态让取模结果不均匀。",
+        "cx": "时间 期望 O(1)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "概率与随机"
+    },
+    {
+      "id": "384",
+      "number": 384,
+      "title": "打乱数组",
+      "slug": "shuffle-an-array",
+      "category": "概率与随机",
+      "source": "",
+      "time": "shuffle O(n)，reset O(n)",
+      "space": "O(n)",
+      "idea": "构造函数把 nums.clone() 存进 original，使外部改动不影响内部。reset 返回 original.clone()，避免调用方改到 original。shuffle 再 clone 出 result，i 从 result.length-1 降到 1，j 取 random.nextInt(i+1)，交换 result[i] 与 result[j]，使当前位置等概率来自下标 0 到 i。",
+      "description": "设计一个结构保存初始数组，支持 reset() 恢复原数组，以及 shuffle() 返回一个随机打乱后的排列，并要求每种排列出现的概率相同。",
+      "code": "import java.util.*;\n\nclass Solution {\n    private final int[] original;\n    private final Random random = new Random();\n\n    public Solution(int[] nums) {\n        // 保存一份独立副本，避免外部对 nums 的修改影响内部状态。\n        this.original = nums.clone();\n    }\n\n    public int[] reset() {\n        // 返回副本，避免调用方修改 original。\n        return original.clone();\n    }\n\n    public int[] shuffle() {\n        int[] result = original.clone();\n\n        // Fisher-Yates：位置 i 与 [0, i] 中随机下标交换，才能等概率。\n        for (int i = result.length - 1; i > 0; i--) {\n            int j = random.nextInt(i + 1);\n            int temp = result[i];\n            result[i] = result[j];\n            result[j] = temp;\n        }\n\n        return result;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "设计一个结构保存初始数组，支持 reset() 恢复原数组，以及 shuffle() 返回一个随机打乱后的排列，并要求每种排列出现的概率相同。",
+        "req": [
+          "reset() 恢复初始数组",
+          "shuffle() 使每种排列出现的概率相同"
+        ],
+        "analysis": "构造函数把 nums.clone() 存进 original，使外部改动不影响内部。reset 返回 original.clone()，避免调用方改到 original。shuffle 再 clone 出 result，i 从 result.length-1 降到 1，j 取 random.nextInt(i+1)，交换 result[i] 与 result[j]，使当前位置等概率来自下标 0 到 i。",
+        "cx": "时间 shuffle O(n)，reset O(n)，空间 O(n)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "概率与随机"
+    },
+    {
+      "id": "interview-biased-bit-uniform",
+      "number": "面试变体 5",
+      "title": "非均匀 0/1 随机源生成 [0,1) 均匀随机数",
+      "slug": "",
+      "url": "",
+      "category": "概率与随机",
+      "source": "面试补充",
+      "time": "期望 O(53 / (p(1-p))) 次源调用",
+      "space": "O(1)",
+      "idea": "fairBit 每次取 first、second：01 返回 0，10 返回 1，因为这两种序列概率都是 p(1-p)；00 和 11 则继续循环。nextUniformDouble 把 53 次 fairBit 的结果依次左移并或进 bits。最后用 bits / (double)(1L<<53) 得到 [0,1) 上的网格点。",
+      "description": "有一个独立同分布的随机源，每次返回 1 的概率为未知常数 p、返回 0 的概率为 1-p，且 0<p<1。要求只调用这个偏置随机源，构造 [0,1) 上的均匀随机数。严格的连续均匀需要无限随机位；工程上生成 53 个公平 bit，得到 double 能精确表示的 2^53 个等概率点 k/2^53。",
+      "code": "class Solution {\n    // 只通过该接口取偏置位，保证不引入别的随机源。\n    interface BiasedBitSource {\n        int nextBit(); // 独立返回 0 或 1，P(1)=p。\n    }\n\n    private final BiasedBitSource source;\n\n    public Solution(BiasedBitSource source) {\n        this.source = source;\n    }\n\n    // 01 与 10 等概率，用来抽出一个不偏向的 bit。\n    private int fairBit() {\n        while (true) {\n            int first = source.nextBit();\n            int second = source.nextBit();\n\n            // P(01)=(1-p)p 与 P(10) 相同，返回 0 不会偏向某一侧。\n            if (first == 0 && second == 1) {\n                return 0;\n            }\n            if (first == 1 && second == 0) {\n                return 1;\n            }\n\n            // 00、11 的概率一般不等，不能当公平位，丢掉重抽。\n        }\n    }\n\n    public double nextUniformDouble() {\n        long bits = 0L;\n\n        // double 可区分的 [0,1) 网格是 2^53 个点，所以凑满 53 位。\n        for (int i = 0; i < 53; i++) {\n            bits = (bits << 1) | fairBit();\n        }\n\n        // bits 均匀落在 [0, 2^53)，再除以 2^53 就落在 [0,1)。\n        return bits / (double) (1L << 53);\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "有一个独立同分布的随机源，每次返回 1 的概率为未知常数 p、返回 0 的概率为 1-p，且 0<p<1。要求只调用这个偏置随机源，构造 [0,1) 上的均匀随机数。严格的连续均匀需要无限随机位；工程上生成 53 个公平 bit，得到 double 能精确表示的 2^53 个等概率点 k/2^53。",
+        "req": [
+          "只能调用给定的偏置 0/1 随机源",
+          "0<p<1",
+          "生成 53 个公平 bit，结果落在 [0,1)"
+        ],
+        "analysis": "fairBit 每次取 first、second：01 返回 0，10 返回 1，因为这两种序列概率都是 p(1-p)；00 和 11 则继续循环。nextUniformDouble 把 53 次 fairBit 的结果依次左移并或进 bits。最后用 bits / (double)(1L<<53) 得到 [0,1) 上的网格点。",
+        "cx": "时间 期望 O(53 / (p(1-p))) 次源调用，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "概率与随机"
+    },
+    {
+      "id": "interview-weighted-random",
+      "number": "面试概率题",
+      "title": "按概率随机返回元素（CDF / 前缀和二分）",
+      "slug": "",
+      "category": "概率与随机",
+      "source": "实习面试盘点",
+      "time": "预处理 O(n)，单次抽样 O(log n)",
+      "space": "O(n)",
+      "idea": "构造时用 sum 把 probabilities 累进写入 prefix，使 prefix[i] 成为第 i 个元素区间的右端点，total 等于总和。pick 里 r = random.nextDouble()*total 落在 [0,total)。二分在 prefix 上找第一个 prefix[mid] > r 的下标 left，返回 nums[left]，该下标对应的区间长度就是它的概率。",
+      "description": "给定 nums 和与之一一对应的概率数组 probabilities，每次调用都按照指定概率返回 nums 中的一个元素。例如概率 [0.1,0.3,0.6] 应分别以 10%、30%、60% 返回三个值。",
+      "code": "import java.util.*;\n\nclass WeightedPicker {\n    private final int[] nums;\n    private final double[] prefix;\n    private final double total;\n    private final Random random = new Random();\n\n    public WeightedPicker(int[] nums, double[] probabilities) {\n        if (nums.length != probabilities.length || nums.length == 0) {\n            throw new IllegalArgumentException(\"nums 与 probabilities 长度必须相同且非空\");\n        }\n\n        this.nums = nums.clone();\n        this.prefix = new double[probabilities.length];\n\n        double sum = 0.0;\n        // 前缀和把每个元素映射成长度等于其概率的一段。\n        for (int i = 0; i < probabilities.length; i++) {\n            if (probabilities[i] < 0.0) {\n                throw new IllegalArgumentException(\"概率不能为负数\");\n            }\n            sum += probabilities[i];\n            prefix[i] = sum;\n        }\n\n        if (sum <= 0.0) {\n            throw new IllegalArgumentException(\"概率总和必须大于 0\");\n        }\n        this.total = sum;\n    }\n\n    public int pick() {\n        double r = random.nextDouble() * total; // r 属于 [0, total)，用来落在某一段上。\n\n        int left = 0;\n        int right = prefix.length - 1;\n\n        // prefix 单调，二分第一个右端点严格大于 r 的区间。\n        while (left < right) {\n            int mid = left + (right - left) / 2;\n            if (prefix[mid] > r) {\n                right = mid;\n            } else {\n                left = mid + 1;\n            }\n        }\n\n        return nums[left];\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定 nums 和与之一一对应的概率数组 probabilities，每次调用都按照指定概率返回 nums 中的一个元素。例如概率 [0.1,0.3,0.6] 应分别以 10%、30%、60% 返回三个值。",
+        "req": [
+          "probabilities 与 nums 一一对应",
+          "每次调用按对应概率返回 nums 中的一个元素"
+        ],
+        "analysis": "构造时用 sum 把 probabilities 累进写入 prefix，使 prefix[i] 成为第 i 个元素区间的右端点，total 等于总和。pick 里 r = random.nextDouble()*total 落在 [0,total)。二分在 prefix 上找第一个 prefix[mid] > r 的下标 left，返回 nums[left]，该下标对应的区间长度就是它的概率。",
+        "cx": "时间 预处理 O(n)，单次抽样 O(log n)，空间 O(n)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "概率与随机"
+    },
+    {
+      "id": "interview-count-squares",
+      "number": "面试变体 2",
+      "title": "点集中可以组成多少个正方形",
+      "slug": "",
+      "url": "",
+      "category": "计算几何",
+      "source": "面试补充",
+      "time": "O(n²)",
+      "space": "O(n)",
+      "idea": "点先编码进 pointSet。外层 i、内层 j=i+1 把无序点对当成对角线，用坐标和 sx、sy 以及差 dx、dy，把半对角线转 90° 得到另外两点的两倍坐标 (sx-dy, sy+dx) 与 (sx+dy, sy-dx)。四者都是偶数、除以 2 后仍能放进 int、且两个 key 都在 pointSet 里时 diagonalHits 加一；每个正方形有两条对角线，最后除以 2。",
+      "description": "给定平面上一组互不重复的整数坐标点，统计这些点能组成多少个正方形。正方形允许旋转，不要求边与坐标轴平行，每四个不同点组成一个正方形只计一次。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public long countSquares(int[][] points) {\n        // 用哈希集合保存所有已存在的点，后面可以 O(1) 查询候选顶点。\n        Set<Long> pointSet = new HashSet<>();\n        for (int[] point : points) {\n            pointSet.add(key(point[0], point[1]));\n        }\n\n        long diagonalHits = 0L;\n\n        // 枚举任意两个点作为“候选对角线”的两个端点。\n        for (int i = 0; i < points.length; i++) {\n            long x1 = points[i][0];\n            long y1 = points[i][1];\n\n            for (int j = i + 1; j < points.length; j++) {\n                long x2 = points[j][0];\n                long y2 = points[j][1];\n\n                // 中点坐标的两倍，避免一开始就使用小数。\n                long sx = x1 + x2;\n                long sy = y1 + y2;\n\n                // 对角线向量 A - C。\n                long dx = x1 - x2;\n                long dy = y1 - y2;\n\n                // 另外两个顶点坐标的两倍。\n                // 相当于把半对角线旋转 90° 后，加到/减到中点上。\n                long bx2 = sx - dy;\n                long by2 = sy + dx;\n                long dx2 = sx + dy;\n                long dy2 = sy - dx;\n\n                // 输入点都是整数坐标；如果分子为奇数，候选顶点不是整数点，直接跳过。\n                if (((bx2 | by2 | dx2 | dy2) & 1L) != 0L) {\n                    continue;\n                }\n\n                long bx = bx2 / 2;\n                long by = by2 / 2;\n                long otherX = dx2 / 2;\n                long otherY = dy2 / 2;\n\n                // 点集来自 int 坐标；超出 int 范围不可能存在于输入集合中。\n                if (!fitsInt(bx) || !fitsInt(by) || !fitsInt(otherX) || !fitsInt(otherY)) {\n                    continue;\n                }\n\n                if (pointSet.contains(key(bx, by))\n                        && pointSet.contains(key(otherX, otherY))) {\n                    diagonalHits++;\n                }\n            }\n        }\n\n        // 一个正方形有两条对角线，因此会被上面的枚举命中两次。\n        return diagonalHits / 2;\n    }\n\n    private boolean fitsInt(long value) {\n        return value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE;\n    }\n\n    private long key(long x, long y) {\n        // x、y 都保证在 int 范围内，用高 32 位 + 低 32 位编码成唯一 long。\n        return (x << 32) ^ (y & 0xffffffffL);\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定平面上一组互不重复的整数坐标点，统计这些点能组成多少个正方形。正方形允许旋转，不要求边与坐标轴平行，每四个不同点组成一个正方形只计一次。",
+        "req": [
+          "点的整数坐标互不重复",
+          "正方形允许任意旋转",
+          "每四个不同点组成的正方形只计一次"
+        ],
+        "analysis": "点先编码进 pointSet。外层 i、内层 j=i+1 把无序点对当成对角线，用坐标和 sx、sy 以及差 dx、dy，把半对角线转 90° 得到另外两点的两倍坐标 (sx-dy, sy+dx) 与 (sx+dy, sy-dx)。四者都是偶数、除以 2 后仍能放进 int、且两个 key 都在 pointSet 里时 diagonalHits 加一；每个正方形有两条对角线，最后除以 2。",
+        "cx": "时间 O(n²)，空间 O(n)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "计算几何"
+    },
+    {
+      "id": "interview-point-in-polygon",
+      "number": "面试变体 4",
+      "title": "判断点在多边形内部还是外部",
+      "slug": "",
+      "url": "",
+      "category": "计算几何",
+      "source": "面试补充",
+      "time": "O(n)",
+      "space": "O(1)（固定次数的大整数临时量；若把坐标位宽计入则为 O(log C)）",
+      "idea": "循环里 j 是上一个顶点、i 是当前顶点。cross 用 BigInteger 算 AB 与 AP 的叉积，符号为 0 且 px、py 都落在 AB 的 min/max 盒子里就返回 2。否则只有两端点分处水平线两侧时才看射线：cross.signum() 等于 Long.compare(by, ay) 说明交点在 P 右侧，把 inside 取反。奇数次返回 1，偶数次返回 0。",
+      "description": "给定按顺时针或逆时针顺序排列的 n 个顶点，形成一个简单多边形，再给定查询点 P，判断 P 在多边形内部、外部还是边界上。简单多边形允许凹多边形，但边与边之间除相邻端点外不自交。",
+      "code": "import java.math.BigInteger;\n\nclass Solution {\n    // 返回 0 = 外部，1 = 内部，2 = 边界。\n    public int locatePoint(long[][] polygon, long px, long py) {\n        boolean inside = false;\n        int n = polygon.length;\n\n        for (int i = 0, j = n - 1; i < n; j = i++) {\n            long ax = polygon[j][0];\n            long ay = polygon[j][1];\n            long bx = polygon[i][0];\n            long by = polygon[i][1];\n\n            // 叉积为 0 且落在端点盒子内，说明 P 在线段 AB 上。\n            BigInteger cross = cross(ax, ay, bx, by, px, py);\n            if (cross.signum() == 0\n                    && px >= Math.min(ax, bx) && px <= Math.max(ax, bx)\n                    && py >= Math.min(ay, by) && py <= Math.max(ay, by)) {\n                return 2;\n            }\n\n            // 半开规则：只有边的两个端点分处水平线 y=py 两侧时才参与计数。\n            if ((ay > py) != (by > py)) {\n                // xIntersection - px = cross / (by - ay)。\n                // 因此交点在 P 的右边，当且仅当 cross 与 (by-ay) 同号。\n                int denominatorSign = Long.compare(by, ay);\n                if (cross.signum() == denominatorSign) {\n                    inside = !inside;\n                }\n            }\n        }\n\n        return inside ? 1 : 0;\n    }\n\n    private BigInteger cross(long ax, long ay, long bx, long by,\n                             long px, long py) {\n        BigInteger bax = BigInteger.valueOf(bx).subtract(BigInteger.valueOf(ax));\n        BigInteger bay = BigInteger.valueOf(by).subtract(BigInteger.valueOf(ay));\n        BigInteger pax = BigInteger.valueOf(px).subtract(BigInteger.valueOf(ax));\n        BigInteger pay = BigInteger.valueOf(py).subtract(BigInteger.valueOf(ay));\n\n        return bax.multiply(pay).subtract(bay.multiply(pax));\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数学与位运算",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "simple": {
+        "statement": "给定按顺时针或逆时针顺序排列的 n 个顶点，形成一个简单多边形，再给定查询点 P，判断 P 在多边形内部、外部还是边界上。简单多边形允许凹多边形，但边与边之间除相邻端点外不自交。",
+        "req": [
+          "顶点按顺时针或逆时针顺序给出",
+          "多边形为简单多边形，边除相邻端点外不自交",
+          "需区分内部、外部和边界"
+        ],
+        "analysis": "循环里 j 是上一个顶点、i 是当前顶点。cross 用 BigInteger 算 AB 与 AP 的叉积，符号为 0 且 px、py 都落在 AB 的 min/max 盒子里就返回 2。否则只有两端点分处水平线两侧时才看射线：cross.signum() 等于 Long.compare(by, ay) 说明交点在 P 右侧，把 inside 取反。奇数次返回 1，偶数次返回 0。",
+        "cx": "时间 O(n)，空间 O(1)（固定次数的大整数临时量；若把坐标位宽计入则为 O(log C)）",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      },
+      "oldCat": "计算几何"
+    },
+    {
+      "id": "nonlc-3-0",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "给定两个矩形，判断它们有没有相交。",
+      "number": "几1",
+      "description": "给定两个边与坐标轴平行的矩形，判断它们有没有重叠区域。每个矩形用左下角和右上角 (x1, y1, x2, y2) 表示。",
+      "idea": "先算 separated：a.x2 <= b.x1 或 b.x2 <= a.x1 表示一个完全在另一个左边，a.y2 <= b.y1 或 b.y2 <= a.y1 表示一个完全在另一个下边。四条里任一成立就没有重叠区域，比较用 <=，边刚好贴住也算分开。四条都不成立才有重叠，所以返回 !separated。",
+      "code": " public class RectangleOverlap {\n     static class Rectangle {\n        int x1;\n        int y1;\n        int x2;\n        int y2;\n\n        // 左下 (x1,y1)，右上 (x2,y2)\n        Rectangle(int x1, int y1, int x2, int y2) {\n            this.x1 = x1;\n            this.y1 = y1;\n            this.x2 = x2;\n            this.y2 = y2;\n        }\n    }\n\n    public boolean isOverlap(Rectangle a, Rectangle b) {\n        // 完全在左、右、下、上任一侧（含边贴边）就一定不相交\n        boolean separated = a.x2 <= b.x1 || b.x2 <= a.x1\n                || a.y2 <= b.y1 || b.y2 <= a.y1;\n        return !separated;\n     }\n }",
+      "progressKey": "nonlc-3#0",
+      "faceParent": "nonlc-3",
+      "faceIdx": 0,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "给定两个边与坐标轴平行的矩形，判断它们有没有重叠区域。每个矩形用左下角和右上角 (x1, y1, x2, y2) 表示。",
+        "req": [
+          "矩形边与坐标轴平行",
+          "用左下角和右上角 (x1, y1, x2, y2) 表示",
+          "一边的 x2 或 y2 小于等于另一边对应的 x1 或 y1 时视为分离，边界相贴不算相交"
+        ],
+        "analysis": "先算 separated：a.x2 <= b.x1 或 b.x2 <= a.x1 表示一个完全在另一个左边，a.y2 <= b.y1 或 b.y2 <= a.y1 表示一个完全在另一个下边。四条里任一成立就没有重叠区域，比较用 <=，边刚好贴住也算分开。四条都不成立才有重叠，所以返回 !separated。",
+        "cx": "时间 O(1)，空间 O(1)",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      }
+    },
+    {
+      "id": "nonlc-1-8",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "设计 · 数学 · 专项",
+      "cat": "数学 · 位运算 · 随机 · 几何",
+      "title": "圆周率一般有哪些计算方式？",
+      "number": "通9",
+      "description": "说明圆周率一般有哪些计算方式。需要把常见数学做法和工程上的取舍讲清楚：各自的精度、收敛速度、能否并行，以及什么场景会选哪一类。",
+      "idea": "一类是几何或概率近似，例如蒙特卡洛：在单位正方形里随机撒点，落进内切圆的比例大约是 π/4。一类是无穷级数，如 Leibniz 公式、Nilakantha 级数和 Machin 公式。一类是高斯-勒让德、Chudnovsky 这类收敛更快的高精度算法。蒙特卡洛实现简单且适合并行，但收敛慢；Leibniz 直观但效率低；要很多位小数时改用高阶算法。",
+      "code": "",
+      "progressKey": "nonlc-1#8",
+      "faceParent": "nonlc-1",
+      "faceIdx": 8,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "说明圆周率一般有哪些计算方式。需要把常见数学做法和工程上的取舍讲清楚：各自的精度、收敛速度、能否并行，以及什么场景会选哪一类。",
+        "req": [],
+        "analysis": "一类是几何或概率近似，例如蒙特卡洛：在单位正方形里随机撒点，落进内切圆的比例大约是 π/4。一类是无穷级数，如 Leibniz 公式、Nilakantha 级数和 Machin 公式。一类是高斯-勒让德、Chudnovsky 这类收敛更快的高精度算法。蒙特卡洛实现简单且适合并行，但收敛慢；Leibniz 直观但效率低；要很多位小数时改用高阶算法。",
+        "cx": "",
+        "topic": "p-math",
+        "topicName": "数学 · 位运算 · 随机 · 几何"
+      }
+    }
+  ]
+}

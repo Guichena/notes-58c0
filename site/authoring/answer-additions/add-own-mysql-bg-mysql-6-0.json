@@ -1,0 +1,359 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-6-0",
+  "entryId": "bg-mysql-6",
+  "expectedOriginalHash": "e70206a1200a1598fc120c58a01fafba7e6555eec3e1842ffdd8762a9e46bba5",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第31章 分片动机 业务键与路由规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "分片是以路由、跨片查询和运维复杂度换取容量或资源扩展，只有热点和访问模式被一起考虑时，拆分才可能改善目标负载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：什么时候分库分表？怎么选分片键？分多少表？Shop Number 和二级索引各起什么作用？订单、关注、评论、对话日志应该按哪个维度拆？"
+    },
+    {
+      "type": "paragraph",
+      "text": "水平分表拆行，垂直分表拆字段，水平分库把行分布到不同实例，垂直分库按业务域隔离。多个库名仍在一台实例上时，不会凭空增加 CPU、I/O 或连接处理能力。读副本主要分担允许旧值的读取，原生分区主要提供裁剪与生命周期管理；它们与应用层跨实例分片解决的问题不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先画查询矩阵：按用户列订单、按商家列订单、按订单号点查、按日期报表各出现多少次，需要怎样的新鲜度，通常更新哪些实体。再看行数、字节、QPS、锁竞争和最大实体占比，最后决定路由。片内索引仍要设计；索引存在不会让缺少分片键的请求自动定位。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "亿级社交关注系统怎样建表、分片，并正确处理关注与取消关注？"
+    },
+    {
+      "type": "paragraph",
+      "text": "关注关系按唯一有向边维护权威状态，正反向列表和计数按各自访问路径投影，取消和迟到重放靠版本墓碑处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：亿级社交关注系统怎样建表、分片，并正确处理关注与取消关注？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "权威关系与访问路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "用一条有向边(follower_id,followee_id)表达关注，唯一约束保护“同一人对同一人至多一条关系”。可保存state、version、created_at、updated_at；主键或唯一键包含路由键。按follower_id分片，能把本人关注列表定位到一个分片，按(created_at,followee_id)游标分页。不要用扫描全部分片拼OFFSET来做高频列表。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为什么分片：确认单实例写吞吐、容量、热点工作集或维护窗口已接近SLO瓶颈，而不是看到“一亿行”就机械分表。分片先按主体稳定hash/逻辑桶路由，并保留版本化路由表以支持迁移。超级大V主要是粉丝侧热点，按普通用户hash不必然解决单个被关注者的写热点，反向视图可能需要桶化和分层计数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "关注、取消与乱序重试"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等关注可以插入唯一边，已存在则返回当前状态；取消可删除或标记inactive。若存在异步反向视图，物理删除后不能丢掉版本，否则延迟到达的旧关注事件会把已取消关系重新激活。更稳妥的是权威分片在同一事务更新state和单调version并写outbox，事件含边ID、最终state、version。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一边的并发命令由权威行锁/CAS等串行化；请求有稳定幂等键，重试返回原命令结果。不能无条件拿客户端墙钟作最后写入者规则：时钟漂移和重试到达顺序会改变语义。业务需明确是服务端接受顺序还是客户端命令序列，拒绝不合法的旧序列。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "反向视图、计数与扩容"
+    },
+    {
+      "type": "paragraph",
+      "text": "粉丝列表按followee_id存物化反向索引，通过outbox/CDC异步投影；消费者只有在version更大时才更新，每条事件重复不能多加计数。计数可按状态迁移差量更新分桶计数，并定期与权威关系对账；绝不能每次列表请求都全表COUNT。反向列表和计数若最终一致，要明确可见延迟；若业务强要求同时一致，需接受跨分片事务/协调的额外成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扩容采用逻辑桶迁移：快照+增量追平、校验、路由切换与旧路由转发/拒绝协议。不能简单把hash%16改成%32，已有边不会自己移动。所有迁移期间的写必须有唯一权威，双写任一失败要有日志修复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与性能边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "最重要的时序：关注v1、取消v2、迟到v1不得复活；关注重试不重复加数；取消不存在的边按契约幂等；关注与取消并发结果必须解释为明确顺序；反向视图崩溃重放能追平。测试超大V、同一边恶意反复操作、空页及同时间戳分页。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单边更新成本以一次权威事务加异步投影为主，普通列表理想为单片索引定位加page_size读取；粉丝分桶需要多路归并，写放大与读扩散应分别算。不要虚构QPS、分片数量或延迟，真实参数取决于边数、分布和压测。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "MySQL保存Agent对话记录和工具日志，应该按租户、用户、会话还是时间分片？"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话消息与工具日志优先按主要读取聚合共置，租户、用户、会话和时间各有不同热点与查询代价。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：MySQL保存Agent对话记录和工具日志，应该按租户、用户、会话还是时间分片？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先明确关联与高频读取"
+    },
+    {
+      "type": "paragraph",
+      "text": "conversation保存tenant_id、conversation_id、owner、状态；message保存会话内seq、role、content/附件引用、创建时间；tool_call保存run_id、call_id、关联message_id、工具/参数摘要、状态、耗时、结果引用和重试幂等键。大文本/附件可在对象存储，关系库保存可鉴权的版本和摘要，不能把凭据原样写日志。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见热路径是某会话最近N条消息、某run完整执行链、某用户会话列表和租户审计查询。会话内消息与工具调用最好共置，使顺序写、追加幂等和事务边界落单片；按message_id独立随机散列会让每次上下文加载全库扇出。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分片维度的条件化比较"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用hash(tenant_id,conversation_id)→逻辑bucket→物理片，主查询携带租户及会话完成路由；同会话seq唯一，工具调用idempotency key在片内约束。租户级用户会话列表另做目录/读模型，否则按会话hash后用户列表需要跨片。若主要是用户跨会话记忆，则hash(tenant_id,user_id)更容易同用户共置，但共享会话、多用户协作和超级用户热点需重新评估。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只按tenant_id最易租户查询与迁移，却可能让大租户压垮单片；可为超大租户增加稳定bucket并管理路由表。只按时间有利归档与时间范围扫描，但最新时间段热点、历史对话跨月、长期会话JOIN都可能变贵；常用业务key分片加片内时间分区/归档，而不是让所有在线查询扫描日期库。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "扩容、全局查询和实际边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要把物理库数直接写死进hash%N；用固定逻辑桶/路由版本，迁移时全量基线+增量追平、版本核验和受控切读写，处理双写失败。全局唯一ID与业务幂等键不同，跨片唯一性/FK不能假定本地约束天然覆盖。单会话特别大时先归档分页，若再拆子分片，必须增加跨段有序归并和恢复协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "报表/审计走CDC到独立查询模型，明确延迟与权限；按tenant/user删除时追踪所有日志、对象和派生索引。用最大租户/长会话/热点run、迁移期间重试/乱序做负载和一致性验证，容量按字节、索引、工作集、IO/日志及恢复时间推导。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消息防重发项目如何选分片键，ID取模的数据倾斜能靠哈希扰动解决吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "稳定哈希可以改善规律性 ID 的桶分布，但不能打散一个热业务键；随机盐还可能破坏防重所需的同片唯一性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：消息防重发项目如何选分片键，ID取模的数据倾斜能靠哈希扰动解决吗？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 MySQL/Redis/RocketMQ 的防重发漏发问题为背景推演；另一个 ID 取模问题来自 Milvus，二者只共享路由原理，不能互换产品实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从消息状态和不变量推候选键"
+    },
+    {
+      "type": "paragraph",
+      "text": "可考虑message/dispatch任务、按接收者的delivery状态、去重receipt、outbox等表；实际拆分对象须由现有schema与访问路径决定。定义一次业务发送的稳定键，例如(tenant,campaign,recipient,channel)，同键重复请求落同权威分片并由唯一约束/事务状态保护；全局随机message_id不自动把业务重复路由到同一片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按recipient/user使该用户发送历史、去重/限频共置，但活动整体统计需额外读模型；按campaign利于活动查询却可能把大型活动集中单片；按message_id均匀但用户列表扇出；按时间利于归档却使当前窗口热。高频查询、关联事务、key不可变、基数/倾斜与数据保留共同决定，不能只挑“唯一字段”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先分清三种倾斜"
+    },
+    {
+      "type": "paragraph",
+      "text": "先看倾斜的是哪一种资源。行数平均，大 payload 仍可能把字节挤在一片；字节平均，少数热用户或活动仍可能占掉多数 QPS、CPU。逐逻辑桶和物理片看行数、字节、读写 QPS、锁等待、p99，再看 key 热度，才能区分低位规律、超级租户、单 key 热点和查询扇出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有低位规律这类问题，重新混合 hash 才可能直接帮忙。例如 ID 全为 16 的倍数，id%16 全落 0；先用稳定、跨语言可复现的 hash/mix，再对固定逻辑桶取模，可打散这一模式。Java 用 floorMod 处理负数，不用 Math.abs(Long.MIN_VALUE)。测试里的 mix 是非密码学 64 位混合，既不保证任意对抗输入均匀，也不是 Milvus 内部 hash 的兼容实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一个热key不会被重新hash成多个key"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一key的所有请求仍指向同桶，哈希扰动或一致性hash不能分散单key热点。读热点可缓存/合并请求/限流；写热点若能业务拆分，可用稳定子桶或分段任务并行，但会引入跨桶读取、聚合、顺序和全局唯一约束问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把去重键随机加盐会让同一请求落不同片，破坏“不多发”；若盐由业务身份确定又可能仍集中。拆分需重新定义权威/协调协议，例如每接收者稳定桶，活动统计异步汇总；严格总额度可用受控分配/汇总而非各片独立放行。幂等记录还要和业务状态/发送意图共事务，不能把布隆过滤器当最终唯一证据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "扩容路由与Milvus分区边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "ShardRouting示例固定逻辑bucket并用不可变owner数组表示物理映射，迁移一个bucket只改变它的owner，不重新计算其他bucket。示例仅算路由；复制存量、追增量、write epoch、旧路由拒绝/重定向与回滚由在线迁移协议承担，不是调用movedBucket数据就搬好了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Milvus 2.6.0 的 partition key由该产品按标量hash映射到分区，手动按ID%P分区则由应用承担一致路由/读取范围；换算法需要重建/迁移既有数据。均匀分区可能增加租户搜索扇出，按tenant又可能大租户倾斜；配合过滤/资源隔离/合理桶化验证，而不把MySQL路由示例直接接到Milvus当该产品实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "容量与真实验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "真实量级应报告当前/增长/保留期行数及字节、峰值混合负载、最大租户和单片SLO压测，再算容量、吞吐和故障余量所需片数；没有这些输入，就只能给公式与条件化方案。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 ShardRouting.java。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/data/code/ShardRouting.java",
+      "value": "import java.util.Arrays;\n/** Teaching router: stable logical bucket, immutable physical-owner map; no migration engine. */\npublic final class ShardRouting {\n    private final int[] owners;\n    public ShardRouting(int[] owners) {\n        if(owners.length==0 || Arrays.stream(owners).anyMatch(x->x<0)) throw new IllegalArgumentException(\"bad owners\");\n        this.owners=owners.clone();\n    }\n    public static long mix(long x) {\n        x=(x^(x>>>33))*0xff51afd7ed558ccdL;\n        x=(x^(x>>>33))*0xc4ceb9fe1a85ec53L;\n        return x^(x>>>33);\n    }\n    public int bucket(long stableId) { return (int)Math.floorMod(mix(stableId),(long)owners.length); }\n    public int owner(long stableId) { return owners[bucket(stableId)]; }\n    public ShardRouting movedBucket(int bucket,int newOwner) {\n        if(bucket<0 || bucket>=owners.length || newOwner<0) throw new IllegalArgumentException(\"bad move\");\n        int[] copy=owners.clone(); copy[bucket]=newOwner; return new ShardRouting(copy);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "短视频评论系统怎样设计表、主键和分库分表，如何处理热门视频？"
+    },
+    {
+      "type": "paragraph",
+      "text": "评论通常按视频或回复根共置以减少列表扇出，爆款单键仍需缓存、限流或有界子桶，并维持回复关系与请求幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：短视频评论系统怎样设计表、主键和分库分表，如何处理热门视频？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实体、关系和状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "video_comment保存tenant、comment_id、video_id、author_id、content、created_at、version、state以及root_id/parent_id。顶层root/parent均NULL；回复root指顶层、parent指直接回复对象，所以能同时按楼层分页和展示“回复谁”。如只支持两层可限制parent=root；任意深度则必须限制深度并验证无环。"
+    },
+    {
+      "type": "paragraph",
+      "text": "状态区分pending、visible、hidden、deleted，删除可保留墓碑维系回复关系而隐藏/清理正文，审核必须幂等按版本迁移。删顶层后回复隐藏还是保留由产品明确；不能简单级联物理删掉所有回复而不考虑投诉/留存。回复插入在事务中核对父/根同视频同租户、根确为顶层、父属于同根且可回复，FK只能证明引用存在，不能独自证明这些业务不变量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "主键、幂等与索引"
+    },
+    {
+      "type": "paragraph",
+      "text": "稳定全局comment_id便于跨分片定位/事件关联，可评估带唯一worker和时钟回拨保护的分布式ID、号段或其他全局ID；不能假设多库自增天然不重复。示例关系模型主键(tenant,comment_id)，同视频引用由(tenant,video,comment_id)唯一键支撑，author+request_id唯一用于用户重试，重复请求还须核对内容/视频。"
+    },
+    {
+      "type": "paragraph",
+      "text": "顶层按(tenant,video,state,root,created,id)读，回复按(tenant,video,root,state,created,id)读，用户历史另按(tenant,author,created,id)。时间加id确定分页，长内容不纳入宽覆盖索引。热榜likes/score是可变排序，可发布短时榜单版本或有界候选缓存；普通时间游标不能保证可变热度榜快照。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "常规路由优先让视频局部读取少扇出"
+    },
+    {
+      "type": "paragraph",
+      "text": "按video_id稳定哈希到逻辑桶，再映射物理库/表，同视频和回复共址、按视频分页简单；按comment_id平均散写会让每次视频列表跨所有片。查询“我的评论”可维护按作者的异步索引/目录，给水位与回源权限检查；单条commentID若不含路由，需目录或调用时同时提供可信video_id。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨独立 MySQL 实例分片后，普通外键不能跨实例维护引用，片内唯一索引也不提供跨片全局唯一性；应保持同根引用同片或在服务协议中校验。同一实例的不同 schema 仍可使用符合限制的 InnoDB 外键。全局 request 去重也要同路由或使用独立幂等目录。分片数不是固定真实机器数，用逻辑桶目录支持扩容，迁移遵守快照+增量、写权epoch、对账和回滚，不能直接改hash取模丢旧路由。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一个爆款视频不会被hash自动摊开"
+    },
+    {
+      "type": "paragraph",
+      "text": "按视频分片使一个热点仍在同桶。读可用首页/热榜缓存、请求合并、只读副本和有界回源，写计数可异步投影/分桶，正文写权限/去重仍由权威库守护。统计同根回复数需防重复事件与删除更正，不能每次列表全扫COUNT。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若确需拆热视频，可按root_id哈希分桶使一楼回复共址，顶层列表跨有限桶分别取TopK再按统一时间/id归并；或热视频目录标识新路由版本。一个极热根仍是热点，进一步拆分要付出回复读取、顺序和事务成本。热点QPS、字节、数据量分别监测；无限加表不保证降低单键冲突。容量需要评论速率×保留期×平均行/索引字节、副本和迁移峰值预算，再以热门视频读写混合负载实测。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 comment_schema.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/comment_schema.sql",
+      "value": "CREATE TABLE video_comment (\n tenant_id BIGINT NOT NULL, comment_id BIGINT NOT NULL, video_id BIGINT NOT NULL,\n author_id BIGINT NOT NULL, root_id BIGINT, parent_id BIGINT,\n content TEXT NOT NULL, state VARCHAR(16) NOT NULL CHECK(state IN ('pending','visible','hidden','deleted')),\n created_us BIGINT NOT NULL, version BIGINT NOT NULL CHECK(version>=0),\n request_id VARCHAR(100) NOT NULL,\n PRIMARY KEY(tenant_id,comment_id), UNIQUE(tenant_id,video_id,comment_id),\n UNIQUE(tenant_id,author_id,request_id),\n CHECK((root_id IS NULL AND parent_id IS NULL) OR (root_id IS NOT NULL AND parent_id IS NOT NULL)),\n CHECK(parent_id IS NULL OR parent_id<>comment_id),\n CHECK(root_id IS NULL OR root_id<>comment_id),\n FOREIGN KEY(tenant_id,video_id,root_id) REFERENCES video_comment(tenant_id,video_id,comment_id),\n FOREIGN KEY(tenant_id,video_id,parent_id) REFERENCES video_comment(tenant_id,video_id,comment_id)\n);\nCREATE INDEX ix_comment_top ON video_comment(tenant_id,video_id,state,root_id,created_us,comment_id);\nCREATE INDEX ix_comment_reply ON video_comment(tenant_id,video_id,root_id,state,created_us,comment_id);\nCREATE INDEX ix_comment_author ON video_comment(tenant_id,author_id,created_us,comment_id);\n-- Top-level page; add the two-column keyset predicate for subsequent pages.\nSELECT comment_id,author_id,content,created_us FROM video_comment\n WHERE tenant_id=? AND video_id=? AND root_id IS NULL AND state='visible'\n ORDER BY created_us DESC,comment_id DESC LIMIT ?;\nSELECT comment_id,parent_id,author_id,content FROM video_comment\n WHERE tenant_id=? AND video_id=? AND root_id=? AND state='visible'\n ORDER BY created_us,comment_id LIMIT ?;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "评论结构应检查顶层与回复、审核过滤、跨视频和跨租户外键、幂等键重复、删除仍被回复引用的父行以及墓碑保留引用。祖先合法性和读写权限不能靠外键代替；全局 ID、跨片归并、缓存计数和迁移也需要独立协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "行数算例只是一条容量约束"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设已有 2000 万行，未来每年增加 500 万，规划 10 年且保守假设旧数据全部保留，总量上界为 7000 万行。若确实滚动保留 10 年，则必须按现有数据年龄分布推算峰值，不能简单相加。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再假设受控压测证明某片在目标混合负载和 p99 要求下能容纳 2000 万行，纯行数下界是 ceil(7000万/2000万)=4。还要比较索引与大字段字节、热点工作集、持续写入、备份恢复时间、故障后余量，以及迁移期间新旧双份容量。这个算例没有给任何项目指定四片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所谓“2000 万行到 B+ 树四层”不是通用分表线。仅在假设扇出 1170、每叶页 16 行时，三层示意容量为 1170×1170×16=21,902,400；真实内部记录不只有主键和一个固定指针，页头、记录头、目录、填充率、键宽和行格式都会改变结果。多一层也不等于每次多一次物理磁盘读取，热点内部页可能已缓存。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "0"
+}

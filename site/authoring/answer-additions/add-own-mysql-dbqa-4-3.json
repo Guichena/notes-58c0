@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-dbqa-4-3",
+  "entryId": "dbqa-4",
+  "expectedOriginalHash": "a95e43f47fffaa309bdc3c90dad36b3626dd81f88f5e59b891ffde5bfb326e7c",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第22章 实际访问路径决定锁范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁范围由引擎、隔离级别、事务边界、索引访问路径与完整谓词共同决定，不能只数结果行，也不能只看 WHERE 中出现了什么字段。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按六个条件逐层推导"
+    },
+    {
+      "type": "paragraph",
+      "text": "拿到一条 SQL，按执行过程推锁范围，而不要从返回几行倒猜。先固定 MySQL 8.4.0/InnoDB，并确认是否显式事务：autocommit 下语句结束，保护窗口也随该事务结束。接着确定读类型，RR 普通 SELECT 通常读快照；FOR SHARE、FOR UPDATE、UPDATE、DELETE 则面向当前可操作记录并加锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "然后看真正选中的索引，判断是否完整唯一等值命中；继续检查有没有修改索引键、外键检查或重复键检查，这些都会增添资源访问。最后把已取得的锁跟到 COMMIT 或 ROLLBACK。引擎、事务边界、读类型、访问路径、额外约束和释放时点都清楚了，才有条件说明谁会等待。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对完整唯一键的现存记录等值查找，通常只需相应记录锁，无须锁前方 gap。主键路径锁聚簇记录；唯一二级路径可能同时涉及二级记录与聚簇记录。不存在的唯一值、联合唯一索引只给部分列、可空 UNIQUE 的 NULL 查找、普通非唯一等值、范围谓词、类型转换改变路径，都不能套用这一结论。修改主键或其他唯一列还需维护旧新索引项和检查约束，可能增加等待对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RR 的范围锁定扫描可用 next-key/gap 保护插入位置，空结果也可能挡插入。RC 的普通搜索和扫描不使用常规间隙保护，但外键检查与重复键检查仍是例外。RC 的 UPDATE 可以用 semi-consistent read 将被锁行的最近已提交版本交给 Server 判断 WHERE；确需修改时再读并锁定或等待。对不匹配记录的释放还受执行路径影响，尤其索引条件与额外残余条件并非同一阶段，不能无条件说“RC 最终必然只锁返回行”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实验一 空范围为何挡插入"
+    },
+    {
+      "type": "paragraph",
+      "text": "按编号操作，不使用 sleep 猜另一连接是否完成。"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "A：SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION;",
+        "A：SELECT * FROM s3_lock FORCE INDEX(ix_score) WHERE score>10 AND score<20 FOR UPDATE; 确认返回空集，保持事务。",
+        "B：START TRANSACTION; INSERT INTO s3_lock VALUES(4,15,'new'); 在 B 窗口提交该命令，保持 A 窗口可操作。预期等待。",
+        "O 确认等待关系涉及 s3_lock 的 ix_score 范围；若 B 超时，先 B ROLLBACK，再重新开始本组，不能把超时后的旧事务继续混用。",
+        "A：ROLLBACK。B 的 INSERT 若尚在等待，应能继续；B 随后 ROLLBACK。",
+        "A 改成 READ COMMITTED，在新事务重做同一查询；B 再插同一行。普通 RC 范围查询通常不再因该 gap 保护挡住插入，B 仍 ROLLBACK，A ROLLBACK。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "这不是“无匹配行就无锁”的反例外技巧，而是保护谓词未来成员的正常用途。普通 SELECT 去掉 FOR UPDATE 后又是不同契约，不能用这一实验推导普通快照读也锁间隙。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实验二 唯一命中 未命中 普通键和联合键"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个分支独立执行：先 A 设 RR 并 START TRANSACTION，执行所列 A 语句并确认返回；再 B START TRANSACTION 执行 B 语句。记录是否完成/等待及真实锁，最后 A、B 都 ROLLBACK。如果 B 等待，先让 O 取证，再释放 A；不要在被阻塞的同一个 B 窗口尝试输入释放 A 的命令。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "完整主键命中：A SELECT * FROM s3_lock WHERE id=2 FOR UPDATE; B INSERT INTO s3_lock VALUES(4,15,'new'); 此主键点读不应照搬 ix_score 空范围的阻塞结论。",
+        "完整主键未命中：A SELECT * FROM s3_lock WHERE id=4 FOR UPDATE; B INSERT INTO s3_lock VALUES(4,15,'new'); RR 需要考虑缺失键所在间隙，不能从上一组推导不阻塞。",
+        "唯一二级命中：A SELECT * FROM unique_probe FORCE INDEX(uq_u) WHERE u=20 FOR UPDATE; B UPDATE unique_probe SET note='x' WHERE id=2; 应关注二级项及聚簇记录的冲突。",
+        "唯一二级未命中：A SELECT * FROM unique_probe FORCE INDEX(uq_u) WHERE u=15 FOR UPDATE; B INSERT INTO unique_probe VALUES(4,15,15,'new'); RR 下检查插入 gap；改 RC 后用全新事务重做，对普通缺失搜索的结论不能覆盖重复检查例外。",
+        "普通二级等值：A SELECT * FROM unique_probe FORCE INDEX(ix_k) WHERE k=20 FOR UPDATE; B INSERT INTO unique_probe VALUES(4,40,20,'new'); 值 20 可有多行，索引物理次序还包含主键后缀，必须分析整个匹配范围及边界。",
+        "联合唯一只给前缀：A SELECT * FROM compound_probe FORCE INDEX(uq_ab) WHERE a=1 FOR UPDATE; B INSERT INTO compound_probe VALUES(4,1,15); 这里不是唯一点查。",
+        "联合唯一完整命中：A SELECT * FROM compound_probe WHERE a=1 AND b=10 FOR UPDATE; B INSERT INTO compound_probe VALUES(4,1,15); 与上一组独立比较。",
+        "改唯一键：A UPDATE unique_probe SET u=25 WHERE u=20; B INSERT INTO unique_probe VALUES(4,25,99,'new'); 新键的唯一性检查产生另外的约束，不能说“只锁旧行就结束”。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "先 EXPLAIN 对应 SELECT/UPDATE，再执行测试。FORCE INDEX 是教学对照的显式假设，真实业务的自然计划需另看。若题面没给 SQL、schema、参数、缓存状态，无法计算精确回表次数、物理 I/O 次数或锁行数；逻辑访问数也不等于每次真实磁盘读。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复习时的最后三问"
+    },
+    {
+      "type": "paragraph",
+      "text": "RC 是否绝无 gap lock？不是，需保留重复键/外键检查例外。唯一等值命中、范围和不存在的键能否共用一句答案？不能。为什么没返回行还会挡插入？锁保护的是访问路径上的范围及未来成员，不只是最终结果行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "InnoDB 的行锁数量增加不会按固定阈值自动升级为整表 X 锁；广范围阻塞要追溯实际扫描与间隙保护。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "3"
+}

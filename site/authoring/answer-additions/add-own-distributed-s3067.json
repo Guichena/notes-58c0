@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3067",
+  "entryId": "bg-rocketmq-4",
+  "expectedOriginalHash": "9ee6dae9290f1a6f13cecf0fa17b711bee8b6d931182cb9034410d60bd4310d9",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.12 Kafka、RocketMQ和Redis用于消息时怎样选型"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka偏持久日志与分区消费，RocketMQ提供业务消息能力，Redis消息结构适合明确范围的轻量方案，选择取决于真实责任边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Kafka RocketMQ Redis消息怎么选；Redis Pub/Sub会不会丢；有消费组是否就可靠。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "按吞吐、时延、保留重放、顺序、可靠性和运维成本选择；Redis Pub/Sub、List和Stream不能混作同一种队列。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先写消息契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "明确是通知、可靠任务、保留可重放日志，还是缓存共享状态；列顺序单位、单消息大小、吞吐/延迟、峰值持续时间、重试/死信、保留期、跨区与团队运维。持久成功后应能恢复，不能只比较“内存很快”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka常规分区日志及独立消费组便于保留回放、流处理；RocketMQ业务消息可评估其事务消息、延时、重试等真实版本能力。二者仍需生产确认、副本/刷盘策略、消费者幂等，第5.5节解释事务消息为何不等于外部数据库全局ACID。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis不是单一消息语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通GET/SET是状态读写；Pub/Sub对在线订阅者推送，断开期间消息不可补领，官方定义at-most-once。它适合允许丢失且可从权威状态重建的通知，不适合单独承诺支付/订单任务可靠到达。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Streams 的确认和删除不是一回事。它保存带 ID 的记录，XREADGROUP 分组交付，PEL 记录未确认项；业务完成后 XACK 移除的是该组 pending，不是删除流中的消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "处理者宕机后，可按版本用 XPENDING/XCLAIM 或 XAUTOCLAIM 接管，但接管可能与旧处理者重叠，目的端仍需幂等。XAUTOCLAIM 从 Redis6.2 提供，不能把新语义直接套到未知历史版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Streams保留/裁剪、消费者组进度、AOF/RDB与异步复制故障窗口要一起设计；某消息仍pending不保证payload永远不会被裁剪。缓存型实例的maxmemory淘汰策略可能不适合任务日志，至少隔离容量与故障域。选Streams可以复用设施，但不会自动获得与特定Kafka配置等价的持久/回放/生态能力。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "组合与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "可MQ保存业务事件、Redis作缓存/进度投影，两者职责明确；不能先写Redis状态后异步发MQ就假设原子。按持久权威+可靠事件联接，测确认丢失、消费提交后崩溃、主从切换、裁剪/淘汰与积压超过保留期。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.14 各种MQ与EventBus有什么区别，为什么可能选择RocketMQ"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程内EventBus适合本进程解耦，持久MQ承担跨进程投递与恢复，RocketMQ选型还需说明延时、事务消息和运维需求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：MQ与EventBus区别是什么；为什么可能选RocketMQ；进程崩溃后EventBus事件能否恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "EventBus常指进程内事件分发，具体库语义需明确；它与跨进程持久Broker的故障模型不同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "解耦的范围不同"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程内 EventBus 解决的是模块之间不要直接依赖。发布者与监听者按事件类型联系，事件通常是内存对象，双方仍共享同一个进程故障域。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步分发会把监听耗时加进发布调用；异步分发只是提交执行器，还得明确队列容量、线程安全、异常处理和 shutdown 排空。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨进程持久MQ通过网络、序列化、Broker存储/复制与消费确认维护可恢复传递，能让服务独立部署、下游停机后恢复消费，也多出网络失败、重复、乱序、保留、schema兼容及运维成本。进程内发布成功不意味着记录持久；MQ send成功也不自动意味着所有下游业务成功。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不能从名字推出具体语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "Guava官方明确其EventBus用于Java进程内，且当前文档不建议新项目采用：它缺背压和足够线程/异常控制。普通EventBus与AsyncEventBus的执行策略须按实际API；不要说所有EventBus都异步、都吞异常或都带持久队列。若另一产品也叫EventBus且是云消息服务，就按其契约重新比较。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如UI刷新/可重建缓存通知可用本地事件；订单成功后必须送达仓储则应在业务事务持久outbox再经可靠通道传播。事务内调用本地listener只在监听操作真的加入同一事务时才共享回滚，异步线程和外部HTTP均不会天然加入。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "产品选择落到业务需求"
+    },
+    {
+      "type": "paragraph",
+      "text": "第5.5节说明half message/本地事务/回查，不能据此宣称任意两个数据库已是全局ACID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若只是单进程内几个模块通知，引入独立Broker可能增加不必要成本；需要跨进程故障恢复时普通内存EventBus不够。选型比较应固定消息大小、复制、确认、业务幂等与延迟目标，再测吞吐、尾延迟、恢复和运维成本；不同可靠性配置下的峰值数字不可直接排名。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "2"
+}

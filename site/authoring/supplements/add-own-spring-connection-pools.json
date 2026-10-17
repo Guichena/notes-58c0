@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-spring-connection-pools",
+  "entryId": "doc-25",
+  "expectedOriginalHash": "451f3a053ca277ae71cabb4867f9a25a1c3f2ebef7e9163467607f3f689e5da8",
+  "title": "JDBC 连接池、总超时与单节点故障证据",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "以下是 Spring/JDBC 条件化诊断与教学估算。原案例中的上线与收益表达只能在真实经历有证据时使用，不能把假设数字当作实测。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "24 连接池 超时与低 CPU 高延迟"
+    },
+    {
+      "type": "paragraph",
+      "text": "池满说明当前可借连接已经耗尽，还要区分是请求需求增加、池上限偏小，还是数据库慢、长事务或泄漏导致连接归还慢。这个池限制的是经它访问数据库的并发连接，并非数据库所有来源的总并发上限；直接扩大池，也可能把等待和争用推到数据库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：Java 连接池怎么做？两个节点只有一个耗尽怎样发现？线程池满但 CPU 低怎么查？响应时间周期性从 50 毫秒升到数秒是什么原因？"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设两个实例只有一个变慢，先按实例看 active、idle、pending、获取连接耗时和超时次数，再把请求路径与慢查询、锁等待、线程栈、GC 对到同一时间线。集群平均值会把这个热点藏起来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接着用证据区分假设：active 长期满、pending 增长且数据库 CPU 高，可能到达数据库吞吐极限；数据库不忙但应用都等同一条锁，可能是长事务或锁链；请求已结束、active 却一直不降，就要查泄漏或资源没关闭。看到哪一种证据，才决定下一步查哪里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hikari 的 connectionTimeout 是等待池中连接的上限，validationTimeout 是验证连接的预算，maxLifetime 控制连接最大寿命，idleTimeout 针对空闲连接，leakDetectionThreshold 用于可疑长占用诊断。它们不是同一个超时，泄漏检测也不等于自动安全中止业务。maxLifetime 应考虑基础设施连接寿命，不能靠频繁建联解决所有陈旧连接问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "依据 Little 定律，平均在途量约等于吞吐乘平均服务时间。若事务平均占连接 100 毫秒、目标 200 次/秒，粗略平均就需 20 个在途连接，但尾延迟、批量和竞争会改变余量；这不是建议把所有池统一设成 20。REQUIRES_NEW 还会让一个线程同时占用多条连接，必须计算嵌套最大需求及锁关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "超时预算从入口 deadline 向下分配，排队、借连接、SQL、网络调用、重试共享总预算。入口已超时但任务仍在队列执行会浪费资源，甚至产生用户认为失败却实际成功的结果。用幂等键查询状态、限制排队、取消可取消操作，比在每层无限重试更可靠。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：周期性尖刺一定 Full GC 吗？还可能是批处理、锁竞争、连接淘汰、定时任务、缓存集中失效或下游限流。先证据对齐再改参数。池配置的最终依据是测量得到的吞吐、尾延迟、数据库容量与故障恢复能力。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-spring-reference",
+      "label": "教学版本、运行方法与来源边界"
+    }
+  ]
+}

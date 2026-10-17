@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-own-rag-fusion-q-own-rag-rerank-training",
+  "entryId": "own-rag-fusion",
+  "expectedOriginalHash": "1eab5aeccf1ae4e7eef0caff4dc7571ab405f6d82b86222f6d83e6fd19017e00",
+  "title": "算法练习补充：Rerank实现、特征权重与预算感知TopK截断",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Rerank实现、特征权重与预算感知TopK截断"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Rerank 怎样实现，排序特征权重怎样确定，为什么还需要神经重排？",
+        "召回 TopK 过大或过小有什么影响？重排后返回几个块，怎样选择 K 并在预算内截断？",
+        "如何解释一条完整 RAG 的切分、召回与重排链路？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "分别定义每路召回 K、融合候选 M、送入 reranker 的 R 和最终证据块 Kout，并通过相关性与预算评测确定参数。下面 Java 代码实现的是得到分数后的精确 TopK 与证据选择，神经模型推理属于上游步骤。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "rerank 上线后，模型分数只是链路中的一步，权限、版本和异常处理同样要闭环。正常路径是：鉴权与有效版本检查 → 各路召回 → 融合去重 → 按长度截取或窗口化 → 批量 rerank → 校验输出 ID 和有限分数 → 确定性排序 → 预算截断 → 生成与引用验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果模型服务超时、返回数目错乱或给出 NaN 分数，要能观测到降级。例如保留已经授权的融合排序，并标注降级；不能随手把未经排序或越权内容兜底给生成模型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "双塔各自编码query/doc，向量能预存并做ANN；Cross-Encoder输入通常组织为query与doc的联合token序列，注意力可跨两者交互，输出标量score，需逐候选计算。它不只是在余弦上乘个系数。分数可能是任意logit，不一定校准为概率。LLM重排还可pointwise逐对打分、pairwise比较或listwise排列表；要防位置偏置、输出解析失败和更高延迟，候选文本中的指令不应改变排名任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试被问“权重怎么设”，先确认问的是哪一层。BM25 与向量召回的融合权重，可以用本章 RRF 或校准后的分数；显式排序特征的权重，比如 crossScore、精确实体匹配、新鲜度和可信度，要先统一尺度并约定缺失值；神经模型内部参数，通常由训练获得。"
+    },
+    {
+      "type": "paragraph",
+      "text": "权限、租户和必须满足的版本条件不是软权重，而是硬过滤。相关性再高，也不能把这些条件抵消掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "有标注时，按query拆分训练/验证/测试避免同问改写泄漏；用相关/不相关query-doc对做pointwise BCE，或正负对做pairwise排序，或列表做listwise/Lambda类目标。混合随机负例和与query相似但不回答的难负例，防标签把实际相关项误当负例；模型/显式权重都需在保留集看nDCG、MRR、Recall及成本。点击日志要考虑曝光/位置偏置，不能把“没点”一律标负。无标注时用可解释小规则基线与人工小样本起步，不能把猜出的权重当结论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "K过小可能漏相关文档或多跳另一半证据；过大增加检索、重排、传输和上下文成本，低相关项还会干扰生成。固定K适合作为基线，然后调最小分数阈值、最大块数、最大token数、同源去重和覆盖不同子问题；分数阈值需针对模型/版本校准，Top1低置信时可拒答或受控补检索，不能为了凑K塞噪声。上下文预算=模型总窗口−系统/历史/query−预留输出−安全余量，不能把总窗口全留给证据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整Java topK先按(id,version)去重保留最高分；同身份父块/长度元数据冲突拒绝。维护大小k的“最差项在顶”堆，新项优于堆顶才替换；最后按score降序、id及version字典序输出保证稳定。空输入、k=0、k超候选数均有定义，不修改输入。版本是否当前、用户是否有权须调用者先验证，身份含version不等于可同时放入过期版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "evidence方法先完整排名，再逐项应用最低分、剩余token、最多一块每(parent,version)、最大块数；块太长时跳过并继续试后面小块，不是遇到第一块超长就停止。父块去重只有选入后才登记，故高分超预算的块不应挡住同父另一个更小可用块。这是按排名的明确贪心合同，不保证总相关分或多跳覆盖的全局最优；若业务要最优预算装箱，应另建背包/子模优化目标并承认额外成本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "候选a分0.9/token11和b分0.8/token4同父p1，c分0.7/token3属于p2；预算7且阈值0.65时跳a，选b+c。不能说“取Top2”就自动满足预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自测应与全量排序对照，覆盖重复身份、精确并列、正负零、k=0、k 超过候选数及输入不变；证据选择还需检查父块去重、token 预算和阈值。模型质量及线上 K 的选取要使用独立业务评测。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "设原候选M、去重后U、返回k=min(K,U)：哈希去重平均O(M)、空间O(U)；堆选择O(U log(k+1))，最终排序O(k log k)。不是整个含去重流程只有O(K)空间。预算方法为检查所有候选先全排序，O(U log U)、空间O(U)。rerank模型代价另外算R次联合编码或批量等价计算，不能用TopK复杂度替代它。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "选择 K 时，在固定保留集与预算上扫描候选数、返回数和阈值，比较证据覆盖、nDCG、答案支持度、p95/p99 延迟与费用，选择满足约束且边际收益合适的点；报告样本量和区间，再小流量验证。题目没有给定这些数据时，不能直接报一个确定的最优 K。"
+    },
+    {
+      "type": "paragraph",
+      "text": "训练与评估不得把跨租户资料发送给无权模型端；对无答案问题单独评估拒答率和误拒率。候选100块不代表100块都适合进入生成上下文。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ],
+  "questionId": "q-own-rag-rerank-training",
+  "targetOrigin": "authored"
+}

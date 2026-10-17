@@ -1,0 +1,260 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-expression-parser",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "递归下降解析：JSON、化学式与表达式 AST",
+  "questions": [
+    {
+      "id": "q-own-algo-expression-parser",
+      "question": "递归下降解析：JSON、化学式与表达式 AST",
+      "shortAnswer": "按语法把输入递归分解成值、对象、数组、字符串和数字，并在每个入口严格消耗对应 token，最后检查整份输入已经结束。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "手写 JSON 与化学式解析器"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "JSON 解析器的主线"
+        },
+        {
+          "type": "paragraph",
+          "text": "按语法把输入递归分解成值、对象、数组、字符串和数字，并在每个入口严格消耗对应 token，最后检查整份输入已经结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正则适合识别数字等局部词法，任意嵌套对象和数组还需要栈或递归。接口返回明确的值类型：null、布尔、字符串、保留原始数字词法的 NumberValue、数组和对象。保存数字原词法能完整保留 -0、巨大整数与指数，不会悄悄舍入成 double；若后续确实需要 BigDecimal、double 或领域金额，应单独选择转换范围与误差合同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象名必须为字符串；数组和对象允许空，分隔符、冒号和结束符必须逐一匹配。数字不接受前导加号、非法前导零、空小数部分或缺失指数数字；字符串处理引号、反斜杠和规定转义，不接受裸控制字符。可忽略的语法空白只有空格、制表符、回车和换行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个实现额外采用严格互操作配置：重复对象名直接拒绝，解码后的字符串拒绝孤立代理项；这两点应作为本实现的策略说明，不能把所有其他解析器不同的行为一概称为违反基础语法。合法代理对可以表示补充平面字符，不做 Unicode 规范化。输入是 Java String，不涉及网络字节的 UTF-8 解码；如果从字节读入，解码器必须另行处理非法字节和资源限制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么一定要检查完整输入？ 如果读出 true 就返回，true garbage 会被错误接受。如果只在对象中最后一次写入覆盖前值，重复键可能让签名校验与业务层产生不同理解。实现用明确异常和 UTF-16 偏移报告失败，返回的数组/对象容器不可修改；这不是执行 JavaScript 的 eval，也不执行对象 getter 或任意代码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "深度与长度限制。 默认最多 100 万个 UTF-16 单元、128 层容器嵌套；调用者可改限额，但本递归实现把最大深度硬上限定为 256。零深度允许标量而不允许任何容器。限额是教学服务的资源保护选择，部署时应结合线程栈与请求大小预算调整；它不是 JSON 格式本身规定的上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "输入长度为 L 时，除数字后续转换外，解析在通常哈希表模型下期望 O(L) 时间，结果树和解码字符串 O(L) 空间，调用栈 O(允许的嵌套深度)。输出对象的递归 equals/toString 仍可能走深结构；解析器受限不等于任何消费方都天然不会栈溢出。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\n\n/** JSON syntax with an explicit interoperability profile: unique names, valid scalar Unicode. */\npublic final class StrictJson {\n    public sealed interface Value permits NullValue,BoolValue,StringValue,NumberValue,ArrayValue,ObjectValue {}\n    public enum NullValue implements Value { INSTANCE }\n    public record BoolValue(boolean value) implements Value {}\n    public record StringValue(String value) implements Value { public StringValue{Objects.requireNonNull(value);} }\n    /** Exact original numeric lexeme; no binary floating conversion or exponent expansion. */\n    public record NumberValue(String lexeme) implements Value { public NumberValue{Objects.requireNonNull(lexeme);} }\n    public record ArrayValue(List<Value> values) implements Value { public ArrayValue{values=List.copyOf(values);} }\n    public record ObjectValue(Map<String,Value> values) implements Value { public ObjectValue{values=Collections.unmodifiableMap(new LinkedHashMap<>(values));} }\n    private final String text;private final int maximumDepth;private int at;\n    private StrictJson(String text,int maximumDepth){this.text=text;this.maximumDepth=maximumDepth;}\n    public static Value parse(String text,int maximumCharacters,int maximumDepth){\n        Objects.requireNonNull(text);if(maximumCharacters<0||maximumDepth<0||maximumDepth>256)throw new IllegalArgumentException(\"limits: depth 0..256\");\n        if(text.length()>maximumCharacters)throw new IllegalArgumentException(\"input length limit\");\n        StrictJson p=new StrictJson(text,maximumDepth);Value result=p.value(0);p.space();if(p.at!=text.length())throw p.error(\"trailing content\");return result;\n    }\n    public static Value parse(String text){return parse(text,1_000_000,128);}\n    private IllegalArgumentException error(String message){return new IllegalArgumentException(message+\" at UTF-16 offset \"+at);}\n    private void space(){while(at<text.length()){char c=text.charAt(at);if(c==' '||c=='\\t'||c=='\\r'||c=='\\n')at++;else break;}}\n    private boolean take(char c){if(at<text.length()&&text.charAt(at)==c){at++;return true;}return false;}\n    private void expect(char c){if(!take(c))throw error(\"expected \"+c);}\n    private Value value(int depth){\n        space();if(at==text.length())throw error(\"missing value\");char c=text.charAt(at);\n        if(c=='\"')return new StringValue(string());\n        if(c=='t'){literal(\"true\");return new BoolValue(true);}if(c=='f'){literal(\"false\");return new BoolValue(false);}if(c=='n'){literal(\"null\");return NullValue.INSTANCE;}\n        if(c=='['||c=='{'){\n            if(depth>=maximumDepth)throw error(\"nesting limit\");at++;space();\n            if(c=='['){List<Value> values=new ArrayList<>();if(take(']'))return new ArrayValue(values);for(;;){values.add(value(depth+1));space();if(take(']'))return new ArrayValue(values);expect(',');}}\n            Map<String,Value> values=new LinkedHashMap<>();if(take('}'))return new ObjectValue(values);\n            for(;;){space();if(at==text.length()||text.charAt(at)!='\"')throw error(\"object key must be string\");String key=string();space();expect(':');Value value=value(depth+1);if(values.putIfAbsent(key,value)!=null)throw error(\"duplicate object name\");space();if(take('}'))return new ObjectValue(values);expect(',');}\n        }\n        if(c=='-'||digit(c))return number();throw error(\"invalid value\");\n    }\n    private void literal(String expected){if(!text.startsWith(expected,at))throw error(\"expected \"+expected);at+=expected.length();}\n    private static boolean digit(char c){return c>='0'&&c<='9';}\n    private NumberValue number(){\n        int start=at;take('-');if(at==text.length())throw error(\"missing integer\");\n        if(take('0')){if(at<text.length()&&digit(text.charAt(at)))throw error(\"leading zero\");}\n        else{if(text.charAt(at)<'1'||text.charAt(at)>'9')throw error(\"integer digit required\");while(at<text.length()&&digit(text.charAt(at)))at++;}\n        if(take('.'))digitsRequired();\n        if(take('e')||take('E')){if(!take('+'))take('-');digitsRequired();}\n        return new NumberValue(text.substring(start,at));\n    }\n    private void digitsRequired(){int start=at;while(at<text.length()&&digit(text.charAt(at)))at++;if(start==at)throw error(\"digit required\");}\n    private String string(){\n        expect('\"');StringBuilder s=new StringBuilder();boolean ended=false;\n        while(at<text.length()){\n            char c=text.charAt(at++);if(c=='\"'){ended=true;break;}if(c<0x20)throw error(\"unescaped control character\");\n            if(c!='\\\\'){s.append(c);continue;}if(at==text.length())throw error(\"incomplete escape\");\n            char escape=text.charAt(at++);\n            switch(escape){case '\"','\\\\','/'->s.append(escape);case 'b'->s.append('\\b');case 'f'->s.append('\\f');case 'n'->s.append('\\n');case 'r'->s.append('\\r');case 't'->s.append('\\t');case 'u'->{int code=0;for(int i=0;i<4;i++){if(at==text.length())throw error(\"short unicode escape\");char h=text.charAt(at++);int digit=h>='0'&&h<='9'?h-'0':h>='a'&&h<='f'?h-'a'+10:h>='A'&&h<='F'?h-'A'+10:-1;if(digit<0)throw error(\"hex digit required\");code=16*code+digit;}s.append((char)code);}default->throw error(\"invalid escape\");}\n        }\n        if(!ended)throw error(\"unterminated string\");\n        for(int i=0;i<s.length();i++){\n            char c=s.charAt(i);if(Character.isHighSurrogate(c)){if(i+1==s.length()||!Character.isLowSurrogate(s.charAt(i+1)))throw error(\"unpaired high surrogate\");i++;}else if(Character.isLowSurrogate(c))throw error(\"unpaired low surrogate\");\n        }\n        return s.toString();\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "化学式中的原子数量"
+        },
+        {
+          "type": "paragraph",
+          "text": "从右往左扫描，数字成为紧邻左侧原子或括号组的倍数；用乘数栈保存外层倍数，就能把每个原子的总贡献直接加到计数表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "语法限定为一个或多个“元素名+可选正整数”或“括号内化学式+可选正整数”。元素名为一个大写 ASCII 字母跟若干小写字母；允许嵌套圆括号，不接收离子电荷、中点水合物、方括号、同位素前缀或空白。它按符号语法解析，并不验证元素名是否真实存在于周期表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如 K4(ON(SO3)2)2 中，内层 SO3 受 2 与外层 2 两次放大，得到 K4N2O14S4。遇到右括号时把现有外层乘数压栈，乘上刚读到的局部倍数；遇到对应左括号时恢复。元素本身有下标时再乘该下标，没有时按 1。每个词法元素只扫描一次，不需要每闭合一层就把整个原子表复制并逐项放大。"
+        },
+        {
+          "type": "paragraph",
+          "text": "数字必须为不带前导零的正整数，空组、孤立数字、未配对括号、小写开头的元素名都拒绝。结果用 BigInteger 保存，避免嵌套乘法或长计数字面量溢出。countOf(formula,\"O\") 返回指定原子数量，不存在为 0；canonical 按元素名字典序输出，数量 1 省略。这样同时覆盖“统计所有元素”与“只查询一个目标元素”的输出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "设有 L 个输入字符、U 种元素、D 层嵌套，控制扫描 O(L)，TreeMap 累加需要 O(log U) 次键比较，字符串比较与大整数乘加另计；额外结构为 O(U+D)，其中数值所占位数必须单独计算。显式栈不使用递归，但深层乘数和最终大数仍可能消耗很多内存，生产入口应另外限制输入长度、嵌套深度和计数位数。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\n\n/** Grammar: formula := term+ ; term := Element [positiveCount] | '(' formula ')' [positiveCount]. */\npublic final class ChemicalFormula {\n    private ChemicalFormula() {}\n    private record Frame(BigInteger multiplier,boolean hadTerm) {}\n    public static SortedMap<String,BigInteger> countAtoms(String formula){\n        Objects.requireNonNull(formula);if(formula.isEmpty())throw new IllegalArgumentException(\"empty formula\");\n        TreeMap<String,BigInteger> counts=new TreeMap<>();Deque<Frame> stack=new ArrayDeque<>();BigInteger multiplier=BigInteger.ONE,pending=null;boolean hadTerm=false;\n        for(int i=formula.length()-1;i>=0;){\n            char c=formula.charAt(i);\n            if(c>='0'&&c<='9'){\n                int end=i+1;while(i>=0&&formula.charAt(i)>='0'&&formula.charAt(i)<='9')i--;String number=formula.substring(i+1,end);\n                if(number.charAt(0)=='0'||pending!=null)throw new IllegalArgumentException(\"positive canonical count required\");pending=new BigInteger(number);continue;\n            }\n            if(c==')'){\n                stack.push(new Frame(multiplier,hadTerm));multiplier=multiplier.multiply(pending==null?BigInteger.ONE:pending);pending=null;hadTerm=false;i--;continue;\n            }\n            if(c=='('){\n                if(pending!=null||!hadTerm||stack.isEmpty())throw new IllegalArgumentException(\"invalid group\");Frame outer=stack.pop();multiplier=outer.multiplier;hadTerm=true;i--;continue;\n            }\n            if((c>='a'&&c<='z')||(c>='A'&&c<='Z')){\n                int end=i+1;while(i>=0&&formula.charAt(i)>='a'&&formula.charAt(i)<='z')i--;\n                if(i<0||formula.charAt(i)<'A'||formula.charAt(i)>'Z')throw new IllegalArgumentException(\"element must start uppercase\");String name=formula.substring(i,end);i--;\n                BigInteger amount=multiplier.multiply(pending==null?BigInteger.ONE:pending);counts.merge(name,amount,BigInteger::add);pending=null;hadTerm=true;continue;\n            }\n            throw new IllegalArgumentException(\"invalid formula character at \"+i);\n        }\n        if(pending!=null||!stack.isEmpty()||!hadTerm)throw new IllegalArgumentException(\"incomplete formula\");\n        return Collections.unmodifiableSortedMap(counts);\n    }\n    public static BigInteger countOf(String formula,String element){\n        Objects.requireNonNull(element);if(element.isEmpty()||element.charAt(0)<'A'||element.charAt(0)>'Z')throw new IllegalArgumentException(\"element\");for(int i=1;i<element.length();i++)if(element.charAt(i)<'a'||element.charAt(i)>'z')throw new IllegalArgumentException(\"element\");\n        return countAtoms(formula).getOrDefault(element,BigInteger.ZERO);\n    }\n    public static String canonical(String formula){StringBuilder out=new StringBuilder();for(var e:countAtoms(formula).entrySet()){out.append(e.getKey());if(!e.getValue().equals(BigInteger.ONE))out.append(e.getValue());}return out.toString();}\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试通过随机生成合法语法及其独立预期值，检查解析结果；反例覆盖每一种缺失分隔符、非法数字、转义错误、重复名称和资源边界。化学式生成器先构造子式的数学计数，再拼接文本，对照右到左解析器，避免只做“解析后再序列化”的自我验证。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\npublic final class ParserVariantsTest {\n    static long checks;static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|NullPointerException e){return;}throw new AssertionError(\"invalid accepted\");}\n    record JsonExample(String text,StrictJson.Value expected) {}\n    record FormulaExample(String text,SortedMap<String,BigInteger> expected) {}\n    public static void main(String[] args){Random r=new Random(20261020);\n        for(int i=0;i<6000;i++){JsonExample e=json(r,0);eq(StrictJson.parse(e.text),e.expected);}\n        eq(StrictJson.parse(\"\\\"\\\\uD83D\\\\uDE00\\\"\"),new StrictJson.StringValue(\"😀\"));eq(StrictJson.parse(\"-0.00E+999999\"),new StrictJson.NumberValue(\"-0.00E+999999\"));eq(StrictJson.parse(\" \\r\\n\\t null \"),StrictJson.NullValue.INSTANCE);\n        for(String text:List.of(\"\",\" \",\"undefined\",\"NaN\",\"Infinity\",\"+1\",\"01\",\"-01\",\"1.\",\".1\",\"1e\",\"1e+\",\"--1\",\"true false\",\"[1,]\",\"[,1]\",\"[1 2]\",\"{a:1}\",\"{\\\"a\\\":1,}\",\"{\\\"a\\\":null,\\\"a\\\":2}\",\"{\\\"a\\\":1 \\\"b\\\":2}\",\"{\\\"a\\\" 1}\",\"\\\"\\\\x20\\\"\",\"\\\"\\\\u123\\\"\",\"\\\"\\\\uXX00\\\"\",\"\\\"\\n\\\"\",\"\\\"unterminated\",\"\\\"\\\\uD800\\\"\",\"\\\"\\\\uDC00\\\"\",\"\\\"\\\\uD800a\\\"\",\"[\",\"{\",\"[true]x\",\"\\u00a0null\",\"\\ufeffnull\"))bad(()->StrictJson.parse(text));\n        eq(StrictJson.parse(\"[1]\",3,1),new StrictJson.ArrayValue(List.of(new StrictJson.NumberValue(\"1\"))));bad(()->StrictJson.parse(\"[[]]\",4,1));bad(()->StrictJson.parse(\"[]\",2,0));bad(()->StrictJson.parse(\"123\",2,1));bad(()->StrictJson.parse(\"null\",4,257));bad(()->StrictJson.parse(\"[\".repeat(129)+\"]\".repeat(129)));\n        var object=(StrictJson.ObjectValue)StrictJson.parse(\"{\\\"x\\\":[1]}\");checks++;try{object.values().put(\"new\",StrictJson.NullValue.INSTANCE);throw new AssertionError(\"mutable parsed object\");}catch(UnsupportedOperationException expected){}\n        for(int i=0;i<7000;i++){FormulaExample e=formula(r,0);eq(ChemicalFormula.countAtoms(e.text),e.expected);for(String atom:List.of(\"H\",\"O\",\"Na\",\"Cl\",\"X\"))eq(ChemicalFormula.countOf(e.text,atom),e.expected.getOrDefault(atom,BigInteger.ZERO));}\n        eq(ChemicalFormula.canonical(\"K4(ON(SO3)2)2\"),\"K4N2O14S4\");eq(ChemicalFormula.canonical(\"Mg(OH)2\"),\"H2MgO2\");eq(ChemicalFormula.countOf(\"H99999999999999999999999999\",\"H\"),new BigInteger(\"99999999999999999999999999\"));\n        eq(ChemicalFormula.canonical(\"(\".repeat(3000)+\"H\"+\")\".repeat(3000)),\"H\");\n        for(String text:List.of(\"\",\"()\",\"H0\",\"H01\",\"0H\",\"2H\",\"(H\",\"H)\",\"(H)0\",\"(2H)\",\"h\",\"Na+\",\"H O\",\"[H]\",\"H(())\",\"H2.5\",\"H(2)\",\"H_2\"))bad(()->ChemicalFormula.countAtoms(text));bad(()->ChemicalFormula.countOf(\"H\",\"h\"));\n        System.out.println(\"ParserVariantsTest PASS \"+checks);\n    }\n    static JsonExample json(Random r,int depth){int kind=r.nextInt(depth<4?6:4);return switch(kind){case 0->new JsonExample(\"null\",StrictJson.NullValue.INSTANCE);case 1->{boolean b=r.nextBoolean();yield new JsonExample(b?\"true\":\"false\",new StrictJson.BoolValue(b));}case 2->{String s=\"key\\n\\t\\\"\\\\/😀\"+r.nextInt(100);yield new JsonExample(quote(s),new StrictJson.StringValue(s));}case 3->{String x=(r.nextBoolean()?\"-\":\"\")+r.nextInt(10000)+(r.nextBoolean()?\".0\"+r.nextInt(100):\"\")+(r.nextBoolean()?\"e-\"+r.nextInt(90):\"\");yield new JsonExample(x,new StrictJson.NumberValue(x));}case 4->{List<StrictJson.Value> values=new ArrayList<>();StringJoiner s=new StringJoiner(\", \\n\",\"[\",\"]\");int count=r.nextInt(5);for(int i=0;i<count;i++){JsonExample e=json(r,depth+1);values.add(e.expected);s.add(e.text);}yield new JsonExample(s.toString(),new StrictJson.ArrayValue(values));}default->{Map<String,StrictJson.Value> values=new LinkedHashMap<>();StringJoiner s=new StringJoiner(\", \",\"{\",\"}\");int count=r.nextInt(5);for(int i=0;i<count;i++){String key=\"k\"+i;JsonExample e=json(r,depth+1);values.put(key,e.expected);s.add(quote(key)+\" : \"+e.text);}yield new JsonExample(s.toString(),new StrictJson.ObjectValue(values));}};}\n    static String quote(String s){StringBuilder out=new StringBuilder(\"\\\"\");for(char c:s.toCharArray()){switch(c){case '\"'->out.append(\"\\\\\\\"\");case '\\\\'->out.append(\"\\\\\\\\\");case '\\n'->out.append(\"\\\\n\");case '\\t'->out.append(\"\\\\t\");default->out.append(c);}}return out.append('\"').toString();}\n    static FormulaExample formula(Random r,int depth){String[] atoms={\"H\",\"O\",\"Na\",\"Cl\",\"C\",\"He\"};StringBuilder text=new StringBuilder();TreeMap<String,BigInteger> counts=new TreeMap<>();int terms=1+r.nextInt(4);for(int i=0;i<terms;i++){int amount=1+r.nextInt(6);FormulaExample inner;if(depth<3&&r.nextBoolean()){inner=formula(r,depth+1);text.append('(').append(inner.text).append(')');}else{String atom=atoms[r.nextInt(atoms.length)];inner=new FormulaExample(atom,new TreeMap<>(Map.of(atom,BigInteger.ONE)));text.append(atom);}if(amount!=1)text.append(amount);for(var e:inner.expected.entrySet())counts.merge(e.getKey(),e.getValue().multiply(BigInteger.valueOf(amount)),BigInteger::add);}return new FormulaExample(text.toString(),counts);}\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "词法、语法与AST：表达式优先级和函数结构怎样识别"
+        },
+        {
+          "type": "paragraph",
+          "text": "编译器可以先按三层讲：词法认出“这是什么词”，语法组织“这些词怎么组成结构”，语义再检查“这个结构有没有道理”。词法把字符流切成带类型、原文本、位置的 token，常用正则规则及有限自动机。"
+        },
+        {
+          "type": "paragraph",
+          "text": "语法按上下文无关产生式组织 token，可用递归下降、Pratt 或 LL/LR 分析器，通过调用栈或显式状态栈构造 AST。表达式的树形由优先级和结合性决定，函数节点由签名、参数列表和函数体的产生式形成。名字是否存在、类型是否匹配、参数个数是否正确，则属于后续语义分析。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可能的问法"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "词法分析与语法分析分别使用哪些结构和方法？",
+            "怎样识别表达式优先级与函数结构，并生成 AST？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "输入、输出与前提"
+        },
+        {
+          "type": "paragraph",
+          "text": "讨论词法与语法分析时，应先明确语言语法。下面不实现整个C++编译器，而用完整Java代码实现一套教学语言：ASCII标识符、无符号十进制整数token、一元±、二元+−*/、括号、按名函数调用和fn name(params)=expression;定义；只做语法AST，不执行代码，也不把它当C++/Java语言全集。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么这样做"
+        },
+        {
+          "type": "paragraph",
+          "text": "分阶段看同一输入fn add(x,y)=x+y; add(2,3*4);：词法给FN、IDENT(add)、左括号、IDENT(x)、逗号等token；语法把第一句组装成函数定义节点，第二句成Call(add,[2,Multiply(3,4)])；语义阶段才判断add是否声明、参数数量是否匹配以及x/y作用域。解析完成不是函数已经执行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "词法需要输入缓冲/字符位置、token类型枚举、词素文本和起止offset，关键字表把fn与普通标识符区分。标识符先尽可能读完整再查关键字，fun_2不能被截成fn或拆成多个词。整数一次读连续数字；空白跳过但offset仍来自原文本。多字符运算符如>=/==在扩展语言里要优先匹配最长合法token，不能先吃一个=造成后续无法恢复。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正则规则可经NFA构造、子集法转DFA并按字符转移，实现常见token识别；手写扫描器是按同类状态直接编码。有限状态机适合标识符/数字等局部模式，但任意深括号嵌套需要栈或等价机制，不能只用一个普通正则就宣称解析整个程序。注释、字符串转义、Unicode标识符各需明确规则，本教学版没有这些规则，遇非法字符直接报位置。"
+        },
+        {
+          "type": "paragraph",
+          "text": "语法由产生式规定结构，而不只是token集合。教学grammar为program=(function|expr)分号重复；function=fn IDENT(参数列表)=expr；expr=term ((+|−) term)*；term=unary ((*|/) unary)*；unary=(+|−) unary 或 primary；primary=NUMBER、IDENT、IDENT(实参列表)或(expr)。参数/实参用逗号分开，可为空，不允许尾随逗号。"
+        },
+        {
+          "type": "paragraph",
+          "text": "递归下降为每个非终结符写方法，预读当前token决定分支，遇预期token才前移。直接写左递归E→E+T会在不消耗输入时无限递归；把它改成E→T(+T)*，循环每次用旧left和新term构造Binary，既保证进展又实现左结合。代码不靠捕捉任意异常反复试所有分支，因此不会出现指数回溯。"
+        },
+        {
+          "type": "paragraph",
+          "text": "优先级来自调用层次：expr先完整解析term，所以1+2*3得到Add(1,Mul(2,3))；括号在primary里递归expr，把(1+2)*3变成Mul(Add(1,2),3)。8−3−1在expr循环里左折叠得到Sub(Sub(8,3),1)，而不是Sub(8,Sub(3,1))。一元−在更深层，所以−2*3先Neg(2)后乘3；一元递归表示−−x。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Pratt或precedence-climbing可以把优先级放在表中，根据左右binding power决定递归界限，适合运算符多/可扩展场景；不能只给每个符号一个整数而忽略右结合的幂/赋值。另一路LR用符号栈/状态栈、ACTION/GOTO表做shift/reduce，遇完整产生式归约时建AST节点；冲突反映文法或优先级需要消歧，而不是随便选一个分支。LL方法自顶向下预测、LR自底向上归约，二者均可生成同一语义树。"
+        },
+        {
+          "type": "paragraph",
+          "text": "AST保留语义结构，通常省掉括号/逗号等纯语法节点，表达式节点包含运算符和子树，函数节点包含名称、形参和函数体，调用节点包含被调对象/实参。代码的Node children不可变，避免后来改一个列表连带改变整棵树。需要重构保留注释/原排版的工具往往还保留具体语法树或token-trivia，AST本身未必能逐字还原源代码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如何识别函数：教学版看到fn走函数产生式，依次读取名字、圆括号内参数、等号和表达式体。实际C/C++函数还包括类型、声明符、限定符、模板和复合语句体，代码块内有声明/控制流/return等节点。函数调用作为primary，与单独变量通过后续是否有左括号区分；更复杂语言里的函数指针、成员调用、调用结果再次调用需postfix语法，本版明确不支持f()(x)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "能生成 AST，只说明符合这套语法，不代表程序合法。语义阶段通常用散列表或树映射配合一个作用域栈：进入函数、代码块就压入作用域，参数和局部名字登记在当前层，查找从内向外。"
+        },
+        {
+          "type": "paragraph",
+          "text": "函数签名表记录形参类型与返回类型；解析后再做名称解析、重复声明检查、类型推导或转换，以及实参数量校验。例如 fn f(x,x)=unknown; f(); 在本语法版能生成 AST，却应在后续报告重复参数、未声明名字和错误实参数量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "错误处理至少带原始位置和期望token。例如1+;遇分号却需要表达式，f(1,)在逗号后缺参数，漏右括号应指向实际遇到的位置；不是默默返回部分AST并忽略余串。当前程序每句必须分号且循环到EOF，12abc不会被当作合法12然后悄悄丢abc。产品可选择panic-mode跳到分号/右花括号继续报多个错误，本版遇首错抛IllegalArgumentException。"
+        },
+        {
+          "type": "paragraph",
+          "text": "资源与安全：输入上限100000个UTF16单元，嵌套unary/括号/调用解析层上限128，超限明确拒绝。串行加法使用循环，解析调用栈不随整条左结合链增长，但得到的AST可以很深；后续visitor/pretty-printer应另用显式栈或深度预算。只构建AST，不用eval/脚本引擎执行不可信表达式，不能混称已经实现沙箱或机器码生成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在完整编译流水线里，语义通过后可降低为IR，再做优化、指令选择/寄存器分配和目标码；函数AST不是操作系统栈帧本身，调用约定/参数传递属于后端与ABI。应区分语法层面的函数分析与运行时的进程地址空间，不能把内存段划分当作语法分析的数据结构。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "例子与推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "fn add(x,y)=x+y; add(2,3*4);产生函数定义及嵌套调用AST，函数体/参数与调用实参各有独立子节点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "自测可由独立生成器同时构造表达式和预期 AST，覆盖嵌套、优先级、左结合、函数、空参数、位置、非法输入与长度深度限制。该解析器不是 LLVM 构建或完整 C++ 编译器。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度与正确性"
+        },
+        {
+          "type": "paragraph",
+          "text": "对这份固定无回溯文法，词法每字符常数次、语法每token常数次处理，输入长度L下O(L)时间，token/AST及文本总O(L)空间，解析调用栈O(嵌套深度)且本接口拒绝超128层。任意文法/一般回溯parser没有这个线性保证；符号解析/类型检查不在本代码测试范围。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界、反例与追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "题目未给定完整语言语法时，应先确认词法、运算符、优先级和函数形式。这里的 fn 是明确的教学语法，不代表完整 C++。"
+        },
+        {
+          "type": "paragraph",
+          "text": "数字节点保留词素文本，不提前转换有限整数，因此语法解析不承诺数值求值、溢出、除零或运行时类型语义。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java实现"
+        },
+        {
+          "type": "paragraph",
+          "text": "下方提供解析器主体；自测应另行编写，覆盖上文的语法、AST、错误位置和资源边界。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\n/** Syntax-only teaching language: fn name(params)=expression; or expression; */\npublic final class TinyExpressionParser {\n private TinyExpressionParser() {}\n public enum Kind { NUMBER, IDENTIFIER, FN, LPAREN, RPAREN, COMMA, PLUS, MINUS, STAR, SLASH, EQUALS, SEMICOLON, EOF }\n public record Token(Kind kind,String text,int start,int end) {}\n public record Node(String kind,String text,List<Node> children){public Node{children=List.copyOf(children);}}\n public static List<Token> lex(String source){\n  Objects.requireNonNull(source);if(source.length()>100000)throw error(0,\"input limit 100000 UTF-16 units\");List<Token> tokens=new ArrayList<>();int i=0;\n  while(i<source.length()){char c=source.charAt(i);if(c==' '||c=='\\t'||c=='\\r'||c=='\\n'){i++;continue;}int start=i;\n   if(letter(c)){i++;while(i<source.length()&&(letter(source.charAt(i))||digit(source.charAt(i))))i++;String word=source.substring(start,i);tokens.add(new Token(word.equals(\"fn\")?Kind.FN:Kind.IDENTIFIER,word,start,i));continue;}\n   if(digit(c)){i++;while(i<source.length()&&digit(source.charAt(i)))i++;tokens.add(new Token(Kind.NUMBER,source.substring(start,i),start,i));continue;}\n   Kind kind=switch(c){case '('->Kind.LPAREN;case ')'->Kind.RPAREN;case ','->Kind.COMMA;case '+'->Kind.PLUS;case '-'->Kind.MINUS;case '*'->Kind.STAR;case '/'->Kind.SLASH;case '='->Kind.EQUALS;case ';'->Kind.SEMICOLON;default->throw error(i,\"unexpected character\");};i++;tokens.add(new Token(kind,source.substring(start,i),start,i));\n  }\n  tokens.add(new Token(Kind.EOF,\"\",source.length(),source.length()));return List.copyOf(tokens);\n }\n private static boolean letter(char c){return c>='a'&&c<='z'||c>='A'&&c<='Z'||c=='_';}\n private static boolean digit(char c){return c>='0'&&c<='9';}\n private static IllegalArgumentException error(int offset,String message){return new IllegalArgumentException(\"offset \"+offset+\": \"+message);}\n public static List<Node> parse(String source){return new Parser(lex(source)).program();}\n private static final class Parser {\n  final List<Token> tokens;int index,depth;\n  Parser(List<Token> tokens){this.tokens=tokens;}\n  Token peek(){return tokens.get(index);}\n  boolean take(Kind k){if(peek().kind()!=k)return false;index++;return true;}\n  Token require(Kind k){Token t=peek();if(!take(k))throw error(t.start(),\"expected \"+k+\", found \"+t.kind());return t;}\n  Node leaf(String kind,String value){return new Node(kind,value,List.of());}\n  List<Node> program(){List<Node> result=new ArrayList<>();while(peek().kind()!=Kind.EOF){Node n=peek().kind()==Kind.FN?function():expression();require(Kind.SEMICOLON);result.add(n);}return List.copyOf(result);}\n  Node function(){require(Kind.FN);String name=require(Kind.IDENTIFIER).text();require(Kind.LPAREN);List<Node> children=new ArrayList<>();if(!take(Kind.RPAREN)){do{children.add(leaf(\"param\",require(Kind.IDENTIFIER).text()));}while(take(Kind.COMMA));require(Kind.RPAREN);}require(Kind.EQUALS);children.add(expression());return new Node(\"fn\",name,children);}\n  Node expression(){Node left=term();while(peek().kind()==Kind.PLUS||peek().kind()==Kind.MINUS){String op=tokens.get(index++).text();left=new Node(\"binary\",op,List.of(left,term()));}return left;}\n  Node term(){Node left=unary();while(peek().kind()==Kind.STAR||peek().kind()==Kind.SLASH){String op=tokens.get(index++).text();left=new Node(\"binary\",op,List.of(left,unary()));}return left;}\n  Node unary(){if(++depth>128)throw error(peek().start(),\"nesting limit 128\");try{if(peek().kind()==Kind.PLUS||peek().kind()==Kind.MINUS){String op=tokens.get(index++).text();return new Node(\"unary\",op,List.of(unary()));}return primary();}finally{depth--;}}\n  Node primary(){Token t=peek();if(take(Kind.NUMBER))return leaf(\"number\",t.text());if(take(Kind.IDENTIFIER)){if(!take(Kind.LPAREN))return leaf(\"name\",t.text());List<Node> args=new ArrayList<>();if(!take(Kind.RPAREN)){do{args.add(expression());}while(take(Kind.COMMA));require(Kind.RPAREN);}return new Node(\"call\",t.text(),args);}\n   if(take(Kind.LPAREN)){Node inside=expression();require(Kind.RPAREN);return inside;}throw error(t.start(),\"expected number, name, call or parenthesized expression\");}\n }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        },
+        {
+          "entryId": "p-array",
+          "label": "关联结构与共用实现"
+        }
+      ]
+    }
+  ]
+}

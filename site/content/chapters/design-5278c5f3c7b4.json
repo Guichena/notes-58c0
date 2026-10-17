@@ -1,0 +1,466 @@
+{
+  "entries": [
+    {
+      "id": "scenario-redis-mysql-consistency",
+      "number": "场景 13",
+      "title": "Redis 缓存与 MySQL 数据一致性怎么保证",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "常规读多写少场景用 Cache-Aside：读 miss 回源 DB 后填缓存；写操作先提交 DB，再删除缓存。删除失败通过 MQ/Outbox 重试，热点穿透用 singleflight/互斥回源。强一致要求更高时不要把普通缓存当事实来源。",
+      "description": "MySQL 是权威数据源，Redis 用于加速查询。需要处理并发读写、缓存删除失败、DB 更新成功后缓存仍旧、缓存击穿，以及对一致性等级的取舍。",
+      "metrics": "命中率；脏数据窗口；删除重试成功率；回源 QPS",
+      "components": "MySQL / Redis / Cache-Aside / Outbox or MQ / Singleflight / Version",
+      "requirements": [
+        "先明确是一致性优先还是性能优先；普通缓存一般只承诺最终一致。",
+        "读 miss 时回 DB，填缓存前要避免大量线程同时击穿同一热点 key。",
+        "写路径以 DB 事务成功为准，之后删除而不是直接覆盖缓存，减少并发覆盖旧值的问题。",
+        "缓存删除失败必须有可靠重试或基于 binlog/CDC 的异步失效。"
+      ],
+      "architecture": [
+        "Read：get cache；miss → singleflight → query DB → set cache with TTL。",
+        "Write：transaction update DB → commit → publish invalidate event / delete cache。",
+        "Delete 失败通过 Outbox/MQ 重试；额外可消费 binlog CDC 对缓存做最终兜底。",
+        "热点 key 可使用逻辑过期 + 后台刷新，避免大面积同时回源。"
+      ],
+      "dataFlow": [
+        "读请求 → Redis hit 直接返回。",
+        "miss → DB → 回填带 TTL 的缓存。",
+        "写请求 → MySQL commit → 删除 Redis key。",
+        "删除失败 → 可靠事件重试；CDC 可再次校正。"
+      ],
+      "keyPoints": [
+        "“先删缓存再改 DB”容易在 DB 事务期间被并发读重新写入旧值。",
+        "“更新 DB 后删缓存”仍有短暂竞态，但窗口更小且删除失败可补偿，是常用工程方案。",
+        "双写 Redis + MySQL 很难天然原子，不要轻易声称“分布式锁就强一致”。",
+        "如果业务必须读到刚写成功的最新值，可让写后短时间读主库、携带版本号，或直接绕过缓存。"
+      ],
+      "followups": [
+        "为什么延迟双删不是银弹？第二次延迟多久才正确？",
+        "删除缓存成功但 DB 事务回滚怎么办？",
+        "Redis 整体挂掉时如何防止请求把 MySQL 打穿？",
+        "CDC 更新缓存和删除缓存哪种更稳？"
+      ],
+      "code": "read(key):\n    v = redis.get(key)\n    if v != null: return v\n    return singleflight(key, () -> {\n        v = db.select(key)\n        redis.set(key, v, ttlWithJitter())\n        return v\n    })\n\nwrite(key, value):\n    db.transaction(() -> db.update(key, value))\n    tryDeleteCache(key)\n    if failed:\n        outbox.enqueue(INVALIDATE, key)",
+      "capacityPlan": [
+        "先看读写比、缓存命中率、热点 key QPS 和 DB 可承受回源上限；缓存故障时的 fallback quota 必须提前算。"
+      ],
+      "consistency": [
+        "普通 Cache-Aside 通常只能承诺最终一致：DB 是事实源，写成功后删除缓存并可靠重试。极端并发下仍存在旧读回填的竞态，强一致需求要增加版本校验/CDC 或绕过缓存。",
+        "删除失败通过 Outbox/MQ/CDC 补偿；回填时可携带 version，避免旧值覆盖新缓存。"
+      ],
+      "failureModes": [
+        "Redis 故障时 singleflight+限流保护 DB；恢复后热点缓存要限速重建。",
+        "DB 提交成功但删缓存失败不能回滚已提交 DB，而是记录可靠失效事件持续重试。"
+      ],
+      "observability": [
+        "监控 cache hit/miss、DB fallback QPS、失效事件 lag、旧版本命中、热点 key 和 Redis/DB P99。"
+      ],
+      "interviewAnswer": "默认用 Cache-Aside：读 miss 回源并填缓存，写先提交 DB 再删缓存，删除失败靠可靠事件/CDC 重试。我要强调它是最终一致而不是强一致；强一致场景要用版本、读主库或让缓存退出事实源角色。",
+      "tradeoffs": [
+        "更强一致/更低延迟/更低成本通常无法同时做到；面试时要明确业务优先级，再选择架构。",
+        "中心化更简单，分片更可扩展但运维和一致性复杂度更高。"
+      ],
+      "security": [
+        "至少考虑身份认证、权限校验、输入限长/配额、敏感数据保护和审计。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "缓存、存储与 ID"
+    },
+    {
+      "id": "scenario-redis-outage",
+      "number": "场景 17",
+      "title": "Redis 挂了怎么办：缓存故障与降级设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "先区分 Redis 是“可丢缓存”还是“业务事实/锁/队列”。缓存故障时要防止全量回源把数据库击穿：本地缓存、限流、请求合并、降级和快速失败；基础设施层用主从/哨兵/Cluster 自动故障转移。",
+      "description": "生产环境 Redis 故障或集群抖动时，系统怎样继续服务？需要讨论高可用部署、客户端行为、缓存雪崩、数据库保护，以及如果 Redis 承担锁/库存等强语义时的差异。",
+      "metrics": "故障恢复时间；DB 回源 QPS 上限；降级成功率；错误预算",
+      "components": "Redis HA / Client Timeout / Local Cache / Circuit Breaker / Rate Limit / DB Protection",
+      "requirements": [
+        "先明确 Redis 的职责。普通缓存可以丢，分布式锁/秒杀库存/幂等状态不能简单“绕过 Redis 继续跑”。",
+        "客户端设置短连接/命令超时和有限重试，避免故障时请求线程全部挂死。",
+        "缓存不可用时必须限制 DB 回源流量，保护数据库比保持 100% 功能更重要。",
+        "Redis 集群使用 Sentinel/Cluster/云托管故障转移，并监控复制延迟和 failover。"
+      ],
+      "architecture": [
+        "客户端层：timeout + breaker；连续超时后快速熔断 Redis。",
+        "读路径：优先本地缓存/旧快照；仅允许有限并发 singleflight 回源 DB，超过阈值降级或返回稍后重试。",
+        "写路径：如果缓存只是派生数据，可以只写 DB 并记录待失效事件；Redis 恢复后重建。",
+        "如果 Redis 保存强语义状态，则对应功能 fail-close 或切换到明确设计过的备用一致性路径，不能静默跳过。"
+      ],
+      "dataFlow": [
+        "Redis 错误率升高 → breaker open。",
+        "读请求 → local cache → 受控 DB 回源 → 降级。",
+        "DB 写继续成功 → Outbox 记录缓存更新/失效。",
+        "Redis 恢复 → 限速重建热点缓存 → breaker half-open → 恢复正常。"
+      ],
+      "keyPoints": [
+        "最危险的不是“缓存访问失败”，而是所有 miss 同时打到 MySQL 形成二次雪崩。",
+        "Redis 重试也会放大故障；错误时宁愿快失败，也不要每个请求连续重试十次。",
+        "恢复阶段同样需要限速，不能 Redis 一好就让全站同时重建缓存。",
+        "用 Redis 做分布式锁时故障语义复杂，需要考虑锁丢失、脑裂、fencing token，而不是简单切本地锁。"
+      ],
+      "followups": [
+        "Redis 挂 30 秒时哪些接口应该 fail-open，哪些必须 fail-close？",
+        "Sentinel 已经能自动切主，为什么应用层仍需要熔断？",
+        "Redis Cluster 某个 slot 不可用会发生什么？",
+        "如何给数据库设置“缓存故障专用”的回源配额？"
+      ],
+      "code": "read(key):\n    if redisBreaker.open():\n        return localOrControlledDb(key)\n\n    try:\n        return redis.get(key, timeout=20ms)\n    catch RedisError:\n        redisBreaker.recordFailure()\n        return localOrControlledDb(key)\n\nlocalOrControlledDb(key):\n    if localCache.hit(key): return localCache.get(key)\n    if !dbFallbackLimiter.tryAcquire(): return degrade()\n    return singleflight(key, () -> db.select(key))",
+      "capacityPlan": [
+        "提前测出数据库在“缓存失效模式”下可承受的 fallback QPS，并把回源 limiter 设在这个安全值以下。",
+        "本地应急缓存只保热点和小对象，不能试图在故障瞬间复制整个 Redis。"
+      ],
+      "consistency": [
+        "普通缓存可 fail-open 到受控 DB/旧值；若 Redis 承担锁、库存、幂等事实，则不能静默绕过，需要 fail-close 或明确备用一致性路径。"
+      ],
+      "failureModes": [
+        "短 timeout + breaker 防止线程挂死；故障转移后 half-open 少量探测。恢复重建同样限速，防止二次雪崩。",
+        "Redis Cluster/Sentinel 只解决基础设施 failover，应用仍要处理超时、连接重建和旧数据语义。"
+      ],
+      "observability": [
+        "监控 Redis timeout/error、breaker state、DB fallback QPS、local cache hit、failover 时长和恢复重建速率。"
+      ],
+      "interviewAnswer": "先问 Redis 承担什么角色。若只是缓存，故障时本地旧值+singleflight+严格回源限流保护 DB；若承担锁/库存等强语义则相应功能必须 fail-close 或走设计好的备用路径。基础设施自动切主不等于应用无需熔断。",
+      "tradeoffs": [
+        "缓存故障时全量回源能保持功能但可能击穿 DB；限流/旧值/降级牺牲部分新鲜度或功能以保护核心系统。",
+        "应用快速熔断减少线程堆积；过早 fail-open 可能导致 DB 风暴，因此必须和 fallback quota 联动。"
+      ],
+      "security": [
+        "Redis 使用 ACL/TLS/最小权限；故障降级路径也必须保留授权校验，不能因为缓存不可用而绕过权限。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "缓存、存储与 ID"
+    },
+    {
+      "id": "scenario-local-cache",
+      "number": "场景 15",
+      "title": "如何设计一个本地缓存",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "本地缓存重点是容量淘汰、并发访问、过期策略、缓存击穿和与远端数据的一致性。常用做法是 Caffeine 风格的 size/weight 上限 + TTL/TTI + singleflight + 异步刷新。",
+      "description": "设计进程内缓存组件，供高 QPS 读请求直接从 JVM 内存获取数据。要求明确 key/value API、容量控制、淘汰、过期、并发、加载失败以及多实例一致性。",
+      "metrics": "命中率；P99；内存上限；加载成功率；驱逐率",
+      "components": "Concurrent Map / Eviction Policy / Expiration Wheel / Loader / Singleflight / Metrics",
+      "requirements": [
+        "必须有明确容量上限，不能只靠 TTL，否则高基数 key 会把进程内存吃光。",
+        "支持 expireAfterWrite/expireAfterAccess 或业务版本；淘汰策略可用近似 LRU/LFU，而不是每次访问维护全局链表大锁。",
+        "同一个热点 key miss 时只能有一个 loader 回源，其余请求等待结果，防止 cache stampede。",
+        "加载失败不应把错误结果永久缓存；可对不存在数据做短 TTL negative cache。"
+      ],
+      "architecture": [
+        "API 提供 getIfPresent/get(key, loader)/put/invalidate。",
+        "数据结构使用分段/并发 Map；淘汰元数据异步维护，容量按 entry 数或 weight 控制。",
+        "过期可惰性清理 + 后台 timer wheel，避免每个 key 独立 Timer。",
+        "多实例数据变更通过版本号、消息通知或短 TTL 失效；本地缓存不承担强一致事实源角色。"
+      ],
+      "dataFlow": [
+        "请求 → local cache hit。",
+        "miss → singleflight loader → DB/Redis → put。",
+        "写事件 → invalidate 本机 + 广播其他实例（可选）。",
+        "后台维护过期与容量驱逐。"
+      ],
+      "keyPoints": [
+        "不要把“高性能 LRU”理解成每次读都修改一个全局双向链表并抢大锁。成熟本地缓存会把并发数据结构、访问缓冲和淘汰策略解耦；例如 Caffeine 使用 Window TinyLFU 兼顾近期性与频率，并支持 size/weight/time 等驱逐维度。",
+        "TTL 要加 jitter，避免大量 key 同一时刻过期。",
+        "对象占用不是 value 字节数本身，Java 对象头、引用和集合开销也要纳入 weight。",
+        "如果缓存值非常大，要考虑 off-heap、序列化成本与 GC 压力。"
+      ],
+      "followups": [
+        "LRU 和 LFU 在热点突发/周期访问下各有什么问题？",
+        "如何实现 refreshAfterWrite，使旧值可读但后台刷新？",
+        "多实例本地缓存如何保证配置变更在几秒内传播？",
+        "缓存里的对象被业务代码修改怎么办？需要 immutable/copy 吗？"
+      ],
+      "code": "get(key):\n    entry = cache.get(key)\n    if entry != null && !entry.expired():\n        return entry.value\n\n    return singleflight(key, () -> {\n        value = loader.load(key)\n        cache.put(key, value, ttlWithJitter())\n        evictIfOverWeight()\n        return value\n    })",
+      "capacityPlan": [
+        "容量按 weight 而不是只按 entry 数估算，Java 对象头、引用、容器开销也计入；GC pause 是容量上限的重要约束。",
+        "命中率、加载成本和内存之间做曲线压测，决定 maximumWeight 与 TTL。"
+      ],
+      "consistency": [
+        "本地缓存天然是每实例副本，通常只做最终一致。变更可通过短 TTL、版本号或消息 invalidate；强一致数据不要只依赖本地缓存。",
+        "refresh 可让旧值在后台刷新期间继续读，但要明确最大陈旧时间。"
+      ],
+      "failureModes": [
+        "loader 失败时不应永久缓存异常；热点 miss 用 singleflight，远端故障时可以短暂 stale-if-error。",
+        "缓存自身内存压力过大时先驱逐/拒绝大对象，避免把 JVM 推到 OOM/GC 风暴。"
+      ],
+      "observability": [
+        "监控 hit rate、load success/latency、eviction、weight、refresh、singleflight waiters 与 JVM GC。"
+      ],
+      "interviewAnswer": "本地缓存要同时回答容量、淘汰、过期、并发加载和一致性。我会用 Caffeine 类似的 maximumWeight + W-TinyLFU/时间驱逐，热点 miss 用 singleflight，变更用版本/失效消息，明确它只是派生加速层。",
+      "tradeoffs": [
+        "更大缓存提高命中率但增加堆占用和 GC；off-heap 降 GC 但增加序列化与管理复杂度。",
+        "主动失效一致性更好但依赖通知链路；短 TTL 设计简单但存在可控陈旧窗口。"
+      ],
+      "security": [
+        "敏感信息尽量不长期驻留本地缓存；管理/统计接口避免泄露 key/value，缓存对象跨请求共享时注意不可变性。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "缓存、存储与 ID"
+    },
+    {
+      "id": "scenario-distributed-lock",
+      "number": "场景 20",
+      "title": "分布式锁设计（Redis / ZooKeeper / 数据库）",
+      "idea": "Redis 用 SET NX PX + Lua 原子释放 + Redisson 看门狗续期；ZK 用临时顺序节点 + watcher；DB 用唯一索引。一般业务互斥首选 Redis，要处理主从切换丢锁和时钟漂移；强一致场景用 ZK/etcd，并配合 fencing token。",
+      "description": "设计分布式锁：互斥、防死锁（超时）、可重入、高可用、高性能。",
+      "metrics": "加锁延迟 < 10ms；锁冲突率低；可重入；不丢锁",
+      "components": "Redis / ZK / DB / Watchdog / Lua",
+      "requirements": [
+        "互斥：同一时刻只有一个客户端能持有锁",
+        "防死锁：锁必须有超时时间",
+        "可重入：同一客户端可以重复加锁",
+        "高可用：Redis 主从切换时不丢锁",
+        "高性能：加锁/解锁延迟要低"
+      ],
+      "capacityPlan": [
+        "Redis 单节点 QPS ~10w，集群可水平扩展",
+        "锁超时时间要大于业务执行时间 P99"
+      ],
+      "architecture": [
+        "Redis：SET resource_name random_value NX PX 30000",
+        "释放锁用 Lua：先 GET 校验 value 再 DEL",
+        "Redisson 看门狗：默认 30s 超时，每 10s 续期",
+        "ZK：临时顺序节点，最小节点获得锁",
+        "DB：唯一索引 + INSERT ON DUPLICATE KEY UPDATE"
+      ],
+      "dataFlow": [
+        "客户端 → SET NX PX → Redis",
+        "Redis 返回 OK → 获得锁",
+        "业务执行 → Lua 释放锁",
+        "Watchdog 后台续期"
+      ],
+      "consistency": [
+        "Redis 主从切换可能丢锁（异步复制）",
+        "RedLock 算法可解决但有争议",
+        "ZK 是强一致，Redis 是最终一致"
+      ],
+      "failureModes": [
+        "Redis 主从切换丢锁 → 强一致场景改用 ZK/etcd 并配合 fencing token（RedLock 有争议）",
+        "业务执行超时 → 看门狗续期",
+        "客户端崩溃 → 锁超时自动释放"
+      ],
+      "keyPoints": [
+        "SET NX PX 必须原子，不能用 SETNX + EXPIRE",
+        "释放锁必须 Lua 校验 value 再删，防误删",
+        "看门狗解决业务执行时间超过锁超时",
+        "ZK 临时顺序节点天然支持公平锁",
+        "RedLock 有争议（Martin Kleppmann vs Antirez）",
+        "Fencing token：每次加锁返回单调递增的 token，存储层拒绝比已见 token 更旧的写入，防止锁过期后旧持有者的迟到写"
+      ],
+      "observability": [
+        "监控锁 QPS、冲突率、超时率",
+        "告警：冲突率 > 10% 或超时率 > 1%"
+      ],
+      "tradeoffs": [
+        "Redis vs ZK：Redis 性能高但可能丢锁，ZK 强一致但性能低",
+        "超时时间：太短误释放，太长阻塞"
+      ],
+      "security": [
+        "锁 value 用 UUID 防猜测",
+        "锁 key 加业务前缀防冲突"
+      ],
+      "followups": [
+        "Redis 锁主从切换丢锁怎么办？",
+        "Redisson 看门狗怎么实现？",
+        "ZK 和 Redis 锁的性能差异？",
+        "如何实现可重入锁？",
+        "锁的粒度怎么选？"
+      ],
+      "code": "// Redisson 分布式锁核心代码\nString lockKey = \"lock:order:\" + orderId;\nRLock lock = redisson.getLock(lockKey);\ntry {\n    boolean acquired = lock.tryLock(10, 30, TimeUnit.SECONDS);\n    if (acquired) {\n        processOrder(orderId);\n    } else {\n        throw new BusinessException(\"系统繁忙\");\n    }\n} finally {\n    if (lock.isHeldByCurrentThread()) {\n        lock.unlock();\n    }\n}",
+      "interviewAnswer": "我会先明确分布式锁的四个核心要求：互斥、防死锁、可重入、高可用。然后给出 Redis 方案：SET NX PX 原子加锁，Lua 脚本原子释放，Redisson 看门狗自动续期。最后讨论 Redis 主从切换丢锁的问题，以及 ZK 的强一致方案。关键要能说出 SET NX PX 不能用两条命令代替，释放锁必须用 Lua 校验 value。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "分布式锁",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "缓存、存储与 ID"
+    },
+    {
+      "id": "scenario-unique-id",
+      "number": "场景 22",
+      "title": "分布式唯一 ID 生成器设计",
+      "idea": "UUID 无单点但占空间；DB 自增简单但单点；雪花算法本地生成高性能，但要处理时钟回拨；号段模式减少 DB 压力。生产首选雪花算法或 Leaf。",
+      "description": "设计分布式唯一 ID 生成器：全局唯一、趋势递增、高性能（QPS 10w+）、高可用、不暴露业务量。",
+      "metrics": "QPS 10w+；ID 长度 ≤ 19 位；趋势递增",
+      "components": "Snowflake / Leaf / UidGenerator / Redis / DB",
+      "requirements": [
+        "全局唯一",
+        "趋势递增（利于 DB 索引）",
+        "高性能 QPS 10w+",
+        "高可用",
+        "信息安全（不暴露业务量）"
+      ],
+      "capacityPlan": [
+        "QPS = 业务峰值 × ID 生成频率",
+        "雪花算法本地生成，QPS 可达百万级",
+        "号段模式 DB 压力 = QPS / 号段大小"
+      ],
+      "architecture": [
+        "UUID：无单点但 128 bit 占空间、无序",
+        "DB 自增：简单但单点、QPS ~1k",
+        "雪花算法：64 bit = 1 + 41 时间戳 + 10 机器 + 12 序列",
+        "号段模式：DB 一次取 1000 个 ID 内存使用",
+        "Redis INCR：简单但单点"
+      ],
+      "dataFlow": [
+        "应用 → ID 生成器 → 返回 ID",
+        "雪花算法：本地生成无网络",
+        "号段模式：DB 取号段 → 内存使用 → 用完再取"
+      ],
+      "consistency": [
+        "雪花算法本地生成无一致性",
+        "号段模式需保证号段不重复（DB 唯一索引）"
+      ],
+      "failureModes": [
+        "时钟回拨 → 拒绝生成或等待追平",
+        "号段用完 → 阻塞或预取下一段",
+        "机器 ID 冲突 → ZK 分配"
+      ],
+      "keyPoints": [
+        "雪花 41 bit 时间戳可用 69 年，10 bit 机器 ID 支持 1024 台",
+        "时钟回拨是雪花最大问题，可用 ZK 记录上次时间戳",
+        "号段模式减少 DB 压力但会阻塞",
+        "Leaf（美团）支持雪花和号段",
+        "UidGenerator（百度）支持缓存行填充优化"
+      ],
+      "observability": [
+        "监控 QPS、时钟回拨次数、号段使用率",
+        "告警：时钟回拨次数 > 0"
+      ],
+      "tradeoffs": [
+        "UUID vs 雪花：UUID 无单点但占空间，雪花紧凑但需处理时钟",
+        "号段大小：越大 DB 压力越小但浪费越多"
+      ],
+      "security": [
+        "ID 不能暴露业务量",
+        "ID 加随机前缀或混淆防遍历"
+      ],
+      "followups": [
+        "雪花算法时钟回拨怎么解决？",
+        "号段大小怎么选？",
+        "UUID 和雪花性能差异？",
+        "如何高可用？",
+        "QPS 上限？"
+      ],
+      "code": "// 雪花算法核心代码\npublic class SnowflakeIdGenerator {\n    private final long workerId;\n    private long sequence = 0L;\n    private long lastTimestamp = -1L;\n    public SnowflakeIdGenerator(long workerId) { this.workerId = workerId; }\n    public synchronized long nextId() {\n        long timestamp = System.currentTimeMillis();\n        if (timestamp < lastTimestamp) throw new RuntimeException(\"时钟回拨\");\n        if (timestamp == lastTimestamp) {\n            sequence = (sequence + 1) & 4095;\n            if (sequence == 0) timestamp = tilNextMillis(lastTimestamp);\n        } else sequence = 0L;\n        lastTimestamp = timestamp;\n        return ((timestamp - 1288834974657L) << 22) | (workerId << 12) | sequence;\n    }\n    private long tilNextMillis(long last) {\n        long t = System.currentTimeMillis();\n        while (t <= last) t = System.currentTimeMillis();\n        return t;\n    }\n}",
+      "interviewAnswer": "我会先明确唯一 ID 的四个核心要求：全局唯一、趋势递增、高性能、高可用。然后给出方案：雪花算法本地生成，无网络调用，QPS 可达百万级。最后讨论时钟回拨的问题，以及号段模式的优化。关键要能说出雪花算法的位分配和时钟回拨的解决方案。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "唯一 ID",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "缓存、存储与 ID"
+    },
+    {
+      "id": "scenario-short-url",
+      "number": "场景 21",
+      "title": "短链系统设计（Short URL）",
+      "idea": "发号器（DB 自增 / Redis INCR）+ Base62 编码 + Redis 缓存热点 + 301/302 重定向。难点在防刷、缓存击穿和数据分析。",
+      "description": "设计短链系统：长链转短链，短链 301/302 跳转。要求高并发、低延迟、防刷、支持自定义。",
+      "metrics": "QPS 10w+；跳转延迟 < 10ms；短链长度 ≤ 7 位",
+      "components": "ID Generator / Base62 / Redis / MySQL / CDN",
+      "requirements": [
+        "长链 → 短链：生成唯一短码",
+        "短链 → 长链：301/302 重定向",
+        "防刷：限流 + 验证码",
+        "自定义短链：用户指定短码",
+        "数据分析：统计点击量"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 人均点击 / 86400 × 峰均比",
+        "存储 = 短链数 × (短码 + 长链 + 元数据)",
+        "带宽 = QPS × 302 响应大小（很小）"
+      ],
+      "architecture": [
+        "发号器：DB 自增或 Redis INCR",
+        "Base62 编码：7 位可表示 3.5 万亿",
+        "存储：Redis 缓存热点（TTL 1h），MySQL 持久化",
+        "重定向：301 永久（浏览器缓存）或 302 临时（可统计）",
+        "防刷：网关层限流"
+      ],
+      "dataFlow": [
+        "长链 → 发号器 → Base62 → 短码 → 存储 → 返回",
+        "短链 → 缓存 → 命中 → 302",
+        "短链 → 缓存 → 未命中 → DB → 回写缓存 → 302"
+      ],
+      "consistency": [
+        "缓存和 DB 最终一致：先写 DB 再删缓存",
+        "热点短链永不过期"
+      ],
+      "failureModes": [
+        "缓存击穿 → 互斥锁 + 热点永不过期",
+        "DB 压力大 → 缓存 + 读写分离",
+        "短码冲突 → 发号器保证唯一"
+      ],
+      "keyPoints": [
+        "Base62 只用 0-9a-zA-Z，去掉了 Base64 中 +、/、= 这类 URL 不安全字符，无需转义（长度并不比 Base64 短）；7 位 = 62^7 ≈ 3.5 万亿",
+        "301 永久重定向会被浏览器缓存，后续访问不再经过服务端，性能好但点击统计不完整",
+        "302 每次都请求服务器，可统计",
+        "热点短链必须缓存",
+        "防刷是关键"
+      ],
+      "observability": [
+        "监控 QPS、跳转延迟、缓存命中率",
+        "告警：缓存命中率 < 90%"
+      ],
+      "tradeoffs": [
+        "301 vs 302：301 可被浏览器缓存、减轻服务端压力，但点击统计不完整；302 每次都经过服务端，便于统计",
+        "短码长度：越短越易记但容量越小"
+      ],
+      "security": [
+        "短码要随机防遍历",
+        "长链要做安全检测"
+      ],
+      "followups": [
+        "短码冲突怎么办？",
+        "如何防止恶意刷量？",
+        "301 和 302 的区别？",
+        "如何设计过期机制？",
+        "如何统计点击数据？"
+      ],
+      "code": "// 短链生成核心代码\npublic String shorten(String longUrl) {\n    String existing = redis.get(\"url:\" + longUrl);\n    if (existing != null) return DOMAIN + existing;\n    long id = redis.incr(\"short_url:id\");\n    String shortCode = base62Encode(id);\n    redis.setex(\"short:\" + shortCode, 3600, longUrl);\n    redis.setex(\"url:\" + longUrl, 3600, shortCode);\n    db.insert(shortCode, longUrl);\n    return DOMAIN + shortCode;\n}",
+      "interviewAnswer": "我会先明确短链的核心是发号器 + 映射存储 + 重定向。然后给出方案：DB 自增 ID 或 Redis INCR 发号，Base62 编码成短码，Redis 缓存热点映射，MySQL 持久化。最后讨论 301 和 302 的区别，以及如何防刷和统计点击量。关键要能说出 Base62 编码的容量计算和 301/302 的业务影响。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "短链系统",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "缓存、存储与 ID"
+    }
+  ]
+}

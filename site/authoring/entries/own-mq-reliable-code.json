@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mq-reliable-code",
+  "kind": "doc",
+  "module": "code",
+  "part": "消息队列与异步系统",
+  "category": "教学参考与完整代码",
+  "title": "取消墓碑与外部 UNKNOWN 协议模型",
+  "tags": [
+    "消息队列",
+    "教学边界"
+  ],
+  "sections": [
+    {
+      "id": "s-4114",
+      "title": "完整文件：components/reliable/CouponCancellation.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/reliable/CouponCancellation.java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Authenticated, unpaid, unredeemed and always-cancellable requests only. */\npublic final class CouponCancellation {\n    enum State { CREATED, CANCELLED }\n    record Key(long tenant,String intent) {}\n    record Row(String immutablePayload,State state) {}\n    final Map<Key,Row> rows=new HashMap<>();\n    long allocated;\n    synchronized State apply(Key key,String payload,boolean cancel) {\n        if(key.tenant()<=0||key.intent()==null||key.intent().isBlank()||payload==null||payload.isBlank())\n            throw new IllegalArgumentException();\n        Row old=rows.get(key);\n        if(old!=null&&!old.immutablePayload().equals(payload)) throw new IllegalArgumentException(\"identity conflict\");\n        if(old!=null&&old.state()==State.CANCELLED)return State.CANCELLED;\n        if(cancel) {\n            if(old!=null)allocated=Math.subtractExact(allocated,1);\n            rows.put(key,new Row(payload,State.CANCELLED));return State.CANCELLED;\n        }\n        if(old==null){allocated=Math.addExact(allocated,1);rows.put(key,new Row(payload,State.CREATED));}\n        return State.CREATED;\n    }\n    synchronized long allocated(){return allocated;}\n    static void check(boolean b){if(!b)throw new AssertionError();}\n    static int permutations(int depth,int[] order,boolean[] used) {\n        if(depth==4) {\n            CouponCancellation m=new CouponCancellation();Key k=new Key(1,\"purchase\");\n            for(int op:order){m.apply(k,\"owner:sku\",op>=2);check(m.allocated()>=0&&m.allocated()<=1);}\n            check(m.allocated()==0&&m.rows.get(k).state()==State.CANCELLED);return 1;\n        }\n        int count=0;\n        for(int i=0;i<4;i++)if(!used[i]){\n            used[i]=true;order[depth]=i;count+=permutations(depth+1,order,used);used[i]=false;\n        }\n        return count;\n    }\n    public static void main(String[] args)throws Exception {\n        check(permutations(0,new int[4],new boolean[4])==24);\n        CouponCancellation m=new CouponCancellation();Key k=new Key(1,\"purchase\");\n        ExecutorService pool=Executors.newFixedThreadPool(8);\n        Throwable primary=null;\n        try {\n            List<Callable<State>> tasks=new ArrayList<>();\n            for(int i=0;i<100;i++){final boolean cancel=i%2==0;tasks.add(()->m.apply(k,\"owner:sku\",cancel));}\n            for(Future<State> f:pool.invokeAll(tasks,5,TimeUnit.SECONDS)) {\n                check(!f.isCancelled());f.get(1,TimeUnit.SECONDS);\n            }\n            check(m.allocated()==0&&m.rows.get(k).state()==State.CANCELLED);\n            check(m.apply(k,\"owner:sku\",false)==State.CANCELLED);\n            check(m.apply(new Key(1,\"new-purchase\"),\"owner:sku\",false)==State.CREATED);\n            check(m.apply(new Key(2,\"purchase\"),\"owner:sku\",false)==State.CREATED);\n            try{m.apply(k,\"other-owner\",true);throw new AssertionError();}catch(IllegalArgumentException expected){}\n            check(m.allocated()==2);\n        } catch(Exception|Error failure){primary=failure;throw failure;}\n        finally { FailureTools.cleanup(primary, () -> { pool.shutdownNow();check(pool.awaitTermination(5,TimeUnit.SECONDS)); }); }\n        System.out.println(\"PASS: 24 permutations, 100 bounded concurrent calls, tombstone, new intent, tenant isolation, payload conflict; memory only\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-6232",
+      "title": "一个完整的纯 Java 协议模型",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "下面的 ReliableDeliveryProtocol 把稳定身份、发布重复、持久责任转交的抽象、处理轮次、未知查询和目的端去重放在一个入口中。它是内存状态机，不能证明数据库持久化、Broker 宕机或真实渠道行为。Pipeline 只表示一个订阅消费者，原子受理和责任转交代表存储契约，生产必须由事务实现并加入消费者命名空间，不能照搬 HashMap。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Ledger 表示原子存储端口，本地 SQL 仍使用前文唯一的数据库实现。读状态机时，先区分各状态已经掌握了什么事实："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "READY：还未获准执行。",
+            "CREATING：可能已经发出请求。",
+            "OPEN：目的端已明确受理，尚不能自动解释为送达。",
+            "UNKNOWN：结果仍未决。",
+            "MANUAL：停止自动推进；可能来自明确拒绝，也可能来自未知升级，必须一起看 evidence 和 reservationHeld。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "模型中，受理成功会把占用转为已落实效果；它不模拟退款额度会计。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Driver 的时间参数是有界演练的逻辑时间，Mock 方法瞬时完成。真实适配器每次结果提交应重新取权威时间、校验租约与 epoch，不能把调用前的时间重复用于长时间 HTTP 后的判断。Mock 的 queryable、atomicSameKeyReplay、replayUntil 是显式假设，不代表任何真实服务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 ReliableDeliveryProtocol.java。仅需完整 Java 21 JDK，无第三方依赖、环境变量或网络。下面代码全部打印，包含 main、断言及 Mock。不要将教学请求转发到真实服务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行与结束步骤：在只放教学文件的目录中，执行下面三条命令。第一条创建仅供本例使用的构建目录；后两条分别编译和执行。程序只做七个有限场景，无后台任务，正常结束退出码为 0，断言失败则非零退出。编译使用 Java 21 的 source/target，完整 JDK 也可用 javac --release 21。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "commands/fence-045.txt",
+          "value": "mkdir -p reliable-build\njava -Xmx128m -m jdk.compiler/com.sun.tools.javac.Main -source 21 -target 21 -d reliable-build ReliableDeliveryProtocol.java\njava -Xmx64m -cp reliable-build ReliableDeliveryProtocol\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "正常结束会打印 PASS: 7 bounded scenarios; in-memory model only; calls and effects counted separately。它分别统计 Mock 调用与效果，不代表真实渠道验证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行完无需停止服务，程序没有创建服务、连接或持久数据。删除自己创建的 reliable-build 目录即可清除编译产物，源文件可保留复习。若要演练进程强杀，不能用本例内存 Map 冒充数据库恢复，必须另建隔离的持久化集成环境。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读完协议模型，沿三个结果检查理解："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "为什么 Pipeline 可以在渠道还未成功时确认某次消费？因为模型假设后续工作已由可靠持久任务接管；生产若没有这件事实，就不允许 ACK。",
+            "为什么同号重放可能 calls=2、effects=1？目的端幂等限制效果次数，没有禁止第二次网络调用。",
+            "为什么 MANUAL 后 reservationHeld 仍可为 true？人工接管没有消除未知，不能因为自动重试停止就释放资源。"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "s-6274",
+      "title": "UNKNOWN 协议模型与清理依赖",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "ReliableDeliveryProtocol 是同一 JVM 内的协议推演，模拟外部目的端三种能力及“先产生效果、后丢响应”的时序。它不将内存 Map 伪装成持久账本。components/reliable 中两个主程序共用完整 FailureTools；分开编译该模块，不与其他目录的同名 helper 一起混编。"
+        }
+      ]
+    },
+    {
+      "id": "s-6278",
+      "title": "完整文件：components/reliable/FailureTools.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/reliable/FailureTools.java",
+          "value": "public final class FailureTools {\n    @FunctionalInterface public interface Action { void run() throws Exception; }\n    private FailureTools() {}\n    public static void attach(Throwable primary, Throwable secondary) {\n        if (secondary instanceof InterruptedException) Thread.currentThread().interrupt();\n        // addSuppressed forbids self-suppression; disabled suppression is allowed.\n        if (secondary != null && primary != secondary) primary.addSuppressed(secondary);\n    }\n    public static void cleanup(Throwable primary, Action action) throws Exception {\n        try { action.run(); }\n        catch (Exception | Error secondary) {\n            if (secondary instanceof InterruptedException) Thread.currentThread().interrupt();\n            if (primary == null) throw secondary;\n            attach(primary, secondary);\n        }\n    }\n    private static final class NoSuppression extends Exception {\n        private static final long serialVersionUID = 1L;\n        NoSuppression() { super(\"primary\", null, false, true); }\n    }\n    static void require(boolean ok) { if (!ok) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        Exception primary = new Exception(\"primary\");\n        cleanup(primary, () -> { throw primary; });\n        require(primary.getSuppressed().length == 0);\n        Exception secondary = new Exception(\"secondary\");\n        cleanup(primary, () -> { throw secondary; });\n        require(primary.getSuppressed()[0] == secondary);\n        NoSuppression disabled = new NoSuppression();\n        cleanup(disabled, () -> { throw secondary; });\n        require(disabled.getSuppressed().length == 0);\n        Thread.interrupted();\n        cleanup(primary, () -> { throw new InterruptedException(\"cleanup interrupted\"); });\n        require(Thread.currentThread().isInterrupted());\n        Thread.interrupted();\n        try {\n            cleanup(null, () -> { throw secondary; });\n            throw new AssertionError();\n        } catch (Exception actual) { require(actual == secondary); }\n        System.out.println(\"FailureTools OK\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-6325",
+      "title": "完整文件：components/reliable/ReliableDeliveryProtocol.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/reliable/ReliableDeliveryProtocol.java",
+          "value": "import java.nio.charset.StandardCharsets;\nimport java.security.MessageDigest;\nimport java.util.*;\n\n/** Pure in-memory protocol model. No JDBC, broker, network, disk or real provider. */\npublic final class ReliableDeliveryProtocol {\n    enum State { READY, CREATING, OPEN, UNKNOWN, MANUAL }\n    enum Result { ACCEPTED, REJECTED_NO_EFFECT, RETRYABLE_NO_EFFECT, PENDING, NOT_FOUND, UNKNOWN }\n    record Key(long tenant, String businessKey) {}\n    record RequestKey(long tenant, String requestId) {}\n    record EventKey(long tenant, String eventId) {}\n    record StableRequest(long tenant, String businessKey, String requestId,\n                         String canonicalPayload, String payloadHash) {\n        StableRequest {\n            if (tenant <= 0 || blank(businessKey) || blank(requestId) ||\n                blank(canonicalPayload) || !sha(canonicalPayload).equals(payloadHash))\n                throw new IllegalArgumentException(\"invalid stable request\");\n        }\n        Key key() { return new Key(tenant, businessKey); }\n        RequestKey requestKey() { return new RequestKey(tenant, requestId); }\n    }\n    record Event(long tenant, String eventId, StableRequest request) {\n        Event {\n            if (blank(eventId) || tenant != request.tenant())\n                throw new IllegalArgumentException(\"event identity\");\n        }\n        EventKey key() { return new EventKey(tenant, eventId); }\n    }\n    record Ticket(Key key, long epoch) {}\n    record View(StableRequest request, State state, long epoch, long leaseUntil,\n                boolean reservationHeld, int sends, int queries, Result evidence) {}\n    record Capability(boolean queryable, boolean atomicSameKeyReplay, long replayUntil) {}\n    interface Channel {\n        Capability capability();\n        Result send(StableRequest request);\n        Result query(StableRequest request);\n    }\n    /** Each method is one atomic storage contract, not an SQL implementation. */\n    interface Ledger {\n        void prepare(StableRequest request);\n        Optional<Ticket> claim(Key key, long now, long lease);\n        View view(Key key);\n        boolean begin(Ticket ticket, long now, boolean authorizedSameKeyReplay);\n        boolean resolve(Ticket ticket, long now, Result result);\n        boolean queried(Ticket ticket, long now);\n        boolean manual(Ticket ticket, long now);\n    }\n    static final class MemoryLedger implements Ledger {\n        static final class Row {\n            final StableRequest request;\n            State state = State.READY;\n            long epoch, leaseUntil;\n            boolean held = true;\n            int sends, queries;\n            Result evidence;\n            Row(StableRequest r) { request = r; }\n        }\n        final Map<Key,Row> rows = new HashMap<>();\n        final Map<RequestKey,Key> requestIds = new HashMap<>();\n        public synchronized void prepare(StableRequest r) {\n            Row old = rows.get(r.key());\n            if (old != null) {\n                if (!old.request.equals(r)) throw new IllegalArgumentException(\"payload/id conflict\");\n                return;\n            }\n            Key bound = requestIds.get(r.requestKey());\n            if (bound != null && !bound.equals(r.key()))\n                throw new IllegalArgumentException(\"request id reused for another business action\");\n            rows.put(r.key(), new Row(r)); requestIds.put(r.requestKey(), r.key());\n        }\n        public synchronized Optional<Ticket> claim(Key k, long now, long lease) {\n            if (now < 0 || lease <= 0) throw new IllegalArgumentException();\n            Row r = required(k);\n            if (r.state == State.OPEN || r.state == State.MANUAL || r.leaseUntil > now)\n                return Optional.empty();\n            long end = Math.addExact(now, lease);\n            long epoch = Math.incrementExact(r.epoch);\n            // Lease expiry never proves the previous external call stopped.\n            if (r.state == State.CREATING) r.state = State.UNKNOWN;\n            r.epoch = epoch; r.leaseUntil = end;\n            return Optional.of(new Ticket(k, epoch));\n        }\n        public synchronized View view(Key k) {\n            Row r=required(k);\n            return new View(r.request,r.state,r.epoch,r.leaseUntil,r.held,r.sends,r.queries,r.evidence);\n        }\n        private Row required(Key k) {\n            Row r=rows.get(k); if(r==null) throw new IllegalArgumentException(\"unknown action\"); return r;\n        }\n        private boolean current(Row r, Ticket t, long now) {\n            return r.epoch == t.epoch() && r.leaseUntil > now;\n        }\n        public synchronized boolean begin(Ticket t,long now,boolean replay) {\n            Row r=required(t.key());\n            if (!current(r,t,now) || !(r.state==State.READY || (replay && r.state==State.UNKNOWN)))\n                return false;\n            r.sends=Math.incrementExact(r.sends); r.state=State.CREATING; return true;\n        }\n        public synchronized boolean resolve(Ticket t,long now,Result result) {\n            Row r=required(t.key());\n            if (!current(r,t,now) || !(r.state==State.CREATING || r.state==State.UNKNOWN)) return false;\n            r.evidence=Objects.requireNonNull(result);\n            switch(result) {\n                case ACCEPTED -> { r.state=State.OPEN; r.held=false; }\n                case REJECTED_NO_EFFECT -> { r.state=State.MANUAL; r.held=false; }\n                case RETRYABLE_NO_EFFECT -> r.state=State.READY;\n                case PENDING,NOT_FOUND,UNKNOWN -> r.state=State.UNKNOWN;\n            }\n            return true;\n        }\n        public synchronized boolean queried(Ticket t,long now) {\n            Row r=required(t.key());\n            if(!current(r,t,now) || r.state!=State.UNKNOWN) return false;\n            r.queries=Math.incrementExact(r.queries); return true;\n        }\n        public synchronized boolean manual(Ticket t,long now) {\n            Row r=required(t.key());\n            if(!current(r,t,now) || r.state==State.OPEN || r.state==State.MANUAL) return false;\n            r.state=State.MANUAL; return true; // UNKNOWN keeps its reservation and evidence.\n        }\n    }\n    static final class Driver {\n        final Ledger ledger; final Channel channel;\n        final int maxSends, maxQueries; final long deadline;\n        Driver(Ledger l,Channel c,int s,int q,long d) {\n            if(s<1||q<0||d<0) throw new IllegalArgumentException();\n            ledger=l;channel=c;maxSends=s;maxQueries=q;deadline=d;\n        }\n        boolean send(Ticket t,long now,boolean sameKeyReplay) {\n            View v=ledger.view(t.key()); Capability c=channel.capability();\n            if(now>=deadline || v.sends()>=maxSends) {ledger.manual(t,now);return false;}\n            if(sameKeyReplay && (!c.atomicSameKeyReplay() || now>=c.replayUntil())) return false;\n            if(!ledger.begin(t,now,sameKeyReplay)) return false;\n            Result result;\n            try { result=Objects.requireNonNull(channel.send(v.request())); }\n            catch(RuntimeException e) { result=Result.UNKNOWN; }\n            ledger.resolve(t,now,result); return true;\n        }\n        void reconcile(Ticket t,long now) {\n            View v=ledger.view(t.key()); if(v.state()!=State.UNKNOWN) return;\n            if(!channel.capability().queryable() || v.queries()>=maxQueries) {\n                ledger.manual(t,now); return;\n            }\n            if(!ledger.queried(t,now)) return;\n            Result result;\n            try {result=Objects.requireNonNull(channel.query(v.request()));}\n            catch(RuntimeException e) {result=Result.UNKNOWN;}\n            ledger.resolve(t,now,result);\n        }\n    }\n    /** A scripted destination. Effects and HTTP-like attempts are counted separately. */\n    static final class MockChannel implements Channel {\n        final Capability cap;\n        final Map<RequestKey,String> effects = new HashMap<>();\n        int calls, effectCount, queries;\n        boolean execute=true, loseReply=false;\n        Result nextSend=Result.ACCEPTED, queryOverride;\n        MockChannel(Capability c){cap=c;}\n        public Capability capability(){return cap;}\n        public Result send(StableRequest r) {\n            calls++;\n            if(execute && nextSend==Result.ACCEPTED) {\n                String old=effects.get(r.requestKey());\n                if(old!=null && !old.equals(r.payloadHash())) throw new IllegalArgumentException(\"remote conflict\");\n                if(!cap.atomicSameKeyReplay() || old==null) effectCount++;\n                effects.put(r.requestKey(),r.payloadHash());\n            }\n            return loseReply?Result.UNKNOWN:nextSend;\n        }\n        public Result query(StableRequest r) {\n            if(!cap.queryable()) throw new IllegalStateException(\"no query API\");\n            queries++;\n            return queryOverride!=null?queryOverride:\n                   effects.containsKey(r.requestKey())?Result.ACCEPTED:Result.NOT_FOUND;\n        }\n    }\n    /** Models atomic event acceptance, outbox, and durable responsibility transfer only. */\n    static final class Pipeline {\n        final Ledger ledger;\n        final Map<EventKey,Event> outbox=new LinkedHashMap<>();\n        final Set<EventKey> published=new HashSet<>(), handedOff=new HashSet<>();\n        final List<Event> brokerCopies=new ArrayList<>();\n        final Set<Integer> ackedCopies=new HashSet<>();\n        Pipeline(Ledger l){ledger=l;}\n        synchronized void accept(Event e) {\n            Event old=outbox.get(e.key());\n            if(old!=null && !old.equals(e)) throw new IllegalArgumentException(\"event id conflict\");\n            ledger.prepare(e.request()); outbox.putIfAbsent(e.key(),e);\n        }\n        void publish(EventKey k,boolean loseConfirmOrCrashBeforeMark) {\n            if(published.contains(k))return;\n            brokerCopies.add(Objects.requireNonNull(outbox.get(k)));\n            if(!loseConfirmOrCrashBeforeMark)published.add(k);\n        }\n        void consume(int index,boolean loseAck) {\n            Event e=brokerCopies.get(index);\n            // In production the inbox + action reference must commit atomically.\n            ledger.prepare(e.request()); handedOff.add(e.key());\n            if(!loseAck)ackedCopies.add(index);\n        }\n    }\n    static String sha(String s) {\n        try {return HexFormat.of().formatHex(MessageDigest.getInstance(\"SHA-256\")\n                    .digest(s.getBytes(StandardCharsets.UTF_8)));}\n        catch(Exception e){throw new IllegalStateException(e);}\n    }\n    static boolean blank(String s){return s==null||s.isBlank();}\n    static StableRequest request(String key){String payload=\"recipient=demo;template=1;amount=10\";\n        return new StableRequest(1,key,\"request-\"+key,payload,sha(payload));}\n    static Ticket claim(Ledger l,StableRequest r,long now){return l.claim(r.key(),now,10).orElseThrow();}\n    static void check(boolean x,String why){if(!x)throw new AssertionError(why);}\n    static void conflict(Runnable r){try{r.run();throw new AssertionError(\"conflict missing\");}\n        catch(IllegalArgumentException expected){}}\n    public static void main(String[] args) {\n        MemoryLedger l=new MemoryLedger(); StableRequest r=request(\"outbox\");\n        Pipeline p=new Pipeline(l); Event e=new Event(1,\"event-1\",r);\n        p.accept(e);p.accept(e);p.publish(e.key(),true);p.publish(e.key(),false);\n        p.consume(0,true);p.consume(0,false);p.consume(1,false);\n        check(p.outbox.size()==1&&p.brokerCopies.size()==2&&p.ackedCopies.size()==2,\"outbox/ack\");\n        MockChannel c=new MockChannel(new Capability(true,true,100));\n        Driver d=new Driver(l,c,3,3,100);Ticket t=claim(l,r,0);d.send(t,0,false);\n        check(c.effectCount==1&&l.view(r.key()).state()==State.OPEN,\"one effect\");\n        check(!d.send(t,1,false),\"terminal cannot resend\");\n        final MemoryLedger firstLedger=l; final StableRequest firstRequest=r;\n        conflict(()->firstLedger.prepare(new StableRequest(1,firstRequest.businessKey(),firstRequest.requestId(),\"changed\",sha(\"changed\"))));\n        conflict(()->firstLedger.prepare(new StableRequest(1,\"other\",firstRequest.requestId(),firstRequest.canonicalPayload(),firstRequest.payloadHash())));\n\n        l=new MemoryLedger();r=request(\"lost-response\");l.prepare(r);\n        c=new MockChannel(new Capability(true,true,100));c.loseReply=true;\n        d=new Driver(l,c,3,3,100);t=claim(l,r,0);d.send(t,0,false);\n        check(l.view(r.key()).state()==State.UNKNOWN&&l.view(r.key()).reservationHeld(),\"unknown held\");\n        d.reconcile(t,1);check(c.calls==1&&c.effectCount==1&&l.view(r.key()).state()==State.OPEN,\"query repairs\");\n\n        l=new MemoryLedger();r=request(\"missing\");l.prepare(r);\n        c=new MockChannel(new Capability(true,true,100));c.execute=false;c.loseReply=true;\n        d=new Driver(l,c,3,3,100);t=claim(l,r,0);d.send(t,0,false);d.reconcile(t,1);\n        check(l.view(r.key()).state()==State.UNKNOWN&&l.view(r.key()).reservationHeld(),\"not found is not failure\");\n        c.execute=true;c.loseReply=false;check(d.send(t,2,true),\"authorized stable replay\");\n        check(c.calls==2&&c.effectCount==1,\"attempts differ from effects\");\n\n        l=new MemoryLedger();r=request(\"no-capability\");l.prepare(r);\n        c=new MockChannel(new Capability(false,false,0));c.loseReply=true;\n        d=new Driver(l,c,3,3,100);t=claim(l,r,0);d.send(t,0,false);d.reconcile(t,1);\n        check(l.view(r.key()).state()==State.MANUAL&&l.view(r.key()).reservationHeld()&&c.calls==1,\"manual preserves unknown\");\n\n        l=new MemoryLedger();r=request(\"stale-owner\");l.prepare(r);\n        c=new MockChannel(new Capability(true,true,100));Ticket a=claim(l,r,0);\n        check(l.begin(a,0,false),\"prepared before external call\");c.send(r);\n        Ticket b=claim(l,r,11);\n        check(!l.resolve(a,11,Result.ACCEPTED),\"old epoch rejected\");\n        d=new Driver(l,c,3,3,100);d.reconcile(b,12);\n        check(l.view(r.key()).state()==State.OPEN&&c.effectCount==1,\"new owner queries\");\n        c.send(r);check(c.calls==2&&c.effectCount==1,\"only destination can suppress late physical send\");\n\n        l=new MemoryLedger();r=request(\"pending\");l.prepare(r);\n        c=new MockChannel(new Capability(true,true,2));c.loseReply=true;c.queryOverride=Result.PENDING;\n        d=new Driver(l,c,3,1,100);t=claim(l,r,0);d.send(t,0,false);d.reconcile(t,1);\n        check(!d.send(t,2,true)&&l.view(r.key()).reservationHeld(),\"expired replay contract\");\n        d.reconcile(t,3);check(l.view(r.key()).state()==State.MANUAL&&l.view(r.key()).reservationHeld(),\"query budget is not failure proof\");\n\n        l=new MemoryLedger();r=request(\"rejected\");l.prepare(r);\n        c=new MockChannel(new Capability(true,false,0));c.nextSend=Result.REJECTED_NO_EFFECT;\n        d=new Driver(l,c,1,1,100);t=claim(l,r,0);d.send(t,0,false);\n        check(!l.view(r.key()).reservationHeld()&&c.effectCount==0,\"confirmed rejection releases model hold\");\n        System.out.println(\"PASS: 7 bounded scenarios; in-memory model only; calls and effects counted separately\");\n    }\n}\n"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "运行边界与未执行声明"
+    }
+  ]
+}

@@ -1,0 +1,502 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch07",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 金额 时间 字符串 JSON 与大文本",
+  "title": "金额 时间 字符串 JSON 与大文本",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s5073",
+      "order": 5073,
+      "question": "MySQL常用数据类型怎样选择，金额、文本和时间有哪些容易混淆的边界？",
+      "shortAnswer": "数据类型按取值域、精度、时间语义与比较规则选择，并将 Java 映射、编码字节、增长余量和 NULL 纳入契约。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第07章 金额 时间 字符串 JSON 与大文本"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据类型首先表达业务值域和比较语义，然后才讨论空间与速度；字符数、编码字节、行大小、协议包大小及应用内存限制不能混成一个上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：VARCHAR 会预留最大空间吗？金额为什么不用 double？TIMESTAMP 与 DATETIME 怎么选？JSON 列是否能代替关系表？视频转写或超大正文应该放哪里？"
+        },
+        {
+          "type": "paragraph",
+          "text": "选最小类型的准确含义是“在完整生命周期内足够且留有合理余量”，不是把当前样本塞进最小整数。字段经常一起使用可以考虑同表，更新频率和大字段加载模式不同也可以分离；拆表、TEXT、BLOB 或 NULL 都不能仅凭名称判成慢 SQL。必要的关系约束仍应保留，未知值也不能为了所谓性能改为 0。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 侧金额用 BigDecimal 或带币种与单位的整数；外部 JSON 若会经过 JavaScript，超出安全整数范围的 ID 应采用约定的字符串编码。把数字存成字符串、把日期存成无规范文本或让连接时区随机器变化，都会把比较和边界错误推迟到运行时。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "MySQL常用数据类型怎样选择，金额、文本和时间有哪些容易混淆的边界？"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据类型按取值域、精度、时间语义与比较规则选择，并将 Java 映射、编码字节、增长余量和 NULL 纳入契约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：MySQL常用数据类型怎样选择，金额、文本和时间有哪些容易混淆的边界？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "数字与布尔"
+        },
+        {
+          "type": "paragraph",
+          "text": "TINYINT/SMALLINT/MEDIUMINT/INT/BIGINT是不同范围的整数，选有符号/无符号及未来增长空间；INT常见4字节、BIGINT8字节，INT(11)中的历史显示宽度不是11位十进制容量。BIGINT UNSIGNED的上半范围不能用Java有符号long表示，跨JSON客户端还要考虑精确整数表示。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DECIMAL(p,s)按十进制精确保存，p总位数、s小数位，如DECIMAL(12,2)只有10位整数部分；金额也可用有明确币种/最小单位的整数，定义舍入和总和上界。FLOAT/DOUBLE是近似浮点，适合允许误差的测量，不直接替代精确金额。BOOL/BOOLEAN通常是TINYINT(1)同义而非自动只允许0/1，必要时加CHECK/应用校验。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "文本、字节和枚举"
+        },
+        {
+          "type": "paragraph",
+          "text": "CHAR适合近固定长度字符，VARCHAR保存变长字符及长度信息；声明长度以字符为主要语义，但行/索引上限和utf8mb4实际字节共同约束。collation决定大小写/重音/尾空格等比较行为，唯一键的业务相等语义必须确认，不能以Java字符串字节不同推断数据库一定不重复。"
+        },
+        {
+          "type": "paragraph",
+          "text": "BINARY/VARBINARY/BLOB保存字节，TEXT家族保存有字符集/排序规则的文本；超长正文要考虑packet/客户端内存、分页投影和对象存储。ENUM/SET可表达有限值但增加值/排序语义和schema演进有取舍，频繁变化业务状态也可受控字典表/数值代码，禁止随意字符串拼接丢失结构。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "时间与时区"
+        },
+        {
+          "type": "paragraph",
+          "text": "DATE用于日历日期；DATETIME记录日期时间，MySQL8.4支持范围跨1000至9999年；TIMESTAMP保存/读取时按会话时区与UTC转换，常用范围约1970至2038，DATETIME不按同一方式自动转换。预约远未来、历史日期和跨时区系统须明确业务含义，不直接把两者当只差存储字节。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DATETIME/TIMESTAMP可指定最多6位小数秒，TIME也可表示时长而不只是一天内时刻，YEAR仅年份；数据库默认当前时间/自动更新要显式配置，不能靠字段名created_at推定。统一连接时区和Java Instant/LocalDateTime映射约定，查询用明确半开区间，验证DST、闰日、精度与无效/零日期的SQL mode行为。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "结构化扩展与NULL"
+        },
+        {
+          "type": "paragraph",
+          "text": "JSON是原生验证/二进制文档类型，适合变化的嵌套属性，但不是所有业务字段都该塞JSON；需要过滤/约束的热点字段评估普通列、生成列与索引。POINT/GEOMETRY等空间类型还要指定坐标参考与空间索引/函数含义。MySQL9.x的VECTOR是不同版本能力，不能列成所有8.4实例已有类型。"
+        },
+        {
+          "type": "paragraph",
+          "text": "NULL表示未知/缺失，与0/空串不同；用IS NULL判断，注意COUNT(expr)、聚合和三值逻辑。选择最小够用但可增长的类型，保持连接两端/外键列类型与字符规则兼容以避免隐式转换。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "类型选择的检查顺序"
+        },
+        {
+          "type": "paragraph",
+          "text": "金额从币种、最小单位、单笔上限和累计上限推导；汇总精度要大于单行精度，Java long 不能承载任意 DECIMAL 聚合。使用 BigDecimal 比较值时，compareTo 判断数值相等，equals 还比较 scale。最终展示舍入和入账舍入可以不同，必须分别约定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "时间先明确是瞬间、日历日期还是不带时区的当地安排。跨时区业务日要从当地起止边界转换成两个瞬间，以 [start,end) 过滤；有夏令时的日不保证正好 86400 秒。连接统一时区能减少意外转换，但不能代替业务时区。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对于“是不是应该避免 TEXT/BLOB、NULL、多字段或 JOIN”，答案都是看访问契约。大字段单独加载可以减少列表传输，必要的 NULL 可以忠实表达未知，规范化的关系可以减少更新异常。真实瓶颈应由扫描、网络、日志、页密度和计划共同说明。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-4",
+          "label": "订单表一般怎么设计？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s4905",
+      "order": 4905,
+      "question": "CHAR与VARCHAR在长度、存储和尾空格上有什么区别，VARCHAR会预分配最大空间吗？",
+      "shortAnswer": "VARCHAR 按实际长度存储而非每行预留声明上限；字符长度、编码字节和尾空格比较是三个不同问题。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "CHAR与VARCHAR在长度、存储和尾空格上有什么区别，VARCHAR会预分配最大空间吗？"
+        },
+        {
+          "type": "paragraph",
+          "text": "VARCHAR 按实际长度存储而非每行预留声明上限；字符长度、编码字节和尾空格比较是三个不同问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：CHAR与VARCHAR在长度、存储和尾空格上有什么区别，VARCHAR会预分配最大空间吗？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "字符上限不等于固定字节数"
+        },
+        {
+          "type": "paragraph",
+          "text": "CHAR(n)声明固定字符长度，存储/取回具有补空格和默认去尾空格规则；VARCHAR(n)存可变长度值，通常实际数据加1或2字节长度前缀，可能超过255字节的列需2字节长度表示。n通常是字符数量，utf8mb4一个字符可能多个字节，不能把VARCHAR(100)说成永远100字节。"
+        },
+        {
+          "type": "paragraph",
+          "text": "VARCHAR不是每行预先分配声明的最大数据空间；最大定义影响允许值、行大小/索引限制和某些执行缓冲估算，与行内实际存储是不同层面。InnoDB行头/NULL/变长目录、页外存储另有开销，不能用“字符数+1”计算所有真实磁盘占用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "尾空格、比较和唯一约束"
+        },
+        {
+          "type": "paragraph",
+          "text": "通常CHAR取回会去掉尾部填充空格，VARCHAR保留合法长度内存入的尾空格；精确行为需看版本/SQL模式。尾空格是否在比较中有意义则由collation的PAD SPACE/NO PAD属性决定，不等于VARCHAR保留了字节就一定在等号/唯一索引中有区别。"
+        },
+        {
+          "type": "paragraph",
+          "text": "字符串截断、过长值和警告/错误受严格模式及具体规则影响；业务ID若必须精确字节匹配，应评估VARBINARY等明确表示，不把空格规范化藏在驱动里。比较空串、NULL和仅空格也要分别定义，NULL不是长度0字符串。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "什么时候用以及如何验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定短编码在长度稳定且尾空格语义合适时可评估CHAR，姓名/标题等变化较大的文本通常评估VARCHAR；不要断言CHAR必然更快。InnoDB对多字节CHAR等物理编码有特殊规则，最终用目标字符集、行格式和真实值分布量化页密度/更新代价。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可在隔离MySQL实例记录SELECT VERSION()/sql_mode/列collation，插入空串、ab、ab带尾空格、中文/补充字符、边界/超长值，再比CHAR_LENGTH、LENGTH、HEX、等号与唯一约束结果。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s4929",
+      "order": 4929,
+      "question": "MySQL怎样存JSON，JSON列、TEXT字符串和关系表分别适合什么？",
+      "shortAnswer": "MySQL 原生 JSON 能校验并按路径访问文档，但高频关联和强约束字段仍应结构化，原始文本与业务合法性须另管。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "MySQL怎样存JSON，JSON列、TEXT字符串和关系表分别适合什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "MySQL 原生 JSON 能校验并按路径访问文档，但高频关联和强约束字段仍应结构化，原始文本与业务合法性须另管。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：MySQL怎样存JSON，JSON列、TEXT字符串和关系表分别适合什么？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下固定 MySQL 8.4 的原生 JSON 语义；SQL NULL、JSON null 与缺失路径要分别处理。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "原生JSON的语义"
+        },
+        {
+          "type": "paragraph",
+          "text": "原生 JSON 列先帮你确认“这是不是合法 JSON”，并转成内部二进制表示，便于按路径取值；它还不知道“这是不是合法业务对象”。如果只接受对象，要用 JSON_TYPE 约束；必填项、取值范围和数据版本仍需业务 schema 校验或合适 CHECK。主体 ID、金额、外键等高频强约束字段通常继续用普通列。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TEXT 保存的是字符内容，JSON 合法性需另行校验，路径读取也需要解析；若需要保留原始文本格式或验签，可以另存原文。原生 JSON 会规范化空白和重复键，并不保留输入逐字节表示，不能用读回文本验证原始签名。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最后把三个看似“空”的状态分开：SQL NULL、JSON null、路径不存在。JSON 本身还可以是数组或标量，不一定是对象。接口的默认值、校验和查询应分别处理这些情况，不能因为写入成功就认定业务字段齐全。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整建表与访问示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "mysql_json.sql给JSON NOT NULL列、只接受对象的CHECK、从$.city提取的STORED生成VARCHAR列和(tenant_id,city)索引；插入用JSON_OBJECT，查询city，更新用JSON_SET同时version+1并在WHERE检查旧version。应用输入用参数绑定/库序列化，不能把未转义用户字符串拼到SQL或路径表达式。"
+        },
+        {
+          "type": "paragraph",
+          "text": "->返回JSON值，->>等价提取后unquote；JSON路径操作和普通字符串比较要对齐类型/collation。不能给整个JSON对象直接建立普通B树索引，可提取标量到生成列/匹配函数索引；数组成员查询有版本相关multi-valued index，先核对适用操作和限制，不把它当任意嵌套文档通用索引。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "更新、容量与模型权衡"
+        },
+        {
+          "type": "paragraph",
+          "text": "JSON_SET等在满足条件时可做部分原地更新，但添加更大成员或直接替换整个文档不保证成立；行锁/事务边界仍在行上，大JSON热点仍会竞争。JSON_MERGE_PATCH的null删除语义与保留JSON null不同，别把任意merge当无损字段合并。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JSON存储受max_allowed_packet等约束，巨型文档会放大网络、复制、日志、内存和更新成本；用应用大小上限、小对象/版本引用控制。频繁JOIN、唯一或外键关系应拆关系表；可选低频扩展属性才适合JSON，不用万能JSON规避所有建模。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 mysql_json.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/mysql_json.sql",
+          "value": "CREATE TABLE profile_example (\n tenant_id BIGINT NOT NULL, user_id BIGINT NOT NULL,\n attributes JSON NOT NULL,\n city VARCHAR(80) GENERATED ALWAYS AS\n   (JSON_UNQUOTE(JSON_EXTRACT(attributes,'$.city'))) STORED,\n version BIGINT NOT NULL DEFAULT 0,\n PRIMARY KEY(tenant_id,user_id),\n INDEX ix_city(tenant_id,city),\n CHECK (JSON_TYPE(attributes)='OBJECT')\n);\nINSERT INTO profile_example(tenant_id,user_id,attributes)\n VALUES(1,7,JSON_OBJECT('city','北京','notifications',CAST('true' AS JSON)));\nSELECT user_id FROM profile_example WHERE tenant_id=1 AND city='北京';\nUPDATE profile_example\n SET attributes=JSON_SET(attributes,'$.city','上海'),version=version+1\n WHERE tenant_id=1 AND user_id=7 AND version=0;\nSELECT attributes->>'$.city' AS city,version FROM profile_example\n WHERE tenant_id=1 AND user_id=7;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-73",
+          "label": "第三范式 3NF 判断与反范式设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s4986",
+      "order": 4986,
+      "question": "MySQL存很大的文本用什么类型，LONGTEXT的标称上限就是实际可写大小吗？",
+      "shortAnswer": "长文本类型按编码字节选择，LONGTEXT 的类型上限不等于单次请求可写上限，还受包大小、内存、日志和复制预算限制。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "MySQL存很大的文本用什么类型，LONGTEXT的标称上限就是实际可写大小吗？"
+        },
+        {
+          "type": "paragraph",
+          "text": "长文本类型按编码字节选择，LONGTEXT 的类型上限不等于单次请求可写上限，还受包大小、内存、日志和复制预算限制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：MySQL存很大的文本用什么类型，LONGTEXT的标称上限就是实际可写大小吗？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "容量先按字节算"
+        },
+        {
+          "type": "paragraph",
+          "text": "TEXT家族有TINYTEXT最多255字节、TEXT最多65,535字节、MEDIUMTEXT最多16,777,215字节、LONGTEXT最多4,294,967,295字节，分别对应约2^8−1、2^16−1、2^24−1、2^32−1。多字节字符占用不同，不能把LONGTEXT称可存同数量任意中文字符；长度前缀和行/页还有额外存储开销。"
+        },
+        {
+          "type": "paragraph",
+          "text": "VARCHAR适合有界短文本，受声明字符数和最大行大小等限制；TEXT系列用于更长内容，不把VARCHAR(65535)当任何表/字符集都合法。存压缩文件/音视频字节要用BLOB/对象存储而不是随便转字符；“JSON文本很大”也须区分要原始字节还是可查询JSON。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "实际限制往往更早到达"
+        },
+        {
+          "type": "paragraph",
+          "text": "LONGTEXT 的类型容量是一层限制，能把一次写入送到服务器是另一层。客户端与服务端的 max_allowed_packet、驱动协议、内存、请求超时、日志和复制预算，以及业务上限，都可能先挡住它。MySQL 8.4 客户端和服务端可传最大包为 1 GiB，实际配置还可能更小，所以不能从类型上限推出能发一个 4 GiB 单包。应用通常应设远低于极限的上限，并考虑流式、分块或外置对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进入 InnoDB 后，长变长列可能部分或大部分放到页外，取决于行格式和行大小；不是所有 TEXT 一开始就全部在页外，也不是页外就没有 Buffer Pool 或 I/O 成本。列表用 SELECT * 拉回巨型正文，还会增加网络、内存、临时处理与副本延迟。让列表只取元数据、正文按需读取，往往比单纯换一个更大类型更重要。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "索引、更新和外置的取舍"
+        },
+        {
+          "type": "paragraph",
+          "text": "对长TEXT普通B树常需前缀长度且不能代表完整内容唯一性；按词搜索可考虑FULLTEXT或搜索投影，按摘要判断内容相等时仍要处理哈希碰撞/原文校验。正文整段频繁更新会放大undo/redo/binlog和复制，拆稳定正文版本与可变元数据可降低热点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "大附件/长文档可放对象存储，MySQL保存tenant/owner、object_key、版本、长度、SHA-256和状态；先持久内容后登记可见，处理孤儿对象/应答丢失、鉴权、删除和备份一致性。外置不是把URL公开给所有人，也不自动获得跨存储事务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "先统计实际UTF-8字节分布、最大单条、访问/更新频率和恢复要求，选择够用类型并验证严格SQL模式下超限行为。测试中文/emoji、空串/NULL、大值、截断错误、复制/备份和列表不加载正文。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s5016",
+      "order": 5016,
+      "question": "视频解析后的长文本用什么字段类型，怎样保存时间片、版本和索引？",
+      "shortAnswer": "视频转写需将整文、时间片和处理版本关联起来，引用固定版本，正文类型按字节预算选择而非一律 LONGTEXT。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "视频解析后的长文本用什么字段类型，怎样保存时间片、版本和索引？"
+        },
+        {
+          "type": "paragraph",
+          "text": "视频转写需将整文、时间片和处理版本关联起来，引用固定版本，正文类型按字节预算选择而非一律 LONGTEXT。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：视频解析后的长文本用什么字段类型，怎样保存时间片、版本和索引？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先测UTF-8字节分布再选类型"
+        },
+        {
+          "type": "paragraph",
+          "text": "短标题/语言/状态用有界VARCHAR或明确状态字段；转写正文按实际字节选TEXT/MEDIUMTEXT，特别大时可外置不可变对象，库保存key、长度、hash和版本。LONGTEXT的类型理论上限不等于单请求/驱动/内存/packet/复制能承受的大小；四种 TEXT 类型的字节上限和实际包限制应同时满足。"
+        },
+        {
+          "type": "paragraph",
+          "text": "避免会话列表/视频列表SELECT *搬运全部长文；按视频ID读取元数据，再按需取正文或时间片。转写内容不是视频MD5：原始视频hash、parser/model版本、文本hash分别记录，重跑识别会改变文本，不能沿用旧摘要/向量而不标版本。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "整文与时间片分开，引用可追溯"
+        },
+        {
+          "type": "paragraph",
+          "text": "transcript键为(tenant,video,revision)，存language、parser_version、state、文本/对象key二选一、hash/字节数；transcript_segment记录同revision下segment_id、start_ms/end_ms、speaker、body及hash。时间用非负毫秒或明确精度，区间[start,end)；不同说话人可有重叠，不能把重叠一概当坏数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "检索chunk还应保存原段ID集合/字符offset、embedding模型/维度、引用版本；按时间跳转用(tenant,video,revision,start_ms,segment_id)索引，区间重叠条件start<query_end AND end>query_start，再检查查询窗口有界。短片段文本搜索可建全文/向量投影，但列表元数据与检索载荷分开。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "发布、更新和权限"
+        },
+        {
+          "type": "paragraph",
+          "text": "新转写写BUILDING新revision，确认段序/时长/内容hash与源视频一致后发布READY，并原子更新权威当前revision；读请求固定该revision获取摘要/原段/向量，避免新摘要引用旧时刻。失败留旧可读代，新代修复后发布；敏感内容删除必须覆盖原文、段、摘要、索引与缓存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象与数据库非原子事务，先持久新对象再发布manifest，失败清理未引用孤儿，不能先把READY指向尚未完成的上传。实际租户/视频访问权每次校验；知道asset_id不等于能读。DDL外键只能护引用，不验证真实媒体哈希、任务状态机或模型识别正确。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 video_transcript.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/video_transcript.sql",
+          "value": "CREATE TABLE transcript (\n tenant_id BIGINT NOT NULL,video_id BIGINT NOT NULL,revision BIGINT NOT NULL,\n language VARCHAR(32) NOT NULL,parser_version VARCHAR(100) NOT NULL,\n state VARCHAR(16) NOT NULL CHECK(state IN ('BUILDING','READY','FAILED')),\n full_text TEXT,object_key VARCHAR(512),content_hash VARCHAR(64) NOT NULL,\n byte_length BIGINT NOT NULL CHECK(byte_length>=0),PRIMARY KEY(tenant_id,video_id,revision),\n CHECK((full_text IS NULL)<>(object_key IS NULL))\n);\nCREATE TABLE transcript_segment (\n tenant_id BIGINT NOT NULL,video_id BIGINT NOT NULL,revision BIGINT NOT NULL,\n segment_id BIGINT NOT NULL,start_ms BIGINT NOT NULL CHECK(start_ms>=0),\n end_ms BIGINT NOT NULL,speaker VARCHAR(100),body TEXT NOT NULL,body_hash VARCHAR(64) NOT NULL,\n PRIMARY KEY(tenant_id,video_id,revision,segment_id),CHECK(end_ms>start_ms),\n FOREIGN KEY(tenant_id,video_id,revision) REFERENCES transcript(tenant_id,video_id,revision)\n);\nCREATE INDEX ix_segment_time ON transcript_segment(tenant_id,video_id,revision,start_ms,segment_id);\n-- Resolve a READY revision once. A timestamp can overlap multiple speaker segments.\nSELECT segment_id,start_ms,end_ms,speaker,body FROM transcript_segment\n WHERE tenant_id=? AND video_id=? AND revision=? AND start_ms<? AND end_ms>?\n ORDER BY start_ms,segment_id;\n-- TEXT here is a portable bounded fixture. MySQL production may choose MEDIUMTEXT\n-- after a measured UTF-8 size budget, or immutable external objects for large bodies.\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "转写模型应拒绝跨租户关联、正文和对象定位同时缺失、开始不早于结束的非法区间；时间片重叠查询保留明确的左右端点。示例小文本用 TEXT，长正文是否换 MEDIUMTEXT 或对象存储，应按真实 UTF-8 字节预算决定。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-95",
+          "label": "分片上传与异步索引的表设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

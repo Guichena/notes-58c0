@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-network-own-java-io-q-own-java-io-models",
+  "entryId": "own-java-io",
+  "expectedOriginalHash": "9121d20d31c66cae5b312d12e26770542f33d089d3bffb83fd252935d7744f5b",
+  "title": "网络手册：协议机制、适用条件与设计边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "NIO 里怎样正确暂停和恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "暂停读取和恢复读取，都应由连接所属的事件循环来做。读缓冲、decoder 和输出队列归同一个 owner 管理：业务队列达到高水位时撤销读兴趣，降到低水位后再恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设置两个阈值，是为了避免队列在一个边界附近反复开关。具体水位仍要结合消息大小、吞吐与延迟目标测量，不是找一个固定数字照抄。"
+    },
+    {
+      "type": "paragraph",
+      "text": "解析循环也要限制单次处理字节和帧数，避免一个持续发送零长度帧的连接饿死其他连接。预算耗尽后若本地缓冲还有数据，必须主动安排下一轮继续解析；不能只等新网络事件，否则已有半批数据会搁置。LT/ET 和 Java Selector 的具体重调度方式不同，核心都是不能遗忘已经可推进的工作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试设计慢客户端时，应同时说明“最多占多少资源”和“恢复后如何继续”。单连接 1024 字节上限并不自动带来全局有界，十万条连接及应用保留的输出数组仍要单独预算。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "T13 Linux Socket、Java NIO 与 Reactor：谁等待，谁真正搬数据"
+    },
+    {
+      "type": "paragraph",
+      "text": "I/O 多路复用让少量线程等待许多连接的就绪事件，真正的读写、拆帧和业务处理仍要由应用安排；事件循环一旦被阻塞，多个连接会一起变慢。 解释模型时要分清操作系统机制、Java API 和框架线程结构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些问法一起准备：BIO、NIO、AIO 有什么区别？select/poll/epoll 为什么性能不同？LT 和 ET 怎么选？Redis 为什么可以用 LT？muduo 为什么有多个 EventLoop？Java Buffer 在堆内还是堆外？Go 协程和 Java 线程怎么比较？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "阻塞、非阻塞、同步和异步是两组问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "阻塞读会等待可读数据等条件；非阻塞读在当前无法推进时立即返回。Java 非阻塞 SocketChannel.read 可能返回 0，Linux 非阻塞系统调用常用 EAGAIN/EWOULDBLOCK 表示当前不能推进。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步 I/O 的调用方负责在相应调用中完成读写；异步 I/O 接口则提交操作，稍后通过完成通知、回调或 Future 得到结果。Java NIO 的 Channel/Selector 常用于非阻塞就绪模型，AIO 的异步通道暴露完成型接口；底层具体实现依赖平台，不能只按类名推断“没有线程等待”“必然更快”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个线程处理一个阻塞连接容易理解；连接很多、长期等待时，平台线程栈与调度成本会上升。Reactor 用事件循环分派就绪事件，减少大量空闲线程。Proactor 从完成事件开始调度处理逻辑。它们是职责划分模式，实际框架可以混合实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "select、poll 和 epoll，别背成三个复杂度"
+    },
+    {
+      "type": "paragraph",
+      "text": "比较 select、poll、epoll，先看“兴趣集合由谁保存，醒来后还要检查多少”。select 使用描述符集合，返回后检查哪些就绪，受 API 和平台的集合大小约束，Linux 常见 fd_set 还有固定上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "poll 用数组表示兴趣集合，避免相同的位图上限，但每次等待仍要处理这份集合。epoll 把兴趣集合留在内核，用 epoll_ctl 增删改，用 epoll_wait 获取就绪事件。连接很多、活跃比例较低时，减少重复提交和全量用户态扫描通常更有价值，而不是单凭一个复杂度标签判断快慢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 Linux v6.12 的实现为例，eventpoll 保存兴趣项红黑树 rbr、就绪链表 rdllist 和供等待者睡眠的等待队列；每个注册项由 epitem 关联目标文件/FD、兴趣事件与链表节点。epoll_ctl 负责建立和维护注册，在目标文件的 poll 等待机制上挂接回调；发生相应就绪变化时，回调把条目挂到就绪集合并唤醒等待者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "epoll_wait 主要收集可报告的就绪条目，重新核对事件并把结果复制到用户提供的数组；它不在每次调用时把所有连接的数据搬进用户缓冲。红黑树便于注册项查找维护，就绪链表避免每次全量用户态扫描，但返回 k 个事件本身仍有随 k 增长的工作，LT 重报、并发唤醒和注册维护也有成本。内核字段是具名版本的实现证据，不能当成所有平台的 API 保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能说“epoll 全过程 O(1)、零拷贝、连接无上限”。连接上限仍受 FD、内存、队列及应用资源影响；有网络端点时还要看地址端口组合。只有几条忙连接时，换 API 未必带来可见收益。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LT、ET 的关键是如何保证再次推进"
+    },
+    {
+      "type": "paragraph",
+      "text": "LT 是电平触发：只要条件仍满足，后续等待仍可以报告就绪。ET 是边沿触发：应用不能依赖“剩了一些数据，下次一定再来一个事件”。通常把 FD 设为非阻塞，读取或写入直到 EAGAIN，记录状态，再等待下一次通知。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里又有公平性问题。一个连接不断有数据，循环到耗尽可能长期占用线程。因此可以设置每轮字节/消息预算，把尚可继续处理的连接保留在应用就绪队列里轮转；预算用尽不等于已到 EAGAIN，不能直接丢掉处理责任去等新边沿。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EPOLLONESHOT 是一次通知后需要重新武装的机制，常用于控制多线程对一个 FD 的并发处理，它与 LT/ET 不是同一概念。无论哪种触发模式，错误、半关闭、EOF、部分写入和 FD 复用都必须处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 6.2/7.2 分支的 Linux ae 后端注册 EPOLLIN/EPOLLOUT 而没有 EPOLLET，属于 LT 用法；不能推广为所有版本、所有平台永远同一实现。LT 可以让每轮处理保持相对简单，性能不只取决于通知模式。Redis 的网络 I/O 线程与命令执行线程职责也要按版本说明，不能从“用了多路复用”推出“整个 Redis 只有一个线程”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一个可工作的 Reactor 还缺哪些细节"
+    },
+    {
+      "type": "paragraph",
+      "text": "监听通道收到 accept 就绪后接收新连接，配置非阻塞并注册读兴趣；每连接保存解码状态、读缓冲、待发送队列和截止时间。读到字节不代表完整请求，交给 T10 的拆帧器；业务处理若耗时，要转交有界执行器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "非阻塞写要记住“还欠哪些字节”。write 可能只写一部分，甚至返回 0；把剩余 Buffer 留在发送队列，注册写兴趣，等可写时继续。队列清空后取消写兴趣，否则经常处于可写状态的 Socket 会让事件循环空转。"
+    },
+    {
+      "type": "paragraph",
+      "text": "队列还要有高低水位、拒绝或暂停策略，以及总字节上限。关闭连接时取消 key、释放缓冲、关闭 channel，并保证每个未决请求只完成一次，不能正常结果和关闭异常各回调一遍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨线程提交任务时，通过事件循环的任务队列转回连接所有者，必要时唤醒 Selector；不能把线程安全问题藏在“Netty 会处理”里。线程间要传递结果和明确所有权，不能任意同时改同一条连接的 Buffer、兴趣集和关闭状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "单 Reactor、多 Reactor 与 muduo"
+    },
+    {
+      "type": "paragraph",
+      "text": "单 Reactor 单线程适合处理短、轻、非阻塞逻辑，状态简单，但一个慢处理拖住全部连接。单 Reactor 加工作线程可隔离业务 CPU/阻塞任务，不过有跨线程队列、顺序和回传成本。主从 Reactor 常由一个或少量 accept loop 接入连接，再把已建立连接分配给多个 I/O loop。"
+    },
+    {
+      "type": "paragraph",
+      "text": "muduo 是 Linux C++ 非阻塞事件驱动网络库。典型结构是 one loop per thread：EventLoop 在所属线程运行循环，Poller 封装 poll/epoll 等等待，Channel 把 FD 与事件回调关联，Acceptor 接纳连接，TcpConnection 管理连接状态与输入输出 Buffer，TcpServer 再通过 EventLoopThreadPool 选择管理新连接的 I/O loop。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它把部分读写、错误处理、缓冲、定时器、跨线程唤醒和生命周期等重复基础设施收拢到清楚的所有权模型。跨线程通过 runInLoop/queueInLoop 等方式把操作交还连接所属 loop，并在需要时唤醒；不能随意从另一线程修改同一个 Channel 或缓冲。库没有替业务定义分帧、授权、全局配额与共享业务状态的同步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“一个 EventLoop”不等于“整个服务器只能一个线程”，muduo 与多线程也不是二选一。大量等待连接可受益于少量 I/O 线程复用；低并发、简单流程的阻塞模型可能更易维护。Java 的 Netty EventLoop 也可从所有权角度理解，但不同框架的线程数量、唤醒和缓冲实现不能混同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "配套 poll_echo.cpp 给出完整 C++ 非阻塞 poll 回显服务，只监听 loopback，限制客户端数、每行长度、输出队列和运行时长，保留了部分读写、EOF 后排空输出及多客户端逻辑。epoll_modes.c 用本地非阻塞管道对照 LT/ET，便于观察“还有数据”和“还有新通知”的差别。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "CPU 密集还是 I/O 密集，要看哪个阶段"
+    },
+    {
+      "type": "paragraph",
+      "text": "压缩、序列化和加密可能消耗 CPU，随后数据库或网络等待又是另一阶段。结合线程 CPU 时间、热点采样、阻塞栈、池等待与 Trace，而不是只看整机 CPU。一个事件循环单核饱和可以被多核平均值掩盖，容器 CPU 配额节流也会在宿主机空闲时制造等待；低 CPU 不自动等于网络慢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如任务花 5 ms 计算、45 ms 等待，适度并发可以隐藏等待；数据库只有 20 个连接时开 2000 个线程，大多只是增加排队。目标是比较吞吐、p99、错误与资源，而不是线程数本身。HTTP/2 多路复用属于协议流组织，协程属于执行模型；可以一起使用，两者不能替代。C++20 协程机制本身也不附带完整调度器，跨语言不能直接套同一模型。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java 和 Go：把等待便宜化，业务上限仍在"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go goroutine 由运行时调度，网络等待可配合 netpoll；Java 传统平台线程与 OS 线程关联较直接，也可以用 NIO/Netty 显式编写事件驱动代码。Java 21 正式提供虚拟线程，可以用较自然的阻塞风格承载大量等待型任务。它们不是更快的 CPU：CPU 密集任务吞吐仍受核心数、算法和内存行为约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "虚拟线程也不会扩大数据库池、第三方接口配额或内存预算；仍要限制并发、传播 deadline 并处理取消。JDK 版本还影响阻塞与 pinning 行为，JDK 24 改进了 synchronized 相关 pinning，不能拿旧版本规则解释所有新版本。面试选型可以说：优先清晰的生命周期和可观测性，再结合依赖是否阻塞、并发规模、框架生态与测量结果选模型，避免“协程必然比线程快”。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "版本与本批未执行声明"
+    },
+    {
+      "entryId": "own-network-transport-code",
+      "label": "网络传输：完整 Java 与跨语言教学程序"
+    },
+    {
+      "entryId": "own-network-application-code",
+      "label": "网络应用：完整 Java、浏览器与安全教学程序"
+    }
+  ],
+  "questionId": "q-own-java-io-models",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-bbaf77b032bbfb68",
+  "entryId": "own-rag-retrieval",
+  "expectedOriginalHash": "acb2ea611a95ac9f4924468185bf565b060e81a2e7ffa64d5ec9cc79e9c9a24b",
+  "title": "跨册场景补充：C29 FP16 异常和模型实现怎样排查",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C29 FP16 异常和模型实现怎样排查"
+    },
+    {
+      "type": "paragraph",
+      "text": "低精度异常应定位第一个出现非有限值的算子，并区分数值 NaN/Inf 与接口返回 null，不能把二者当同一故障。 先建立同样输入的 FP32 基准，再逐模块比较，换成更大模型通常不是修复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：FP16 出现 null 而 FP32 正常；vLLM 均值池化溢出；梯度爆炸先看哪里；autograd 怎么截断；激活放在相加前后有什么差别；手写 MHA。"
+    },
+    {
+      "type": "paragraph",
+      "text": "FP16 最大有限值约 65504，指数范围远小于 BF16/FP32；长向量求和、QK 点积、exp 和归一化都可能溢出。均值池化若先用 FP16 求和、再除长度，和可能早已变成 Inf，除法无法补救。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此用 FP32 累加与归一化，屏蔽 padding，再检查有效长度。全 padding 要明确输出零或拒绝，不能除零；真实输入已有 NaN，也不能靠改求和 dtype 修复。不要用 nan_to_num 静默替换损坏结果并当作成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "训练时保存 loss、梯度范数、学习率、各层激活/梯度非有限计数、有效序列长度、标签与 mask 分布以及混合精度 scaler 状态。检查异常数据或标签、过高学习率、loss 未正确归一化、mask 全屏蔽、初始化及精度，必要时梯度裁剪和损失缩放。裁剪有助控制更新幅度，却不修复前向已经发生的 NaN。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PyTorch autograd 在前向记录对需要梯度张量的可微操作图，反向按链式法则累积。detach() 切断该张量通向上游的梯度但不复制其所有语义；torch.no_grad() 让块内不构图；将层参数 requires_grad=False 仅冻结这些参数，若输入需要梯度，梯度仍可能穿过该层传回更早层。要冻结 backbone 但训练新 head，可对 backbone 输出 detach 或在 no_grad 中算 backbone，再正常训练 head，二者与只冻结某组参数应按需求区分。"
+    },
+    {
+      "type": "paragraph",
+      "text": "没有非线性时，多层线性可合并为一层线性。通常 φ(a+b)≠φ(a)+φ(b)，例如 ReLU(1−2)=0，而 ReLU(1)+ReLU(−2)=1；放置位置改变表示和梯度路径。Pre-norm 可写 y=x+Attn(LN(x))，z=y+FFN(LN(y))；Post-norm 为 y=LN(x+Attn(x))，z=LN(y+FFN(y))。这不是只移动一行代码而保持相同网络，深层训练稳定性和末端 norm 都要考虑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MHA 对 X∈R^{B×T×d} 做 Q/K/V 投影，拆 H 头，每头维度 d_h=d/H；scores=QKᵀ/√d_h，叠加因果与 padding mask，按 key 维 softmax，再乘 V，合并各头并输出投影。计算 attention 是 O(BT²d)，投影约 O(BTd²)，保存注意力矩阵约 O(BHT²)。全 masked 行不能直接 softmax(−Inf,…,−Inf)，需定义零输出并避免 NaN；padding query 的最终输出也应屏蔽。后面代码给出完整实现、梯度与因果泄漏测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C32 PyTorch 模型与数学实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "数学和模型题应保留自动求导、mask、张量形状及数值稳定性，换成 Java 数组循环会遗漏原问题的重要语义。 下列完整文件保存为 rec_models.py，目标运行环境为 Python 3.12 与 PyTorch 2.7.0，CPU 即可做小规模功能测试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先看数值函数的合同。stable_sigmoid 分段计算，避免未选分支仍执行危险指数；binary_ce 用两个 softplus 项的非负组合，接受 [0,1] 软标签，避免大数相减吞掉小损失。低精度计算提升到 FP32，FP64 输入仍保持 FP64；梯度写回输入 dtype 时，舍入或下溢仍可能发生。"
+    },
+    {
+      "type": "paragraph",
+      "text": "info_nce 按行构造候选余弦分数，实现多正例 log-sum 目标，并检查空正例、零向量和非法温度。计算先升精度，再除每行最大绝对值后求单位方向，避免固定 eps 改变极小向量的方向长度或大数平方溢出；温度造成非有限 logits 时直接拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "corrected_sample_logits 只做 expected-count 校正，不能独立构成采样器。FM 使用与显式两两乘积等价的平方和恒等式；CrossV2 的 bias 在与 x0 相乘的括号内。先辨认这些接口各自负责的部分，再接到模型里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DINPool 给出未做 softmax 归一化的局部激活核心；MMoE 明确计算全部专家，并分别返回任务 logits 和 gate 便于诊断。masked_multitask_bce 在至少 FP32 中计算损失与按任务归约，保留 FP64；只对存在合法标签的任务样本归一化，缺失标签可以存 NaN，但绝不作为负例参与梯度。"
+    }
+  ],
+  "questionId": "q-own-rag-half-precision",
+  "targetOrigin": "authored"
+}

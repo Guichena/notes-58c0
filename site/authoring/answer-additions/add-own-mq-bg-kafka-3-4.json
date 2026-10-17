@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-kafka-3-4",
+  "entryId": "bg-kafka-3",
+  "expectedOriginalHash": "622725d25fd7ffb1cf95b05f1207fdc5fb3393dff04e264a691467ea5d67d0a5",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q19 Kafka 幂等生产者和事务有什么范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等生产者抑制协议重试重复，事务把 Kafka 输出和输入消费进度一起提交；外部数据库效果仍需自己的协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Producer ID、epoch 和分区序列使 broker 识别同一生产语义下的重复批次。应用重新发起的独立 send 或新会话的业务重发，不能仅靠该机制消除。业务 eventId 依然必要。幂等兼容的 in-flight 配置允许并行网络请求同时保持分区内重试顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka-to-Kafka 处理通常为：配置稳定且实例独占的 transactional.id，initTransactions，beginTransaction，发送输出，sendOffsetsToTransaction 将已完成输入的后继位移与当前 group metadata 加入事务，commitTransaction。下游使用 read_committed，才不会把中止事务输出当有效记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "read_committed 受 last stable offset 约束，未决长事务会使后面记录暂不可见；它不是只在记录上打一个过滤标签而永不影响延迟。事务有协调、标记和超时成本，应控制批次和事务时长。共享 transactional.id 的新 producer 可以 fence 旧实例，旧实例应退出，不能把 fencing 当普通错误无限重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务提交超时可能结果未知。要按具体 API 异常语义恢复，不能既可能已提交又无条件把同一业务重做一遍。简单教学程序可失败退出，让同一身份的下一次初始化与消费者已提交位置恢复；生产代码应设计受控状态机，而不是 catch 所有异常都 abort 后跳到下一批。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等生产者消除协议重试造成的重复追加，业务 eventId 消除独立请求或消费重放造成的重复效果，两者不能互相替代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一次完整事务的顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次 Kafka 输入到输出的事务，按下面顺序执行："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "为可恢复、独占的逻辑生产实例设置稳定 transactional.id，先 initTransactions。",
+        "beginTransaction 后发送输出。",
+        "用 sendOffsetsToTransaction(offsets, consumer.groupMetadata()) 纳入本次已处理完成的输入位移。",
+        "最后 commitTransaction。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "自动提交应关闭，也不能在事务之外另做普通 commit，抢先推进输入进度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Transactional.id 在并行活动实例间应唯一，在接管同一逻辑实例时应稳定。随便给所有节点相同 ID 会互相 fencing；每次随机造全新 ID 又失去预期的跨会话接管关系。初始化和 epoch 使旧生产者无法继续以失效身份提交，但这不等于旧进程向外部数据库发出的 HTTP/SQL 被取消。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务协调器持久化事务状态，并驱动涉及分区的事务标记。提交记录与标记传播不是“所有消费者在同一纳秒看到所有分区”，跨分区 poll 也不自动组成业务快照。保证在协议的提交可见性和输入输出原子性边界，不能扩展为任意读取方式下的全局同时可见。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "read_committed 为什么可能看起来卡住？"
+    },
+    {
+      "type": "paragraph",
+      "text": "read_uncommitted 可以读到后续可能中止的事务数据；read_committed 过滤中止数据并受稳定事务边界限制。较早未结束的事务会压住 LSO，后面普通记录也可能暂时不交付。此时 broker 的日志尾部继续增长，而消费 lag 增大，不能直接得出消费者 CPU 不够。"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制记录和过滤后的批次会形成 offset 空洞。批末恢复位置应保留客户端给出的 nextOffsets 及 leader epoch；不要拿“最后一条用户记录加一”代替所有 API 边界。事务超时还受 broker transaction.max.timeout.ms 约束，长时间把远程模型推理包进开放 Kafka 事务会扩大可见性阻塞和失败窗口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "失败、fencing 和提交结果未知"
+    },
+    {
+      "type": "paragraph",
+      "text": "在提交前处理失败，可以 abortTransaction 后重读输入；但 abort 不会自动把 consumer.position 倒回去。示例采用退出并从组已提交位置重新恢复，持续运行实现则要显式 seek 到正确恢复点。ProducerFencedException、授权失败等致命状态应关闭实例，不能原样无限重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "commitTransaction 超时可能只表示未等到结果，并不证明没有提交。此时应按客户端状态允许的方式重试同一次提交，或停止实例并通过同一 transactional.id 的初始化恢复；不能先启动另一笔业务发送再假定旧事务已中止。异常类型、发生 API 和事务阶段共同决定动作。代码采用保守的“提交结果未知就停止”路径，不声称自动解决所有协调器故障。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "DLT 也能是事务输出，但跳过依赖仍是业务决定"
+    },
+    {
+      "type": "paragraph",
+      "text": "坏消息可以与输入 offset 一起在同 Kafka 事务内转交 DLT，使“隔离成功”和“推进原进度”绑定。DLT 应保存原始 value、原 topic/partition/offset、稳定身份、错误分类和 schema 等重放依据，读取方用 read_committed。若 DLT 不可用，本次事务不能把输入当成功处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这只解决责任转交的原子性。订单创建失败后把它送 DLT，又继续处理同订单支付，并不因此业务正确。还需阻止依赖事件、补齐缺口或者重建权威快照。外部修复表与 Kafka offset 不是同一事务，依然要走本地幂等与可靠转交协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q62 Kafka 输入输出怎样纳入同一事务"
+    },
+    {
+      "type": "paragraph",
+      "text": "整批纯转换输出与该批输入后继位移一起提交，读取使用 read_committed，且没有外部数据库副作用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "运行前创建输入输出 topic，配置合适副本、minISR、事务内部 topic 和权限。transactionalId 是稳定逻辑 worker 身份，不能被两个并发实例任意共享。此程序只处理一次有界 poll；没有数据时结束。它不逐条 get，也不独立提交 consumer offset。"
+    },
+    {
+      "type": "paragraph",
+      "text": "任何异常都失败退出，未在未知提交结果上盲目 abort+重做；受控重启使用相同 transactionalId，让事务初始化和已提交消费位置恢复。未决事务在恢复/超时前可能影响下游可读位置，这是简化失败退出策略的代价。生产服务需要完整的错误分类、重试状态机、优雅停机和监控。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    },
+    {
+      "entryId": "own-mq-kafka-code",
+      "label": "Kafka 4.0.2 完整客户端与隔离验证"
+    }
+  ],
+  "questionId": "4"
+}

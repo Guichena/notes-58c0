@@ -1,0 +1,585 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "q-own-jvm-diagnosis",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 与 JVM",
+  "category": "JVM 运行机制与诊断",
+  "title": "监控、GC 故障与 OOM 证据",
+  "number": "3 问",
+  "source": "https://my.feishu.cn/wiki/LHMUwWeOZiLKRZk6tDecxooCnDo",
+  "tags": [
+    "OWN JVM",
+    "Java 21 / HotSpot 21"
+  ],
+  "questions": [
+    {
+      "id": "q-own-jvm-metrics",
+      "order": 210,
+      "question": "诊断JVM应观察什么证据，累计GC时间为何不能推出p99？",
+      "commonPhrasings": [
+        "程序运行时关注哪些 JVM 核心指标？",
+        "两个项目分别用了什么 GC？",
+        "累计 GC 时间能算出 p99 吗？",
+        "堆占用不高，为什么进程仍然危险？",
+        "两个项目用了什么 GC"
+      ],
+      "shortAnswer": "运行中的 JVM 要把内存、GC、线程、类加载与编译、进程资源放在同一时间线上，再用业务吞吐、错误率和尾延迟判断问题是否真的影响服务。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "运行中的 JVM 要把内存、GC、线程、类加载与编译、进程资源放在同一时间线上，再用业务吞吐、错误率和尾延迟判断问题是否真的影响服务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：程序运行时关注哪些 JVM 核心指标？两个项目分别用了什么 GC？累计 GC 时间能算出 p99 吗？堆占用不高，为什么进程仍然危险？"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先证明自己观察的是哪个运行环境"
+        },
+        {
+          "type": "paragraph",
+          "text": "诊断的第一张“底图”是实例身份，而不是参数推荐。记录服务版本、制品或构建哈希、实例与进程启动时间、JDK 发行版和补丁版本、收集器、堆参数、CPU 与内存配额。相同服务名下可能同时存在不同发布版本；同一 PID 也可能在进程退出后被复用。因此，指标差分至少要识别同一实例的同一次启动。"
+        },
+        {
+          "type": "paragraph",
+          "text": "构建时使用 JDK 21，并不能证明生产进程也运行在 JDK 21；启动脚本没有写收集器选项，也不能独立证明最终用了哪一个收集器。环境变量、容器入口脚本和运行时自适应选择都可能影响实际结果。被问到“两个项目用了什么 GC”时，要分别核对各项目部署的版本、启动日志和运行时证据。真实配置暂时不清楚，就说明查证方法，不凭开发机默认值代答。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在有权限的目标进程上，可先使用以下只读检查思路。PID 要替换成已确认的目标，命令是否支持及影响等级以该进程的帮助为准："
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "label": "jvm-code-09.txt",
+          "value": "jcmd <pid> help\njcmd <pid> VM.version\njcmd <pid> VM.command_line\njcmd <pid> VM.flags\njcmd <pid> GC.heap_info\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "java -version 读取的是本次启动的 Java 可执行文件；jcmd <pid> VM.version 针对已经运行的目标进程。两者不能随意互换。getInputArguments() 提供传给 JVM 的输入参数，GC MXBean 提供实际管理器名称，但输入参数不等于全部生效默认值。分享命令行、系统属性和日志前要检查是否包含凭据或业务敏感值。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "把存量、增量与分布分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "内存是存量，增长速度和回收后基线才解释趋势。 堆的 used 是当前已使用量，committed 是 JVM 已承诺可用的容量，max 是允许达到的上限；max 或初始值可以为 -1，表示未定义。它们不是三份相互独立的内存，更不能把 committed 直接当 RSS。即使 used < max，进一步提交内存仍可能因系统资源不足而失败。"
+        },
+        {
+          "type": "paragraph",
+          "text": "年轻代的锯齿式上升再下降通常是分配与回收在工作。值得关注的是：相近负载下，经过能够回收相应区域的收集后，活集是否持续扩大；老年代晋升速度是否超过回收速度；是否出现很多大对象、疏散失败或分配等待。一次 Young GC 后老年代没有下降，不等于老年代泄漏，因为那次收集可能根本不以回收该老年代集合为目标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "非堆需要分别看 Metaspace、Compressed Class Space、Code Cache 等池；直接和映射缓冲区看 BufferPool 的数量、总容量与实际内存使用估计。容量与实际占用不必相等，部分估计值可以未知；库自己的缓冲池还应读其池内空闲、已借出、待释放等指标。堆中的一个小包装对象可能持有很大的本地缓冲。"
+        },
+        {
+          "type": "paragraph",
+          "text": "GC 次数和时间通常是累计计数，不是窗口事件明细。 对标准 GC MXBean，CollectionCount 和 CollectionTime 分别给累计次数和近似累计毫秒数，未知时可返回 -1。先确认进程未重启、管理器未改变，再做前后差分。遇到未知值、计数回退或采样缺口，要保留缺失状态，不能当作零。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设同一进程的同一管理器在 60 秒内，累计次数从 100 变成 130，累计时间从 2000ms 变成 2300ms。可以确认的是：这个口径新增 30 次，累计时间约增加 300ms。再算 300 ÷ 30，得到的 10ms 只是粗略平均，里面没有足够信息推出 p99。"
+        },
+        {
+          "type": "paragraph",
+          "text": "也不能直接把 300ms ÷ 60 秒说成“所有请求停顿占比 0.5%”。先核对统计的是并发收集耗时还是 STW、多个管理器是否有重叠；重叠时段不能直接相加。要回答尾延迟，必须继续看事件级数据和业务请求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要知道尾部，必须保留事件级暂停数据，按 Young、Mixed、Full 或具体并发阶段分组，看窗口内次数、分位数和最大值。并发周期持续五秒不意味着应用暂停五秒；五次短暂停也不等于一次等长长暂停。窗口很小时，p99 可能只是在反复观察最大样本，解释时要带样本量和负载阶段。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程与类加载也要区分当前值、峰值和累计值。 平台线程关注数量、创建速度、运行与阻塞状态、CPU 热点和死锁；线程池另看活跃任务、排队长度、排队时间、拒绝数及任务完成速度。Java 21 的 ThreadMXBean 主要管理平台线程，不能据其数量推导所有虚拟线程。虚拟线程任务需要结合该版本支持的录制事件、线程转储和业务执行器指标，不能把载体线程少理解为并发任务少。"
+        },
+        {
+          "type": "paragraph",
+          "text": "类加载要同时看当前加载数、累计加载数和累计卸载数。累计加载数本来就不会因卸载下降；当前类数、加载器数、Metaspace 一起上升，才值得进一步调查动态生成类或热部署生命周期。编译侧看预热阶段、编译活动、Code Cache 余量及反优化线索。新实例刚启动时的编译 CPU 与稳定态业务热点不是同一种现象。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "把 JVM 放回进程、容器和业务链路"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一窗口至少再关联三组证据："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "CPU：进程消耗、分配到的 CPU 配额、节流时间与次数、宿主争用。容器被节流时，GC 和业务线程都可能排队；平均 CPU 百分比还可能因分母不同而误导。",
+            "内存：RSS、容器当前用量与上限、系统内存压力、缺页和交换。Xmx 之外还有线程栈、元空间、代码缓存、直接内存、GC 元数据和本地库。容器统计也不一定等于某个 Java 进程 RSS，可能包含同容器其他进程和文件缓存等。",
+            "业务：进入请求数、完成请求数、错误与超时、p95/p99、队列深度、最老任务年龄、输入文件尺寸、重试量、缓存条目和下游耗时。吞吐已经掉下去时 GC 次数减少，不能认作优化成功。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "假设某服务回收后堆长期稳定在 1GiB，但 RSS 持续上升，应沿本地缓冲、平台线程、类元数据、本地库以及内存归还行为继续排查；不能因为 Java 堆稳定就说“没有内存问题”，也不能立即说“Java 对象泄漏”。NMT 适合比较 HotSpot 所跟踪类别的增长，需要在启动时开启，可建立 baseline 再看差分；它不覆盖所有非 JVM 本地分配，也有额外开销。NMT 的 reserved、committed 不是操作系统 RSS 的直接替代。"
+        },
+        {
+          "type": "paragraph",
+          "text": "工具的职责应清楚：监控适合发现趋势；GC 日志解释收集类型、原因、阶段与占用变化；JFR 把 GC、分配、CPU、锁和 I/O 等事件放到时间线上；线程转储提供线程状态和调用栈；heap dump 提供堆对象及引用图。它们互补，不是换一个工具就能回答全部问题。日常告警围绕 SLO、资源余量及稳定态基线设置，避免把“GC 次数不为零”当故障。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整示例：读取实际收集器并做有界分配"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的 GcEvidence 面向 Java 21。它保留最多 32 个 16KiB 数组，不断替换旧槽位，总共做 10,000 次分配，并校验最后保留的内容。程序记录运行时身份、输入参数、收集器名称和累计计数前后差分，不把数组长度断言当作“发生过 GC”的证明。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "GcEvidence.java",
+          "value": "import java.lang.management.GarbageCollectorMXBean;\nimport java.lang.management.ManagementFactory;\nimport java.lang.management.MemoryUsage;\nimport java.util.LinkedHashMap;\nimport java.util.List;\nimport java.util.Map;\n\npublic final class GcEvidence {\n    private static volatile int sink;\n    private record Counter(long count, long millis) { }\n\n    private static Map<String, Counter> snapshot(List<GarbageCollectorMXBean> beans) {\n        Map<String, Counter> result = new LinkedHashMap<>();\n        for (GarbageCollectorMXBean bean : beans) {\n            result.put(bean.getName(), new Counter(bean.getCollectionCount(),\n                    bean.getCollectionTime()));\n        }\n        return result;\n    }\n\n    private static String delta(long before, long after) {\n        return before < 0 || after < 0 || after < before\n                ? \"UNKNOWN\" : Long.toString(after - before);\n    }\n\n    private static void memory(String stage) {\n        MemoryUsage u = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();\n        System.out.println(stage + \" HEAP used=\" + u.getUsed()\n                + \" committed=\" + u.getCommitted() + \" max=\" + u.getMax());\n    }\n\n    public static void main(String[] args) {\n        if (Runtime.getRuntime().maxMemory() > 64L * 1024 * 1024) {\n            throw new IllegalArgumentException(\"Use -Xmx32m or -Xmx64m\");\n        }\n        System.out.println(\"VM=\" + System.getProperty(\"java.vm.name\")\n                + \" \" + System.getProperty(\"java.runtime.version\"));\n        System.out.println(\"PID=\" + ProcessHandle.current().pid()\n                + \" START_MS=\" + ManagementFactory.getRuntimeMXBean().getStartTime());\n        System.out.println(\"ARGS=\" + ManagementFactory.getRuntimeMXBean().getInputArguments());\n        List<GarbageCollectorMXBean> beans = ManagementFactory.getGarbageCollectorMXBeans();\n        System.out.println(\"GC=\" + beans.stream().map(GarbageCollectorMXBean::getName).toList());\n        memory(\"BEFORE\");\n        Map<String, Counter> before = snapshot(beans);\n        long start = System.nanoTime();\n        byte[][] retained = new byte[32][];\n        for (int i = 0; i < 10_000; i++) {\n            byte[] chunk = new byte[16 * 1024];\n            chunk[0] = (byte) i;\n            retained[i % retained.length] = chunk;\n            sink += chunk[0];\n        }\n        long elapsed = System.nanoTime() - start;\n        Map<String, Counter> after = snapshot(beans);\n        for (int slot = 0; slot < retained.length; slot++) {\n            int last = 9_999 - ((9_999 - slot) % retained.length);\n            if (retained[slot] == null || retained[slot].length != 16 * 1024\n                    || retained[slot][0] != (byte) last) {\n                throw new AssertionError(\"Bounded retention invariant failed\");\n            }\n        }\n        for (String name : before.keySet()) {\n            Counter a = before.get(name);\n            Counter b = after.get(name);\n            System.out.println(name + \" COUNT=\" + b.count() + \" TIME_MS=\" + b.millis()\n                    + \" DELTA_COUNT=\" + delta(a.count(), b.count())\n                    + \" DELTA_TIME_MS=\" + delta(a.millis(), b.millis()));\n        }\n        memory(\"AFTER\");\n        System.out.println(\"WORKLOAD_NS=\" + elapsed + \" sink=\" + sink);\n        System.out.println(\"PASS bounded allocation; counters are not pause percentiles or a benchmark\");\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以在独立实验目录编译后，以小堆、明确的 G1 选择和轮转日志运行："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "jvm-code-11.sh",
+          "value": "mkdir -p classes logs\njava -Xmx128m -m jdk.compiler/com.sun.tools.javac.Main \\\n  -source 21 -target 21 -Xlint:all -Werror -encoding UTF-8 \\\n  -d classes GcEvidence.java\njava -Xms32m -Xmx32m -XX:+UseG1GC \\\n  '-Xlog:gc*,safepoint:file=logs/gc.log:time,uptime,level,tags:filecount=2,filesize=1m' \\\n  -cp classes GcEvidence\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "每轮分配 16KiB、保留 32 份只描述程序控制的数组负载，不代表整个进程恰好使用 512KiB。类加载、管理接口、数组对象头、日志与 JVM 自身也需要资源。最后检查日志是否真的出现 Young 暂停，再看相应管理器的增量。不要要求每台机器收集次数和毫秒数相同；计数读取也不是对整个运行时的一次原子快照。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个例子适合验证“我读到了哪个 JVM、哪个收集器、什么累计值”，不适合比较 G1 与 ZGC 快几倍，也不能代表生产 p99。性能对比还需要预热、代表性负载、重复窗口、CPU 与总内存预算以及端到端业务指标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问时可继续回答：如果累计次数变小，先查进程身份或计数重置；如果 GC 时间低但请求慢，转向排队、锁、I/O、分配等待与调度；如果 max=-1，展示绝对占用和可用的外部限额，而不是计算没有意义的使用率。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [
+        {
+          "entryId": "bg-线上排障-2",
+          "label": "CPU/线程栈/代码定位已覆盖基础；无 MXBean 累计值语义、事件分布及示例。",
+          "questionId": "0"
+        },
+        {
+          "entryId": "doc-23",
+          "label": "列监控与 GC 日志；未给指标定义。"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-gc-troubleshooting",
+      "order": 220,
+      "question": "GC从一秒变五秒或频繁Full GC时，怎样逐步定位与验证？",
+      "commonPhrasings": [
+        "原来 GC 一秒完成，现在五秒，怎么排查？",
+        "线上 Full GC 很频繁怎么办？",
+        "jstack 有什么用？",
+        "响应时间周期性从 50ms 变成几秒，是不是 GC？"
+      ],
+      "shortAnswer": "GC 从一秒变成五秒时，先确认比较的是同一种事件和同一时间口径，再把耗时拆到阶段、存活数据和系统资源上；频繁 Full GC 则要进一步找到为何反复需要全堆恢复或显式收集。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "GC 从一秒变成五秒时，先确认比较的是同一种事件和同一时间口径，再把耗时拆到阶段、存活数据和系统资源上；频繁 Full GC 则要进一步找到为何反复需要全堆恢复或显式收集。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：原来 GC 一秒完成，现在五秒，怎么排查？线上 Full GC 很频繁怎么办？jstack 有什么用？响应时间周期性从 50ms 变成几秒，是不是 GC？"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先固定口径，再建立事件时间线"
+        },
+        {
+          "type": "paragraph",
+          "text": "“一秒”和“五秒”可能分别是请求延迟、一次 STW、整个并发标记周期，甚至某监控窗口累计耗时。先问清定义，再对齐 JDK、GC、堆与容器配额、实例规格和部署版本。Young 变成 Full，是回收路径发生变化；并发标记周期变长，也不能直接说停顿增长五倍。"
+        },
+        {
+          "type": "paragraph",
+          "text": "将业务尖刺、日志时间戳、JVM uptime 和 GC ID 对齐。GC ID 用于关联一次收集的阶段，但不应把安全点日志或相邻所有行强行归入同一 GC。JDK 9 以后的 HotSpot 可用统一日志保留 gc、阶段与 safepoint 信息，并给磁盘配额与轮转。只开摘要看不见关键阶段时，再在受控窗口提高所需标签的级别，避免长期全量 debug 日志把磁盘和 I/O 打满。"
+        },
+        {
+          "type": "paragraph",
+          "text": "安全点总耗时至少要区分：发起请求后，线程到达安全点花了多久；已经进入安全点后，执行 VM 操作又花了多久。若主要慢在到达安全点，单调堆大小未必能解决；若主要慢在疏散复制，就应回到活对象和目标空间。业务线程被暂停后的积压还可能在恢复后继续影响延迟，因此请求尖刺可能长于 GC 暂停本身。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "按最慢阶段提出可反驳的假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "复制、疏散或整理变慢：先看工作量。 对采用 STW 疏散的年轻代收集，回收集合容量相同，不代表存活对象数量、字节数及引用扫描量相同。队列积压会让原本很快结束的请求对象跨过多次 GC；新增缓存会增加存活集；重试并发可能让同一份资料出现多份表示。看对象年龄、晋升量、收集集中的存活字节、老年代余量，判断是多做了复制工作，还是目标空间不足。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对 G1，继续看 Humongous Region 数量、可用 Region、疏散失败及 Full 前的收集序列。大对象可能需要连续的 Region，显示“总空闲还不少”不代表该次分配能成功。Region 大小、对象阈值和疏散机制本身需要结合具体版本；诊断时优先用实际日志中的 Region 大小与完整对象大小，而不是只看数组有效载荷。"
+        },
+        {
+          "type": "paragraph",
+          "text": "根或堆引用扫描变慢：看保留图的形状。 线程大量增长可能增加栈根扫描工作；密集跨代、跨 Region 引用以及待处理的卡信息可能增加扫描量。观察 G1 的 Merge Heap Roots、Scan Heap Roots 等阶段以及对应版本的细项，不把 SATB 标记日志和记忆集扫描混成同一件事。只有这些阶段确实占主要时间，才值得围绕跨区引用、对象组织或 Region 粒度做实验。"
+        },
+        {
+          "type": "paragraph",
+          "text": "引用处理或类卸载变慢：看对象类别与生命周期。 大量软、弱、虚引用以及需要处理的清理关联可能增加引用处理工作；动态生成类和加载器增长可能增加元数据压力。不是看见一个引用处理阶段就要关掉引用机制，而是找为什么这些对象集中产生、为什么加载器长久不退役，以及可否减少不必要的注册和临时结构。"
+        },
+        {
+          "type": "paragraph",
+          "text": "GC 得不到 CPU 或被系统拖慢：先把“干了多久活”和“等了多久”分开。 日志的 User、Sys 是 CPU 时间，Real 是经过的墙钟时间。并行 GC 会把多个线程的 CPU 时间累计起来，所以 User 总和大于 Real 并不奇怪。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若 Real 明显增长，CPU 工作量却没有相应增长，先查容器节流、宿主争用、调度延迟和虚拟化环境。若 Sys 升高，再查内存提交、缺页、系统内存压力、交换和日志写入。高 Sys 能给调查方向，但不能单独证明某个原因。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Xms=Xmx 或预触页可把部分提交成本移到启动阶段，但会提高启动成本和内存预算要求，不能当成诊断前的固定模板。先证明相关成本在故障窗口出现，才有理由试验。增加 GC 线程数也受可用 CPU 约束，线程更多可能只是让业务与 GC 争抢同一份配额。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Full GC 要沿“触发原因—回收收益—再次触发”看一整段"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确认日志确实是 Full，而不是监控把所有老年代活动都标成 Full。历史 CMS 的并发老年代周期与全堆停顿不是同义词，G1 的 Mixed 也不是 Full。再看 cause 和前后事件："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "显式请求或工具操作。 若原因是 System.gc() 或诊断请求，追查业务库、定时任务及运维操作。不要看到 Full 就先认定堆泄漏。禁止显式请求或使其走并发路径，需要核对版本、收集器、直接内存回收等依赖和实际收益；外部工具仍可能请求收集。",
+            "分配、晋升或疏散进展不足。 检查 Full 前年轻代是否频繁晋升、G1 并发标记是否来不及完成、Humongous 是否突增，以及回收所需余量是否被压缩。历史 CMS 还要看碎片与并发失败线索。应用分配速度突然变快、活集变大和 CPU 变少，都可能让原先够用的配置失效。",
+            "元数据压力。 结合 Metaspace 和类加载器数量，确认是正常的新类加载峰值、上限过小，还是旧加载器无法卸载。堆空间充足不意味着元空间也有余量；也不能说元空间只能靠 Full GC 才回收。",
+            "回收后仍很满。 若 Full 能回收很多空间但很快再次触发，重点查分配速率、并发峰值、晋升与配置；若在稳定负载下回收收益很小、回收后基线持续抬高，查真正活数据增长和泄漏。两类问题可以并存，不能只选一个解释。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Full GC 后基线抬升是线索，不是泄漏判决。缓存暖机、会话增长和业务数据增长也能产生类似曲线。最后要用对象保留路径和业务释放条件区分它们。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "周期性尖刺：先做竞争假设，再缩小到 GC"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设高并发压测时，正常请求约 50ms，随着流量上涨，响应时间稳定周期性冲到数秒。周期性不能证明 GC；可以同时建立以下检验："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "若尖刺与 STW 完整重合，且恢复后短暂排队消散，再看对应 GC 类型和阶段。",
+            "若线程池活跃数到顶、队列年龄先上升、拒绝随后出现，而 GC 稍后才加重，可能是任务堆积先延长对象寿命。看线程栈是否集中等待下游或连接池。",
+            "若数据库调用段先变慢，检查慢查询、锁等待和连接获取时间；若 Redis 调用段先变慢，检查其阻塞与服务端延迟。JVM 参数不能替代下游诊断。",
+            "若定时批处理、缓存刷新、重试退避或流量周期与尖刺同相位，检查它们是否制造集中分配或资源争抢。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "用链路追踪拆开排队、执行与下游等待，核对服务器和压测机时钟；必要时观察多次相同周期。线程转储适合查看阻塞链、线程爆炸或热点位置，jstack 不能直接证明“哪个堆对象泄漏”。一份采样栈里看到业务方法，也不能证明整个几秒都花在那里。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "止损、验证和回滚"
+        },
+        {
+          "type": "paragraph",
+          "text": "影响已经扩散时，先用已有机制限制输入尺寸、并发、重试或批量，必要时隔离异常实例、恢复被误降的资源或回滚刚发布的改动。止损后保留足够现场，再深入分析；不要为了拿一个 dump 让所有实例同时停顿，也不要因急于重启而丢掉唯一可用日志。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每次实验明确一个主要假设。例如“消费减慢导致队列长期保留大数组”，就先限制待处理字节数或修复消费者，再比较相同输入与并发下的队列年龄、回收后活集、GC 阶段时间和请求 p99。若降低暂停目标后次数上升、CPU 更高、业务 p99 更差，说明只优化了局部指标，应回滚，而不是继续盲目压低目标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整结论应说得出：哪类事件变慢、哪个阶段多耗时、什么数据或资源变化解释它、哪个改动改变了该证据，以及付出了什么代价。没有现场日志时，可以给出这个流程和候选原因，不能把“一秒变五秒”直接诊断成某个真实事故。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [
+        {
+          "entryId": "bg-线上排障-1",
+          "label": "先止损按资源取证已有；无 GC 类型/阶段/时间口径与 Full 触发链。",
+          "questionId": "0"
+        },
+        {
+          "entryId": "doc-23",
+          "label": "频率、暂停、分配、老代增长列举已有；无逐阶段诊断。"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-oom",
+      "order": 230,
+      "question": "怎样区分内存泄漏、OOM、栈溢出及跨进程资源边界？",
+      "commonPhrasings": [
+        "有 GC 为什么还会泄漏？",
+        "线上 OOM 怎么一步步排查？",
+        "怎样分别让堆、元空间、直接内存和栈达到边界？",
+        "ThreadLocal 为什么会泄漏？",
+        "大文件解析为什么容易 OOM？"
+      ],
+      "shortAnswer": "Java 有 GC 仍会泄漏，因为 GC 只能判断可达关系，不能判断业务还需不需要对象；OOM 则是某类分配失败，既可能来自泄漏，也可能来自正常活集、突发峰值、上限或本地资源不足。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Java 有 GC 仍会泄漏，因为 GC 只能判断可达关系，不能判断业务还需不需要对象；OOM 则是某类分配失败，既可能来自泄漏，也可能来自正常活集、突发峰值、上限或本地资源不足。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：有 GC 为什么还会泄漏？线上 OOM 怎么一步步排查？怎样分别让堆、元空间、直接内存和栈达到边界？ThreadLocal 为什么会泄漏？大文件解析为什么容易 OOM？"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先定位失败资源，不要先改 Xmx"
+        },
+        {
+          "type": "paragraph",
+          "text": "OOM 排查的第一步是确认“哪一种资源分配失败”。先保留完整异常类型、消息、堆栈和时间，再核对 JDK、启动参数、容器限制以及进程是否还活着。"
+        },
+        {
+          "type": "paragraph",
+          "text": "抛错栈通常指向最后那次失败的分配，不一定指向此前耗尽资源的保留者。因此不能看见某个方法抛 OOM，就认定它是泄漏入口。同样一句“内存满了”，下面这些错误会把调查带向不同资源："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "Java heap space：Java 堆中的一次分配无法满足。检查对象活集、数组规模、并发峰值和堆上限。缓存泄漏只是其中一种原因。",
+            "GC overhead limit exceeded：在适用的 HotSpot 收集策略下，运行时间大量消耗在 GC、回收进展很小。关闭该保护不会自动创造可用空间，必须核对活集与容量；不要把某个策略的阈值泛化到所有收集器。",
+            "Requested array size exceeds VM limit：申请的单个数组超过实现能支持的尺寸；不是只要物理内存多就能分配任意长度数组。检查长度计算、整数溢出和是否本就该分块。",
+            "Metaspace 或 Compressed class space：定位类元数据相应区域。检查上限、动态类生成、加载器数量和卸载情况；调整 Java 堆无法直接取消这些上限。",
+            "含 direct buffer memory 的错误：检查 NIO 直接缓冲的额度、池和持有关系。MaxDirectMemorySize 管的是相关直接缓冲预算，不是进程所有 native 分配的总上限。",
+            "unable to create native thread：检查平台线程数量、线程栈与本地内存、操作系统和容器任务数限制。线程数、栈大小和堆大小共同挤占进程资源，扩大堆有时反而让问题更严重。",
+            "StackOverflowError：通常是当前线程调用栈深度超过可用空间，例如无终止递归或过深调用链。应检查递归终止和算法结构，再评估栈预算，不能用 Xmx 修复。",
+            "进程直接被系统或容器终止：检查退出原因、内核与容器事件、内存峰值。被 kill 不一定有 Java OOME，也不保证有 heap dump；退出码 137 本身也不能独立证明 OOM kill。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "如果是 JNI 或本地库分配失败，还可能出现本地 OOM、崩溃或错误日志，需要操作系统内存映射和对应库的工具。PC 寄存器不是“给它多分点对象就能复现溢出”的区域；不要为了凑齐内存分区而编造实验。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从趋势找到不合理保留者"
+        },
+        {
+          "type": "paragraph",
+          "text": "先用低影响证据重建现场：相近业务负载下的回收后占用、对象或缓存条目数量、队列长度、会话数、输入规模、线程与加载器数量；把发布和异常重试标在时间线上。一个有限缓存从空到满后稳定，通常与无限增长不同；消费速度不足形成的积压也可能有明确业务原因。诊断既要问“对象还可达吗”，也要问“为什么现在仍需要它”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象直方图能说明类的数量与浅大小分布，不能直接给所有权。heap dump 是更完整的对象图，但采集可能带来长停顿、触发 GC、占用大磁盘，且包含文档内容、用户数据甚至秘密。先确认影响、可用空间、访问与保留策略，再选择必要的实例和时机。以 HotSpot 21 的 GC.heap_dump 为例，默认会请求 Full GC；-all 可包含不可达对象，但不意味着无停顿或无开销。分析不同 dump 时也要知道是否包含不可达对象，否则比较可能失真。"
+        },
+        {
+          "type": "paragraph",
+          "text": "三个概念决定如何读图："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Shallow size 是对象本身占用，不包含它引用的所有后代。一个很小的集合或缓冲包装器可能保留巨大内容。",
+            "Retained size 表示若该对象不可达，连带可变为不可达的一组对象的大小，依赖分析器采用的引用边界。它不是“该对象分配过的总字节数”，也不是任意删除一个字段后立刻能归还给操作系统的字节数。",
+            "Dominator 描述支配关系：若从分析所用根出发到对象 B 的所有路径都经过 A，则 A 支配 B。支配树帮助找具有控制作用的上游节点；多个对象的 retained size 可能重叠，不能随意求和。最短根路径只是便于阅读的一条路径，修掉它后还可能存在其他强保留路径。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "例如 静态注册表 → 任务上下文 → 分块集合 → byte[]，应追问任务完成后谁负责注销上下文。最多的 byte[] 是被保留的数据，长期存活的注册表才可能是修复入口。再结合两次可比快照中同类对象和所有者的增长，避免凭一张“最大对象”截图下结论。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "常见泄漏不是“没有回收”，而是生命周期错配"
+        },
+        {
+          "type": "paragraph",
+          "text": "缓存与队列。 无界 Map、只有写入没有真正生效的过期策略、队列生产持续快于消费，都可能保留数据。TTL 不是容量上限，短时间内写入量极大仍会造成峰值；限制条目数也未必限制字节数，因为任务大小差异很大。缓存应同时考虑容量、失效和重建代价，队列应结合待处理字节数、并发与背压。清空缓存可能带来集中回源，要有分批和回滚方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ThreadLocal。 先沿 OpenJDK 21 的持有关系看：线程内部 Map 的 key 对 ThreadLocal 是弱引用，Entry 却仍强持有 value。key 被清除，只断了 key 的关联，不代表 value 当场消失；清理通常依赖后续相关操作，线程池的长寿命线程不能只等偶然清理。即使 ThreadLocal 一直被 static 强持有，漏掉任务结束时的 remove()，也会延长 value 的寿命。"
+        },
+        {
+          "type": "paragraph",
+          "text": "修复应落在任务边界：把设置与清理配对，成功、异常、取消都经过它；有嵌套上下文时，要保存并恢复外层值，不能清掉别人拥有的状态。把 value 一律换成弱引用，会让业务数据可能意外消失，并不是通用修复。"
+        },
+        {
+          "type": "paragraph",
+          "text": "监听器、回调与定时任务。 一个页面、会话或任务结束了，但全局注册表仍持有监听器；监听器又捕获外部对象，于是整条图继续存活。检查注册是否有注销，取消是否真正从容器移除，完成回调是否又把大上下文捕获到另一个长期 Future 中。修复要落到生命周期的拥有者，而不是让每个下游都猜何时释放。"
+        },
+        {
+          "type": "paragraph",
+          "text": "类加载器。 热部署或动态生成类后，旧加载器可能仍被线程上下文加载器、定时任务、缓存或 JNI 引用留住，进而保留其类元数据。加载器和类可以卸载需要满足相应可达性条件，也不保证立刻执行。要看同一应用版本是否留下越来越多加载器，而不是把每个新代理类都判为框架泄漏。"
+        },
+        {
+          "type": "paragraph",
+          "text": "直接缓冲与视图。 小的 slice 或 duplicate 可能共享一整块本地存储，保留小视图会延长大块内存寿命。显式资源关闭、缓冲池归还和 Java 包装对象可达性是不同层面的协议。释放后 RSS 未立即下降也不独立证明泄漏，分配器和系统可能保留已可复用页面。应同时验证池可复用容量、存活引用和本地资源趋势。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "大文件和跨进程链路的峰值预算"
+        },
+        {
+          "type": "paragraph",
+          "text": "处理大文档时，文件字节数不是堆预算。原始上传 byte[]、解码文本、解析树、全部分块、向量化批次、重试副本可能同时存在；解压内容也可能远大于压缩文件。峰值由各阶段同时活着的表示决定，不是把文件大小乘一个永远固定的系数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一种有用的预算分解是：基础活集 + 各并发阶段的在途任务数 × 每任务峰值驻留 + 排队数据 + 缓冲池及安全余量。这个关系用于列清需要测量的量，不是精确容量公式。队列只传任务标识也不代表工作进程不会一次读完整个文件；异步化会缩短请求链路，但若增加了在途任务数，总内存仍可能上升。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对于几十 GB 的文件，且题目不允许使用 Redis、Kafka 等中间件，应让读取、解析、去重和输出都具有明确内存上限：固定大小读取缓冲，正确处理跨块的行和多字节字符；解析器真正按流消费；输出逐批写出；并发与待输出数据有上界。readAllBytes()、先收集成完整 List、再写出的流式 API 外壳都不算有界处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读入有界，不代表去重也有界。边读边把全部 ID 塞进 HashSet，内存仍随不同 ID 数量增长；每块单独去重，又会漏掉跨块重复。先明确是否要求精确的全局去重，再选择能满足它的路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要精确全局去重时，可以评估磁盘外排序，或分区后逐批去重；题目允许时，也可借助数据库唯一约束。随之要核算临时磁盘、数据倾斜、分区过大、重复处理和输出原子性。内存必须容纳最坏的一批，装不下就继续拆分或归并。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单个超长记录、压缩炸弹和不能流式解析的格式，仍需拒绝、限额或隔离。完成、失败和取消都要清理临时文件；否则只是把堆耗尽变成了磁盘耗尽。"
+        },
+        {
+          "type": "paragraph",
+          "text": "当 Java Host 与 Python Worker 分工时，先确认增长发生在哪个进程、哪个容器与哪个阶段。Java heap dump 无法解释 Python 对象或模型 native 内存；Python Worker 的峰值也不能直接算进 Java Xmx。若共享总资源上限，两边预算必须相加并留余量；若独立部署，则分别看各自限制及跨进程队列。通信协议、模型执行方式和部署拓扑都需要依据实际实现，不能从“跨语言”三个字推断。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整示例：四种低限额资源边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "MemoryBoundaries 仅用于独立实验子进程，面向 HotSpot 21，利用相同 Seed.class 被不同定义加载器加载并强保留的方式增加元数据占用。程序先校验小堆及相应限额，再制造指定失败；每种模式严格检查类型与消息，避免把“任何 OOME”都当成功。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "MemoryBoundaries.java",
+          "value": "import com.sun.management.HotSpotDiagnosticMXBean;\nimport java.lang.management.ManagementFactory;\nimport java.nio.ByteBuffer;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic final class MemoryBoundaries {\n    private static final int MIB = 1024 * 1024;\n    private static final List<Object> ROOT = new ArrayList<>(10_000);\n    private static int depth;\n\n    private static final class Loader extends ClassLoader {\n        Loader() { super(null); }\n        Class<?> define(byte[] data) {\n            return defineClass(\"Seed\", data, 0, data.length);\n        }\n    }\n\n    private static void recurse() {\n        depth++;\n        recurse();\n    }\n\n    private static long option(String name) {\n        return Long.parseLong(ManagementFactory\n                .getPlatformMXBean(HotSpotDiagnosticMXBean.class)\n                .getVMOption(name).getValue());\n    }\n\n    public static void main(String[] args) throws Exception {\n        if (args.length < 1 || Runtime.getRuntime().maxMemory() > 64L * MIB) {\n            throw new IllegalArgumentException(\"Use an isolated child with -Xmx64m or less\");\n        }\n        String mode = args[0];\n        byte[] seed = null;\n        switch (mode) {\n            case \"heap\" -> {\n                if (Runtime.getRuntime().maxMemory() >= 32L * MIB) {\n                    throw new IllegalArgumentException(\"heap mode needs -Xmx16m\");\n                }\n            }\n            case \"direct\" -> {\n                long cap = option(\"MaxDirectMemorySize\");\n                if (cap <= 0 || cap > MIB) {\n                    throw new IllegalArgumentException(\"direct mode needs direct cap <= 1MiB\");\n                }\n            }\n            case \"stack\" -> {\n                long kib = option(\"ThreadStackSize\");\n                if (kib <= 0 || kib > 512) {\n                    throw new IllegalArgumentException(\"stack mode needs -Xss256k\");\n                }\n            }\n            case \"metaspace\" -> {\n                long cap = option(\"MaxMetaspaceSize\");\n                if (cap <= 0 || cap > 16L * MIB || args.length != 2) {\n                    throw new IllegalArgumentException(\"metaspace mode needs cap <= 16MiB and Seed.class\");\n                }\n                Path path = Path.of(args[1]);\n                if (Files.size(path) > 64 * 1024) {\n                    throw new IllegalArgumentException(\"Unexpectedly large class file\");\n                }\n                seed = Files.readAllBytes(path);\n                ROOT.add(new Loader().define(seed));\n            }\n            default -> throw new IllegalArgumentException(\"Unknown mode\");\n        }\n        System.out.println(\"START bounded boundary test\");\n        try {\n            switch (mode) {\n                case \"heap\" -> ROOT.add(new byte[32 * MIB]);\n                case \"direct\" -> ROOT.add(ByteBuffer.allocateDirect(2 * MIB));\n                case \"stack\" -> recurse();\n                case \"metaspace\" -> {\n                    for (int i = 1; i < 10_000; i++) {\n                        ROOT.add(new Loader().define(seed));\n                    }\n                }\n                default -> throw new AssertionError(\"Validated mode changed\");\n            }\n        } catch (StackOverflowError error) {\n            if (!mode.equals(\"stack\") || depth == 0) throw error;\n            System.out.println(\"PASS StackOverflowError\");\n            return;\n        } catch (OutOfMemoryError error) {\n            String message = error.getMessage();\n            boolean expected = switch (mode) {\n                case \"heap\" -> \"Java heap space\".equals(message);\n                case \"direct\" -> message != null && message.contains(\"direct buffer memory\");\n                case \"metaspace\" -> \"Metaspace\".equals(message);\n                default -> false;\n            };\n            if (!expected) throw error;\n            // Constant output avoids new concatenation call sites after metaspace exhaustion.\n            System.out.println(message);\n            System.out.println(\"PASS expected OutOfMemoryError domain\");\n            return;\n        }\n        throw new AssertionError(\"Expected resource boundary was not reached\");\n    }\n}\n\nclass Seed { int value; }\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "四种模式分别采用以下实验条件："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "heap：-Xmx16m 下申请 32MiB 数组，预期 Java heap space。",
+            "direct：-Xmx32m -XX:MaxDirectMemorySize=1m 下申请 2MiB 直接缓冲，预期消息包含 direct buffer memory。",
+            "stack：-Xmx32m -Xss256k 下有意递归，预期 StackOverflowError；深度取决于实现和执行状态，不以固定层数为结论。",
+            "metaspace：-Xmx64m -XX:MaxMetaspaceSize=16m，用至多 10,000 个不同加载器定义同一类并保留 Class，预期 Metaspace。同名类由不同加载器定义时属于不同的类身份，重复定义并不是在同一个加载器里覆盖原类。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "不要把这些条件直接注入已有服务，也不要通过海量创建线程或耗尽宿主内存补做演示。在独立实验目录中创建 code 子目录，将前面的两个完整 Java 程序分别保存为 code/GcEvidence.java 和 code/MemoryBoundaries.java；Seed 已包含在后一个文件中，无需另建源码。先确认 /usr/bin/java 是带有编译模块的 HotSpot 21 JDK。下面的完整脚本面向 Linux/POSIX，保存为 code/run_examples.py。"
+        },
+        {
+          "type": "paragraph",
+          "text": "脚本清除可能注入额外 JVM 选项的环境变量，分别启动子进程，设置 20 秒墙钟、15 秒 CPU、64KiB 捕获输出和 8MiB 单文件大小上限，并关闭 core dump。编译进程的 Java 堆上限是 128MiB；演示子 JVM 使用 16、32 或 64MiB 堆，并限制元空间、直接缓冲、栈和代码缓存。它还检查未按要求设小堆的启动会被拒绝。编译产物和日志写入实验目录中的 example-output，这些限额用于演示安全边界，不是生产参数建议。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "run_examples.py",
+          "value": "\"\"\"Run only the bounded Java examples in this package on a POSIX host.\"\"\"\nimport json\nimport os\nfrom pathlib import Path\nimport resource\nimport selectors\nimport signal\nimport subprocess\nimport time\n\nROOT = Path(__file__).resolve().parents[1]\nOUTPUT = ROOT / \"example-output\"\nCLASSES = OUTPUT / \"classes\"\nCLASSES.mkdir(parents=True, exist_ok=True)\nENV = os.environ.copy()\nfor variable in (\"JAVA_TOOL_OPTIONS\", \"JDK_JAVA_OPTIONS\", \"_JAVA_OPTIONS\"):\n    ENV.pop(variable, None)\n\n\ndef child_limits():\n    resource.setrlimit(resource.RLIMIT_CPU, (15, 15))\n    resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))\n    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n\n\ndef run(name, arguments, deadline=20, output_cap=64 * 1024):\n    start = time.monotonic()\n    child = subprocess.Popen(\n        arguments, cwd=ROOT, env=ENV, stdout=subprocess.PIPE,\n        stderr=subprocess.STDOUT, start_new_session=True, preexec_fn=child_limits,\n    )\n    selector = selectors.DefaultSelector()\n    selector.register(child.stdout, selectors.EVENT_READ)\n    output = bytearray()\n    reason = \"completed\"\n    while selector.get_map():\n        if time.monotonic() - start > deadline:\n            reason = \"wall_timeout\"\n            os.killpg(child.pid, signal.SIGKILL)\n            break\n        for key, _ in selector.select(0.2):\n            data = os.read(key.fd, 4096)\n            if not data:\n                selector.unregister(key.fileobj)\n                continue\n            output.extend(data)\n            if len(output) > output_cap:\n                reason = \"output_cap\"\n                os.killpg(child.pid, signal.SIGKILL)\n                break\n        if reason != \"completed\":\n            break\n    child.wait()\n    selector.close()\n    child.stdout.close()\n    (OUTPUT / (name + \".log\")).write_bytes(output[:output_cap])\n    result = {\n        \"name\": name, \"argv\": arguments, \"exit_code\": child.returncode,\n        \"elapsed_seconds\": round(time.monotonic() - start, 3),\n        \"termination\": reason, \"wall_timeout_seconds\": deadline,\n        \"output_cap_bytes\": output_cap, \"cpu_limit_seconds\": 15,\n        \"file_size_limit_bytes\": 8 * 1024 * 1024, \"output_bytes\": len(output),\n    }\n    print(name, child.returncode, reason, len(output))\n    return result\n\n\njava = [\"/usr/bin/java\"]\nruns = [run(\"version\", java + [\"-version\"])]\nruns.append(run(\"compile\", java + [\n    \"-Xmx128m\", \"-XX:ActiveProcessorCount=2\", \"-m\",\n    \"jdk.compiler/com.sun.tools.javac.Main\", \"-source\", \"21\", \"-target\", \"21\",\n    \"-Xlint:all\", \"-Werror\", \"-encoding\", \"UTF-8\", \"-d\", str(CLASSES),\n    str(ROOT / \"code/GcEvidence.java\"), str(ROOT / \"code/MemoryBoundaries.java\"),\n]))\nassert runs[-1][\"exit_code\"] == 0, \"Compilation failed\"\n\ncommon = java + [\n    \"-XX:ActiveProcessorCount=2\", \"-XX:ReservedCodeCacheSize=32m\",\n    \"-XX:CompressedClassSpaceSize=16m\", \"-XX:MaxDirectMemorySize=1m\",\n    \"-XX:MaxMetaspaceSize=16m\", \"-Xss256k\",\n]\nruns.append(run(\"gc_evidence\", common + [\n    \"-Xms32m\", \"-Xmx32m\", \"-XX:+UseG1GC\",\n    \"-Xlog:gc*,safepoint:file=example-output/gc.log:time,uptime,level,tags:filecount=2,filesize=1m\",\n    \"-cp\", str(CLASSES), \"GcEvidence\",\n]))\nfor mode, heap in ((\"heap\", \"16m\"), (\"direct\", \"32m\"),\n                   (\"stack\", \"32m\"), (\"metaspace\", \"64m\")):\n    arguments = common + [\"-Xms\" + heap, \"-Xmx\" + heap,\n                          \"-cp\", str(CLASSES), \"MemoryBoundaries\", mode]\n    if mode == \"metaspace\":\n        arguments.append(str(CLASSES / \"Seed.class\"))\n    runs.append(run(mode, arguments))\n\n# This child is rejected before its deliberate 32 MiB heap allocation.\nruns.append(run(\"reject_unsafe\", java + [\n    \"-Xmx128m\", \"-cp\", str(CLASSES), \"MemoryBoundaries\", \"heap\",\n]))\n(OUTPUT / \"runs.json\").write_text(json.dumps(runs, indent=2) + \"\\n\")\nassert all(r[\"exit_code\"] == 0 and r[\"termination\"] == \"completed\" for r in runs[:-1])\nassert runs[-1][\"exit_code\"] != 0\nfor name in (\"heap\", \"direct\", \"stack\", \"metaspace\", \"gc_evidence\"):\n    assert \"PASS\" in (OUTPUT / (name + \".log\")).read_text()\nassert \"Pause Young\" in (OUTPUT / \"gc.log\").read_text()\nprint(\"All expected positive and negative checks passed\")\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "从实验目录运行："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "jvm-code-14.sh",
+          "value": "python3 code/run_examples.py\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "错误处理也有资源边界。元空间耗尽后，首次执行字符串拼接、日志框架初始化或动态支持类加载，可能再触发失败；堆耗尽后，大 JSON 告警或异步队列入队也可能分配失败。例子先初始化常用路径并使用固定报告，不在捕获错误后继续执行业务。这样的演示并不证明任意 OOME 都可恢复；生产上应有进程外健康检查、受控退出与重启恢复策略，并保证已受理任务的状态能够核对。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "修复是否有效，要回到完整业务生命周期"
+        },
+        {
+          "type": "paragraph",
+          "text": "复现后保留根路径，修复后重复相同规模的业务：正常完成、超时、失败、重试、取消、热部署都要覆盖。观察缓存和队列是否回到合理区间、旧加载器是否不再持续累积、相关对象在适当回收后是否不再增长，同时比较 p99、吞吐、错误率、RSS 和磁盘。"
+        },
+        {
+          "type": "paragraph",
+          "text": "加堆可能为容量不足或紧急止损争取时间，但对无界增长只会延后失败，并可能扩大最坏暂停或挤占 native 预算。单次调用 System.gc() 后某个弱引用变空，也不能证明所有生命周期路径都已修复。真正的闭环是：找到不符合业务生命周期的保留关系，改变其拥有者，再证明可比负载下该增长不再出现。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [
+        {
+          "entryId": "bg-线上排障-1",
+          "label": "堆/元空间/线程/OOM 与 SOE 区分已有；缺 direct/array/kill 边界、支配树、完整实验。",
+          "questionId": "2"
+        },
+        {
+          "entryId": "doc-23",
+          "label": "泄漏类别有提纲；缺拥有者追踪和失败路径。"
+        },
+        {
+          "entryId": "scenario-external-sort",
+          "label": "有界 run 与归并、临时磁盘/恢复已有；缺无中间件精确全局去重与跨进程预算。"
+        },
+        {
+          "entryId": "scenario-local-cache",
+          "label": "容量不能只靠 TTL 与权重估算已有；非整个 OOM 答案。"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

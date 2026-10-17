@@ -1,0 +1,587 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-java-collections",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 基础与工程实践",
+  "category": "集合机制与并发使用契约",
+  "title": "集合机制与并发使用契约",
+  "tags": [
+    "Java",
+    "面试",
+    "工程实践"
+  ],
+  "questions": [
+    {
+      "id": "q-own-java-collection-contracts",
+      "order": 447,
+      "question": "怎样从重复、顺序、访问与共享条件选择集合？",
+      "shortAnswer": "先明确判等、顺序、访问方式和线程共享，再选择集合；不可修改、独立副本、快照和线程安全是不同保证。",
+      "commonPhrasings": [
+        "Collection 与 Map 是什么关系？List、Set、Queue 分别承诺什么？",
+        "大量数据频繁增删且不能重复，用哪个集合？",
+        "同时要求有序与线程安全，该怎样改造 HashMap？",
+        "容器内部是不是一定使用另一种标准集合？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "选集合前，先问四件事：能不能重复、要哪种顺序、主要怎样访问、是否跨线程共享。条件定下来，再选实现。只说“链表插入快”或“哈希 O1”，还不足以做选择。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Collection 表达元素集合，List 表达带位置的序列，Set 表达按其约定判等的不重复成员，Queue 表达待处理元素的访问纪律，Deque 支持两端操作。Map 表达键到值的映射，不继承 Collection，也不能直接用于增强 for；通常遍历 entrySet、keySet 或 values 视图。Queue 不一定先进先出，例如 PriorityQueue 依优先级出队。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“有序”先要说清是哪一种：List 的位置顺序、LinkedHash 系列的遇见或访问顺序，还是 Tree 系列按比较规则排序。HashMap 不保证顺序；某次按整数递增打印，不会变成接口承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把题目固定为“频繁增删，而且不能重复”，再逐个改变条件："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "没有排序要求，HashSet 通常是起点。",
+            "要保留首次出现的顺序，选 LinkedHashSet。",
+            "要做范围查询和有序导航，考虑 TreeSet。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "如果数据已经放不进单机内存，问题就变成存储与分片，不能只换一个集合名称。"
+        },
+        {
+          "type": "paragraph",
+          "text": "集合通常保存引用。ArrayList 底层的 Object[] 连续存储元素引用，不意味着每个业务对象本身相邻；LinkedList 又增加节点对象与前后引用。比较内存不能只数元素个数，还要考虑桶数组、节点、装箱、对象图、空余容量和 GC 压力，数值估算需绑定 JVM 布局与实际测量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HashMap 的桶数组和内部 Node 链并不是 ArrayList<LinkedList<Entry>>。实现可以直接使用数组和节点，减少包装层并自行控制扩容、遍历、树化和内存布局。原理上能用 ArrayList 实现桶表，但要注意初始 capacity 不等于 size，不能刚 new 就按桶下标 get；额外 API 与自身扩容策略还可能不必要。LinkedList 若充当桶索引表，按桶下标定位要线性扫描，丢掉哈希直接寻址的优势。因此“不能替换”应解释为成本与控制不合适，而不是语法绝对不允许。"
+        },
+        {
+          "type": "paragraph",
+          "text": "集合的不可变、只读、线程安全和快照四者独立。不可修改包装可以仍观察到后端变化；线程安全容器可能允许可变元素；快照可能只复制引用。设计一个返回集合的 API，要把结构能否变、元素能否变、是否关联后端、是否容许 null 和顺序是否稳定分别写清。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-hashmap-mechanism",
+      "order": 515,
+      "question": "HashMap 怎样定位、插入和处理碰撞？",
+      "shortAnswer": "HashMap 先用散列定位桶，再按键身份或 equals 查找；碰撞、扩容与遍历复杂度都依赖明确的实现和负载条件。",
+      "commonPhrasings": [
+        "讲一下 put 的完整流程，什么情况下覆盖，什么情况下 size 增长？",
+        "为什么还要扰动 hashCode？同 hashCode 怎么办？",
+        "为什么容量选择 2 的幂？碰撞除了链地址法还有什么办法？",
+        "HashMap 的查找和遍历都能说成 O(n) 或 O(1) 吗？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "HashMap 查找可以说成两步：先用哈希找桶，再按键的相等关系找映射。 OpenJDK 8 以后的实现使用数组、链表和树桶，既照顾普通访问成本，也控制严重碰撞时的退化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 OpenJDK 21 为例，非 null key 先取 hashCode，再用 h ^ (h >>> 16) 混合高低位，null key 的散列值为 0。桶索引用 (n - 1) & hash。n 是 2 的幂时，n-1 的低位全为 1，索引相当于取需要的低位；高位扰动帮助把原始哈希高位信息带进低位。但它无法把所有相同 hashCode 的键变成不同哈希，也不是密码学防碰撞函数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "put 的过程沿着“这个键已经存在吗”展开："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "表还没分配，先初始化。",
+            "目标桶为空，直接建立节点；不为空，先查桶头，再沿链或树查找等价键。判断同时考虑缓存的 hash，以及键身份或 equals。",
+            "找到已有键，就更新 value、返回旧值，通常不增加 size。",
+            "没找到，才增加映射，再处理树化或全表负载触发的扩容。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "这里的“键唯一”按逻辑相等定义；值可以重复，也可以是 null。"
+        },
+        {
+          "type": "paragraph",
+          "text": "链地址法让多个映射位于同一桶的节点链中。开放寻址则把碰撞元素放在表内其他槽位，需要探测策略、负载控制及正确删除标记。两者有不同的缓存局部性与删除复杂度，不要把所有 Java 哈希结构都描述成 HashMap 的链表模型，例如 IdentityHashMap 的实现就有自己的开放寻址设计。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问“再哈希”时，先确认它指哪件事："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "双重散列：用另一散列函数生成开放寻址的探测步长。步长要和表长配合，确保能遍历需要的槽位；删除时不能随意把探测链路中的槽位标为空。",
+            "扩容后的 rehash：容量增长后，重新分布已有条目。它和上面的探测策略不是同一层意思。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "另一个方案是公共溢出区：把冲突项放进额外区域，并维护查询、插入、删除所需的关联。如果溢出区只能顺序搜索，也可能线性退化。OpenJDK HashMap 的链桶和树桶，并不是这两种方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "理想散列下基本 get/put 常用期望 O(1) 描述；单次扩容要处理旧桶与映射。链桶最坏要逐项检查；树桶虽有平衡结构，但大量同哈希且不能提供有效比较次序的键，某些查找路径仍可能探查多处，不能无条件承诺任何恶意键都严格 O(log n)。攻击面很大时，还要限制输入与总容量，不能认为“JDK8 有红黑树”就结束容量治理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HashMap 的全表遍历成本与 capacity 加 size 成正比，而不只是 size。把容量开得极大、存很少元素，遍历也可能浪费；LinkedHashMap 维护遇见顺序链，其遍历成本通常随 size 增长。若业务要按值搜索，HashMap 并不自动提供值索引，containsValue 一般要遍历。"
+        },
+        {
+          "type": "paragraph",
+          "text": "学习手写 HashMap 时，先实现稳定的不变量：容量为 2 的幂，元素归属正确桶，更新不增加 size，扩容不丢节点，null 与不存在可区分。附带的 MiniHashMap 是单线程、链地址教学实现，刻意不伪装成 JDK 替代品；第 37 节解释如何逐项比较差距。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-hashmap-resize",
+      "order": 561,
+      "question": "HashMap 扩容、树化与退化的触发条件是什么？",
+      "shortAnswer": "扩容重分布全表，树化处理局部碰撞；8、6、64 等阈值必须结合具体 OpenJDK 方法路径和容量解释。",
+      "commonPhrasings": [
+        "默认负载因子 0.75 是什么意思？为什么不是越低越好？",
+        "扩容后为什么节点留在原位置或移动旧容量？",
+        "第 8 个节点就一定树化吗？退化一定发生在剩 6 个时吗？",
+        "为什么选红黑树而不是 AVL？记录量大为何变慢？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "扩容是把全表的桶重新分布，树化是处理某个桶里的长链。先讲清它们解决的不同问题，再讲 8、6、64：这些是特定 OpenJDK 路径的实现阈值，不能离开触发条件单独背。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见默认容量为 16、负载因子为 0.75。在正常已分配表中阈值通常为 capacity×loadFactor，新增映射使 size 超过 threshold 时触发扩容，因此容量 16、阈值 12 时第 13 个不同键通常触发增长。构造器阶段 threshold 字段可能暂存初始容量目标，最大容量等路径也有特殊处理，源码变量不能脱离状态解释。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把容量从 n 扩为 2n，索引掩码只新增一个二进制位。因此旧桶 j 中的节点，若 hash & n 为 0，仍放 j；否则放 j+n。比如 n=16，hash=5 与 hash=21 原来都在桶 5；新容量 32 时分别去 5 与 21。节点缓存了处理后的 hash，拆分不需要为每个键重新调用业务 hashCode。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-java/hashmap-resize.png",
+          "alt": "HashMap 从16扩容到32，旧桶3中的hash3与35留在3，19与51移至19；只检查新增哈希位。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 OpenJDK 21 的普通 putVal 链表尾插路径为例，分两步看树化："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "TREEIFY_THRESHOLD 为 8；这条路径在已有至少 8 个节点后，再插入一个新节点时触发 treeifyBin。常见表现是第 9 个同桶新节点触发尝试。",
+            "treeifyBin 还检查容量。MIN_TREEIFY_CAPACITY 为 64；容量不足 64 时先扩容，让新增索引位有机会分散碰撞，而不是立即树化。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "其他插入路径的计数方式可能不同。因此回答节点数时，要一起说出所在方法和路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "退化也要看路径。UNTREEIFY_THRESHOLD=6 用在扩容拆分树桶后的计数判定；普通删除还有按树结构判断是否太小的逻辑，不能说每次减到 6 就统一退化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不同门槛有助于减少临界点来回转换，但 8 和 6 不是严格概率推导出的普适常数。源码讨论理想散列下的桶长分布，是在解释树桶应相对罕见，也不能据此证明负载因子 0.75 适合所有工作负载。"
+        },
+        {
+          "type": "paragraph",
+          "text": "红黑树限制高度，同时控制更新时的再平衡开销；AVL 对高度有更严格约束，通常更偏重查找平衡，但更新维护方式不同。选型应比较内存、比较器、插删比例与已有实现复杂度，不能概括为“AVL 每次都要更多旋转”或“红黑树总是更快”。树节点更重，小桶用简单链往往更划算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JDK 7 的典型实现使用链表与迁移时的头插，错误并发扩容可能形成环；JDK 8 的迁移结构改变消除了这类特定机制，却没有给 HashMap 增加并发安全。丢更新、可见性和结构竞态仍存在，不能把“没有环”当可共享写入的证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用户记录增多后查询变慢，先定位证据，再改容量。要分别检查：是否冲突严重、是否出现扩容尖峰、equals/hashCode 是否昂贵，以及大值对象、GC、CPU 缓存失效和内存容量是否造成成本。良好散列下，元素变多不等于平均桶查找必然线性增长。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果证据指向频繁扩容，可按期望条目数和负载因子准备容量；Java 19 起的 HashMap.newHashMap 直接接收期望映射数。然后仍要考虑最大项数、TTL、淘汰、分片和外部存储。扩大桶数组可能减少冲突，也会增加空间和遍历成本，不能代替有界缓存设计。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-views-snapshots",
+      "order": 603,
+      "question": "怎样区分集合视图、结构副本和不可修改快照？",
+      "shortAnswer": "视图关联后端，副本独立容器结构，不可修改限制当前修改入口；三者都不自动冻结共享的元素对象。",
+      "commonPhrasings": [
+        "Arrays.asList 的 set、add、remove 分别会怎样？",
+        "List.of、List.copyOf、Collections.unmodifiableList 的区别？",
+        "subList 是副本吗？Map 的 keySet 和 values 呢？",
+        "Stream.toList 与 Collectors.toList 能否直接增删？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "视图会与原容器共享某种状态；副本有独立的容器结构；不可修改只限制当前入口的修改能力。判断返回的集合能否放心使用，要继续问：后端还会变吗，元素本身会变吗？ 三者都不自动复制或冻结元素对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Arrays.asList(String[]) 返回由该数组支持的定长列表，set 会反映到数组，数组元素赋值也会被列表观察到；结构性增删不支持。new ArrayList<>(view) 复制引用到独立可增删容器，但不深拷贝元素。Arrays.asList(int[]) 把整个基本类型数组当作一个元素，得到 size=1 的 List<int[]>；要得到 List<Integer>，应逐项装箱。"
+        },
+        {
+          "type": "paragraph",
+          "text": "比较这三个 API，可以先让源列表发生一次修改："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "Collections.unmodifiableList 是不可修改包装。如果别人仍能改后端列表，包装通常会看到变化。",
+            "List.copyOf 提供不可修改的内容快照语义，源集合结构的后续改变不会反映进去。实现可以复用合格的已有不可修改实例，不保证每次都 new。",
+            "List.of/copyOf 拒绝 null；某些包装容器允许 null，迁移 API 时必须核对。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "包装和 copyOf 都可能共享元素引用，所以“不能增删”仍不等于“元素不会变”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "List.subList 是范围视图，允许的修改通过视图反映到原表。如果原表在视图之外发生结构性修改，其语义可能不再有定义，常见实现抛 ConcurrentModificationException；不能把这种异常当所有实现的安全承诺。长期保存很小的视图还可能延长大底层结构的生命周期，需要独立内容时应显式拷贝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Map.keySet、values、entrySet 也是关联视图。经支持的视图删除通常会删除原 map 映射；一般不能直接向 keySet.add 一个没有 value 的新键。values 可含重复值，按值 remove 通常只删除一个匹配映射，批量删除应明确扫描规则。entry 的 setValue 是否允许、entry 在后续结构变化后是否仍可用，取决于具体视图契约；不要把拿出来的 Entry 默认当永远稳定的独立数据对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Map.get(k)==null 对允许 null 值的 map，可能是未命中，也可能是映射到 null；必要时结合 containsKey。getOrDefault 对存在且映射到 null 的键返回 null，不把它替换成默认值。computeIfAbsent 在无映射或映射为 null 时尝试计算，返回 null 不建立新的非空映射；merge 要求传入的待合并 value 非 null，重映射函数返回 null 表示删除。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 16 的 Stream.toList 返回不可修改列表；Collectors.toList 不保证具体类型、可变性或线程安全，不能依赖“当前碰巧是 ArrayList”。明确需要可变列表时用 toCollection(ArrayList::new)。同理，Map.copyOf 的迭代顺序不应拿来保留原 LinkedHashMap 的业务顺序；需要独立有序只读快照，可以先复制为 LinkedHashMap，再对这个私有副本做不可修改包装。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-iteration-contracts",
+      "order": 639,
+      "question": "迭代删除、fail-fast、快照和弱一致各承诺什么？",
+      "shortAnswer": "迭代修改须遵守具体迭代器协议；fail-fast 尽力发现误用，快照固定结构，弱一致允许部分并发变化，都不自动构成事务。",
+      "commonPhrasings": [
+        "单线程增强 for 中直接 list.remove 为什么也会报错？",
+        "Iterator.remove 可以随便调用吗？",
+        "没有 ConcurrentModificationException 是否说明线程安全？",
+        "CopyOnWriteArrayList 与 ConcurrentHashMap 的迭代有什么不同？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Iterator 封装遍历位置，让调用者不必了解容器内部结构。遇到修改时，再区分三种约定：fail-fast 尽力发现错误修改，快照迭代固定一份结构，弱一致迭代允许观察部分并发变化。它们都不会自动成为业务事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Iterable 上的增强 for 按迭代器协议展开，数组增强 for 则按数组访问处理。hasNext 询问是否还有元素，next 在耗尽时抛 NoSuchElementException。可选的 remove 删除上一次 next 返回的元素，不能在首次 next 前调用，也不能对同一个返回元素重复 remove；不支持修改的实现会抛 UnsupportedOperationException。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单线程里也可能触发 ConcurrentModificationException。ArrayList 等实现保存结构修改计数，迭代器保存自己预期的计数；若绕过迭代器直接 add/remove，两者就可能不一致。"
+        },
+        {
+          "type": "paragraph",
+          "text": "沿迭代器自己的 remove 删除时，它可以同步更新自身状态；ListIterator 还支持按契约 set/add。普通 set 替换元素通常不算结构修改，但这不代表其他实现也如此，更不代表业务可以无同步地并发改值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "检测是 best-effort，不构成 happens-before，不保证每次误用都抛异常。例如某些路径在 hasNext 结束时不再触发检查，出现“没有报错但漏读”并不能证明安全。绝不能用捕获 ConcurrentModificationException 再重试来实现任意并发遍历正确性。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CopyOnWriteArrayList 的迭代器固定创建时数组，后续结构变更不影响它，且不支持 iterator.remove/set/add。旧数组只要还被迭代器引用就可能继续占用内存。复制的是引用，所以同一个可变元素的内部字段仍可能改变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ConcurrentHashMap 的迭代弱一致，可以与更新并行，不是全表单一时刻快照。它不会因这种并发更新按普通 fail-fast 方式抛异常，但可能观察到部分新旧状态。想得到精确批量业务边界，要另设协议，而不是把一次遍历命名为 snapshot 就当完成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除列表元素可用迭代器 remove 或 removeIf；后者的 predicate 应只判断当前项，避免回头修改同一集合。对 Collections.synchronizedList 遍历，要在包装器要求的同一对象上同步整个遍历；只认为每次 next 调用已经自动受保护会遗漏整体一致性。若需要锁外处理大量数据，可在锁内建立约定好的快照，再在锁外做耗时工作。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-order-equality",
+      "order": 669,
+      "question": "有序容器怎样同时定义顺序、去重和优先级？",
+      "shortAnswer": "哈希容器按 equals 判重，树容器按比较结果定位，LinkedHash 维护遇见或访问顺序，优先队列只保证队头优先。",
+      "commonPhrasings": [
+        "TreeSet 与 TreeMap 的关系是什么？和 HashSet 有什么不同？",
+        "对象明明不 equals，放 TreeSet 为什么只剩一个？",
+        "LinkedHashMap 能否做 LRU？get 算不算修改？",
+        "为什么求最大的 K 个数要用最小堆？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "容器里的“顺序”和“相等”要一起回答：HashSet 用哈希与 equals 判重，TreeSet/TreeMap 用比较结果识别等价键，LinkedHash 系列维护遇见或访问顺序。PriorityQueue 则只保证队头优先，遍历它不等于得到全局排序结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TreeMap 用有序树组织键，常用 get/put/remove 为 O(log n)，并支持 floor、ceiling、subMap 等导航和范围视图。TreeSet 以类似有序映射的方式管理元素。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么两个不 equals 的对象也可能只留下一个？因为排序比较为 0，会被视为同一位置。比较规则应与 equals 一致，才符合一般 Set/Map 的契约直觉。例如只按年龄比较来保存“所有用户”，同龄用户可能被合并；若要全保留，可以在年龄之后用稳定唯一标识打破平局，或者改用排序 List。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TreeMap 具体以红黑树组织有序映射。红黑树先满足二叉搜索树的排序关系，再把节点标红或黑：根为黑，空叶子按黑色处理，红节点不能有红孩子，从同一节点到各个空叶子的路径具有相同黑节点数。这些约束把高度限制在对数级，而不是要求左右子树处处一样高。插删后通过旋转与重新着色恢复约束；旋转保持中序的排序关系。比较器本身如果昂贵，一次比较的成本还要乘进操作复杂度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "自然顺序下 TreeMap/TreeSet 通常不接收 null 键；明确支持 null 的比较器可以改变这一点。HashSet/HashMap 可接收 null，并不能推广到所有 Set/Map。EnumSet 和 EnumMap 对枚举键域有专门表示，适合状态标记或枚举映射，比为了所有场景都统一 HashMap 更能表达约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "LinkedHashMap 默认按插入顺序，更新已有映射通常不把它当新插入；开启 accessOrder 后，成功访问可能调整链表，因此 get 也可能成为影响迭代顺序的结构修改。可通过 removeEldestEntry 制定容量淘汰，但一个 LRU 还需要清楚的并发、过期、加载去重和失败策略。若面试明确禁止 LinkedHashMap，不能用它冒充手写哈希表加双向链表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PriorityQueue 常见实现是数组二叉堆。父子关系维护局部堆序，堆顶是当前最小元素，offer/poll 通常 O(log n)，peek O(1)，contains 和 remove(Object) 一般 O(n)。迭代和 toArray 不承诺按优先级排序；要求完整有序输出时，持续 poll 或复制后显式排序。相同比较优先级的元素不保证 FIFO，若业务需要稳定次序，应附加序号。"
+        },
+        {
+          "type": "paragraph",
+          "text": "取最大 K 项时维护大小不超过 K 的最小堆：堆顶是最容易淘汰的候选，遇到更大值再替换。若反而使用最大堆，删除队头会把最需要保留的最大值丢掉。保持重复还是按不同值排名要先确认；K=0、K>n、负 K、极值和空输入都应有明确行为。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“有序且线程安全”先问是哪种顺序：排序导航可考虑 ConcurrentSkipListMap；插入或访问顺序可对 LinkedHashMap 采用统一锁与快照接口；多键事务又需要额外业务同步。并发容器名称不会自动解决所有顺序要求。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-concurrent-collections",
+      "order": 701,
+      "question": "并发集合保护哪些状态，哪些复合操作仍不安全？",
+      "shortAnswer": "并发集合保护自己的结构和规定操作；元素内部状态、跨调用操作和多键业务约束仍需额外协议。",
+      "commonPhrasings": [
+        "HashMap、Hashtable、ConcurrentHashMap 怎样比较？",
+        "CopyOnWriteArrayList 为什么适合读多写少？",
+        "containsKey 后 put 为什么仍会竞态？",
+        "读取时有其他线程写入，怎样保证读到的结果正确？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "并发集合能保护自己的结构，并保证规定操作的并发语义。它不会自动保护三件事：元素内部状态、多次调用拼成的操作、跨多个键的业务约束。回答“线程安全吗”时，要先说明问的是哪一层。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hashtable 是较早的同步映射实现，常用方法围绕同一对象监视器同步，不接受 null 键和值；单次方法同步不把多个方法组成的业务自动变成一个事务。Collections.synchronizedMap 也要求所有访问通过同一包装器，并按文档同步遍历。不要保留裸 map 再从另一条路径绕过锁。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Hashtable 的同步之外还要说明结构。OpenJDK 21 使用桶数组与 Entry 链处理碰撞，默认初始容量为 11、负载因子为 0.75；按 (hash & 0x7fffffff) % table.length 定位，常见增长为旧容量的两倍加一，并处理数组上限。它不采用 HashMap 的二次幂掩码和树桶方案。良好散列、单次 hashCode/equals 成本有界时查找常用期望 O(1) 描述，严重碰撞仍可能线性扫描；同步保证和查找复杂度是两回事。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ConcurrentHashMap 不接收 null。针对某个键的成功更新，与之后报告该更新结果的读取之间有相应 happens-before 关系；读通常不需要获取更新使用的桶锁。其含义不是“读永远只能读旧值”或“读不能看到正在被别人更新的数据”，而是按规定发布完整有效的映射值。与此同时，整个表并没有自动形成一致快照，size/isEmpty 等聚合结果不能直接用来保证精确资源准入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "if (!map.containsKey(k)) map.put(k,v) 的问题在两次调用之间：检查完没有，不代表写入前别人仍没写。要表达“没有才放入”，应使用 putIfAbsent；按旧值更新可用 replace 的条件版本，按键计算可用 compute/merge。"
+        },
+        {
+          "type": "paragraph",
+          "text": "换成原子方法后，仍有两条边界：回调要短小，不能递归更新同一 map、做长期阻塞 I/O，或假定失败重试绝无副作用；map 中的 value 也未必安全。比如 ConcurrentHashMap<K,ArrayList<V>> 不会保护 List.add，可以选择不可变值整体替换、受控的值锁，或合适的并发值容器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JDK 7 的 ConcurrentHashMap 使用 Segment 分段设计；OpenJDK 8 以后采用 CAS、桶级同步与协助扩容等机制。空桶安装等短路径与桶内复合更新不是同一种同步成本。不能把整个实现叫“完全无锁”，也不能把旧 concurrencyLevel 参数说成所有版本的最大并行线程数。CAS 重试、树桶同步、迁移与计数的完整算法属于并发专题，应用选型首先依赖 API 契约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CopyOnWriteArrayList 的有效结构修改通常建立新数组并发布，读取避免与写者在同一数组上争用，迭代器得到稳定快照。少量监听器注册、频繁遍历的场景很合适；写入频繁、列表很大、快照持有很久时，复制和旧数组保留会增加内存与 GC 成本。线程安全仅覆盖列表结构，可变监听器对象内部仍需自己的协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "缓存不是一个 ConcurrentHashMap 就够了。要设最大容量、过期策略、加载失败语义、并发加载去重和统计口径。把所有用户历史永久塞进去，即使每次操作正确，也可能因无限增长失败。需要范围查询时，哈希表也不会凭线程安全自动获得排序能力。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-atomic-value-removal",
+      "order": 733,
+      "question": "如何线程安全地按值整批删除映射，并保证失败时不删一半？",
+      "shortAnswer": "所有访问用同一把锁，在锁内构造保留映射的新表，全部比较成功后才替换引用，才能同时实现整批互斥和结构回滚。",
+      "commonPhrasings": [
+        "设计一个线程安全的模块，批量删除 HashMap 中指定 Value 的所有映射。",
+        "遍历过程中别人更新了 value，能不能误删？",
+        "要同时保留插入顺序，怎么设计？",
+        "删除过程中 equals 抛异常，能否保证没有删掉一半？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先问清楚：调用者能不能看到“只删了一半”的状态？如果只能看到整批删除前或删除后，就要让所有读写遵守同一原子边界。ConcurrentHashMap 的弱一致遍历，单独满足不了这个要求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先做最简单的互斥方案：封装私有 LinkedHashMap，让 get、put、批量删除和快照创建都使用同一把锁，不泄漏可变视图。只要求整批互斥、不要求异常回滚时，可以在锁内用 entrySet 迭代器删除。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再加一个条件：比较到一半时 equals 抛异常。已经删掉的映射不会自动回来，所以这个方案不能保证全有或全无。接下来要解决的，是失败前如何保持原表不变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "LockedValueMap 的做法是：先在锁内筛选新表，全部成功后才替换引用。"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "保持原表不动，遍历原映射，把不匹配目标值的条目放进新的 LinkedHashMap。",
+            "全部比较和建表完成后，一次替换字段。其他线程始终受同一把锁阻挡，只能看到旧表或新表。",
+            "如果比较失败，丢弃新表，原映射结构保持不变。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "所有字段访问都在锁内，因此不需要额外用 volatile 去补救漏锁路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在键的散列良好、hashCode/equals 代价有界时，这个 LinkedHashMap 实现的遍历加建表平均为 O(n)，临时存储为 O(n)，锁持有时间也随数据量增长。对任意值条件又没有反向索引时，必须检查候选映射；若该查询高频，可维护 value→keys 反向索引，但主索引和反向索引要在同一原子边界更新，内存与失败路径更复杂。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果放宽要求，只需“尽力删除遍历时观察到的匹配条目”，才可以考虑 ConcurrentHashMap 遍历加 remove(key, observedValue)。条件删除能避免误删已经变成不相等新值的条目，但不是全表事务，也可能错过遍历边界外的新映射。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再追问一次：旧值先被替换，后来又变回相等值呢？单靠值相等区分不了 ABA，需要版本号或独立身份。因此，批量期间是否允许新增命中项、是否要求精确返回删除数，都要事先说明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "锁内不能运行任意慢 I/O 或不受控回调。equals/hashCode 应稳定、纯净、不会回调本模块；key/value 如果仍可被外部线程修改，封装容器本身也保护不了那些对象。本例按不可变键和值使用，快照是有序、不可修改的独立容器，元素仍浅共享。代码中的异常测试验证的是映射结构回滚，不是把外部对象的一切副作用回滚。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

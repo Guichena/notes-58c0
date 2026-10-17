@@ -1,0 +1,587 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-3-2",
+  "entryId": "ai-agent-3",
+  "questionId": "2",
+  "expectedOriginalHash": "adab4562e530f4cb717c7c2f21417bb331620b04c5d07010ecb186f1060aa2d2",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "02 ReAct 规划执行和 Reflection 如何组合"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： ReAct 根据观察逐步选动作，适合路径未知的调查；Plan and Execute 先明确阶段和依赖，适合长任务、可审查计划和并行调度；Reflection 是执行后的评估与修正，可以叠加在两者上。我的默认设计是粗计划定方向、局部循环补信息、外部验证决定是否通过，再在有预算的前提下重规划。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一轮循环里真正保存什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "“Think、Plan、Action、Observation”可以帮助解释，但持久状态不要依赖模型隐藏思维。保存可审计的决策摘要、计划版本、工具名和规范化参数、完整调用 ID、操作 ID、结果证据、错误类别及下一步候选。模型返回文本不是动作；结构化动作只有经过执行器才会改变环境。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ReAct 的原研究强调推理与行动交错，环境结果能影响下一步。在产品中，可输出简短计划和证据说明，不需要收集或展示私有思维链。CoT 是分步推导的组织方式，ToT 显式搜索多个候选推理状态；它们讨论的层次与任务调度不同，可以与工具结合，不能理解成永远无工具或一定有回溯。"
+    },
+    {
+      "type": "paragraph",
+      "text": "仍以配置调查为例，Planner 回答“先查哪些模块，哪些读取互相依赖”；Executor 检查并执行合法动作；Critic 或 Verifier 对照验收条件判断“证据是否足以支持结论”。证据选择也可以由编排层服务完成，不必再造一个 Agent。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些职责可以由同一个模型的不同调用承担，也可以组合规则与不同模型。把它们拆成三个类、三个 Prompt 或三个进程，只改变组织形式，不能自动获得独立判断；是否合格仍要看验收证据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ToT 与 GoT 的搜索对象是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Tree of Thoughts（ToT）把候选解题状态组成树：从当前状态生成几个可检查的下一步候选，评估可行性，再保留、扩展或回退；可以使用宽度/深度受限的搜索。它适合早期选择会影响后续、能够定义中间评估标准的规划或求解任务，代价是额外模型调用和评估误差。不是把同一问题多问几次就自动得到正确答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Graph of Thoughts（GoT）进一步允许候选信息之间的合并、复用和反馈关系，例如把几段独立候选材料提炼后合成方案，而不要求每个候选只有一个父节点。这里的图表达候选信息及变换依赖，不等同于业务任务 DAG，也不授予任何工具权限。工程上保存候选方案、证据、评估结果和版本即可，不依赖获取模型的私有内部推理。两者都应限制分支、轮数、费用与总时间；评估器高分只用于排序，最终仍靠外部事实、测试和业务硬约束验收。简单固定任务通常用确定性流程更便宜，是否引入搜索以同任务消融结果决定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "目标是调查“为何配置校验失败”。初始计划为读取配置→读取规则→形成候选补丁→验证。读取后发现缺少被引用模块，原计划的“直接改字段”前提不成立。运行时保留已完成读取，增加“定位依赖版本”，冻结已批准修改范围，生成计划 v2。若 v2 改到新模块，必须重新确定授权，不能把重规划理解成权限扩张。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reflection 应输出“哪条验收失败、证据在哪、可尝试什么”，而不是泛泛说“再仔细检查”。代码任务用编译、断言、差异和独立测试；事实任务核对来源、时间和引用是否支持结论。相同模型可能重复认可同一错误，因此第二次调用不构成事实证明。Reflexion 研究中的语言反馈与情景记忆，也不等同于每次反思都更新模型权重。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取舍与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "先计划多一次模型调用，小任务可能更慢。计划越细，环境变化后作废成本越高；ReAct 越自由，局部搜索、重复调用和成本方差越大。可用简单路由：可确定的一步任务走代码或单次模型；需要少量补查走有界循环；跨模块长任务才引入计划图。不要每个 Query 都创建 Planner。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Plan and Solve 常用于先规划再求解的提示方法；Plan and Execute 是执行组织。面试官混用时，先说明讨论的是模型内部解题还是包含外部动作的运行时，再回答具体机制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 规划与协作架构：ReAct 和 Plan-Execute 架构分别适用于哪些场景？如何避免 Agent 出现无限循环或者多个 Agent 之间互相推诿任务？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 框架的工程实现细节，消息格式（Message Schema / Thought-Action-Observation）如何设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你觉得 Planning 规划这一块是 Agent 框架做的还是大模型做的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 和 Plan 模式有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 项目中，常见的规划（Planning）、记忆（Memory）、工具调用（Tool Use）和执行模块分别承担什么职责？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 ReAct 的原理，画一遍完整执行流程"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct、Plan-and-Execute、Workflow 三者有什么区别？（先讲三者本质区别）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的 ReAct 框架你了解吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 问关于 ReAct 的知识，那几个模式有什么差别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目背景与技术选型：这个项目主要解决什么问题？你是怎么学习 ReAct 和 Agent 相关技术的？做项目过程中有哪些让你印象比较深的技术点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 推理-行动循环：ReAct 的推理-行动循环底层是怎么实现的？ReAct 的停止条件是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 死循环与容灾防护：如果模型一直无法终止 ReAct 循环，怎么做工程化拦截与超时兜底？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct模式和Plan模式有什么区别？两种Agent执行方式分别适用于哪些场景？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们用的 Agent 框架是什么？ReAct 还是 Plan-and-Execute？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 的核心流程，这个循环会无限循环吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解 ReAct、Plan-and-Execute 这类 Agent 范式吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 没有使用爬虫进行召回的原因；对于关键词的选择策略；在设计workflow中哪些环节要设计reflection，怎么设计；舆情如何定义；召回效果的评估策略；"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Plan Agent 和 Execute Agent 分别负责什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 简单任务为什么不能直接用 ReAct 完成？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 和现在的 harness 的区别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- evidence planner 是什么？它是在某一个 sub agent 里面的单独的一个东西吗？还是它是在外层的呀？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你的 Planner、Executor、Critic 分别负责什么？整个 Agent Loop 每一轮具体检查什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下你 chat agent 的 ReAct 架构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 和 Plan-Execute-Replan 架构的区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲 ReAct、Plan-and-Execute 两种 Agent 范式，分别适合什么业务场景？工程上各自优缺点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 备考重点：① Java 基础、JVM、MySQL、Redis、Kafka、分布式理论不能丢；② Agent 核心：ReAct、Function Calling、Memory 分层、Tool 设计、多 Agent 协作；③ RAG 全链路：切片、Embedding、多路召回、Rerank、权限控制、版本管理；④ 系统设计：Agent 平台架构、会话存储、限流熔断、成本管控、可观测；⑤ 算法：中等难度，滑动窗口、双指针、哈希，准备白板手写；⑥ 提前准备 1-2 个完整 Agent 项目，准备大量线上故障、优化细节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中的 ReAct 架构如何实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 主流 Agent 架构有哪些，如何选型选择 ReAct 的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 如何防止死循环调用？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你对 ReAct 有何理解，如何防止 Agent 执行任务过程中跑偏？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 循环能力怎样实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Planner 和 Executor 之间是如何通信的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 是怎么用的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 有什么缺点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 的成功率怎么看？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你用 ReAct 做过什么任务？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 ReAct 循环的完整过程，用户发一个任务到完成中间经过哪些处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么在决策流中选择 ReAct 架构？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 模式实现：ReAct 在你的项目里是怎么实现和使用的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请介绍实习期间负责的项目。现在有任务过来时，Plan Agent 和 Execute Agent 分别如何处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 任务处理中的步骤是如何生成的？无论什么类型的任务，都会先经过 Plan-Execute Agent 吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对于比较简单的任务，是否有必要重新生成完整的排查计划，直接使用 ReAct 处理会不会更高效？两者适用场景是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 和 Plan-Execute 模式分别应用在什么场景下？触发 Replan 是自动化还是需要手动操作？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下对 Agent ReAct 模式的理解。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 现在有任务过来时，Plan Agent 和 Execute Agent 分别如何处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 无论什么类型的任务，都会先经过 Plan-Execute Agent 吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对于比较简单的任务，是否有必要重新生成完整的排查计划，直接使用 ReAct 处理会不会更高效？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Harness 相比你 Agent 里调 MCP、相比 ReAct，多了哪些能力？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Harness 的核心要素，相比 ReAct 多了哪些核心要素，导致它更稳定、更安全？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对比思维链（CoT），ReAct范式在模型与外部环境交互过程中，核心解决了哪些痛点问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么使用 Workflow 进行任务编排，而不是直接采用 ReAct 模式？两者的区别以及适用场景分别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Critic 在整个工作流中主要解决什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Planner、Executor 和 Critic 分别负责什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Critic 如何判断 Executor 的结果是否合格？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Critic 和 Executor 使用的同一个模型吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Critic 判定不通过以后你怎么做的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何防止 Planner、Executor 和 Critic 之间反复循环？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 原来的纯 ReAct 方案只是工具调用不稳定吗，还有哪些问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在这个场景中，直接采用 ReAct + Tool 是否也能满足需求？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你的 Agent 使用的是什么执行模式？React/Plan\\&Execute/Reflection？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对比 React、Plan\\&Execute、Reflection、CoT 等不同 Agent 架构区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 workflow、ReAct、Plan-and-Execute"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 ReAct 循环中，Agent 可能陷入无效的「思考—行动」循环。如何检测循环并让它退出？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 和 Plan-and-Execute 在 Java 后端里如何落地？循环终止条件放在哪一层？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下react和plan-excute-replan的使用场景"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下react和plan-excute-replan的区别（回答了几个面试官觉得不够又追问，不会了）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 范式你是怎么理解的？在项目中具体是怎么实现的？针对你的项目能举一个具体的 ReAct 循环案例吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 循环 3 次是每次必须跑满 3 次吗？它会提前退出吗？退出条件如何判定？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 上下文膨胀治理：ReAct 循环越多、上下文加载越多，碰到 Context Window 膨胀或超限怎么处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 循环机制：ReAct 循环具体是怎么运行的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 接触过 ReAct 模式吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 架构与 Schema：Agent 中工具注册的 Schema 是怎么设计的？为什么选择 ReAct 架构？除了 ReAct，还了解哪些 Agent 架构（Plan-and-Solve、Reflexion、Multi-Agent 等）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么采用 Plan-Execute 双 Agent 设计？出发点与提升点是什么？使用什么模型？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解过 Agentic Search 吗？ReAct 和 Plan-Execute 模式的区别？如果是复杂场景，既需要宏观规划又需要及时感知外界反馈并调整，这种场景需要怎么设计混合架构？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 ReAct 的流程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Planner、Executor、Critic 分别怎么做的。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Critic什么意思？为什么不用ReAct？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请讲一下你对 ReAct 的理解。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你实际使用或实现过 ReAct 吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 【项目】看我们的 agent 这里我们同时用了 react 和 plan-execute-replan 的两种模式，然后是两种应用场景，我们简单介绍一下为什么做这样子的技术选型，以及这两种为什么要这样选，以及为什么要分别用在这两个对应的场景上。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲 Agent 完整执行流程，解释 ReAct 的 Thought / Action / Observation。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct模式的优势和不足？（追问还有没有不足）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 考察 ReAct 范式：ReAct、Plan-and-Solve 等不同模式之间有什么核心差别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 架构模式：业界关于 Agent 的架构设计模式有哪些？（单 Agent、Multi-Agent、Plan-and-Solve、ReAct 等）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- react怎么实现的 plan mode怎么实现的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 机制与局限：ReAct 范式的基本执行过程是什么？ReAct 在多步复杂规划中有哪些常见问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 和 Plan-and-Execute 怎么选？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 模式下Agent思考进入死循环了怎么做？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Plan-and-Execute 和 ReAct 两种 Agent 架构有什么区别？它们各自的优点和缺点是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 框架与 ReAct：Agent 采用了什么框架？ReAct 模式底层是怎么运转的？Prompt 是如何设置与优化的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- reAct和plan and excute模式的区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 谈一下项目怎么做的，为什么这么做？（候选人答：基于 ReAct 范式的多智能体协作框架——Planner Agent 任务分解 + 多个 Worker Agent 执行 + Supervisor Agent 审核汇总；向量数据库做长期记忆、对话窗口做短期记忆、关键操作人工审核）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- (2) Baseline 设计： PPO 的 baseline 是 Critic 预测的状态价值; GRPO 的 baseline 是当前 prompt 下同组 G 个 rollout 的均值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Planner-Executor ⼯作流是什么样的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct 机制在生产环境里怎么设计，为什么不能只靠 prompt 写几句 Thought/Action"
+    },
+    {
+      "type": "paragraph",
+      "text": "- react和plan and excute有哪些区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目里的 Modular Agent 是如何实现Multi-step Planning的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 前瞻视野与系统规划：如果给你足够的算力与工程资源，你目前最想做什么 AI / Agent 项目？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 怎么保证 AI 写的 plan 是合理的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是不是所有任务都会先经过 Plan Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果只是一个非常简单的任务，还重新生成完整 Plan，会不会反而降低效率？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Think、Plan、Action、Observation 四个阶段分别保存什么状态？怎么影响下一轮？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 假设说它出现了路由错误，路由到了一个错误的 agent 里面，有没有办法给它用一些类似工程策略的兜底，能够把它绕回来，或者有什么策略可以去解决这个问题吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Plan-Exec 要解决什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- AI Agent 里有 thinking 阶段，这个 thinking 阶段怎么决定是调用工具还是直接回复？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目里的Modular Agent，你能讲讲它是如何实现多步规划的吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目提到了多个工具调用链路，调度策略是如何设计的？是否有异常fallback策略？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们项目中采用的是哪种 Agent 范式？为什么选择这种方案？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 设计“智能行程规划 Agent”：用户说“周末去南京玩两天，预算 2000”，你怎么做工具编排。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解过哪些Agent设计范式？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent项目的多模式引擎怎么做的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你的多智能体旅行规划助手，任务是怎么拆解的？介绍一下。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果规划的时候用户输入信息不足，你怎么处理？（面试官以为是对话式，但作者用的是 hello agent 那个，前端填表）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 谈谈对 ReAct 模式和 Plan-and-Execute 模式的理解及优劣对比。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 谈谈你对 ReAct 模式和 Plan-and-Execute（计划执行）模式的理解及优劣对比。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么用Langgraph而不是原生"
+    },
+    {
+      "type": "paragraph",
+      "text": "- React的原理"
+    },
+    {
+      "type": "paragraph",
+      "text": "- ReAct + Function Calling 流程说一说。"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 为什么使用人在回路（Human-in-the-loop）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍一下你的 agent 项目。为什么要选择这个框架？上下文提取是怎么做的以及为什么要这么做？RAG 从数据输入到召回的处理流程是怎么样的？为什么要采用多路召回与 RRF 排序？上下文与记忆的关系与联系？chunk 过大与过小的问题都有什么？你是如何借助评测结果迭代优化 agent 的，有哪些指标？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent 项目为什么选择这个框架？介绍一下核心功能。RAG 和 Memory 是什么以及它们的关系？为什么采用 plan and solve 架构？还有什么其他的架构以及与你采用架构相比的优劣？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解 ToT（Tree of Thoughts，思维树）或者 GoT（Graph of Thoughts，思维图）吗？详细讲讲原理与落地"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解 ToT 或者 GoT 吗？讲一下。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-nonlc-1-9",
+  "entryId": "nonlc-1-9",
+  "expectedOriginalHash": "5022e81d26ce95da633e4facaee1aa9b2c074bf00cd6f6fbcfc7f09d05547303",
+  "title": "算法练习补充：哈希桶表、冲突与扩容",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "哈希桶表、冲突与扩容"
+    },
+    {
+      "type": "paragraph",
+      "text": "HashMap需要按桶下标直接访问，数组最直接且内部控制明确。ArrayList底层也是数组，get/set同样O(1)，技术上可用，但包装、size与capacity管理以及自动扩容策略并不能替代HashMap的容量规则和rehash。LinkedList按下标访问需要沿节点走，替换为桶表会把定位桶的成本变成O(B)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "哈希表冲突、JDK8扰动与翻倍迁移：附可手写链式表"
+    },
+    {
+      "type": "paragraph",
+      "text": "哈希先缩小查找范围，再比较同桶候选的 key 是否相等。讲扩容时沿着同一条路径继续问：容量翻倍以后，这个键应该留在原桶，还是去另一个桶？OpenJDK8用h^(h>>>16)把高位影响折进低位，再用(capacity−1)&hash定位。容量是2幂，翻倍只多看旧容量那一位，所以旧桶节点不是留原下标就是移到原下标+oldCapacity。树化8、退化6、容量64是具体实现的工程阈值，必须连同入口/计数/移除或拆分路径解释，不能承诺“第8个一定树化、第6个一定立刻回链”。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "HashMap 如何处理哈希冲突？JDK 8 怎样扰动散列值并在翻倍时迁移桶？",
+        "JDK 7 与 JDK 8 有什么区别？树化的 8、退链的 6 和最小容量 64 各在什么路径生效？",
+        "如果手写一个哈希表，需要哪些字段、接口和边界测试？如何如实说明自己实现过的部分？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "哈希实现需要同时解释位运算、冲突、装载与扩容。下面以固定 OpenJDK 8u402-b06 的源码机制为例，再给完整教学链式表。Java HashMap 与 Go map 的实现规则分开讨论，不能根据岗位语言推断容器版本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "通用结构由桶数组、条目key/value/hash、冲突结构和size/loadFactor组成。get定位桶后遍历候选比hash与equals，put命中只覆盖值，未命中才增加条目；remove要正确接回前驱或更新桶头。哈希相同只是冲突，不等于key相等；equals相等必须hash一致，逆向不成立。Java null键散列0，null值与不存在需containsKey区分；教学int表用OptionalInt区分不存在和值0/负数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "链地址法在每桶保留链表，链长取决于散列和装载，简单、删除方便，但有节点/指针开销和局部性成本。开放寻址把元素放在表内，碰撞按探测序列找其他槽；线性探测易主聚集，二次探测/双重散列要保证参数和容量使可访问槽满足合同。表不能满而仍无限探测。删除不能直接把探测链中槽标成从未使用，否则后面键提前查找失败，应使用墓碑或正确的后移修复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扩容降低平均装载、可拆分只是低位相同而高位不同的键，但所有完整hash都相同的键不会因翻倍神奇散开。重哈希、换更好的散列/随机种子可应对特定分布，代价与威胁模型要另外评估；普通Java hash扰动不是密码学哈希，不保证抗所有恶意输入。Java树桶是一个碰撞缓解机制，不是所有语言哈希表都要有树。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JDK8源码hash函数先取key.hashCode=h，再计算h^(h>>>16)。>>>无符号右移，把高16位移动到低16位，XOR让容量小时掩码能感知原高位差别。比如h1=0x00000001与h2=0x00010001，在容量16不扰动都落1；扰动后分别1与0x00010000，可落1和0。函数很便宜，但输入hash相同的键仍相同，且碰撞仍可能存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量c=2^p时c−1的低p位全为1，index=h&(c−1)只保留这些位并总非负，避免Math.abs(Integer.MIN_VALUE)仍为负的问题。扩到2c后mask新增第p位：newIndex=oldIndex或oldIndex+c，取决于(h&c)==0。可复用节点保存的hash按低/高链分流，不必重新调用用户hashCode；两条链各保持原相对次序并将尾.next清空，防止旧交叉链接残留。"
+    },
+    {
+      "type": "paragraph",
+      "text": "源码的默认0.75是空间/冲突成本折中，不能由泊松分布“严格证明唯一最优”。8附近的树化门槛也综合树节点更大、旋转/比较开销与长桶查找成本；注释用理想分布说明长链很少，因此不必给所有小桶付树成本。8和6分离可以减轻临界大小增删时频繁来回转换，这是工程上的迟滞解释，并非所有输入下最佳阈值的数学定理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定版本的 TREEIFY_THRESHOLD=8、UNTREEIFY_THRESHOLD=6、MIN_TREEIFY_CAPACITY=64。普通 putVal 在已有 8 个同桶不同键、追加第 9 个时触发树化检查，容量不足 64 先扩容；compute 等入口的计数写法可能不同。扩容拆分树桶时，子桶计数不超过 6 会退链；普通删除还会检查树形结构，不能断言每次 remove 后恰剩 6 项就立刻转链。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JDK 7 的常见链式桶在迁移时头插，JDK 8 增加树桶，并在常见链表迁移中保持低、高子链相对顺序。这个变化不提供并发安全：可见性、丢更新和复合操作仍需锁或 ConcurrentHashMap 的明确协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "教学IntIntChainedMap实现get/containsKey/put/remove/size和翻倍低高链拆分，key/value均int，无树化/迭代器/null/并发，不能宣称完整复制JDK HashMap。为保证资源边界，最大容量公开限制到2^20，达到配置容量与0.75负载后新键拒绝且状态不变；已有键仍可覆盖。教学版在插新键前扩容，和JDK普通新增后检查阈值的时序不同，刻意写明而不以示例冒充逐字源码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "正确性不变量：每条目在hash&(capacity−1)所指定桶、每key至多一条、size等于节点总数、链无环。更新不改size，删除接回next并减1，扩容用多出的bit把每节点恰放入一个新桶且不改变映射。测试每一步除了对照Java HashMap还核对这些结构不变量；只看最终几个get成功不足以发现迁移遗漏或环。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若被问“自己手写实现过吗”，如实说明完成过哪些接口、怎样测试碰撞/扩容/删除，以及与生产 HashMap 的差距；练习实现与实际承担过的项目工作应区分。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "扰动例1与0x00010001原低位碰撞，混合高位后能区分；同hash常量0的所有键仍在同一桶，正确性靠判key，性能不会自动变O1。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可分别采用正常散列、全 0 碰撞和只用高位三种策略，与独立 HashMap 逐操作对照；每次校验全量映射、桶归属、键唯一性与 size 不变量。覆盖扩容、删除头/中/尾节点、替换、负键、int 极值和容量拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "检查实现阈值时，应分别覆盖 put、computeIfAbsent、扩容拆分与删除路径，并注明 JDK 版本。观察私有字段的白盒实验依赖模块开放设置，不属于普通业务 API。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "教学链式表在散列良好且装载受控时，键操作期望或摊还 O(1)，全碰撞时为 O(n)；翻倍扫描 O(capacity+n)，空间 O(capacity+n)，迁移时另有新桶数组但复用节点。几何增长使多次迁移总量为 O(n)，不代表某次扩容最坏常数。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "语言与版本需要先确认；Go 1.24 Swiss Table、C++ unordered_map、Java HashMap 各有契约，不能把 8/6/64 套到所有 map。"
+    },
+    {
+      "type": "paragraph",
+      "text": "公开源码阈值是实现细节，业务不应以内部节点类作为正确性条件。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.HashMap;\nimport java.util.HashSet;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.OptionalInt;\nimport java.util.Random;\nimport java.util.Set;\nimport java.util.function.IntUnaryOperator;\n/** Teaching map: int keys/values, separate chaining, no tree bins/iteration/concurrency. */\npublic final class IntIntChainedMap {\n    private static final class Node {\n        final int hash,key;int value;Node next;\n        Node(int h,int k,int v,Node n){hash=h;key=k;value=v;next=n;}\n    }\n    private Node[] table=new Node[4];\n    private int size;\n    private final int maximumCapacity;\n    private final IntUnaryOperator rawHash;\n    public IntIntChainedMap(){this(1<<20,x->x);}\n    public IntIntChainedMap(int maximumCapacity,IntUnaryOperator rawHash){\n        if(maximumCapacity<4 || maximumCapacity>(1<<20) || (maximumCapacity&(maximumCapacity-1))!=0)throw new IllegalArgumentException(\"max capacity: power of two in[4,2^20]\");\n        this.maximumCapacity=maximumCapacity;this.rawHash=Objects.requireNonNull(rawHash);\n    }\n    private int hash(int key){int h=rawHash.applyAsInt(key);return h^(h>>>16);}\n    private Node find(int key,int h){for(Node n=table[h&(table.length-1)];n!=null;n=n.next)if(n.hash==h && n.key==key)return n;return null;}\n    public int size(){return size;}\n    public boolean containsKey(int key){return find(key,hash(key))!=null;}\n    public OptionalInt get(int key){Node n=find(key,hash(key));return n==null?OptionalInt.empty():OptionalInt.of(n.value);}\n    public OptionalInt put(int key,int value){\n        int h=hash(key);Node existing=find(key,h);\n        if(existing!=null){int old=existing.value;existing.value=value;return OptionalInt.of(old);}\n        if(size>=table.length-table.length/4)grow(); // before mutation; deliberate teaching contract\n        int bucket=h&(table.length-1);table[bucket]=new Node(h,key,value,table[bucket]);size++;return OptionalInt.empty();\n    }\n    public OptionalInt remove(int key){\n        int h=hash(key),bucket=h&(table.length-1);Node previous=null;\n        for(Node n=table[bucket];n!=null;previous=n,n=n.next)if(n.hash==h&&n.key==key){\n            if(previous==null)table[bucket]=n.next;else previous.next=n.next;\n            n.next=null;size--;return OptionalInt.of(n.value);\n        }\n        return OptionalInt.empty();\n    }\n    private void grow(){\n        int oldCapacity=table.length;\n        if(oldCapacity==maximumCapacity)throw new IllegalStateException(\"configured load/capacity bound reached\");\n        Node[] nextTable=new Node[oldCapacity*2];\n        for(int i=0;i<oldCapacity;i++){\n            Node lowHead=null,lowTail=null,highHead=null,highTail=null;\n            for(Node n=table[i];n!=null;){Node following=n.next;\n                if((n.hash&oldCapacity)==0){if(lowTail==null)lowHead=n;else lowTail.next=n;lowTail=n;}\n                else {if(highTail==null)highHead=n;else highTail.next=n;highTail=n;}\n                n=following;\n            }\n            if(lowTail!=null)lowTail.next=null;if(highTail!=null)highTail.next=null;\n            nextTable[i]=lowHead;nextTable[i+oldCapacity]=highHead;\n        }\n        table=nextTable;\n    }\n    private void invariant(){\n        Set<Integer> seen=new HashSet<>();int count=0;\n        for(int i=0;i<table.length;i++)for(Node n=table[i];n!=null;n=n.next){\n            if(!seen.add(n.key)||(n.hash&(table.length-1))!=i)throw new AssertionError(\"chain/bucket invariant\");count++;\n        }\n        if(count!=size)throw new AssertionError(\"size\");\n    }\n    private static OptionalInt optional(Integer x){return x==null?OptionalInt.empty():OptionalInt.of(x);}\n    private static void check(boolean ok){if(!ok)throw new AssertionError();}\n    public static void main(String[] args){\n        IntUnaryOperator[] hashes={x->x,x->0,x->x<<16};int operations=0;\n        for(IntUnaryOperator hash:hashes){IntIntChainedMap actual=new IntIntChainedMap(4096,hash);Map<Integer,Integer> oracle=new HashMap<>();Random random=new Random(93);\n            for(int i=0;i<10000;i++){\n                int key=random.nextInt(401)-200,value=random.nextInt();\n                switch(random.nextInt(4)){\n                    case 0 -> check(actual.remove(key).equals(optional(oracle.remove(key))));\n                    case 1 -> check(actual.get(key).equals(optional(oracle.get(key))));\n                    default -> check(actual.put(key,value).equals(optional(oracle.put(key,value))));\n                }\n                check(actual.size()==oracle.size());actual.invariant();\n                for(Map.Entry<Integer,Integer> e:oracle.entrySet())check(actual.containsKey(e.getKey())&&actual.get(e.getKey()).orElseThrow()==e.getValue());operations++;\n            }\n            actual.put(Integer.MIN_VALUE,0);actual.put(Integer.MAX_VALUE,-1);check(actual.get(Integer.MIN_VALUE).orElseThrow()==0);check(actual.get(Integer.MAX_VALUE).orElseThrow()==-1);actual.invariant();\n        }\n        IntIntChainedMap bounded=new IntIntChainedMap(4,x->0);for(int i=0;i<3;i++)bounded.put(i,i);\n        check(bounded.put(2,9).orElseThrow()==2 && bounded.size()==3);\n        try{bounded.put(3,3);throw new AssertionError();}catch(IllegalStateException expected){}\n        check(bounded.size()==3&&!bounded.containsKey(3)&&bounded.get(2).orElseThrow()==9);bounded.invariant();\n        System.out.println(\"PASS \"+operations+\" differential operations with full-map/bucket checks;all-collision/high-bit/resize/delete/extremes/bounded failure\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

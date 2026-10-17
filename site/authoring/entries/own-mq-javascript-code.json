@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mq-javascript-code",
+  "kind": "doc",
+  "module": "code",
+  "part": "消息队列与异步系统",
+  "category": "教学参考与完整代码",
+  "title": "JavaScript 有界调度与依赖批次",
+  "tags": [
+    "消息队列",
+    "教学边界"
+  ],
+  "sections": [
+    {
+      "id": "s-4258",
+      "title": "原生 JavaScript：并发上限、依赖批次与最新结果",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "mapLimit 只启动不超过 limit 的 Promise 工作者，结果按输入位置保存，首次失败后停止派发新任务，并通过 AbortSignal 通知已启动任务。它会保留原始失败值，包括合法的 throw undefined、throw null、false 和 0；是否失败要用独立布尔状态，不能用错误对象真假值判断。取消可以让调度器停止等待，但忽略信号的工作仍可能继续产生外部效果，所以不能马上把其配额或资金当作未使用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "dependencyBatches 先校验缺失依赖、重复边、自依赖和环，再用入度算法产生拓扑层，时间复杂度为 O(V+E)、空间为 O(V+E)。runDag 按层执行且每层限制并发；某层失败后，后续依赖层不启动。它有层间屏障，方便解释和测试，但不是“任一父节点完成后立即调度可运行子节点”的最低延迟实现。没有依赖的分支是否继续，需定义业务策略；本例采用全图 fail-fast。"
+        },
+        {
+          "type": "paragraph",
+          "text": "浏览器输入连续变化时，LatestResult 给每次计算增加 generation 并取消前一次，只有仍是最新 generation 且未取消的结果能更新界面。真正使用 Web Worker 时，把 generation 放进请求与回包，主线程最终应用结果前再比较；Worker 即使没收到取消，也不能把旧结果覆盖新输入。Worker 内长循环必须分片检查信号或控制消息，必要时由所有者终止专属 Worker；终止不能撤销已经提交到服务端的请求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "cooperativeSum 在分块间用 setTimeout(0) 让出一个宏任务机会，并检查取消。仅反复 await Promise.resolve() 会继续排微任务，可能饿住渲染与普通事件；具体浏览器帧率还需真实页面测量。示例给输入量、边数和并发设上限，不读取文件、不创建 Worker、不调用网络。保存下面两文件后，在支持 ES2022 与 AbortController 的现有 Node 环境执行 node scheduler.test.mjs；浏览器 Worker 接入是另一个集成边界。"
+        }
+      ]
+    },
+    {
+      "id": "s-4268",
+      "title": "完整文件：components/javascript/scheduler.mjs",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "components/javascript/scheduler.mjs",
+          "value": "/** Native JS teaching code: finite input; no server, database, Worker or remote side effect. */\nexport async function mapLimit(items, limit, work, {signal} = {}) {\n  if (!Array.isArray(items) || items.length > 10000 || !Number.isInteger(limit) || limit < 1 || limit > 256)\n    throw new TypeError('bounded items and positive concurrency required');\n  const controller = new AbortController();\n  let next = 0, firstFailure, failed = false;\n  const result = new Array(items.length);\n  function stop(reason) {\n    if (!failed) { failed = true; firstFailure = reason; }\n    controller.abort(firstFailure);\n  }\n  const externalAbort = () => stop(signal.reason ?? new Error('cancelled'));\n  if (signal?.aborted) externalAbort();\n  else signal?.addEventListener('abort', externalAbort, {once:true});\n  async function one(item, index) {\n    if (controller.signal.aborted) throw controller.signal.reason;\n    let onAbort;\n    const cancelled = new Promise((_, reject) => {\n      onAbort = () => reject(controller.signal.reason);\n      controller.signal.addEventListener('abort', onAbort, {once:true});\n    });\n    try {\n      // Attach rejection handlers immediately. Abort stops waiting, not arbitrary external effects.\n      return await Promise.race([Promise.resolve().then(() => {\n        if (controller.signal.aborted) throw controller.signal.reason;\n        return work(item, index, controller.signal);\n      }), cancelled]);\n    } finally { controller.signal.removeEventListener('abort', onAbort); }\n  }\n  async function runner() {\n    while (!failed) {\n      const index = next++;\n      if (index >= items.length) return;\n      try { result[index] = await one(items[index], index); }\n      catch (error) { stop(error);return; }\n    }\n  }\n  try {\n    await Promise.all(Array.from({length:Math.min(limit,items.length)}, runner));\n    if (failed) throw firstFailure;\n    return result;\n  } finally { signal?.removeEventListener('abort', externalAbort); }\n}\n\n/** Topological layers: edges mean prerequisites, never just display position. */\nexport function dependencyBatches(nodes) {\n  if (!Array.isArray(nodes) || nodes.length > 10000) throw new TypeError('bounded nodes required');\n  const byId = new Map(), indegree = new Map(), children = new Map();\n  for (const node of nodes) {\n    if (!node || typeof node.id !== 'string' || !node.id || byId.has(node.id) || !Array.isArray(node.deps))\n      throw new TypeError('unique task IDs and dependency arrays required');\n    byId.set(node.id,node);children.set(node.id,[]);\n  }\n  let edges=0;\n  for (const node of nodes) {\n    const unique=new Set(node.deps);\n    if (unique.size!==node.deps.length) throw new TypeError('duplicate dependency');\n    indegree.set(node.id,unique.size);\n    for (const dep of unique) {\n      if (!byId.has(dep) || dep===node.id || ++edges > 50000) throw new TypeError('invalid/big dependency graph');\n      children.get(dep).push(node.id);\n    }\n  }\n  let ready=nodes.filter(n=>indegree.get(n.id)===0).map(n=>n.id), visited=0;\n  const batches=[];\n  while (ready.length) {\n    batches.push(ready);visited+=ready.length;\n    const next=[];\n    for(const id of ready) for(const child of children.get(id)) {\n      indegree.set(child,indegree.get(child)-1);\n      if(indegree.get(child)===0) next.push(child);\n    }\n    ready=next;\n  }\n  if(visited!==nodes.length)throw new Error('dependency cycle');\n  return batches;\n}\nexport async function runDag(nodes, limit, work, options={}) {\n  const batches=dependencyBatches(nodes); // Validate all dependencies before any action.\n  const byId=new Map(nodes.map(n=>[n.id,n])), result=new Map();\n  for(const batch of batches) {\n    const values=await mapLimit(batch,limit,(id,_,signal)=>{\n      const node=byId.get(id);\n      const inputs=new Map(node.deps.map(dep=>[dep,result.get(dep)]));\n      return work(node,inputs,signal);\n    },options);\n    batch.forEach((id,i)=>result.set(id,values[i]));\n  }\n  return result;\n}\nexport class LatestResult {\n  #generation=0; #controller; value;\n  begin() {\n    if(this.#generation>=Number.MAX_SAFE_INTEGER)throw new Error('generation exhausted');\n    this.#controller?.abort(new Error('superseded'));\n    this.#controller=new AbortController();\n    return {generation:++this.#generation,signal:this.#controller.signal};\n  }\n  complete(ticket,value) {\n    if(ticket.generation!==this.#generation||ticket.signal!==this.#controller.signal||ticket.signal.aborted)return false;\n    this.value=value;return true;\n  }\n}\nexport async function cooperativeSum(values, signal, chunk=1024) {\n  if(!Array.isArray(values)||values.length>100000||!Number.isInteger(chunk)||chunk<1)throw new TypeError('bounded input');\n  let total=0;\n  for(let i=0;i<values.length;i++) {\n    if(signal.aborted)throw signal.reason;\n    if(typeof values[i]!=='number'||!Number.isFinite(values[i]))throw new TypeError('finite number');\n    total+=values[i];\n    if(!Number.isFinite(total))throw new RangeError('overflow');\n    if((i+1)%chunk===0)await new Promise(resolve=>setTimeout(resolve,0));\n  }\n  if(signal.aborted)throw signal.reason;\n  return total;\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-4389",
+      "title": "完整文件：components/javascript/scheduler.test.mjs",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "components/javascript/scheduler.test.mjs",
+          "value": "import assert from 'node:assert/strict';\nimport {mapLimit,dependencyBatches,runDag,LatestResult,cooperativeSum} from './scheduler.mjs';\nconst sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));\nlet active=0,peak=0;\nassert.deepEqual(await mapLimit([0,1,2,3,4],2,async n=>{\n  active++;peak=Math.max(peak,active);\n  try{await sleep(5);return n*2;}finally{active--;}\n}),[0,2,4,6,8]);assert.equal(peak,2);\nassert.deepEqual(await mapLimit([],1,()=>{throw new Error();}),[]);\nawait assert.rejects(mapLimit([1],0,()=>1),TypeError);\nconst original=new Error('primary');let started=0;\nawait assert.rejects(mapLimit([0,1,2,3],1,()=>{started++;throw original;}),e=>e===original);\nassert.equal(started,1);\nconst stop=new AbortController();stop.abort(original);\nawait assert.rejects(mapLimit([1],1,()=>{throw new Error('must not start');},{signal:stop.signal}),e=>e===original);\nconst controller=new AbortController();const hanging=mapLimit([1,2],1,()=>new Promise(()=>{}),{signal:controller.signal});\ncontroller.abort(original);await assert.rejects(hanging,e=>e===original);\nconst graph=[{id:'A',deps:[]},{id:'B',deps:[]},{id:'C',deps:['A','B']},{id:'D',deps:['C']}];\nassert.deepEqual(dependencyBatches(graph),[['A','B'],['C'],['D']]);\nassert.throws(()=>dependencyBatches([{id:'A',deps:['B']}]),TypeError);\nassert.throws(()=>dependencyBatches([{id:'A',deps:['B']},{id:'B',deps:['A']}]),/cycle/);\nassert.throws(()=>dependencyBatches([{id:'A',deps:[]},{id:'A',deps:[]}]),TypeError);\nconst result=await runDag(graph,2,async(node,inputs)=>node.id==='C'?inputs.get('A')+inputs.get('B'):1);\nassert.equal(result.get('C'),2);let seen=[];\nawait assert.rejects(runDag(graph,2,async node=>{seen.push(node.id);if(node.id==='B')throw original;return 1;}),e=>e===original);\nassert(!seen.includes('C')&&!seen.includes('D'));\nconst latest=new LatestResult(),old=latest.begin(),current=latest.begin();\nassert(old.signal.aborted);assert(!latest.complete(old,'old'));assert(latest.complete(current,'new'));assert.equal(latest.value,'new');\nassert.equal(await cooperativeSum([0,1,2],new AbortController().signal,1),3);\nawait assert.rejects(cooperativeSum([1],stop.signal),e=>e===original);\n\nfor (const thrown of [undefined, null, false, 0, '']) {\n  let caught = false;\n  try { await mapLimit([1], 1, async () => { throw thrown; }); }\n  catch (failure) { caught = true; assert.equal(failure, thrown); }\n  assert.equal(caught, true);\n}\nconsole.log('scheduler tests OK; local JS only; no remote effects or durable queue');\n"
+        }
+      ]
+    },
+    {
+      "id": "s-static-review-4317",
+      "title": "静态复核补充：源行 4317",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "校正说明（源码保持原样）：dependencyBatches 在校验边数上限之前构造 Set(node.deps)。接受的图有界不等于恶意输入拒绝前的分配有界；真实不可信入口应先校验依赖数组长度与剩余预算。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "运行边界与未执行声明"
+    }
+  ]
+}

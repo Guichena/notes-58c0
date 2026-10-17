@@ -1,0 +1,46 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">解释 MySQL InnoDB 的事务隔离级别。什么是脏读、不可重复读、幻读？InnoDB 默认的可重复读如何解决幻读？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这题考察 MySQL 底层。不要只背四个隔离级别，要能结合 MVCC、快照读、当前读、Next-Key Lock 说明。</p>
+<p class="md-p">InnoDB 默认隔离级别是 Repeatable Read。普通 <code class="tok-inline">SELECT</code> 通常是一致性读，RR 通常复用 Read View；自己的写仍可见，不能把所有读取都当成不变快照；<code class="tok-inline">SELECT ... FOR UPDATE</code>、<code class="tok-inline">UPDATE</code>、<code class="tok-inline">DELETE</code> 是当前读，需要加锁。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>Read Uncommitted：可能脏读。</li><li>Read Committed：避免脏读，但可能不可重复读。</li><li>Repeatable Read：一致性读通常复用首次 Read View，但自己的写可见，混合当前读并非同一快照。</li><li>Serializable：更强隔离，可增加等待/死锁，吞吐影响取决于负载，不是固定性能排名。</li><li>MVCC：通过 undo log 和 Read View 实现多版本读。</li><li>Next-Key Lock：记录锁 + 间隙锁，防止当前读场景下的幻读。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">现象解释：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li>脏读：读到其他事务尚未提交的数据。</li><li>不可重复读：同一事务内两次读同一行，结果不同，通常因为别的事务提交了更新。</li><li>幻读：同一事务内按范围查询，两次读出现新增或消失的行。</li></ul></div>
+<p class="md-p">InnoDB 在 Repeatable Read 下：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li>普通 <code class="tok-inline">SELECT</code> 使用 MVCC 快照读，同一事务内 Read View 一致，因此不会看到后续提交的新行。</li><li>RR 中范围当前读如 <code class="tok-inline">SELECT ... FOR UPDATE</code> 通常会加 Next-Key Lock，锁住记录和间隙，阻止其他事务在范围内插入，从而避免当前读幻读。</li></ul></div>
+<p class="md-p">示例：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">START TRANSACTION;
+
+SELECT *
+FROM orders
+WHERE user_id = 1
+  AND amount &gt; 100
+FOR UPDATE;
+
+-- 其他事务不能在该锁范围内插入满足条件的数据
+
+COMMIT;</pre></div></section><p class="md-p">MySQL 8.4/InnoDB：锁范围由隔离级别、索引访问路径及唯一键命中/缺失决定；唯一键完整等值命中通常只需记录锁。RR 不能自动消除跨行写偏差，自己的写会改变后续普通读可见结果；当前读也包括自己未提交的写。混用普通读和锁定读应先明确协议。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：RC 和 RR 最大区别是什么？</strong></p>
+<p class="md-p">问题分析：都是 MVCC，但 Read View 创建时机不同。</p>
+<p class="md-p">知识点：Read View。</p>
+<p class="md-p">答案：RC 每次普通一致性读使用新的已提交视图，所以能看到其他事务已提交的新数据；RR 通常事务第一次快照读创建 Read View，后续复用，所以可重复读。</p>
+<p class="md-p"><strong>变体 2：快照读和当前读区别？</strong></p>
+<p class="md-p">问题分析：很多锁问题都卡在这里。</p>
+<p class="md-p">知识点：普通 SELECT、FOR UPDATE、UPDATE。</p>
+<p class="md-p">答案：RC/RR 中普通 InnoDB SELECT 通常是一致性读，不加事务记录锁但仍有元数据锁；SERIALIZABLE 多语句事务另论。<code class="tok-inline">SELECT ... FOR UPDATE</code>、<code class="tok-inline">UPDATE</code>、<code class="tok-inline">DELETE</code> 是当前读，读取最新已提交版本并加锁。</p>
+<p class="md-p"><strong>变体 3：没有索引时加锁会怎样？</strong></p>
+<p class="md-p">问题分析：锁依赖索引定位，没索引会扫描更多行。</p>
+<p class="md-p">知识点：行锁、索引、锁范围扩大。</p>
+<p class="md-p">答案：条件列没有索引时，InnoDB 可能扫描大量记录并加锁，导致锁范围扩大，并发性能急剧下降。事务更新条件必须有合适索引。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-mysql-database-88">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">BEGIN 并不通常等于快照建立</h3><p class="md-p">BEGIN 通常只是打开 RR 事务，还没给业务表拍下快照。第一次对 InnoDB 表做普通一致性读时，才通常建立 Read View。</p><p class="md-p">按这个时点推结果：A BEGIN；B 把库存从 10 改为 9 并提交；A 第一次普通 SELECT 应看到 9。如果把顺序改成 A 先读到 10，再由 B 提交，那么 A 下一次普通读通常仍是 10。只改变“首次读在谁提交之前”，答案就不同。</p><p class="md-p">要在事务启动时主动建立一致快照，可在 RR 下使用：</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">code/ch19/fence-014.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY;
+-- 此处开始多条普通一致性查询；结束时 COMMIT。
+COMMIT;
+</pre></div></div><p class="md-p">WITH CONSISTENT SNAPSHOT 不会替你改变隔离级别；MySQL 8.4 对非 RR 级别忽略该修饰并发出警告。因此不能在 RC 下加这一句，就声称获得贯穿整个事务的固定快照。只有读取常量、用户变量或查询某些元数据，也不能当作“已建立业务表的一致性读视图”的证据。</p><p class="md-p">RC 所说的“每次新快照”，限定于每次一致性读，不是每一条 SQL 都创建同样的 Read View。优化实现还可能安全复用内部对象；概念上的可见性契约比“是否分配了一个新的对象地址”重要。</p><h3 class="md-h md-h3">无索引 UPDATE 是大扫描 不是锁升级</h3><p class="md-p">题目“按一个没有索引的非主键列找一条数据并更新”没给 DDL 或精确 SQL，应先回答语法，再解释缺失信息。以下 label 故意有两条 A：</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">code/ch22/fence-079.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">UPDATE items SET price=price+1 WHERE label=&#39;A&#39;;
+-- 初始值(1,A,10),(2,A,20),(3,B,30)，此语句修改两条 A。
+UPDATE items SET price=price+1 WHERE id=1 AND label=&#39;A&#39;;
+-- 才是限制为既定主键的一条。
+</pre></div></div><p class="md-p">第一条 UPDATE 可能要扫聚簇树，沿路对大量记录申请保护。RR 保留的记录锁或 next-key 锁会让许多看似无关的操作等待，但过程不是“先升成表 X、查到目标、再降成行锁”；IX 和 MDL 也都不是数据表 X。</p><p class="md-p">LIMIT 1 只限制这次最多处理一条匹配记录，不能证明 label 具有业务唯一性；没有稳定选择规则时，它只是从候选里选中一条。要改善这个问题，应先减少无效扫描，为真实谓词建立合适索引，并缩短事务；新增索引自己的写维护成本也要一并评估。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

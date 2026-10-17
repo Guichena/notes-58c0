@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-spring-project-evidence",
+  "entryId": "handwrite-70",
+  "expectedOriginalHash": "a13b8a6a936c3ba2e6952980fcecd286f73a68a6f4050cc3f637a8bb9e63e892",
+  "title": "NoteWeave 版本事实、Java AI 服务设计与证据",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "以下区分源手册记录的公开代码快照、设计建议和个人经历。未在本次导入重新核验仓库 HEAD 或真实部署，所有配置事实按源快照理解；不据此宣称个人上线、性能提升或生产审计完成。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "48 用 NoteWeave 讲 Spring 应该怎样落地"
+    },
+    {
+      "type": "paragraph",
+      "text": "讲 NoteWeave，可以沿一条 Java 请求说明 MVC 流式接口、JDBC 事务、配置条件和有界执行器怎样配合。Java 业务控制面的实现能从公开代码中看到；自己负责了什么、是否生产部署、收益有多大，需要另有事实支撑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：你的 Boot 项目有什么亮点？为什么使用 JDBC？接口如何流式返回？版本是什么？哪些是实现，哪些只是设想？"
+    },
+    {
+      "type": "paragraph",
+      "text": "backend/pom.xml 声明 Java 17 和 Boot 3.3.5，依赖 Web、JDBC、Validation、Actuator、Kafka、Redis、Flyway 和 MySQL 驱动。这个版本组合与本书实验中的某个更高 JDK 运行环境不能混淆。当前事实也不能扩写为项目用了 JPA、MyBatis 或 Spring Cloud；相关知识是独立学习内容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "application.yml 明确配置 Hikari 最大池 20、最小空闲 4、获取连接超时 30000 毫秒等可覆盖默认值。它们是配置参数，不是压测证明。Web 管理端点默认暴露项为 health，也不能因此声称所有监控系统已经上线。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Context V2 是否开启，要顺着配置覆盖链逐层看。application.yml 中 shadow-enabled、active-enabled 的占位符回退值是 false，default-mode 回退值是 OFF。可是同一公开快照的根 docker-compose.yml 默认向容器注入 true、true、ACTIVE，.env.example 也给出这组三项值。只看一个文件，就可能得出相反结论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要继续看两个边界：research-active-enabled、artifact-active-enabled 是独立开关，在 application.yml 中均回退为 false，不能由会话 ACTIVE 推断它们也启用；ContextV2RolloutService 的 activeEnabled 同时检查全局 active 开关和工作区模式，只有未单独配置的工作区才使用 default-mode。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，某次运行的实际值要结合启动方式、环境覆盖和工作区记录判断。这些静态配置说明了决定条件，不能证明某次真实部署到底启用了哪些路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ConversationController 的会话事件入口返回 SseEmitter，设置 120 秒超时，解析 after 与 Last-Event-ID 游标，使用独立 sseConnectionExecutor 发送快照并跟随事件。完成、超时、错误使用关闭标记，执行器拒绝和发送异常也有处理路径。这能支持“接口显式管理流式生命周期”的说明，但不证明任何网络故障下事件绝不丢失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RealtimeExecutorConfig 把 answer I/O、SSE 分发、SSE 连接和 bridge 分开，避免把不同等待方式的工作全塞进同一个池。answer I/O 默认核心 4、最大 16、队列 64，拒绝策略是 AbortPolicy，关闭等待也有明确上限；TaskDecorator 捕获 MDC，结束时恢复工作线程旧上下文。"
+    },
+    {
+      "type": "paragraph",
+      "text": "某些 bridge/connection 池用零容量队列，让长等待任务到来时能增长线程，而不是一直排在少数核心线程后。这些配置可以用来解释隔离、拒绝和排队的取舍，但不能把数字说成普适最优值；仍要结合过载行为和下游容量讨论。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TaskOutboxDispatcherService 的定时入口重驱待发消息，是否执行由 Kafka enabled 控制。可见批量是 50，等待发送结果最多 10 秒，并调用共享的持久 outbox 调度器；redrive 方法标有 @Transactional，从死信重置状态时会操作数据库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这条链可以解释为什么要持久待发意图、租约和重试。但消息系统的实际可靠性仍要通过故障测试确认，单个 @Transactional 并不能把 Kafka 和 MySQL 合成同一事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "InternalServiceAuthFilter 只针对 /internal/ 路径，按研究/产物路由选择服务端 token；未配置时存在 loopback-only 路径。WebMvcAuthorizationConfig 为 /api/v2/** 注册授权拦截器，WorkspaceAccessGuard 还查询工作区状态、ACL 版本与活动成员。ProductionConfigurationGuard 在 @PostConstruct 验证环境和 Profile 对齐并检查生产约束。这些是静态实现边界，不能扩写为完成全量安全审计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：面试如何说“我做了什么”？先确认自己实际负责的模块、改动、测试和结果，再用自己的经历表达。若只是学习该代码，可说“我沿着这条链路分析过”，不要说独立上线、制造业落地或提升某个百分比。个人职责与收益没有材料时保持条件化，而技术机制仍可以充分讲清。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "49 设计一个稳定的 Java AI 服务"
+    },
+    {
+      "type": "paragraph",
+      "text": "稳定的 Java AI 服务，先要把“任务真的做到了哪一步”和“页面显示到哪一步”分开。短请求负责接入，长任务负责执行，持久状态负责恢复，SSE 等接口负责展示；容量、超时、取消和权限都要在对应环节落实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：Agent 项目与传统 Java 后端相比重点是什么？模型调用慢、用户取消、重复请求、工具执行失败分别怎么处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "以一个用户发起的长任务为例：入口先鉴权和校验，按用户/租户检查请求数与 token 预算；写任务带上幂等键，持久化状态，再返回任务标识或建立事件订阅。"
+    },
+    {
+      "type": "paragraph",
+      "text": "之后由执行器领取工作，带着 deadline 调用模型和工具，每一步保存必要状态。若用户此时取消，或旧执行迟到返回，终态的单向迁移或版本号应阻止它把已取消任务重新写成成功。这个时序让入口响应、后台执行和最终事实各有明确边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型调用可能持续几十秒，数据库事务不应一直陪它等待。事务围绕短小状态更新；要把工作交给另一个进程时，把业务记录与 outbox 放进同一个本地事务，再由消息、租约和幂等消费连接后续过程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若调用超时，模型仍可能计费，工具也可能已经产生副作用。因此要保存 operation id，并能查询结果，不能把“这次没拿到响应”当作“什么都没发生”后直接重做。"
+    },
+    {
+      "type": "paragraph",
+      "text": "SSE 负责展示进度，不作为唯一状态存储。客户端重连按事件游标恢复，用户取消是明确业务命令；断网是否取消按产品契约决定。token 预算、流式背压、工具容错和幂等是 AI 服务额外突出的工程点，但权限、数据库、线程池等传统后端基础同样不能省。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多模型接入采用能力接口和适配器，区分请求协议、流事件、使用量统计与错误分类。不同供应商并非只换 endpoint 就完全兼容。若引入框架，应知道哪部分替你管理工具循环，哪部分仍需自己做权限和预算，避免把框架默认值当生产协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：如何证明有效？为取消前后竞态、迟到结果、重复投递、限流拒绝、连接超时、进程停机设计测试，观测队列最老年龄、任务终态、token 成本和业务成功率。先提供可重复故障证据，再讨论架构收益。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "66 从项目版本讲到证据与取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "介绍项目时，先用构建声明和实际模块说明它是什么，再沿一条确实能解释的调用链讲判断与取舍。对规模、收益和个人职责，只讲有事实支持的部分；遇到未知实现，说明缺什么版本、配置或运行证据，继续核对即可。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Boot 项目就是微服务吗？不是，部署与数据边界决定架构，分包只说明进程内组织。",
+        "实现存在是否表示开关开启？不是，需要检查生效配置、Profile 和灰度条件。",
+        "配置了连接池 20 是否证明能扛多少 QPS？不能，容量依赖事务耗时、下游和工作负载。",
+        "H2 测试通过是否证明 MySQL 锁语义？不能，真实数据库和驱动要另测。",
+        "为什么不直接升级最新 Framework？升级要考虑 Boot BOM、第三方依赖、行为变化和回归，不是只改一个版本号。",
+        "如何回答暂时不知道的专有实现？说出已知机制、缺失的包名/版本/配置，以及下一步需要核对什么；不要把有条件的解释说成项目事实。"
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-spring-reference",
+      "label": "教学版本、运行方法与来源边界"
+    }
+  ]
+}

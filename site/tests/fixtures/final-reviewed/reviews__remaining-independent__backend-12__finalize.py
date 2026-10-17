@@ -1,0 +1,54 @@
+import json,hashlib,re
+from pathlib import Path
+p=Path(__file__).parent; h=lambda x:hashlib.sha256(x).hexdigest(); load=lambda f:json.loads((p/f).read_text())
+entries=load('composed-entries.json'); base=load('input/live-base.json'); leaves=load('approved-leaves.json')
+# Every inherited edit must replay exactly from the frozen original.
+for k,e in base.items():
+ current=e['entry']
+ for s in load('input/source-span-map.json'):
+  if s['entryId']!=k:continue
+  v=current
+  for a in s['path'][:-1]:v=v[a]
+  last=s['path'][-1]
+  assert v[last].count(s['before'])==s['occurrences'],(k,s['path'])
+  v[last]=v[last].replace(s['before'],s['after'])
+ assert current==json.loads((p/'input'/f'{k}-staged.json').read_text()), k
+for k,e in entries.items():
+ rendered=(p/'rendered'/f'{k}-rendered.html').read_text()
+ if e.get('readingNotesHtml'):assert e['readingNotesHtml'] in rendered,k
+ for q in e['items']:
+  assert 'id="q-'+q['id']+'"' in rendered
+  if q.get('leadType')=='authored':assert rendered.count(q['lead'])==1,(k,q['id'])
+assert not any(r['numericRemoved'] for r in load('mechanical-checks.json'))
+assert len(entries)==10 and sum(len(e['items'])for e in entries.values())==35 and len(leaves)==40
+(p/'source-receipts.md').write_text('''# Backend 12 independent audit, 2026-10-15
+
+All ten entries, 35 questions, short authored leads, unchanged siblings, native/OS/JS reading supplements and all 68 original exact edits were read. The 68 edits replay exactly to the frozen staged entries. Composition retains original before values and hashes; four newly included leaves are also guarded against the same live base. All ten current live entries match that base, despite any older preflight differences. No live content was written.
+
+## Independent source checks
+- https://docs.kernel.org/6.12/admin-guide/cgroup-v2.html: explicitly Linux 6.12; cpu.max quota/period versus cpuset, weight versus cap, hierarchical accounting and memory.high/max distinctions. The 200000/100000 two-CPU budget example is arithmetic, not a CPU-affinity claim.
+- https://raw.githubusercontent.com/torvalds/linux/v6.12/fs/eventpoll.c: exact v6.12 tag, epitem/eventpoll, rbr/rdllist/ovflist and callback reinsertion checked. Returning K events still requires handling K results; no universal O(1) claim.
+- https://modelcontextprotocol.io/specification/2025-11-25/basic/transports: named protocol version; stdio and Streamable HTTP, POST JSON/SSE and optional GET stream remain distinct. Not a claim that every model request streams tokens.
+- https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/MappedByteBuffer.html: Java 21 API, OS-dependent visibility, mapping lifetime and inaccessible truncated mappings; force does not supply compound synchronization.
+- https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Process.html: Java 21 API used to cross-check waiting, pipe blockage and termination semantics. Teaching use of Java 8 APIs is retained, not certified by Java 21 execution.
+- https://docs.python.org/3.11/library/exceptions.html#ExceptionGroup: the retrieved family page is 3.11.17, not an exact 3.11.0 snapshot. Confirms the 3.11 exception-group hierarchy boundary without claiming compatibility across all Python 3.
+- https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html#using-multiple-asyncio-event-loops: 2.0 family documentation, default pool loop ownership, dispose/NullPool qualifications; no exact patch-runtime certification.
+- https://html.spec.whatwg.org/multipage/server-sent-events.html: living standard, UTF-8 line framing and final blank-line dispatch. Pending EOF data is discarded. Existing id=103, jobId=j-7, percent=60 field example retained.
+- https://docs.docker.com/engine/network/drivers/overlay/: current primary documentation, Swarm host membership even for standalone containers, attachable, 2377/TCP, 7946/TCP/UDP and 4789/UDP, optional encryption and platform limits. Deployment version remains an explicit check.
+- https://nodejs.org/learn/asynchronous-work/event-loop-timers-and-nexttick: current documentation of Node20/libuv1.45 timer change. CJS/ESM and callback-context distinctions remain conditional; no Node runtime experiment was executed.
+- https://www.rfc-editor.org/rfc/rfc3550.html: RTP/NTP Sender Report mapping and CNAME correlation. The 48/90 kHz, 96000/900000 to 144000/990000 example retains its common-clock assumption.
+- https://sourceware.org/gdb/current/onlinedocs/gdb.html/Dump_002fRestore-Files.html: current GDB command reference, dump versus restore. No version number was invented; GDB attach/core analysis was not performed.
+- JEP491 URL retrieval failed twice. https://docs.oracle.com/en/java/javase/24/migrate/significant-changes-jdk-24.html and official OpenJDK/Oracle search evidence independently support the JDK24 synchronized virtual-thread pinning change; no direct JEP-page retrieval is claimed.
+
+## Retention and narrow extra composition
+Nine exact added edits qualify ssr_state.mjs, trusted_client.py, SseIncremental.java and SseCodecDemo.java as indexed/model companions rather than complete runnable files on this page; restore the original SparseFileWindow.java filename; distinguish the OS source archive and assert/NDEBUG caveat from delivered or executed tests; clarify JDK21 as a preparation baseline, the Python cross-link as theory, and the final Java supplement as proposed validation.
+
+The inherited GDB, Java/Go and optimistic/pessimistic-lock first answers directly answer the questions. Their detailed mechanisms remain below. The previously empty line-index appendix sections now contain concrete protocols; the full preceding explanation retains N+1 uint64 offsets, 8(N+1), billion-line 8GB, 64KiB scan, ExceptionGroup cleanup, K-block compression, file identity/TOCTOU, read-close synchronization and packaging/benchmark boundaries. No allocator implementation is in this batch; the foundations reading route merely links that topic and was retained.
+
+Every original href, id anchor, image and code element survives exactly per changed leaf. All numeric sets survive. Every question ID, order, variant metadata and non-answer field remains intact. Three original source archives were rehashed unchanged. The network zip contains Markdown and images, not separately packaged companion .java/.py/.mjs files; archive prose naming a program is not delivery evidence. Source Markdown includes code fragments, which are preserved and are not re-certified as complete programs.
+
+## Renderer and limits
+35 actual compiled qaCardHtml cases passed, authored lead exactly once. All ten full renderQA outputs passed, with stable question anchors and every full reading supplement present verbatim. Isolated lightweight Node VM uses the live compiled app.js with unrelated presentation helpers stubbed. This is not a browser layout/full-site regression or a JVM/OS/container/network/benchmark test. No Feishu, GitHub or deployment mutations; integration and heavy tests remain with the integrator.
+''')
+m=dict(batch='backend-12',status='approved-narrow-with-explicit-source-bounds',entries=10,questions=35,approvedLeaves=40,additionalCompositionEdits=9,approvedArtifact='approved-leaves.json',approvedArtifactSha256=h((p/'approved-leaves.json').read_bytes()),coverage='All prose, siblings, leads and supplements read; all 68 original edits exactly replayed; original guards retained.',checks='Frozen inputs and three archives verified; ten current live guards; exact links/anchors/images/code and numeric retention; 35 card and ten complete entry renders.',limits=['No browser layout or full-site suite.','No Node workload/JVM/OS/container/network/benchmark execution.','Living/family docs do not certify all historical releases; direct JEP491 retrieval failed, Oracle JDK24 primary release evidence used.'],files={str(f.relative_to(p)):h(f.read_bytes())for f in sorted(p.rglob('*'))if f.is_file() and f.name!='composition-manifest.json'})
+(p/'composition-manifest.json').write_text(json.dumps(m,ensure_ascii=False,indent=2)); print(m['approvedArtifactSha256'])

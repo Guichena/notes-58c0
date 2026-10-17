@@ -1,0 +1,47 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">question.txt</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="text">article(id, tenant_id, status, category_id, created_at, title)</pre></div></section>
+<p class="md-p">常见查询：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">question.txt</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT id, title
+FROM article
+WHERE tenant_id = ?
+  AND status = ?
+  AND category_id = ?
+ORDER BY created_at DESC
+LIMIT 20;</pre></div></section>
+<p class="md-p">如何设计索引？哪些查询能用上这个索引？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这题考察联合索引顺序。一般原则是等值条件在前，排序/范围条件在后。对于多租户业务，<code class="tok-inline">tenant_id</code> 常作为查询前缀，但索引列顺序不是权限隔离；租户谓词必须来自可信身份并覆盖所有入口。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>最左前缀：联合索引从最左列开始连续使用。</li><li>等值条件可以连续匹配。</li><li>遇到范围条件后，后续列通常不能继续缩小连续定位区间，但仍可能通过 ICP 过滤或用于覆盖。</li><li>排序字段要和索引顺序一致，才能避免 filesort。</li><li>覆盖索引：查询列包含在索引中。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">推荐索引：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE INDEX idx_tenant_status_category_created
+ON article(tenant_id, status, category_id, created_at DESC, id DESC);</pre></div></section>
+<p class="md-p">这个索引能很好支持：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">WHERE tenant_id = ?
+  AND status = ?
+  AND category_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT 20</pre></div></section>
+<p class="md-p">也能支持只查租户和状态：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">WHERE tenant_id = ?
+  AND status = ?</pre></div></section>
+<p class="md-p">不能高效支持跳过 <code class="tok-inline">tenant_id</code> 的查询：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">WHERE status = ?
+  AND category_id = ?</pre></div></section>
+<p class="md-p">因为不满足最左前缀。若后台管理确实需要全局按状态查询，应另建索引。</p><p class="md-p">目标 MySQL 8.4，降序索引需要 MySQL 8.0+。title 不在该索引内，列表读取 title 仍需取行；相同 created_at 用 id 决定顺序。跳过前导列可能采用全索引扫描或受条件限制的 skip scan，不应概括为完全不能用索引。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：<code class="tok-inline">status</code> 区分度很低，要不要放索引里？</strong></p>
+<p class="md-p">问题分析：低区分度字段单独建索引意义不大，但放在联合索引中可配合其他字段。</p>
+<p class="md-p">知识点：选择性、组合过滤。</p>
+<p class="md-p">答案：<code class="tok-inline">status</code> 单列索引价值低；在 <code class="tok-inline">(tenant_id, status, category_id, created_at)</code> 中有价值，因为它参与等值过滤并帮助排序定位。</p>
+<p class="md-p"><strong>变体 2：范围条件如何影响索引？</strong></p>
+<p class="md-p">问题分析：例如 <code class="tok-inline">created_at &gt;= ? AND category_id = ?</code>。</p>
+<p class="md-p">知识点：范围列之后的列难以继续用于索引定位。</p>
+<p class="md-p">答案：应把等值过滤列放在范围列前。常见顺序是 <code class="tok-inline">(tenant_id, status, category_id, created_at)</code>，不要把 <code class="tok-inline">created_at</code> 放到 <code class="tok-inline">category_id</code> 前面，除非时间过滤是主要入口。</p>
+<p class="md-p"><strong>变体 3：查询 <code class="tok-inline">SELECT *</code> 有什么问题？</strong></p>
+<p class="md-p">问题分析：查询列过多会导致回表，覆盖索引失效。</p>
+<p class="md-p">知识点：回表、覆盖索引、宽字段。</p>
+<p class="md-p">答案：列表页只查必要字段；大字段如正文、JSON、向量信息不要放列表查询，详情页再按主键查。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

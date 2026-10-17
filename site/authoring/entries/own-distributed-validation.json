@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-distributed-validation",
+  "kind": "doc",
+  "module": "code",
+  "part": "分布式系统工程",
+  "category": "手册路线与故障验证",
+  "title": "完整边界测试与运行条件：原始源码和非执行声明",
+  "tags": [
+    "分布式系统",
+    "教学边界"
+  ],
+  "sections": [
+    {
+      "id": "s-12770",
+      "title": "怎样用故障测试验证设计",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先写可检查的不变量与故障模型，再在每个独立提交边界前后停止进程，确认恢复结果，而不是只做一次高QPS成功路径压测。"
+        },
+        {
+          "type": "paragraph",
+          "text": "故障测试可以按三组准备："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "正确性至少覆盖：重复身份、同身份不同载荷、乱序版本、确认丢失、提交未知、旧执行者恢复、精确过期边界、保留期耗尽和整数溢出。",
+            "资源：队列满、连接池耗尽、磁盘满、慢消费者和输出过大。",
+            "恢复：日志截断、完整帧损坏、快照缺件和版本不兼容。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "每一组都对应不同失败原因，不能只用一次成功路径高QPS压测代替。"
+        },
+        {
+          "type": "paragraph",
+          "text": "安全性断言描述永远不能发生什么，例如总额度不变、余额不能越界、旧epoch不能提交。活性断言描述在明确依赖恢复条件下应何时继续，例如待办会被扫描发现、失败可见并最终终结。无限分区、永久权限错误或所有持久副本毁损时，不能继续声称必然自动成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单机模型证明局部状态转移，真实数据库测试证明所选驱动和隔离下的部分行为，跨节点故障演练才涉及网络分区、时钟、部署及实际恢复目标。压测固定消息大小、确认策略、副本配置与错误率，报告p95/p99、可持续吞吐和恢复时间，不用本机循环次数代替远程服务容量。"
+        }
+      ]
+    },
+    {
+      "id": "s-12788",
+      "title": "随书代码怎样运行",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Java代码基线为Java 21。无外部依赖的状态、并发、HTTP loopback和本地日志示例可直接编译运行；JDBC教学示例另需H2 2.5.252，并使用隔离临时数据库。H2结果不能直接证明MySQL生产锁、隔离、故障切换或OSS上传行为。"
+        },
+        {
+          "type": "paragraph",
+          "text": "伴随源码的运行脚本按测试创建独立临时目录。若环境没有javac命令但有完整JDK编译器模块，可使用Java调用编译器主类。生产迁移仍需核对产品版本、驱动、SQL差异、索引与恢复策略。"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "label": "044/fence-044.sh",
+          "value": "mkdir -p classes\nWORK=$(mktemp -d)\njava com.sun.tools.javac.Main -Xlint:all -d classes src/*.java\njava -cp classes ReplicaState\njava -cp classes DistributedLru\njava -cp classes ScriptControl\njava -cp classes JournalHeaderRegression \"$WORK/journal.log\"\njava -cp \"classes:$H2_JAR\" TaskLeaseStore \"$WORK/task-db\"\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件日志仅支持正文定义的普通本地文件和协作访问假设，CRC不防恶意篡改，force不证明真实断电无损。模型程序中的假工具、内存预算与静态拓扑不能直接当Redis集群、支付渠道或完整执行平台。扩展之前先保留相同的边界测试，再增加真实故障域。"
+        }
+      ]
+    },
+    {
+      "id": "s-12807",
+      "title": "边界测试完整代码",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "将以下三个类与前面的 Java 类一起放入 src 目录。测试分别检查回滚异常保留、日志头损坏拒绝，以及 ID 边界和子进程等待。它们验证本地教学合同；数据库代理测试不连接外部数据库，日志测试不模拟真实断电。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "RollbackFailureRegression.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "045/RollbackFailureRegression.java",
+          "value": "import java.lang.reflect.*;\nimport java.sql.*;\nimport java.util.Properties;\nimport java.util.logging.Logger;\n\n/** Diagnostic regression only: no external DB, commit, broker or durability guarantee. */\npublic final class RollbackFailureRegression {\n    enum Mode { SUCCESS, DISTINCT_FAILURE, SAME_FAILURE }\n    static void check(boolean value) { if (!value) throw new AssertionError(); }\n    @SuppressWarnings(\"unchecked\")\n    static <T> T proxy(Class<T> type, InvocationHandler handler) {\n        return (T) Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type}, handler);\n    }\n    static final class State {\n        final Mode mode;\n        final SQLException primary = new SQLException(\"primary operation failure\", \"23505\");\n        final SQLException secondary = new SQLException(\"rollback failure\", \"08006\");\n        int rollbackCalls, lookupCalls;\n        State(Mode mode) { this.mode = mode; }\n        Object rollback() throws SQLException {\n            rollbackCalls++;\n            if (mode == Mode.DISTINCT_FAILURE) throw secondary;\n            if (mode == Mode.SAME_FAILURE) throw primary;\n            return null;\n        }\n        void verifyFailureChain() {\n            Throwable[] suppressed = primary.getSuppressed();\n            if (mode == Mode.DISTINCT_FAILURE) check(suppressed.length == 1 && suppressed[0] == secondary);\n            else check(suppressed.length == 0);\n        }\n        Connection minimalConnection() {\n            return proxy(Connection.class, (p, method, args) -> {\n                if (method.getName().equals(\"rollback\")) return rollback();\n                throw new AssertionError(\"unexpected helper call: \" + method.getName());\n            });\n        }\n        Connection shortLinkConnection() {\n            return proxy(Connection.class, (p, method, args) -> {\n                return switch (method.getName()) {\n                    case \"rollback\" -> rollback();\n                    case \"setAutoCommit\", \"close\" -> null;\n                    case \"createStatement\" -> proxy(Statement.class, (sp, sm, sa) -> {\n                        return switch (sm.getName()) {\n                            case \"execute\" -> true; // constructor DDL only\n                            case \"close\" -> null;\n                            default -> throw new AssertionError(\"unexpected statement: \" + sm.getName());\n                        };\n                    });\n                    case \"prepareStatement\" -> prepared((String) args[0]);\n                    default -> throw new AssertionError(\"unexpected connection call: \" + method.getName());\n                };\n            });\n        }\n        PreparedStatement prepared(String sql) {\n            boolean lookup = sql.startsWith(\"SELECT code,target,expires\");\n            if (lookup) lookupCalls++;\n            else check(sql.startsWith(\"INSERT INTO links\"));\n            return proxy(PreparedStatement.class, (p, method, args) -> {\n                return switch (method.getName()) {\n                    case \"setString\", \"setLong\", \"setNull\", \"close\" -> null;\n                    case \"executeUpdate\" -> throw primary;\n                    case \"executeQuery\" -> {\n                        check(lookup);\n                        yield proxy(ResultSet.class, (rp, rm, ra) -> {\n                            return switch (rm.getName()) {\n                                case \"next\" -> true;\n                                case \"getLong\" -> 100L;\n                                case \"wasNull\" -> false;\n                                case \"getString\" -> ((Integer) ra[0]) == 1 ? \"code\" : \"https://example.com/a\";\n                                case \"close\" -> null;\n                                default -> throw new AssertionError(\"unexpected result call: \" + rm.getName());\n                            };\n                        });\n                    }\n                    default -> throw new AssertionError(\"unexpected prepared statement: \" + method.getName());\n                };\n            });\n        }\n    }\n    static void helperBranches() throws Exception {\n        String[] names = {\"TaskLeaseStore\", \"ShortLinkStore\", \"VersionedUnban\", \"AlarmSlots\",\n            \"AccountLedger\", \"IdRangeStore\", \"BucketEscrow\", \"SessionCAS\", \"ClaimOrder\", \"OperationRecovery\"};\n        for (String name : names) {\n            Method helper = Class.forName(name).getDeclaredMethod(\"rollbackPreserving\", Connection.class, Throwable.class);\n            for (Mode mode : Mode.values()) {\n                State s = new State(mode);\n                boolean result = (Boolean) helper.invoke(null, s.minimalConnection(), s.primary);\n                check(result == (mode == Mode.SUCCESS));\n                check(s.rollbackCalls == 1);\n                s.verifyFailureChain();\n            }\n        }\n    }\n    static void actualShortLinkCatch() throws Exception {\n        for (Mode mode : Mode.values()) {\n            State s = new State(mode);\n            String url = \"jdbc:rollback-regression:\" + mode;\n            Driver driver = new Driver() {\n                public Connection connect(String value, Properties properties) {\n                    return acceptsURL(value) ? s.shortLinkConnection() : null;\n                }\n                public boolean acceptsURL(String value) { return url.equals(value); }\n                public DriverPropertyInfo[] getPropertyInfo(String value, Properties properties) { return new DriverPropertyInfo[0]; }\n                public int getMajorVersion() { return 1; }\n                public int getMinorVersion() { return 0; }\n                public boolean jdbcCompliant() { return false; }\n                public Logger getParentLogger() { return Logger.getLogger(\"rollback-regression\"); }\n            };\n            DriverManager.registerDriver(driver);\n            try {\n                ShortLinkStore store = new ShortLinkStore(url);\n                Throwable observed = null;\n                try { store.create(\"ns\", \"code\", \"owner\", \"request\", \"https://example.com/a\", 100L); }\n                catch (Throwable failure) { observed = failure; }\n                if (mode == Mode.SUCCESS) check(observed == null && s.lookupCalls == 1);\n                else check(observed == s.primary && s.lookupCalls == 0);\n                check(s.rollbackCalls == 1);\n                s.verifyFailureChain();\n            } finally {\n                DriverManager.deregisterDriver(driver);\n            }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        helperBranches();\n        actualShortLinkCatch();\n        System.out.println(\"PASS 10 JDBC helpers x 3 Connection-proxy rollback branches; primary identity preserved; distinct failure suppressed; self-suppression avoided; actual ShortLinkStore queries replay only after rollback success. No DB or durability claim.\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "JournalHeaderRegression.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "046/JournalHeaderRegression.java",
+          "value": "import java.nio.*;\nimport java.nio.file.*;\n/** A complete acknowledged record with one damaged length-header byte must not be silently discarded. */\npublic final class JournalHeaderRegression {\n  public static void main(String[] args) throws Exception {\n    Path p=Path.of(args[0]);\n    try(SegmentJournal j=new SegmentJournal(p)){j.append(\"acknowledged\",new byte[]{1,2,3});}\n    byte[] bytes=Files.readAllBytes(p); bytes[3]^=64; Files.write(p,bytes);\n    try(SegmentJournal j=new SegmentJournal(p)){\n      throw new AssertionError(\"damaged acknowledged header silently accepted; remaining records=\"+j.size()+\", bytes=\"+Files.size(p));\n    }catch(java.io.IOException expected){\n      if(Files.size(p)!=bytes.length)throw new AssertionError(\"corruption mutated source\");\n    }\n    System.out.println(\"PASS acknowledged length-header corruption rejected without truncation\");\n  }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "AdditionalBoundaryTests.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "047/AdditionalBoundaryTests.java",
+          "value": "import java.nio.file.*;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicLong;\n\n/** Dependency-free tests of extracted components; never evidence of H2 transactions. */\npublic final class AdditionalBoundaryTests {\n    static void check(boolean b){if(!b)throw new AssertionError();}\n    static void rejects(Runnable r){try{r.run();throw new AssertionError();}catch(IllegalArgumentException|IllegalStateException expected){}}\n    public static void main(String[] args)throws Exception {\n        AtomicLong now=new AtomicLong(1000);SnowflakeInterview s=new SnowflakeInterview(1000,1023,now::get);\n        Set<Long> ids=new HashSet<>();for(int i=0;i<4096;i++)check(ids.add(s.nextId()));rejects(s::nextId);\n        now.set(1001);check(ids.add(s.nextId()));now.set(1000);rejects(s::nextId);\n        now.set(1000+((1L<<41)-1));check(s.nextId()>=0);now.incrementAndGet();rejects(s::nextId);\n        rejects(()->new SnowflakeInterview(0,1024,()->0));rejects(()->new SnowflakeInterview(-1,0,()->0));\n        // Two live generators with the same node identity intentionally collide: allocation/fencing is external.\n        check(new SnowflakeInterview(0,1,()->10).nextId()==new SnowflakeInterview(0,1,()->10).nextId());\n        String fp=OperationRecovery.fingerprint(List.of(\"argv\",\"cwd:a\",\"input:v1\"));\n        check(!fp.equals(OperationRecovery.fingerprint(List.of(\"argv\",\"cwd:b\",\"input:v1\"))));\n        check(!OperationRecovery.fingerprint(List.of(\"ab\",\"c\")).equals(OperationRecovery.fingerprint(List.of(\"a\",\"bc\"))));\n        OperationRecovery.LoopGuard guard=new OperationRecovery.LoopGuard();\n        for(int i=0;i<4;i++)check(guard.allow(fp,\"p0\"));check(!guard.allow(fp,\"p0\"));check(guard.allow(fp,\"p1\"));\n        Path receipt=Path.of(args[0]);String java=Path.of(System.getProperty(\"java.home\"),\"bin\",\"java\").toString();\n        Process child=new ProcessBuilder(java,\"-cp\",System.getProperty(\"java.class.path\"),\"OperationRecovery\",\"--child\")\n                .redirectOutput(receipt.toFile()).redirectError(ProcessBuilder.Redirect.INHERIT).start();\n        try{\n            check(!child.waitFor(10,TimeUnit.MILLISECONDS)&&child.isAlive());\n            child.getOutputStream().write('\\n');child.getOutputStream().close();\n            check(child.waitFor(10,TimeUnit.SECONDS)&&child.exitValue()==0&&Files.readString(receipt).equals(\"completed\"));\n        }finally{if(child.isAlive()){child.destroyForcibly();child.waitFor(10,TimeUnit.SECONDS);}}\n        System.out.println(\"PASS Snowflake exhaustion/exact epoch/rollback/range/node bounds, duplicate-node counterexample; OperationRecovery fingerprint/fifth-repeat/progress and real subprocess survives wait timeout then completes. H2 operation journal NOT tested.\");\n    }\n}\n"
+        }
+      ]
+    }
+  ]
+}

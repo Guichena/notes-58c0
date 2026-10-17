@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-6-8",
+  "entryId": "ai-agent-6",
+  "questionId": "8",
+  "expectedOriginalHash": "c056386d45331ca2b47bd61c2c0fa7bf00f668217d44c16e0921a4521bac20d7",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "16 更换模型需要改多少 如何设计 Provider Adapter"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 我把厂商差异限制在适配层，但不会宣称换一个 endpoint 就完全兼容。内部统一消息、工具候选、用量、错误、流式生命周期和能力描述；适配器把它们映射到具体 API。切换前跑契约和任务回归，比较工具选择、参数、拒答、引用、成本与延迟，再灰度。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "需要明确适配的差异"
+    },
+    {
+      "type": "paragraph",
+      "text": "先看输入能否表达同一意思：System/developer/user 等消息和多模态内容格式、工具定义及 JSON Schema 支持范围、上下文窗口与输出限制，都要逐项适配。可选推理强度和采样参数也不能假装所有模型都支持。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看一次调用能否正确走完：并行工具调用和多轮结果必须配对，文本与参数 delta 要正确组装，结束原因和拒绝要保留。最后核对运行与计费合同：超时、429、重试、request ID，以及输入/输出/缓存/推理 token 的统计口径。只改 endpoint 往往漏掉的，正是这些消息之间和状态之间的关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用能力协商或配置表达 supportsParallelTools、supportsStructuredOutput、supportsImages，不支持就采用有声明的替代路径或拒绝，不悄悄丢字段。严格结构化输出改善语法，但业务范围、权限和单位仍由应用验证。不要把所有 provider 返回原始 JSON 塞进领域服务，导致每个状态节点都依赖厂商字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：把同一能力接到不同 Agent，为什么不只是换模型？ Provider Adapter 只解决模型接口差异；宿主还可能有不同的工具注册与调用合同、文件/网络沙箱、身份与审批、Skill 加载方式、消息角色、上下文注入、持久 state/checkpoint、取消、事件流和产物交付机制。先列兼容矩阵与最小能力要求，为这些边界做独立 adapter；缺少持久等待或安全执行能力时，要明确降级或拒绝，不能只换 endpoint 就宣称同等效果。用相同输入与故障集检查状态恢复、权限拒绝、工具结果配对、取消和最终验收，再比较质量与成本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "temperature 为零为什么仍不能承诺完全复现"
+    },
+    {
+      "type": "paragraph",
+      "text": "在接口支持时降低 temperature、调整采样策略可以减少随机性，但 temperature=0 不是跨版本、硬件与后端的逐字一致保证。即使采用贪心选择，后端数值计算或实现变化也可能改变接近的候选排序；模型路由、工具结果和输入顺序变化同样会改变答案。PyTorch 官方复现说明也限定平台与发行版本，并不保证相同种子跨环境一致；这说明底层条件的重要性，不据此断言某个商业模型使用了哪套实现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应记录完整输入、模型和 Prompt 版本、工具快照、采样参数，以及供应商确实支持的 seed/后端标识；不支持的参数不能自行补写。线上模型重跑用多次样本和任务级通过率评估稳定性。故障复现则可使用已记录响应与工具结果做确定性 fixture 回放，两者不是同一种“可复现”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "文本生成 HTTP 接口具体暴露什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个受控请求可含 client_request_id、conversation_id、input/messages、model_alias、generation_options、output_schema、stream、deadline_ms；身份与租户由鉴权取得，模型别名、输出预算、schema 大小和参数范围由服务端校验。普通响应返回 call_id、status、output、finish_reason、usage、error，错误至少含稳定 code、可重试性和必要字段路径。流式响应每帧关联 call ID，并区分正文增量、工具事件、用量与最终完成/失败；连接关闭本身不是成功事件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "call_id 标识这次调用，重试去重用稳定的 client_request_id，跨服务关联另用 trace ID。随机 UUID 只能给极低碰撞概率，不能承诺数学上的绝对唯一。若业务必须在已定义命名空间内保证不重号，可由权威数据库分配不可复用序号并加唯一约束，或分配互不重叠号段；故障恢复不得重用号段。唯一性要求越强，越要说明协调、可用性和命名空间的代价，不能只说“机器号加时间戳”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "模型替换和数据留存"
+    },
+    {
+      "type": "paragraph",
+      "text": "Run 绑定实际 provider/model 标识、Prompt/工具/adapter 版本与关键参数。长任务中途切模型会改变行为，应形成显式事件，重新跑必要验证。供应商可访问的数据、保留政策和网络目的地是独立选型约束；开源 SDK 不代表请求不会去云端，本地模型也不代表应用所有工具都不外传。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：新模型平均分更高是否就上线？ 要看原有关键任务、安全负例、工具兼容、长任务稳定性和尾延迟。平均分上涨但审批泄露、调用格式或少数关键业务退化，仍不能接受。模型自身采样不确定性需要多次重复与置信区间，不能只挑最好的一次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Responses、Chat Completions、Messages 的具体区别"
+    },
+    {
+      "type": "table",
+      "headers": [
+        "接入面",
+        "需要适配的核心形态",
+        "返回到 Runtime 的含义"
+      ],
+      "rows": [
+        [
+          "OpenAI Chat Completions",
+          "请求主体以 messages 为中心；流 chunk 中读取 choices[].delta，工具参数按 index/ID 累积",
+          "message/tool-call 候选、结束原因与独立 usage"
+        ],
+        [
+          "OpenAI Responses",
+          "请求以 input 为中心，输出由 item 构成；流有 response.output_text.delta、response.function_call_arguments.delta/done 等有类型事件",
+          "同一 response 可包含多个 item，不能按单个文本字段处理"
+        ],
+        [
+          "Anthropic Messages",
+          "顶层 system 与 messages，内容块含文本或 tool use/result；流区分 message 和 content block 生命周期",
+          "block index、tool ID 与 message 终态分别维护"
+        ],
+        [
+          "DeepSeek Chat Completions 接口",
+          "与 Chat 形态有相似之处，但能力、推理字段、缓存明细、终止和错误要按该接口验证",
+          "“兼容”是经过测试的字段集合，不是任意 OpenAI 参数都可直传"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "以上只说明适配边界，不固定易变的模型名或所有可选字段。具体事件以接入版本的官方接口合同为准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态关联与 Gemini 的具名接口怎样补齐"
+    },
+    {
+      "type": "paragraph",
+      "text": "Responses 的 previous_response_id 用于按接口合同关联前一响应；应用仍要确认所引用响应属于正确租户与会话、需要传递的指令/工具配置、保留策略和上下文限制。使用 previous_response_id 时，前一 Responses 请求的 instructions 不会自动带到下一次；必须重新发送本次仍需生效的 instructions，不能把状态关联误认为自动继承控制指令。它不是无限记忆，也不替代自己维护的 Run、审批和外部操作账本。Chat Completions 的工具结果通过 tool_call_id 配对，Responses 则按其函数调用 item 的 call_id 等字段处理，不能把显示消息 ID 当作业务幂等键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Gemini 的 GenerateContent 是具名接口：请求使用 contents/parts，可携带文本、多模态部分与工具调用相关内容；流式方法名是 streamGenerateContent，REST 的 SSE 交付还要遵守该端点的媒体类型和响应合同。functionCall 与 functionResponse 等部分须按该接口的关联规则对应，不能把 Chat 的 choices[].delta 解析器直接复用。这里特指 GenerateContent 系列，不断言 Gemini 只有一种 API，也不把后来出现的其他接口与它混成一套字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "识别实际项目用哪个接口，要看固定依赖版本、base URL、路径、脱敏请求体与真实事件结构。切换回归包括空文本、多输出项、交错工具调用、缺终态、拒答、流中错误和取消；兼容网关仅能对已经验证的能力集合宣称兼容。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-stream-code",
+  "kind": "doc",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "教学参考与验证边界",
+  "title": "完整教学实现：流事件、UI 状态与用量投影",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "sections": [
+    {
+      "id": "s-7729",
+      "title": "30 Java 流事件与 Provider 用量的正确投影",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "30 Java 流事件与 Provider 用量的正确投影"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 网络解析、协议适配、UI 状态和业务执行分四层。以下代码接收已解码的 typed event，不打开网络、不解析任意 JSON、不自动执行工具。这样可独立测试交错参数、重复帧、缺口、终态和累计用量，避免把协议错误藏在 Controller 中。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "最小工具参数流"
+        },
+        {
+          "type": "paragraph",
+          "text": "StreamProjection 按 Run 与序号处理有界流，分 call ID 组装参数。同序号同载荷忽略，冲突重复或缺口拒绝；TOOL_END 只返回完整参数候选，还需真实 JSON/schema、权限和副作用策略。这个窄应用合同规定正常 END 前工具结果齐全，人工暂停使用另外的终态，不把流关闭当任务成功。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整文件 src/StreamProjection.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整文件 src/StreamProjection.java",
+          "value": "import java.util.*;\n\n/** Typed event projection after provider/SSE parsing; deliberately no JSON parser. */\npublic final class StreamProjection {\n    public enum Type { START, TEXT, TOOL_START, TOOL_DELTA, TOOL_END, TOOL_RESULT, END }\n    public record Event(String run,long sequence,Type type,String call,String text) {}\n    public record Call(String id,String arguments) {}\n    private final String run;\n    private final Map<Long,Event> seen=new HashMap<>();\n    private final Map<String,StringBuilder> partial=new HashMap<>();\n    private final Map<String,String> complete=new HashMap<>();\n    private final Set<String> results=new HashSet<>();\n    private final StringBuilder text=new StringBuilder();\n    private long cursor=0;\n    private boolean started,ended;\n    public StreamProjection(String run){this.run=Objects.requireNonNull(run);}\n    public synchronized Optional<Call> accept(Event e) {\n        if(!run.equals(e.run()))throw new IllegalArgumentException(\"wrong run\");\n        Event previous=seen.get(e.sequence());\n        if(previous!=null) {\n            if(!previous.equals(e))throw new IllegalArgumentException(\"duplicate ID with different payload\");\n            return Optional.empty();\n        }\n        if(e.sequence()!=cursor+1 || seen.size()>=1000 || ended)\n            throw new IllegalStateException(\"gap, limit, or terminal run\");\n        if(e.text()==null || e.text().length()>8192 || e.call()==null)\n            throw new IllegalArgumentException(\"invalid frame\");\n        Optional<Call> output=Optional.empty();\n        if(e.type()!=Type.START && !started)throw new IllegalStateException(\"missing start\");\n        switch(e.type()) {\n            case START -> {if(started)throw new IllegalStateException(\"second start\");started=true;}\n            case TEXT -> {if(text.length()+e.text().length()>32768)throw new IllegalStateException(\"text limit\");text.append(e.text());}\n            case TOOL_START -> {\n                if(e.call().isBlank()||partial.containsKey(e.call())||complete.containsKey(e.call()))\n                    throw new IllegalStateException(\"call collision\");\n                partial.put(e.call(),new StringBuilder());\n            }\n            case TOOL_DELTA -> {\n                StringBuilder p=partial.get(e.call());\n                if(p==null || p.length()+e.text().length()>8192)throw new IllegalStateException(\"invalid delta\");\n                p.append(e.text());\n            }\n            case TOOL_END -> {\n                StringBuilder p=partial.remove(e.call());\n                if(p==null)throw new IllegalStateException(\"unknown call end\");\n                String args=p.toString();complete.put(e.call(),args);\n                // A candidate only: execution still requires real parsing, schema, auth and budget.\n                output=Optional.of(new Call(e.call(),args));\n            }\n            case TOOL_RESULT -> {\n                if(!complete.containsKey(e.call()) || !results.add(e.call()))\n                    throw new IllegalStateException(\"orphan or repeated result\");\n            }\n            case END -> {\n                if(!partial.isEmpty() || !results.containsAll(complete.keySet()))\n                    throw new IllegalStateException(\"unfinished calls\");\n                ended=true;\n            }\n        }\n        seen.put(e.sequence(),e);cursor=e.sequence();return output;\n    }\n    public synchronized long cursor(){return cursor;}\n    public synchronized String text(){return text.toString();}\n    public synchronized boolean ended(){return ended;}\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "面向前端的 AgentEventState"
+        },
+        {
+          "type": "paragraph",
+          "text": "本例对文本 start/content/end、工具参数/result、状态 snapshot/delta 与 run 终态建模。序号来自服务端持久事件外壳，不是 AG-UI 所有事件天然携带的字段。接入层先验证租户、Run、schema，扩展 chunk 并处理不在本枚举内的协议事件。字段长度/count 是教学限额，生产还需字节限额、总会话上限与事件归档。"
+        },
+        {
+          "type": "paragraph",
+          "text": "状态更新先在副本完成全部 TEST/PUT/REMOVE，全部成功才替换；失败不推进游标。这里的平面键值 patch 是应用内部语义，不是直接接受标准 StateDelta 的通用 JSON Patch；生产若接收 RFC 6902，必须正确实现数组索引、Pointer 转义和各操作原子性，不能使用字符串替换代替。"
+        },
+        {
+          "type": "paragraph",
+          "text": "成功、失败、等待人工分别展示，等待人工后通过授权入口建立后续运行；前端事件不能授予权限或证明资金/文件等外部提交成功。工具参数完整与工具结果完成是两个时刻。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整文件 src/AgentEventState.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整文件 src/AgentEventState.java",
+          "value": "import java.util.*;\n\n/** A bounded application profile after AG-UI JSON parsing and chunk expansion.\n * UI only; it cannot approve an action or execute a tool. State is flat string data,\n * not a general RFC 6902 engine. IDs and sequences belong to our durable envelope.\n */\npublic final class AgentEventState {\n    public enum Type { RUN_STARTED, TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT,\n        TEXT_MESSAGE_END, TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END,\n        TOOL_CALL_RESULT, STATE_SNAPSHOT, STATE_DELTA, RUN_FINISHED, RUN_ERROR }\n    public enum Op { PUT, REMOVE, TEST }\n    public record Change(Op op,String key,String value) {}\n    public record Event(long seq,Type type,String id,String text,Map<String,String> snapshot,\n                        List<Change> changes) {\n        public Event {Objects.requireNonNull(type);Objects.requireNonNull(id);Objects.requireNonNull(text);\n            snapshot=Map.copyOf(snapshot);changes=List.copyOf(changes);}\n    }\n    private final Map<Long,Event> seen=new HashMap<>();\n    private final Map<String,String> messages=new HashMap<>(),calls=new HashMap<>();\n    private final Set<String> closedMessages=new HashSet<>(),closedCalls=new HashSet<>(),results=new HashSet<>();\n    private Map<String,String> state=Map.of();\n    private long cursor;\n    private boolean started,terminal;\n    private String outcome=\"NEW\";\n    public synchronized void accept(Event e) {\n        Event duplicate=seen.get(e.seq());\n        if(duplicate!=null){if(!duplicate.equals(e))throw new IllegalArgumentException(\"conflicting duplicate\");return;}\n        if(terminal||e.seq()!=cursor+1||seen.size()>=1000)throw new IllegalStateException(\"terminal, gap, or limit\");\n        if(e.text().length()>8192||e.id().length()>256||e.changes().size()>128||e.snapshot().size()>128)\n            throw new IllegalArgumentException(\"oversize frame\");\n        if(!started&&e.type()!=Type.RUN_STARTED)throw new IllegalStateException(\"missing run start\");\n        switch(e.type()) {\n            case RUN_STARTED -> {if(started)throw new IllegalStateException(\"duplicate start\");started=true;outcome=\"RUNNING\";}\n            case TEXT_MESSAGE_START -> {fresh(e.id());messages.put(e.id(),\"\");}\n            case TEXT_MESSAGE_CONTENT -> append(messages,closedMessages,e.id(),e.text());\n            case TEXT_MESSAGE_END -> close(messages,closedMessages,e.id());\n            case TOOL_CALL_START -> {fresh(e.id());calls.put(e.id(),\"\");}\n            case TOOL_CALL_ARGS -> append(calls,closedCalls,e.id(),e.text());\n            case TOOL_CALL_END -> close(calls,closedCalls,e.id()); // arguments complete, not action success\n            case TOOL_CALL_RESULT -> {if(!closedCalls.contains(e.id())||!results.add(e.id()))throw new IllegalStateException(\"orphan result\");}\n            case STATE_SNAPSHOT -> {checkState(e.snapshot());state=e.snapshot();}\n            case STATE_DELTA -> {\n                Map<String,String> next=new HashMap<>(state);\n                for(Change c:e.changes()) {\n                    if(c.key()==null||c.op()==null)throw new IllegalArgumentException(\"invalid patch\");\n                    switch(c.op()) {\n                        case PUT -> next.put(c.key(),Objects.requireNonNull(c.value()));\n                        case REMOVE -> {if(!next.containsKey(c.key()))throw new IllegalStateException(\"missing key\");next.remove(c.key());}\n                        case TEST -> {if(!Objects.equals(next.get(c.key()),c.value())||!next.containsKey(c.key()))throw new IllegalStateException(\"test failed\");}\n                    }\n                }\n                checkState(next);state=Map.copyOf(next); // failed patch never changes existing state\n            }\n            case RUN_FINISHED -> {\n                if(!e.text().equals(\"success\")&&!e.text().equals(\"interrupt\"))throw new IllegalArgumentException(\"unknown outcome\");\n                if(e.text().equals(\"success\")&&(!closedMessages.containsAll(messages.keySet())||!results.containsAll(calls.keySet())))\n                    throw new IllegalStateException(\"unfinished result\");\n                terminal=true;outcome=e.text().equals(\"success\")?\"SUCCESS\":\"INTERRUPTED\";\n            }\n            case RUN_ERROR -> {terminal=true;outcome=\"ERROR\";}\n        }\n        seen.put(e.seq(),e);cursor=e.seq();\n    }\n    private void fresh(String id){if(id.isBlank()||messages.containsKey(id)||calls.containsKey(id))throw new IllegalStateException(\"ID collision\");}\n    private static void append(Map<String,String> map,Set<String> closed,String id,String delta) {\n        String old=map.get(id);if(old==null||closed.contains(id)||old.length()+delta.length()>32768)\n            throw new IllegalStateException(\"unknown, closed, or oversized item\");map.put(id,old+delta);\n    }\n    private static void close(Map<String,String> map,Set<String> closed,String id) {\n        if(!map.containsKey(id)||!closed.add(id))throw new IllegalStateException(\"unknown or closed item\");\n    }\n    private static void checkState(Map<String,String> s) {\n        if(s.size()>128)throw new IllegalArgumentException(\"state limit\");\n        for(var e:s.entrySet())if(e.getKey().length()>256||e.getValue()==null||e.getValue().length()>8192)\n            throw new IllegalArgumentException(\"state entry limit\");\n    }\n    public synchronized Map<String,String> state(){return Map.copyOf(state);}\n    public synchronized String message(String id){return messages.get(id);}\n    public synchronized String outcome(){return outcome;}\n    public synchronized long cursor(){return cursor;}\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "用量快照与缺失状态"
+        },
+        {
+          "type": "paragraph",
+          "text": "每个实际模型请求先 begin(attemptId, provider)，即使中途断流没有任何 usage，也留下 complete=false。adapter 把嵌套 usage 字段提取成受控键值映射；同一 attempt 的 partial 字段覆盖累计快照，不累加；不同真实 attempt 才加总。例子把缺字段数值展示为零，但 complete=false 明确表示下界/未确认，绝不能当“供应商确认零收费”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先约定累计用量如何更新：这份代码只接受计数不下降的合同。供应商若发送修订型统计，adapter 必须另定义可审计的修订事件，不能为了通过检查随便取 max。usage 终态由对应 provider 的明确完成与完整计数共同判定；业务输出被拒绝或取消，也不代表已消耗费用退回。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再核对一帧内部的关系。重复、负值、子集超总数、缓存分区冲突和整数溢出都要检测。对 Chat、Responses 和 DeepSeek，同时给出输入、输出及 total_tokens 时，必须验证 total_tokens=输入+输出；缺任何操作数就保留未确认，不能填零硬验。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DeepSeek 的 miss 即使命中字段缺失，也不能大于输入；命中和 miss 齐全时，两者之和应等于输入。命中字段与从 prompt_tokens_details.cached_tokens 提取的别名也必须一致；这里的 cached_tokens 是 adapter 提取后的受控键，不是把任意嵌套字段全部摊平。"
+        },
+        {
+          "type": "paragraph",
+          "text": "全部验证通过后才提交快照和事件序号。任何坏帧都不能污染已经确认的状态，否则后续即使拿到正确用量，也可能建立在错误水位上。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整文件 src/UsageLedger.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整文件 src/UsageLedger.java",
+          "value": "import java.util.*;\n\n/** Provider JSON is parsed by a bounded adapter before reaching this class. */\npublic final class UsageLedger {\n    public enum Provider { OPENAI_CHAT, OPENAI_RESPONSES, CLAUDE, DEEPSEEK }\n    public record Snapshot(long input,long output,long cachedRead,long cacheWrite,\n                           long reasoning,boolean complete) {}\n    private record Frame(long sequence,Map<String,Long> fields,boolean terminal) {}\n    private static final class Attempt {\n        final Provider provider;\n        final Map<String,Long> raw=new HashMap<>();\n        final Map<Long,Frame> seen=new HashMap<>();\n        long cursor;\n        boolean complete;\n        Attempt(Provider provider){this.provider=provider;}\n    }\n    private final Map<String,Attempt> attempts=new HashMap<>();\n    public synchronized void begin(String id,Provider provider) {\n        if(id==null||id.isBlank()||attempts.containsKey(id)||attempts.size()>=1000)\n            throw new IllegalArgumentException(\"invalid or duplicate attempt\");\n        attempts.put(id,new Attempt(Objects.requireNonNull(provider)));\n    }\n    public synchronized Snapshot accept(String id,Provider provider,long sequence,\n                                         Map<String,Long> patch,boolean terminal) {\n        if(id==null||id.isBlank()||patch==null||patch.size()>32)\n            throw new IllegalArgumentException(\"invalid usage envelope\");\n        Frame f=new Frame(sequence,Map.copyOf(patch),terminal);\n        Attempt a=attempts.get(id);\n        if(a==null){if(attempts.size()>=1000)throw new IllegalStateException(\"attempt limit\");a=new Attempt(Objects.requireNonNull(provider));}\n        if(a.provider!=provider)throw new IllegalArgumentException(\"provider changed within attempt\");\n        Frame old=a.seen.get(sequence);\n        if(old!=null){if(!old.equals(f))throw new IllegalArgumentException(\"changed event\");return normalize(provider,a.raw,a.complete);}\n        if(a.complete||sequence!=a.cursor+1||a.seen.size()>=1000)\n            throw new IllegalStateException(\"terminal, gap, or event limit\");\n        Map<String,Long> next=new HashMap<>(a.raw);\n        for(var e:patch.entrySet()) {\n            if(e.getValue()<0||e.getValue()<next.getOrDefault(e.getKey(),0L))\n                throw new IllegalArgumentException(\"negative or decreasing cumulative usage\");\n            next.put(e.getKey(),e.getValue()); // cumulative snapshot, never +=\n        }\n        Snapshot result=normalize(provider,next,terminal); // validate before commit\n        a.raw.clear();a.raw.putAll(next);a.complete=terminal;a.cursor=sequence;a.seen.put(sequence,f);\n        attempts.put(id,a);return result;\n    }\n    private static long value(Map<String,Long> m,String k){return m.getOrDefault(k,0L);}\n    private static Snapshot normalize(Provider p,Map<String,Long> m,boolean complete) {\n        String in=p==Provider.OPENAI_RESPONSES||p==Provider.CLAUDE?\"input_tokens\":\"prompt_tokens\";\n        String out=p==Provider.OPENAI_RESPONSES||p==Provider.CLAUDE?\"output_tokens\":\"completion_tokens\";\n        if(complete&&(!m.containsKey(in)||!m.containsKey(out)))\n            throw new IllegalArgumentException(\"final usage lacks required totals\");\n        long input=value(m,in),output=value(m,out),read=0,write=0;\n        if(p==Provider.CLAUDE){read=value(m,\"cache_read_input_tokens\");write=value(m,\"cache_creation_input_tokens\");input=Math.addExact(input,Math.addExact(read,write));}\n        else if(p==Provider.DEEPSEEK){\n            boolean hit=m.containsKey(\"prompt_cache_hit_tokens\"),alias=m.containsKey(\"cached_tokens\");\n            read=hit?value(m,\"prompt_cache_hit_tokens\"):value(m,\"cached_tokens\");\n            if(hit&&alias&&read!=value(m,\"cached_tokens\"))\n                throw new IllegalArgumentException(\"cache aliases disagree\");\n            if(m.containsKey(in)&&m.containsKey(\"prompt_cache_miss_tokens\")) {\n                long miss=value(m,\"prompt_cache_miss_tokens\");\n                if(miss>input)throw new IllegalArgumentException(\"cache misses exceed input\");\n                if((hit||alias)&&input!=Math.addExact(read,miss))\n                    throw new IllegalArgumentException(\"cache partition disagrees with input\");\n            }\n        } else {read=value(m,\"cached_tokens\");write=value(m,\"cache_write_tokens\");}\n        // Validate reported totals when all operands are known; omitted is not zero.\n        if(p!=Provider.CLAUDE&&m.containsKey(\"total_tokens\")&&m.containsKey(in)&&m.containsKey(out)\n                &&value(m,\"total_tokens\")!=Math.addExact(input,output))\n            throw new IllegalArgumentException(\"reported total disagrees with input plus output\");\n        long reasoning=value(m,\"reasoning_tokens\");\n        if(read>input||write>input||reasoning>output)throw new IllegalArgumentException(\"subset exceeds total\");\n        return new Snapshot(input,output,read,write,reasoning,complete);\n    }\n    public synchronized Snapshot total() {\n        long i=0,o=0,r=0,w=0,t=0;boolean all=!attempts.isEmpty();\n        for(Attempt a:attempts.values()){\n            Snapshot s=normalize(a.provider,a.raw,a.complete);i=Math.addExact(i,s.input());o=Math.addExact(o,s.output());\n            r=Math.addExact(r,s.cachedRead());w=Math.addExact(w,s.cacheWrite());t=Math.addExact(t,s.reasoning());all&=s.complete();\n        }\n        return new Snapshot(i,o,r,w,t,all);\n    }\n}\n"
+        }
+      ]
+    }
+  ]
+}

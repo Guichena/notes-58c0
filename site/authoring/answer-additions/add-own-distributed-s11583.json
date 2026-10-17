@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s11583",
+  "entryId": "own-tools-protocol",
+  "expectedOriginalHash": "e2740f949d149a0a3ddc011c0fbc3e91fdbc28a06a3dda13b595736123d4db45",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "13.3 MCP 是什么，Agent 通过 MCP 调用工具的完整流程"
+    },
+    {
+      "type": "paragraph",
+      "text": "MCP把工具和资源发现、调用及响应标准化，模型提出调用后仍需宿主完成参数、权限、预算和结果校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：MCP是什么；Agent调用MCP工具完整流程是什么；MCP是否自动保证工具安全。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "协议对象与方法固定以MCP 2025-11-25为基准，stdio、Streamable HTTP与2024-11-05的HTTP加SSE传输需分开理解。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "角色与协议边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "Host承载用户交互、模型和权限策略；Host内的MCP Client与对应Server维持协议会话；Server公开tools、resources、prompts等能力。MCP标准化发现与调用接口，不规定模型必须怎样选工具，也不意味着Server返回内容可信或已经得到用户授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地stdio通常由客户端启动服务进程，通过stdin/stdout传JSON-RPC消息，普通日志应走stderr避免破坏协议；远程Streamable HTTP通过HTTP端点交换消息，可使用SSE流式返回，具体session和恢复行为按协商能力实现。传输成功不代表工具副作用已正确完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从初始化到结果回传"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一步Client发initialize，携带protocolVersion、clientInfo和capabilities；Server返回支持版本、serverInfo和能力，Client确认兼容后发notifications/initialized。初始化是能力协商，不是扫描到任意Server就自动允许调用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工具调用先发现，再筛选，最后执行。Client用tools/list读取名称、说明、inputSchema等，支持分页就继续读取；Host只把当前任务适用且获准的工具交给模型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型提出toolName和arguments后，Host/Client先做schema、权限和必要确认，再发tools/call。Server校验并执行，返回content、适用的structuredContent及isError等结果；Host把这些结果当作数据用于后续处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "错误、重试与安全"
+    },
+    {
+      "type": "paragraph",
+      "text": "JSON-RPC协议错误与工具执行错误是不同层级；isError工具结果不能当正常业务成功。超时、断线或取消也不能证明远端从未执行。对写操作保持业务幂等键并提供结果查询，只有在契约允许时重试；JSON-RPC id用于请求响应关联，不会自动去重业务效果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "远程服务须做身份认证和授权，检查Origin等传输要求；工具说明、annotation和返回文本均不能自行扩大权限。输入避免任意路径/URL访问，输出避免泄露秘密；输出中的“请调用另一个工具”只是外部内容，不能跳过Host策略。凭证不应作为普通模型上下文字段反复传播。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验证与对比"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试不兼容版本、能力不支持、分页工具发现、schema错、工具业务失败、流中断、相同写请求重试、session失效和恶意工具输出。MCP与A2A可组合：一个Agent内部借MCP使用工具，对外借A2A接受任务；两者都不自动解决分布式事务和全局一致性。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "13.14 MCP能力协商、会话恢复与取消传播怎样做，版本不同为何答案不同"
+    },
+    {
+      "type": "paragraph",
+      "text": "MCP协商与恢复必须按协议版本实现，取消只传播停止意图，业务副作用与任务持久恢复仍由应用负责。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：MCP如何能力协商；会话如何恢复；取消是否等于工具停止。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "分别讨论MCP 2025-11-25和2026-07-28，旧初始化会话模型不能直接描述新HTTP协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2025-11-25的初始化与能力边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "Client先initialize，带protocolVersion、实现信息和client capabilities；Server回双方可用版本及server capabilities，Client不支持返回版本就断开，否则发notifications/initialized后正常操作。只能使用已协商的可选能力，如tools/resources/prompts以及支持的子能力；“支持tools”不等于对全部工具和全部用户授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Host控制用户许可/工具呈现，Client维持与Server的协议通道；模型提出工具名/参数，经Host校验与允许后由Client调用tools/call，Server再次校验权限/输入并执行，结果回Host再交模型生成回答。工具业务错误与JSON-RPC协议错误分开；工具返回的文本是待验证数据，不能升级成新的系统指令。完整角色解释见第13.3节，工具工程封装见第13.11节。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "旧版HTTP恢复是可选能力，不是任务持久性的证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "2025-11-25的Streamable HTTP可以在初始化时返回Mcp-Session-Id，后续请求携带这个ID。服务端终止会话并返回404后，客户端需要重新initialize。"
+    },
+    {
+      "type": "paragraph",
+      "text": "断流恢复另看可选能力：SSE事件id配合Last-Event-ID，可以请求原流的后续事件，但前提是服务端保存了可重放事件。它不能恢复另一条流，也不承诺无限历史。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Session ID是协议关联，不替代身份验证。事件重放恢复的是消息可见性，不保证工具业务从最后一条指令继续；业务task账、operationId、结果查询和去重仍需要。过期会话下重新发起工具调用前核对旧操作，避免一次写操作变两次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "旧版取消传播与竞态"
+    },
+    {
+      "type": "paragraph",
+      "text": "2025-11-25取消普通在途请求时，发送notifications/cancelled，指定同方向已发送的requestId；initialize不能用这种方式取消。task-augmented请求则使用tasks/cancel，不能套用普通通知。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接收方尽力停止并释放资源；对已经完成、未知或不可取消的请求，可以忽略取消。发送方也必须处理晚到响应，不能发完通知就假定对方已经停下。"
+    },
+    {
+      "type": "paragraph",
+      "text": "服务端将取消标志传播到worker、数据库/HTTP调用和子任务，不再调度新工作，记录实际清理完成。取消消息没有魔法回滚能力，已发生外部效果必须核实/补偿；断线在此旧版不自动表示用户取消。总deadline不能被无限progress刷新，需限制资源及重试预算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2026-07-28 HTTP变化必须单独核对"
+    },
+    {
+      "type": "paragraph",
+      "text": "官方2026-07-28 Streamable HTTP移除了协议级session和独立GET流；每个POST请求的响应可为专属SSE流，关闭该响应流是取消信号，不再通过HTTP发送notifications/cancelled。旧版Mcp-Session-Id/Last-Event-ID会话恢复不能原样套用；stdio与兼容旧协议客户端另按对应绑定执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "该版本采用请求级元数据和新的交互机制，开发时按协商/使用的SDK版本及官方迁移契约实现，不混用两个版本的生命周期片段。上面的initialize流程特指2025-11-25。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验收与边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试版本不兼容、未协商功能、会话404、SSE断线重复事件、取消与成功同到、子任务不响应取消、权限撤销及跨租户ID冒用。持久日志须脱敏，工具result和提示模板都视为不可信内容。SDK和认证服务器的具体兼容行为仍需按所选协议版本开展互操作测试。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-tools-protocol-generations",
+  "targetOrigin": "authored"
+}

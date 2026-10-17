@@ -1,0 +1,1076 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-rag-ingestion",
+  "kind": "qa",
+  "module": "ai",
+  "part": "RAG 检索与工作流",
+  "category": "资料接入、结构切分与增量发布",
+  "title": "资料接入、结构切分与增量发布",
+  "tags": [
+    "RAG",
+    "工程合同"
+  ],
+  "questions": [
+    {
+      "id": "q-own-rag-markdown-images",
+      "order": 96,
+      "question": "Markdown 图片和远程 URL 怎样安全、可恢复地进入 RAG？",
+      "shortAnswer": "先区分文档结构与授权资产，可靠保存受理状态，再按价值选择 OCR/视觉处理，并用版本化幂等和有界并发发布。",
+      "commonPhrasings": [
+        "Markdown图片与URL怎样进入RAG，逐图模型推理如何避免拖慢保存与入库"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Markdown图片与URL怎样进入RAG，逐图模型推理如何避免拖慢保存与入库"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "解析结构而非正则抓所有网址"
+        },
+        {
+          "type": "paragraph",
+          "text": "Markdown 里的网址先是文档结构，不能见一个就下载一个。 用Markdown解析器区分图片、普通链接、alt/title、相对路径、代码块和必要HTML，同时保留文档版本、章节、邻近文本与图片引用位置。例如正文引用一张流程图，需要记录图在何处及周围解释；代码示例里的URL可能只是示例，不一定要抓取。普通超链接默认只是引用，也不等于获准爬取整个站点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "上传资产与远程URL分别处理；相对地址基于受控文档目录解析，阻止路径穿越。远程下载由隔离worker处理SSRF、DNS/重定向每跳、大小/类型/时间、解压炸弹和认证来源，不把任意URL转发给带内网权限的模型/浏览器工具。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "按图的价值选择处理路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "装饰图/重复logo可按明确规则跳过或保留引用，文字截图可先OCR，图表/流程图等必要语义使用视觉描述/结构化抽取，多模态检索可保存图像特征。alt与周边文本能提供上下文但未经验证不当图片真实内容。"
+        },
+        {
+          "type": "paragraph",
+          "text": "缓存键以实际下载内容hash、处理模型/Prompt/预处理版本及权限作用域组成；相同URL内容可变，不能只按URL永久命中。缩放/分辨率影响细节，批量模型是否支持多图及各图独立结果需核对API，不能随意塞满上下文。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "持久保存与异步可检索两阶段"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存慢的问题，要先拆成两个时间点：用户什么时候拿到受理确认，以及全部图片什么时候真正可以被检索。 先可靠保存原文/资产引用、版本和摄取任务，返回docId+PENDING；再把图片处理、分块、embedding和索引交给有界队列。数据库事务/outbox或可靠扫描保证已受理任务还能恢复。进度需说明哪些图片完成、失败或按规则跳过；坏图不是空白图，不能据此声称全部成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以(docVersion,imageHash,stageVersion)幂等处理，可有限重试临时故障并保留永久错误。新版本索引完成质量/ACL核验后切换activeVersion，或明确提供部分可问答契约；旧worker结果不能覆盖新文档/复活删除。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "资源与延迟预算"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如一篇文档有多张相互独立的图，逐图串行耗时近似各图处理时间之和。改成有界并行可以缩短关键路径，但并发上限仍受供应商RPM/TPM、图像字节/像素、GPU和内存限制。先去重、过滤低价值图，再调并发或批量；每图起一个无限线程，只会把慢处理变成失控的资源竞争。"
+        },
+        {
+          "type": "paragraph",
+          "text": "分别测保存ACK、全部资产就绪、索引可用时间和最终问答质量，记录图片数量/像素/失败率、队列年龄和每文档费用。对大量图片文档给可取消与重试状态，取消后确认在途副作用/费用；提前返回任务ID不代表入库计算已完成。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试远程图变化/失效、重复图、异常格式、嵌入HTML、恶意内网URL、大图/多图、worker重启、文档更新删除与索引晚到。当前没有实际视觉模型、远程抓取或多模态索引实验，不编造入库加速和OCR准确率。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-durable-ingestion",
+      "order": 126,
+      "question": "1000 页 PDF 怎样可靠受理、恢复失败页并一致发布索引？",
+      "shortAnswer": "原件、任务、阶段产物与发布版本分离；坏页显式失败，完整核验后切换活动代，删除和撤权不能被迟到任务复活。",
+      "commonPhrasings": [
+        "异步接入如何不丢任务",
+        "1000页PDF从上传到可问答怎样做可恢复摄取与可靠索引"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "异步接入如何不丢任务"
+        },
+        {
+          "type": "paragraph",
+          "text": "异步接入先保证“接下来的工作有记录”，再追求“尽快返回”。 Java 接入层先校验权限、文件格式和大小，可靠保存原件与受理记录，再返回文档身份和 PENDING。这个返回值表示已受理，不表示解析或索引已经完成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "之后，解析、图片处理、切分、向量化、索引写入各自记录状态和失败原因，用有限并发与有界队列推进。例如图片处理完成而向量化失败，恢复时先核对已经留下的阶段产物，再补未完成计算。原件与阶段产物必须可重读，计算允许重试，发布指针最后切换。若接口允许部分完成，就明确可检索页范围；若业务要求整篇一致，继续使用上一完整版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "消息可以带任务标识、文档版本、对象引用和阶段配置，而不是把整个大文件塞进队列。可靠受理需要事务性任务记录与可恢复的投递方式；消息重复、worker 崩溃与处理成功但确认丢失，都要由持久幂等和阶段结果核对收敛。本地线程池只提供执行资源，不能在进程消失后恢复未持久化的任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果条件改成 1000 页或 600GB–1TB 压缩 PDF，先别直接报机器数量。页数不是固定字节数，压缩体积也不是向量条数；先统计格式、扫描比例、解压比、总 token、块数和失败分布，再估算 CPU、GPU、内存、存储、网络以及新旧索引并存峰值。增加并发只能改变处理速度和资源压力，不能修复坏页，也不能绕过权限撤销。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "1000页PDF从上传到可问答怎样做可恢复摄取与可靠索引"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先可靠接收，再异步处理"
+        },
+        {
+          "type": "paragraph",
+          "text": "1000 页 PDF 的处理重点，是每一阶段都能停下来再接着做。 客户端可分片、断点上传到对象存储；服务核验所有权、校验和、大小、页数、加密状态和格式安全，持久化任务后返回文档ID与版本。解析/OCR放到隔离worker，分别限制CPU、内存、运行时间、解压比例和并发，不能在问答HTTP线程里一次把1000页展开到内存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设文件上传完成后，第一个解析worker退出：原件和任务仍在，新的worker才有依据继续。若只留下一个成功HTTP响应，却没有持久任务或可核对的阶段结果，“异步”并不能保证剩下的页最终被处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "按页/章节分批提取文本、版面、表格、标题与页码映射；扫描件走OCR，文本层异常要检测。对乱码、阅读顺序、页眉页脚重复和跨页表格保留诊断，不能把解析失败页当空白直接标全文件成功。任务进度按已验证页/块而非仅下载字节展示。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "分块要保留检索语义和引用"
+        },
+        {
+          "type": "paragraph",
+          "text": "优先依据标题、段落、表格和代码边界，再按token上限切分，适度重叠用于跨边界上下文，但过大重叠会使重复片段占满候选。每块含documentId、version、chunkId、页码/坐标、章节路径、ACL和解析器版本。表格保留列头/行头，跨页表可链接，不把数值和单位拆散。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可同时维护小块用于精确召回、父章节用于补充上下文的层级关系，结合全文检索处理专有名词/编号，向量检索处理语义近似，再做去重与必要重排。ACL过滤与版本检查在候选阶段及返回前执行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "索引发布与恢复"
+        },
+        {
+          "type": "paragraph",
+          "text": "嵌入按有界批次调用并记录模型/维度版本，chunk键稳定且upsert幂等。每个阶段记录检查点与失败块；worker重启只补未完成工作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "新版本先完整建立独立索引命名空间，核验应有块数、失败页、权限和可检索性，再原子切换activeVersion；避免用户检索到一半旧、一半新。删除先标tombstone并阻止返回，再清理对象/全文/向量/缓存；旧摄取任务不能把已删除版本重新发布。若允许部分可问答，应明确哪些页尚不可用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "召回准确率只能被评估，不能口头保证"
+        },
+        {
+          "type": "paragraph",
+          "text": "建立跨章节事实、专有编号、表格数值、否定句、跨页关联及无答案问题的标注集，检验Recall@k、引用页正确性、权限泄露率和索引新鲜度；区分检索不到、OCR错误、分块缺上下文和生成误用四种原因。对长文档做分层采样，避免只测开头几页。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试1000页上传中断、坏页/OCR超时、同文件重复上传、块重复、嵌入模型升级、索引构建时更新权限、旧任务晚到及激活时故障。容量取决于总token、块数、向量维度和副本数，不能由1000页直接推算准确磁盘/GPU大小。准确率与两秒延迟都必须在代表性 PDF 集合上实测验收。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-multimodal-assets",
+      "order": 154,
+      "question": "多模态素材、派生事实和检索索引怎样分层存储？",
+      "shortAnswer": "对象存储保留原素材，权威元数据记录身份与权限，派生向量绑定素材和处理版本；跨模态比较须有兼容空间。",
+      "commonPhrasings": [
+        "多模态用户信息怎么存储、建立元数据与索引，并支持跨模态检索？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "多模态用户信息怎么存储、建立元数据与索引，并支持跨模态检索？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "对象、事实与检索向量分层"
+        },
+        {
+          "type": "paragraph",
+          "text": "把原素材、素材的身份与授权、可重建的检索向量分开保存。 大媒体放受控对象存储；事务库记录asset_id、owner/tenant、对象版本/校验和、MIME、大小、来源、采集时间、保留期和ACL。音视频片段再保存时间区间，图片OCR或文档块保存页/区域坐标。这样检索命中一段转写时，能回到具体版本的那一段音视频。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一张没有版本的大BLOB表若把媒体、用户属性、识别结果和向量混在一行，后续很难说明某个向量对应哪版素材，也难以准确撤回派生结果。分层的价值是让出处、更新与授权关系可以核对，并非只为换一种存储产品。"
+        },
+        {
+          "type": "paragraph",
+          "text": "转写、OCR、描述及embedding均是派生物，保存处理器版本、置信度与对应原素材版本。结构化用户事实需区分明确提供与推断，存在敏感信息时按用途最小化。原素材撤权或删除必须使所有派生索引和缓存同步失效，不能因向量无法直接读懂就把它当无隐私风险。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "检索的两条可行路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一多模态模型编码的图像/文本若共享空间，可进行文搜图、图搜图等相似搜索，距离度量与归一化依模型规范。不同向量空间不能直接相加或比较余弦；可分别检索后按排名融合，或者将OCR/转写作为另一条文本检索通道，再对小规模候选重排。这里不扩展模型训练方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先用可信用户/租户、媒体类型、时间和权限过滤候选，再按查询意图选通道。搜索“上周发票金额”可优先结构化金额/OCR检索，搜索“红色汽车照片”可用图文检索并核验候选。返回asset_id、片段坐标、版本及可授权的临时获取方式，不能向未授权模型泄露全量媒体。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一致性、成本与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "上传完成并校验后再发布可检索状态，索引处理失败可从原对象重试；幂等键包含对象/处理版本，旧处理任务不得覆盖新版本。跨多个派生索引的可见性如需一致，可使用active-generation发布协议；允许最终一致时明确“文件存在但尚不可搜索”的状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "视频按帧/片段建立索引会放大向量数；按需抽样和分层召回能降成本但可能漏细节。测试同一素材重复上传、对象替换、部分转写失败、跨模态查询、权限收紧、时间坐标偏移与删除后迟到任务；评估召回与片段定位正确率、索引延迟、存储和网络成本。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-chunk-intervals",
+      "order": 306,
+      "question": "1000/400/200 的 Markdown 分块、父子窗口与区间合同怎样定义？",
+      "shortAnswer": "先明确计数单位、半开区间、重叠和父子身份；结构优先、长度兜底，回取同版本且有权的连续原文。",
+      "commonPhrasings": [
+        "三种长度必须分开",
+        "该怎样谈真实参数",
+        "Markdown结构分块与父子聚合：精确处理1000/400/200"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "三种长度必须分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "先把计量单位说清楚，后面的 1000/400 才有意义。字节衡量传输和存储，字符描述文本，token 取决于具体 tokenizer。 String.length()、汉字数和文件大小都不能替代模型 token 数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "定位与预算也不是同一件事：Java 的字符串索引是 UTF-16 code unit，PDF 坐标、UTF-8 字节位置和 token offset 要分别保存，或有可验证的映射。正文恰好放得下，不代表完整请求放得下；标题、表头、角色包装和生成预留同样占最终预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例正文坐标采用半开区间。N=1000、C=400、O=0，保留短尾得到 [0,400)、[400,800)、[800,1000)；向前回补得到 [0,400)、[400,800)、[600,1000)。末块可见内容 400，但新增核心仍只有 [800,1000)。把尾部并入前一块得到 600 长度，仅在聚合上限允许时成立，不能偷偷违反 400 的硬限制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "C=400、O=50 时，步长为 350，基础窗口是 [0,400)、[350,750)、[700,1000)，尾段 300。若再回补为 [600,1000)，末次重叠变成 150。索引重叠、尾部回看与召回后聚合是三种操作，必须说清楚发生阶段和真实坐标。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "该怎样谈真实参数"
+        },
+        {
+          "type": "paragraph",
+          "text": "当前 NoteWeave 固定提交的结构化分块配置默认目标为 600 个估算 token、重叠 80；这是当前实现与默认值，不能称精确 tokenizer 计数或历史线上最优参数。实际分布、父窗口聚合预算和回补触发率需要运行记录。面试被问“大部分是否接近满块、很少补尾”，应给长度直方图、短尾占比、触发次数与分母，不能由算法推断“很少”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Markdown结构分块与父子聚合：精确处理1000/400/200"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先给结论"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以先按Markdown标题层级建父模块，再将模块正文按token预算拆成可检索子chunk，保存document/version/parent/headingPath及原文区间。1000个token、size400且不重叠时是[0,400)、[400,800)、[800,1000)；尾200可原样保留，也可向前补成[600,1000)，后者与前块重叠200，不是凭空填充。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "机制展开"
+        },
+        {
+          "type": "paragraph",
+          "text": "结构阶段先确定Markdown方言，用真实AST识别标题层级、段落、列表、表格扩展、代码块等，构建标题栈：遇到同级/更高级标题先弹出对应层，再建模块；开头无标题的前言也保留为根模块。代码围栏里的#不是标题，Setext标题与嵌套引用不能用“见#就切”替代解析。将headingPath作为元数据或可控前缀，不要为凑长度把无关标题下的内容随便拼到一起。"
+        },
+        {
+          "type": "paragraph",
+          "text": "父模块是结构与上下文单元，子chunk是召回粒度，两种ID和大小不能混为一谈。每个子块记录文档ID、版本、父ID、序号、token start/end及可回原文的位置；更新文档生成新版本并替换旧索引，不能用正文hash一项丢掉父路径/来源。Java Parent记录这些结构身份，Chunk同时记录可见区间和去除重叠后的core区间，方便验证整模块内容恰一次归属。"
+        },
+        {
+          "type": "paragraph",
+          "text": "必须使用实际embedding/下游模型相应tokenizer计数，字符数、词数、汉字数不等于token数。先保留段落/句子等安全边界，把相邻小块按预算打包，只有超长不可整体容纳块才进一步拆；标题、表头、代码围栏等附加内容也会占最终模型预算。1000/400示例以模块正文token坐标说明，不包含另加前缀的成本，最终提交前需重新计算总长度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定窗口核心用capacity=C、overlap=O且0<=O<C，每次end=min(start+C,N)，下一start=end−O；N=0无块，N<=C一个不填充短块。如果允许O>=C会没有前进甚至死循环，必须拒绝。一般相邻重叠O便于保留跨边界条件，但存储与召回重复增加；不能说重叠越大越好。"
+        },
+        {
+          "type": "paragraph",
+          "text": "具体1000/400/200：保留尾块的方案三段400、400、200，没有理由所有块必须等长。向前补齐方案第三段是600..1000，新增真实内容只800..1000，600..800来自已有第二块；记录coreStart=800防统计和聚合重复。也可把尾200合并到第二段变600，但若400是硬上限则违反合同，只有聚合预算另允许600时才可做。不能把“合并”和“回看重叠”当同一操作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果本来已设overlap，例如C400/O50，基础段是0..400、350..750、700..1000（最后300而非200）。若再向前补尾到600..1000，末次与前块重叠150而不是固定50。所有百分比和尾段计算必须基于实际步长，不能一边声称固定重叠一边沿用无重叠1000例子的余数。代码分别暴露overlap和backfillTail布尔策略。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“分块后与前面聚合”也有不同发生阶段：索引前可把同父下的小段按顺序合包；召回后可把命中chunk与前后邻段扩成证据区间；父文档召回可用child找到parent再取父正文。保存坐标后对同document/version/parent的区间按start排序，对相交或相邻段取并集，只输出原文一次。不同父模块/不同版本不得仅因数字坐标重合就合并；同一 document/version/parent 的标题路径或 token 总数冲突时应拒绝，而不是拆成两个身份绕过去重。如果选择整父扩展，同父多次命中只取一次。"
+        },
+        {
+          "type": "paragraph",
+          "text": "父模块可能远大于生成上下文预算，不能每次无条件附整父。可先尝试完整父，在超预算时保留命中区间与少量邻段/标题，按排序和剩余预算逐步放入；去重应在预算计算前进行。代码fullParent只明确返回整个父区间，是否在实际剩余预算内由调用方检查，不伪装成完成模型上下文编排。检索与聚合的两种容量都需要独立配置与记录。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“大部分chunk接近大小、很少触发补齐”是待验证的项目事实，不是分块算法自动保证。统计分母需说清是父模块数还是子chunk数，记录原始长度直方图、短尾比例、backfill调用次数/新增重叠tokens、最终输入长度和多次召回去重比例。只有数据支持才能确认“很少”。例如大量短标题段会有许多短chunk，即使全长文档平均很长。"
+        },
+        {
+          "type": "paragraph",
+          "text": "区间规划只解决结构、窗口、父子映射与聚合；端到端质量还取决于实际解析、模型表示和证据使用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "代码输入已经是按实际解析和分词得到的父模块token数，输出精确半开token区间，不按字符切Markdown。真正取原文时需要token到byte/字符边界映射，并避免切到不完整Unicode字节序列；若为有效文本边界调整切点，就应再核算长度及重叠，而非声称本纯区间测试已经验证了所有tokenizer和Markdown方言。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "例子与操作过程"
+        },
+        {
+          "type": "paragraph",
+          "text": "沿用 1000/400 的数值例，保尾：0..400、400..800、800..1000；补尾：0..400、400..800、600..1000。第二、三块聚合并集是400..1000，共600独有token，不是简单拼接800token。"
+        },
+        {
+          "type": "paragraph",
+          "text": "未运行真实Markdown解析、embedding、召回质量或模型tokenizer，未声称这些性能。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "正确性与代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "设已解析/分词模块有N token、产生K区间，纯区间规划O(K)时间/O(K)返回空间，不复制正文；若物化每块文本，还需按总输出token量收费，重叠会使总量大于N。合并S个候选区间分组后排序O(S log S)、空间O(S)，实际读取并集正文另计。AST解析/tokenization成本是前置步骤，不藏进区间规划常数里。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-chroma-responsibility",
+      "order": 346,
+      "question": "Chroma 会自动替文档做语义切块吗？",
+      "shortAnswer": "切块由调用方或指定框架负责，Embedding 与向量存储是独立职责；必须核对实际 API 和模型合同。",
+      "commonPhrasings": [
+        "Chroma负责文档切分吗，切块、Embedding和向量存储怎样分工？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Chroma负责文档切分吗，切块、Embedding和向量存储怎样分工？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "切分与存储的 API 职责"
+        },
+        {
+          "type": "paragraph",
+          "text": "Chroma collection.add接收按ID组织的documents和/或embeddings；只传documents时可由配置的embedding function生成向量，已经传向量则存提供的数据。该API没有因此承诺把一篇长文自动拆成多个业务chunk。常见流程在loader/parser后由splitter切好，再逐块入库。"
+        },
+        {
+          "type": "paragraph",
+          "text": "切分通常在预处理阶段完成；Chroma 除了向量，也可存文档与 metadata，并执行过滤与检索。自定义embedding函数、上层框架或托管摄取流水线可能额外处理文本，需查所用版本/封装代码，不能仅凭产品名断言。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "切分怎样真正落实"
+        },
+        {
+          "type": "paragraph",
+          "text": "先保留标题/段落/表格/代码块结构及页码；以模型token预算划块，必要时小量overlap，避免固定字符切在表头/行或语句中间。chunk_id、doc_id、revision、原文位置、content_hash、模型版本与ACL随块保存；分块不等于模型tokenizer切token，也不是HNSW分区。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两张有关联的表不能只各切一段无表头文本；保存表 ID 与已验证关系，再按问题扩展关联证据。超长文档超过embedding输入限制可能报错或被具体提供方截断，不能把截断称为正确文档切分。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "更新、检索和验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "query采用同一embedding空间，按授权过滤召回再读原文；若块边界变化要更新ID/版本与删除旧块，不能只add同ID期望必然覆盖。Chroma当前add已存在ID会忽略，覆盖应使用相应update/upsert且检查调用结果与版本语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用长文、中文/英文、表格、重复ID、模型维度不匹配、边界答案和文档更新测试块数、原文引用及漏召回。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-method-chunks",
+      "order": 366,
+      "question": "超长方法拆成多个检索块后怎样保持符号身份？",
+      "shortAnswer": "逻辑方法身份与物理块分开，保存仓库、commit、签名、范围及父方法，更新后按同一提交回取与引用。",
+      "commonPhrasings": [
+        "代码知识库按方法切块，超长方法再拆分时怎样保持方法身份、上下文和索引一致？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "代码知识库按方法切块，超长方法再拆分时怎样保持方法身份、上下文和索引一致？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "把逻辑实体和物理检索块分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "“按方法保存”说的是逻辑身份，不要求一个方法永远只有一个检索块。 方法这个父实体保存repo、commit、path、语言、完整符号名/签名、起止offset和内容hash；长度受控的chunk保存parent_method_id、chunk_id、ordinal、原文范围、局部hash和索引generation。长方法可以拆成多个子块，父表仍代表完整方法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如两个重载方法都叫save，只用短方法名就可能把它们接成一个父实体；不同分支的同名方法也不能混读。先固定完整身份，再讨论怎样拆长方法，才能保证命中局部代码后回到正确的实现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "通常按编译器/语言解析器提供的类/方法/语句边界切，连带必要签名、注释、所属类和引用摘要；Java SourcePositions可以给语法树源范围，但位置可能不可用，不能盲信任何节点总有合法offset。动态语言、语法不完整文件、生成代码需明确fallback和低置信标记；不是正则找花括号就支持所有语言。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "长方法怎样拆而不丢语义"
+        },
+        {
+          "type": "paragraph",
+          "text": "先按顶层语句/控制块打包到token预算；一个循环/表达式仍过长时继续按可解释子结构或安全token边界切分，保留父路径、控制条件与变量定义引用。重叠只补有限上下文，不无界复制整方法；超大字面量/自动生成数据可存原始引用并单独说明截断，不能凭摘要替换权威代码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例方法有初始化、权限判断、循环汇总和返回四部分，子块检索命中循环时，按parent关联取签名/权限前提及必要相邻块；不必每次回读整个巨型方法。设总token/块数/深度上限，超预算时分阶段精读；短方法保留整体，粒度由召回证据覆盖和成本评测。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "更新、去重和正确引用"
+        },
+        {
+          "type": "paragraph",
+          "text": "新commit修改方法后，按内容/范围重新构建子块集合，删除不再存在的旧子块；全部就绪才发布父方法manifest/generation。一次请求固定commit，从同版本原文回读，检查hash/offset，避免新向量配旧代码。单纯chunk序号不适合跨任意插入认同一内容，应结合稳定父身份和内容/结构匹配；哈希相同也保留各自合法来源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "结果可先按chunk融合，再按方法做证据聚合/多样性限额；同一方法多个不同证据不能粗暴只剩一块，同一块多路命中也不能虚增重复。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "验收与成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试重载/同名、嵌套类、Unicode 与 offset 单位、超长字面量、语法错误、移动重命名、删除、子块变少、跨仓权限及引用行号漂移；比较定位完整实现、约束证据保留、构建字节和查询延迟。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-incremental-chunks",
+      "order": 515,
+      "question": "文档局部更新怎样只重算受影响块并避免版本混读？",
+      "shortAnswer": "用稳定结构锚点和依赖差分识别变化，重算 overlap 与元数据依赖；新代核验后发布，单块 upsert 不等于整篇原子切换。",
+      "commonPhrasings": [
+        "一个更新时序",
+        "文档局部更新时，如何只重算变化的 chunk 并保证索引版本一致？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一个更新时序"
+        },
+        {
+          "type": "paragraph",
+          "text": "设活动代是 g7，文档只有 B 节改变。写入新原件、版本和可靠变更事件，计算依赖后建立 g8：B 的正文、邻接 overlap 和依赖它的摘要要重算；若标题被拼入所有块，则标题变化使更多向量失效。正文未改而仅 ACL 改变，通常不必重做 embedding，但返回资格必须及时改变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "当 g8 的原文、块目录、全文与向量投影都完整到达规定水位，并通过数量、ID、hash 和代表性检索检查后，用 expectedGeneration=g7 做 CAS 发布。构建失败继续服务 g7。请求开始 pin 一份清单，后续检索、回读、重排与引用都带同一代，而不是每跳重新取 latest。新请求可用 g8，在途请求可继续读保留的 g7，但当前撤权仍优先于历史快照。"
+        },
+        {
+          "type": "paragraph",
+          "text": "索引代不可变不代表永不删除。清理要考虑在途读者、保留期和恢复要求，先阻断不再允许返回的对象，再异步清理派生数据。回滚算法时最好把旧算法重建到当前水位；直接把发布指针退回陈旧快照可能复活删除、丢掉新知识。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "文档局部更新时，如何只重算变化的 chunk 并保证索引版本一致？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "从稳定标识和依赖范围开始"
+        },
+        {
+          "type": "paragraph",
+          "text": "局部更新先回答两个问题：这还是哪一个块，以及哪些产物真的依赖被修改的内容。 为此保存 tenant_id、doc_id、doc_version、chunk_id、content_hash、段落/章节边界、embedding_version、ACL_version 和删除标记。哈希判断内容是否变化，却不能独自决定身份：两处相同文字可能位于不同位置、属于不同权限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果采用固定长度切片，在文首插入一句话就可能让后面所有块位移。稳定段落/章节锚点或内容定义边界可以减少这种连锁变化，但重叠窗口仍会带来相邻重算。所谓“只算变化的块”，应包括真实受影响的依赖，不能只看编辑器里高亮了哪几行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对新旧文档做块级差异：新增块建立向量/词项，修改块重新索引，删除块写 tombstone 并清理旧词项。仅 ACL、标题或结构元数据改变时，可能不需要重算 embedding，但仍要更新权限过滤、展示和依赖的重叠块。模型/分词器/距离度量改变时，旧向量一般不能当作同一索引空间直接混用，需建立新代。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "失败时序决定提交协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "将原文新版本与 outbox 事件在同一事务提交，消费者按 doc_id 有序处理，重复事件幂等。事件带单调版本；索引写入使用外部版本控制或 CAS，版本10到达后迟到的版本9必须被拒绝。删除也保留足够版本信息，否则旧重试可能把已删除文档复活。仅在单条写入加条件并不能保证多chunk切换整体原子。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要文档级一致视图时，先写完整的新代 chunk 集合，校验数量、校验和及必需索引完成，再原子切换 authoritative manifest 的 active_version。读取必须固定该版本，避免新版新增块与旧版删除块混读；多次分页还需固定读取视图。对于允许短时最终一致的搜索，可按chunk增量发布，但必须明示窗口并保留对账修复。ES refresh 决定搜索可见时机，写成功不等于立即可搜索。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "例子、成本与验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "文档有 A、B、C 三节，只改 B。若 B 的前后 overlap 含邻节文字，则重算 B 与受影响的邻接块，复用不依赖 B 的 A/C 向量；如果标题前缀被拼入每个chunk，标题更新将影响全部chunk，这不是差分算法失败，而是依赖关系变了。一次重建从 O(全文字符+全部向量调用) 降至 O(差异识别+受影响chunk)，最坏全篇改写仍是全量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验收：事件重复、乱序、删除后旧更新到达、部分向量写失败、切换前进程崩溃、切换后GC旧代、ACL收紧立即拒绝、模型升级以及重叠边界变化。对账以原文版本manifest为真源，搜索索引是可重建派生物；测试中恢复后结果应全部属于同一活动版本，不得出现已撤权内容。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-snapshot-catalog",
+      "order": 537,
+      "question": "动态知识库怎样实现快照一致检索、时间旅行与不停服更新？",
+      "shortAnswer": "一次请求固定完整 manifest，区分系统已知时间与业务有效时间；新代 CAS 发布，历史查询仍检查当前授权。",
+      "commonPhrasings": [
+        "本地协议模型能证明什么",
+        "不断更新的知识库怎样实现快照一致RAG、版本过滤、时间旅行和不停服更新？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "本地协议模型能证明什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "SnapshotCatalog 要说明的是：先选定一份已发布快照，再在这份快照里查询，同时服从当前授权。 它用不可变 Generation、同步 publish CAS、pin、asKnownAt 与当前允许集合演示这个契约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "今天补录了一条上个月生效的事实，再问“上个月发生了什么”，答案取决于问题的口径。asKnownAt(T) 选当时已发布的版本；businessTime 则在已经选定的版本里筛半开生效区间。两种查询得出不同视图是正常结果，不能把它们统称为“查历史”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个模型没有持久化清单、真实 CDC、分布式事务、跨服务就绪证明和旧代 GC 租约。示例把 revision 与 sourceWatermark 放在同一可比较的教学整数域；生产若两者不是同一序关系，要改为显式版本目录与每源位点，不能直接比较大小。向量数值合同要求平方和正且有限，极大值溢出和极小值下溢会被拒绝；它不是后文稳健数值库的替代。"
+        },
+        {
+          "type": "paragraph",
+          "text": "NoteWeave 当前回读逻辑检查工作区、READY/INDEXED/PROJECTED 资格及最新已索引 Snapshot；这不等于最新上传版本已经可检索，也不证明 MySQL 与 ES 有跨库原子事务。介绍源码应说清楚资格检查与异步投影的边界。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "不断更新的知识库怎样实现快照一致RAG、版本过滤、时间旅行和不停服更新？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一次请求先固定可读清单"
+        },
+        {
+          "type": "paragraph",
+          "text": "维护authoritative manifest：generation、source_watermark、embedding/分词版本、各通道物理索引名、原文版本清单、校验和和发布状态。query开始只读一次已发布manifest，后续向量/BM25/图、重排取文和引用都携带同token，不能每个RPC重新读latest别名。"
+        },
+        {
+          "type": "paragraph",
+          "text": "仅给每条chunk加version再过滤version<=V不够：旧/新版本可能同时满足、删除墓碑可能未到、多文档尚未同水位。必须明确定义快照里每个实体的唯一有效版本或互不重叠有效区间，并保证所有需要的投影已完整到达水位。精确快照可等待一个共同可证明的cut，不能把多个分区墙钟最大值当全局提交顺序。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "写入与发布分开，在线旧代继续服务"
+        },
+        {
+          "type": "paragraph",
+          "text": "权威文档和变更事件同事务提交或使用可验证CDC位置；构建新generation时取一致源快照，从切点继续追增量，重复事件幂等，乱序以实体版本处理，删除同样有墓碑。稳定块按依赖差分复用 embedding；模型、维度或预处理合同升级时，新空间独立构建。"
+        },
+        {
+          "type": "paragraph",
+          "text": "待原文、向量、词项/图、ACL相关数据准备好且数目/哈希/关键查询验收通过，原子CAS发布一个完整manifest；构建失败留旧代，不先删正在服务索引。新请求用新token，在途请求仍pin旧代，资源预热/限速避免切换触发延迟风暴，这就是不停服但需要双份资源/变更日志的代价。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ES一次别名remove/add可用于单服务内切换，PIT可固定适用搜索视图；它们都不自动原子绑定外部向量库、原文和图。跨服务用同一manifest引用不可变物理代，禁止把三个各自切成功的别名说成一个事务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "时间旅行要说清在问哪个时间"
+        },
+        {
+          "type": "paragraph",
+          "text": "as-known-at T：返回当时系统已发布/已获知的快照；business-valid-at T：在选定知识快照中筛valid_from<=T<valid_to。今天补录上月信息会改变“现在知道的上月事实”，不会改变“上月当时知道什么”，需双时间或保留发布历史才能回答两者。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每doc/chunk版本携带原文hash和位置，命中后按指定revision读取并校验引用。旧版本清理必须等活动读者/lease释放并过历史保留窗；超出保留时明确不可查询，不静默退化到latest。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "权限与回滚优先保持安全"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史快照不是历史权限的通行证。正常用户的历史查询仍按当前授权核验，撤权候选在进入模型/返回前拒绝；如审计确需旧ACL须单独授权。结果cache包含tenant、授权版本、generation、模型版本和查询条件，不能只按query缓存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "回滚指向旧索引前先确认期间新增/删除如何继续供应，或把旧算法重建到最新水位；直接退回旧快照会丢新知识/复活已删内容。发布采用expected_generation CAS防并行构建者覆盖，异常后读manifest确认结果，不能因为超时就盲目重发切换。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java模型与验证边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "SnapshotCatalog的Generation/List/记录不可变，校验模型、维度、源水位和版本有效区间；publish用同步CAS只换完整代，pin保留旧对象，asKnownAt选发布历史，search先tenant/当前允许集合/有效时点过滤，再做精确余弦并返回固定原文revision。复杂度构建校验按版本排序，演示检索O(Nd+N log N)，不是高效ANN引擎。 此Java演示的存储向量与查询向量还要求double平方和为正且有限；极大值平方溢出或极小值平方下溢会被拒绝，不承诺接受所有有限double幅度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "配套 PipelineContractTest 覆盖连续发布、固定快照的并发读取、历史切点、旧请求稳定、有效区间等号、当前撤权、跨租户及重叠版本/维度/模型/水位拒绝。模型没有持久manifest、真实CDC/索引就绪、跨服务故障、GC租约或ANN；这些必须单独集成验收，不能由Java synchronized推导分布式一致。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-news-schema",
+      "order": 571,
+      "question": "新闻的来源、版本、关系表和向量分区怎样设计？",
+      "shortAnswer": "文章、来源、revision、chunk 与 embedding 空间分别建模；保留更正撤稿水位，分区不替代权限或语义过滤。",
+      "commonPhrasings": [
+        "新闻如何建关系表与向量分区，文本编码和召回怎样设计？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "新闻如何建关系表与向量分区，文本编码和召回怎样设计？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "来源和关系表以可追溯与查询为中心"
+        },
+        {
+          "type": "paragraph",
+          "text": "先明确采集授权/使用条款，保存provider、source_article_id或规范URL、抓取时间、发布时间、内容哈希和许可。不同网站转载可能内容相同但来源不同，应分开来源记录与规范文章，不能只按标题去重；RSS、NewsAPI 等只能作为可选接入方式，具体供应商须由实际配置确认。实际规模要按文章/版本/chunk/向量分别统计，百万篇不等于百万向量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "建议news_article存article_id、title、source_id、canonical_url、published_at、fetched_at、category、language、content_ref、content_hash、revision、status/ACL；正文较大可放对象存储，DB保存受控引用。news_chunk按(article_id,revision,chunk_id)保存文本/位置/hash，embedding_index记录模型版本、维度、metric、vector_record_id、索引代与状态。不要把外链字段误命名成已经内嵌的embedding_vector。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "索引、分区与容量边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "按真实查询选择(source_id,published_at,id)、(category,published_at,id)等，唯一来源ID/URL需要明确规范化与冲突处理；权限维度参与访问约束。百万行不自动需要分库，行宽、保留期、写速率、工作集、查询/恢复SLO才决定。时间分区可帮助裁剪/生命周期管理，不保证不含时间条件的查询变快。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MySQL原生分区与业务分库不同，分区键会约束唯一键设计，外键支持等也需核对当前引擎限制。不要在已有唯一业务键不兼容时直接宣布按发布时间分区。先索引/归档/读模型，证明单实例边界再分片。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "向量的集合、分区与过滤不是一回事"
+        },
+        {
+          "type": "paragraph",
+          "text": "可按模型版本/维度建立collection以避免空间混用；按租户或稳定业务路由键划分是访问/运维选择，类目和时间也可作为标量过滤。Milvus Partition Key通常按字段hash映射预设分区，不是“每个category必然一个物理partition”；同分区还可能多个键，仍需精确过滤与ACL。"
+        },
+        {
+          "type": "paragraph",
+          "text": "手动按月/类目拆集合需要跨月/跨类查询扇出与归并、热点和小分区开销；分类错误会漏召回，权限不能只靠选collection。查询没有对应硬过滤时分区减少搜索范围就可能改变答案全集，必须先确定合法检索域。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "文本编码、模型维度与词嵌入"
+        },
+        {
+          "type": "paragraph",
+          "text": "新闻按标题、摘要、正文块与必要元信息构造输入，保留时间/来源；分词/tokenizer给模型输入token，embedding得到句段/文档语义向量，不能称HNSW为词嵌入算法。query/doc按同模型契约的前缀、长度、归一化/metric编码，超过输入限长应切块或明确截断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "BGE是模型家族，base-en-v1.5为768维，large-en-v1.5为1024，小模型还有384；text-embedding-3-small默认1536、large默认3072，支持的dimensions参数可改变长度。因此“BGE / text-embedding-3都是768/1536”不成立，必须存完整模型ID/版本/实际维度，不能把不同空间即使同维也混查。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "召回与质量/时效闭环"
+        },
+        {
+          "type": "paragraph",
+          "text": "先tenant/ACL/时间等硬过滤，再比较Flat精确基线与HNSW/IVF-PQ的召回、延迟与内存。精确名称/数字/实体适合BM25，语义改写适合稠密向量，可RRF或经过校准的融合、按文章去重、reranker精排后取证据；时间新鲜度若参与排序需明示，不能默默牺牲相关性。"
+        },
+        {
+          "type": "paragraph",
+          "text": "更正/撤稿生成新版本/删除事件，索引异步更新以单调版本或索引代防旧事件复活；发布与引用绑定同文档版本。评测包含跨语言、旧新闻、同题转载、过滤后候选不足、模型升级与撤权。没有实际数据来源/规模或向量库服务，因此不报项目选型或召回数值。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-table-relations",
+      "order": 603,
+      "question": "Excel 检索如何定位表、验证 JOIN 并维护块关系？",
+      "shortAnswer": "精确 SUM/JOIN 交给受控结构化执行层，检索负责定位说明与 schema；表关系要验证键、基数、版本和来源。",
+      "commonPhrasings": [
+        "Excel与文档表格怎样入库检索，如何定位表、维护表间关联和chunk模型？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Excel与文档表格怎样入库检索，如何定位表、维护表间关联和chunk模型？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "结构化计算与文本检索按查询目标分工"
+        },
+        {
+          "type": "paragraph",
+          "text": "先看问题要计算结果，还是要找说明文字。 问“某地区订单总额”，需要精确过滤、聚合或JOIN：先解析sheet、表头、类型、单位、合并单元格和公式缓存值，落到经过校验的关系表或分析引擎，并保留workbook、sheet、行列位置与版本。问“这项指标怎样定义”，可以将说明结构化chunk后做关键词或向量检索。同一个Excel可同时走两条路线，不能因为文件已经向量化，就让相似度代替SUM和JOIN。"
+        },
+        {
+          "type": "paragraph",
+          "text": "金额、日期、百分数、空白、前导零编号和跨sheet公式尤其容易被错误类型推断。公式结果与公式本身分开保留，记录计算引擎/版本；不信任上传文件宏或公式外联。OCR置信度低/表头不完整需隔离或人工确认，不能悄悄拼成正确表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "大模型如何知道该查哪张表"
+        },
+        {
+          "type": "paragraph",
+          "text": "维护受权限控制的schema目录：tenant、doc/revision、table_id、业务名称/别名、字段类型/单位/描述、主键/外键、有效期、可用查询模板。先按任务与权限检索相关表/列说明，再把有限候选schema及已验证关系传给模型做schema linking；结果是受控的逻辑表ID/查询参数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "后端将逻辑ID映射到白名单物理表，验证SQL AST、只读权限、允许函数/列、tenant谓词、JOIN边、LIMIT与超时，绑定值参数后执行。参数占位不能用于任意表名，所以标识符必须由白名单生成。模型生成看似合理的字段名/连接条件不是存在性或授权证明，无法确认关系就澄清/返回不足。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "两个表的关系要显式保存"
+        },
+        {
+          "type": "paragraph",
+          "text": "同文档表A订单(order_id,customer_id,amount)与表B客户(customer_id,region)可有已证实N:1关系；保存relation_id、左右table/column、基数、来源位置、验证状态、版本。只有同列名或向量相似不能推断可靠关联，要检查唯一性、空值、覆盖率、单位和时间口径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "切块时小且强相关的表可连同标题/关系说明放父chunk；大表按行组切但每块携带表头、类型/单位和主键，不能把每个单元格孤立向量化。保存document_id、revision、table_id、row_range和parent_chunk_id，关系边指向稳定表ID。检索先命中某行组，再按合法关联键有界补取另一表相关行/标题，防多对多展开和Token爆炸。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一种明确的数据模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "权威层document(tenant,doc_id,revision,source_uri,content_hash,ACL_version,status)；table_meta(tenant,doc_id,revision,table_id,schema,header,row_count)；chunk(tenant,doc_id,revision,chunk_id,table_id,row_start,row_end,text_ref,content_hash,parent_id)；table_relation保存已确认键与来源。向量记录以chunk_id+revision+model_version定位并保存metric/dim/index_generation，metadata仅是可检索投影。"
+        },
+        {
+          "type": "paragraph",
+          "text": "主键/外键都包含tenant和revision以免跨租户/跨版本拼接；常用文档块查询索引(tenant,doc_id,revision,chunk_id)，关系扩展索引(tenant,doc_id,revision,left_table_id)，业务关系表则按真实JOIN键建索引。向量结果回读原文需检查当前权限与对应旧版本是否仍允许，而不是拿ID随意读最新文档。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "更新、成本和验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "改动一张表时根据内容hash更新其chunk，并重验依赖关系/摘要，避免另一张表仍引用旧列名。新版本完整构建校验后发布，旧请求固定同一版本；跨表逻辑关联不需要把整个Excel每次向量化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试一对多/多对多、重复主键、缺表头、跨sheet、空值/公式、表被删除、旧列改名、撤权及跨租户同table_id。精确SUM/JOIN与已知SQL oracle比较，文本证据核对原行列。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-batch-upsert",
+      "order": 635,
+      "question": "向量批量写入怎样兼顾吞吐、失败重试与可见水位？",
+      "shortAnswer": "Embedding 批次和写入批次分别按 token、实体数与字节限制；稳定身份加版本协议，逐项核对失败后才推进水位。",
+      "commonPhrasings": [
+        "批次与数据库模型",
+        "向量入库应单条还是批量，怎样兼顾吞吐、内存、部分失败和重试？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "批次与数据库模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "先问这一批受什么限制，再定批大小。 embedding 受模型输入 token、条数和限额约束；向量写入受实体数与实际请求字节约束，二者不必采用同样的批次。例如文本能放进一次 embedding 调用，不代表其向量和 metadata 编码后仍能放进一个写入请求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "vector_batches.py 只演示后一类分批：冻结 UTF-8 JSONL 编码字节，限制条数和字节，单条超限拒绝，同批遇重复 ID 就先切批。它不发送请求，也不实现远端重试、事务或可见水位。真实协议若使用 JSON 数组、头部或其他封套，还需另外扣除封套预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "news_schema.sql 展示来源文章、文章版本、块与向量目录的同租户复合键。retrieval_schema.sql 展示文档、授权、表目录、块和已验证表关系。外键能确保目录中的表存在，不能证明 JSON 内列名真实存在或两列业务上可以 JOIN。数字聚合由受限 SQL 或确定性程序计算；模型提出逻辑表与参数，Java 后端做标识符白名单、SQL AST、只读连接、授权、结果条数与超时检查，值用 PreparedStatement 绑定。占位符不能绑定任意表名。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个 DDL 是独立教学模型，未对应 NoteWeave 或实习的实际业务表。它们保持完整 schema，不把向量引用字段误称实际向量内容。一个表只有一个主键约束，主键可有多列；还可有多个业务 UNIQUE。分区不是必选项，MySQL 原生分区的唯一键与外键限制要按目标版本重新设计，不能给百万行随手加个时间分区就结束。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "向量入库应单条还是批量，怎样兼顾吞吐、内存、部分失败和重试？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "批量摊薄什么成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "单条便于低延迟即时反馈和错误归因，但每条网络、鉴权与请求调度成本高；批量可摊薄往返、序列化和服务端处理。批次过大延长排队和重试成本，占应用/服务端内存，可能触发最大payload、维度×数量或Token配额。不能从“批量”推断底层必为一笔ACID事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "解析/切块→embedding→向量upsert是分开的队列，embedding按Token与模型批上限，入库按实体数与编码字节上限；两段不必同批大小。用有限并发和队列容量做背压，下游429/磁盘慢时不能无限堆积已编码向量。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "身份、版本和确认"
+        },
+        {
+          "type": "paragraph",
+          "text": "向量ID从tenant/document/generation/chunk/model空间等稳定标识生成，metadata带源版本/权限/位置。insert与upsert的重复语义按产品核对，成功重试同ID也可能让较旧payload覆盖新版本，因此要条件版本写或写新一代后发布指针，而不是只靠“幂等ID”四字。"
+        },
+        {
+          "type": "paragraph",
+          "text": "检查返回每项/每批结果，区分可重试429/超时与永久schema/维度错误；只重试失败/结果未知项，用指数退避+jitter+总次数/时限和死信账本。客户端超时可能已写成功，重试前保持同业务ID/版本并核验；不能把HTTP200当所有向量已可搜，产品一致性/索引构建/flush可见时点另定。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "提交水位和上线验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "只在该批所有应有项已确认或明确隔离并记录后推进摄取水位。恢复时从已确认水位/失败账本继续，解析与embedding配置变化开新generation，未完成的新代不能混进旧代搜索。按源document/chunk目录核对数量、ID、维度、payload摘要和代表检索结果，数量相同不证明内容正确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同质量与持久配置下做批大小/并发阶梯实验，测端到端p95/p99、吞吐、RSS、错误/重试率、索引可见延迟；选择达到目标又有余量的点，不编造统一最佳1000条或十线程。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-rag-relational-identity",
+      "order": 499,
+      "question": "来源、版本与表关联怎样由关系约束承接？",
+      "shortAnswer": "复合身份外键、当前授权与业务 JOIN 正确性是三层约束；候选键、可空 UNIQUE 和聚簇代价须区分。",
+      "commonPhrasings": [
+        "关系约束怎样承接来源与版本"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "关系约束怎样承接来源与版本"
+        },
+        {
+          "type": "paragraph",
+          "text": "复合主键要覆盖身份所在的命名空间。例如同一 source 在不同租户、不同 revision 中允许有相同 chunk 序号，但子表外键必须带齐租户和版本，不能只引用一个局部数字 ID。一个表只能有一个 PRIMARY KEY 约束，可以由多列组成，所有主键列都不能为 NULL；UNIQUE 可以有多个，表达来源 URL、业务编码等其他候选键。MySQL 的可空 UNIQUE 通常允许多个 NULL，不能用它直接保证“缺失值也唯一”。InnoDB 通常按主键聚簇，二级索引携带主键；这决定宽复合主键的二级索引成本，不是逻辑主键和业务唯一约束可以混称的理由。"
+        },
+        {
+          "type": "paragraph",
+          "text": "引用完整性、权限和业务关系是三层：外键证明目标行存在，当前授权证明调用者可读，关系审核证明两张表的键和基数确实允许这个 JOIN。数据库中有一条关系声明，仍可能因为列类型、单位、NULL 或多对多重复使聚合失真。先用样例验证连接基数与重复行，再允许它进入检索后的确定性计算。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-rag-source-guide",
+          "label": "运行前提与未验证边界"
+        }
+      ],
+      "tags": [
+        "RAG"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

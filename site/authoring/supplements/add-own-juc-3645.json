@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-juc-3645",
+  "entryId": "lc-face-extra-23",
+  "expectedOriginalHash": "981293613defec85150f2fa0b8c4fb723b68a89263bdcabeb8c83c5aa391803e",
+  "title": "两栈队列的完整同步边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原题是整数单线程队列；以下为泛型并发扩展，方法名和空结果契约按示例独立定义。锁必须保护检查、搬运、取值整体，不能只分别保护两栈。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "两个栈实现队列 怎样补上并发安全"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个栈靠一次整体倒转恢复先进先出：新元素先进入入栈；出栈为空时，把入栈全部倒过去，最早进入的元素就到了出栈顶部。此后从出栈弹出即可，不必每次都搬。一次搬运可能 O(n)，但每个元素只经历有限次移动，因此摊还操作成本是 O(1)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并发版需要保护的是整个“检查出栈为空、搬运、取值”。如果检查完便释放锁，另一个线程可能改变任一栈，原来的搬运判断就过时了。分别给两个栈加锁却不保护跨栈转换，仍然不能得到正确队列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面用一把监视器保护两个栈，保留正确性而不夸大并行度。若题目追加阻塞或关闭，就需要引入条件等待和结束协议，不能靠调用方无限空转作为通用方案。测试中的有限 yield 重试只用来驱动受控实验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "code/TwoStackQueue.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\npublic final class TwoStackQueue<E> {\n    private final Deque<E> in = new ArrayDeque<>(), out = new ArrayDeque<>();\n    public synchronized void offer(E value) { in.push(Objects.requireNonNull(value)); }\n    private void transfer() { if(out.isEmpty()) while(!in.isEmpty()) out.push(in.pop()); }\n    public synchronized E poll() { transfer(); return out.poll(); }\n    public synchronized E peek() { transfer(); return out.peek(); }\n    public synchronized int size() { return Math.addExact(in.size(),out.size()); }\n    private static void check(boolean v) { if(!v) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        TwoStackQueue<Integer> q=new TwoStackQueue<>(); check(q.poll()==null);\n        try { q.offer(null); throw new AssertionError(); } catch(NullPointerException expected) { }\n        q.offer(1);q.offer(2);check(q.peek()==1);check(q.poll()==1);q.offer(3);\n        check(q.poll()==2 && q.poll()==3 && q.size()==0);\n        ExecutorService pool=Executors.newFixedThreadPool(4);\n        try {\n            List<Future<?>> producers=new ArrayList<>();\n            for(int p=0;p<4;p++){final int id=p;producers.add(pool.submit(()->{\n                for(int i=0;i<5000;i++)q.offer(id*5000+i);\n            }));}\n            int[] next=new int[4]; int consumed=0; long start=System.nanoTime();\n            while(consumed<20000){\n                Integer v=q.poll(); if(v==null){\n                    if(System.nanoTime()-start>TimeUnit.SECONDS.toNanos(10))throw new AssertionError(\"deadline\");\n                    Thread.yield();continue;\n                }\n                int p=v/5000;check(v%5000==next[p]++);consumed++;\n            }\n            for(Future<?> f:producers)f.get(10,TimeUnit.SECONDS);check(q.size()==0);\n            for(int i=0;i<20000;i++)q.offer(i);\n            Set<Integer> seen=ConcurrentHashMap.newKeySet();List<Future<?>> consumers=new ArrayList<>();\n            for(int i=0;i<4;i++)consumers.add(pool.submit(()->{Integer v;while((v=q.poll())!=null)check(seen.add(v));}));\n            for(Future<?> f:consumers)f.get(10,TimeUnit.SECONDS);check(seen.size()==20000&&q.size()==0);\n        } finally {pool.shutdownNow();check(pool.awaitTermination(10,TimeUnit.SECONDS));}\n        System.out.println(\"PASS FIFO/empty/null/interleaved transfer; 20000 concurrent producer and consumer items\");\n    }\n}\n\n",
+      "label": "code/TwoStackQueue.java"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-juc-reference",
+      "label": "运行支持与教学范围"
+    }
+  ]
+}

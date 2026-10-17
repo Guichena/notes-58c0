@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-inference-code",
+  "kind": "doc",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "实现参考与验证边界",
+  "title": "完整 CUDA 与 NumPy：归一化、采样与分页参照",
+  "tags": [
+    "完整教学代码",
+    "未执行源代码"
+  ],
+  "sections": [
+    {
+      "id": "s-inference-203",
+      "title": "10 CUDA 手写归一化",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 用 CUDA 实现向量归一化；均值和方差怎样并行归约？常量、长度 1、非整块与空输入怎么处理？"
+        },
+        {
+          "type": "paragraph",
+          "text": "核心回答：先求均值，再求平方偏差的均值，最后除以标准差并处理常量输入。 公式应为 μ=Σxi/N，var=Σ(xi−μ)²/N，yi=(xi−μ)/√(var+ε)。如果把分子误写为 (Σ(xi−μ))²，理论上会接近零，那不是方差。N=0 必须拒绝；N=1 或常量向量用 ε 后输出零。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读下面的 CUDA 示例，可以先沿一个向量走完：一个 block 中的线程跨步遍历输入，先求均值，再求平方偏差；两遍 FP64 归约减少数值抵消，最后输出 FP32。host 负责分配、拷贝、错误检查和 CPU 参照测试，并先检查 1≤N≤INT_MAX−256，再转为 int，保证本例 256 线程跨步索引的最后一次加法不溢出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这份完整示例用于解释机制，没有多 block 分层归约，也未追求大 N 最快。验证要分别检查编译、kernel 错误、设备同步和与 CPU 参照的数值误差，再扩展到不同长度与设备。读懂实现、编译成功和数值对照通过是不同检查，下面不把其中一个当成全部结论。"
+        },
+        {
+          "type": "code",
+          "language": "cpp",
+          "label": "inference/normalize.cu",
+          "value": "// One-block normalization reference implementation.\n// One block computes one entire vector. Two-pass FP64 reductions, FP32 output.\n#include <cuda_runtime.h>\n#include <cmath>\n#include <cstdio>\n#include <stdexcept>\n#include <vector>\n#include <algorithm>\n#include <limits>\n\nstatic void check(cudaError_t e) {\n    if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));\n}\n\ntemplate<int THREADS>\n__global__ void normalize(const float* x, float* y, int n, double eps) {\n    __shared__ double sums[THREADS];\n    __shared__ double mean;\n    __shared__ double inv_std;\n    int tid=threadIdx.x;\n    double s=0.;\n    for (int i=tid;i<n;i+=THREADS) s+=(double)x[i];\n    sums[tid]=s;\n    __syncthreads();\n    for (int stride=THREADS/2;stride>0;stride/=2) {\n        if (tid<stride) sums[tid]+=sums[tid+stride];\n        __syncthreads();\n    }\n    if (tid==0) mean=sums[0]/n;\n    __syncthreads();\n    s=0.;\n    for (int i=tid;i<n;i+=THREADS) {\n        double d=(double)x[i]-mean;\n        s+=d*d;\n    }\n    sums[tid]=s;\n    __syncthreads();\n    for (int stride=THREADS/2;stride>0;stride/=2) {\n        if (tid<stride) sums[tid]+=sums[tid+stride];\n        __syncthreads();\n    }\n    if (tid==0) inv_std=1./sqrt(sums[0]/n+eps);\n    __syncthreads();\n    for (int i=tid;i<n;i+=THREADS) y[i]=(float)(((double)x[i]-mean)*inv_std);\n}\n\nstatic int checked_size(size_t size) {\n    const size_t limit=static_cast<size_t>(std::numeric_limits<int>::max())-256u;\n    if (size==0 || size>limit)\n        throw std::invalid_argument(\"n outside [1, INT_MAX-256]\");\n    return static_cast<int>(size);\n}\n\nstatic void run_case(const std::vector<float>& x) {\n    const int n=checked_size(x.size());\n    const double eps=1e-5;\n    float *dx=nullptr,*dy=nullptr;\n    check(cudaMalloc((void**)&dx,n*sizeof(float)));\n    try {\n        check(cudaMalloc((void**)&dy,n*sizeof(float)));\n        check(cudaMemcpy(dx,x.data(),n*sizeof(float),cudaMemcpyHostToDevice));\n        normalize<256><<<1,256>>>(dx,dy,n,eps);\n        check(cudaGetLastError());\n        check(cudaDeviceSynchronize());\n        std::vector<float> y(n);\n        check(cudaMemcpy(y.data(),dy,n*sizeof(float),cudaMemcpyDeviceToHost));\n        double mean=0.,var=0.;\n        for(float v:x) mean+=v;\n        mean/=n;\n        for(float v:x) var+=(v-mean)*(v-mean);\n        var/=n;\n        for(int i=0;i<n;++i) {\n            double ref=(x[i]-mean)/sqrt(var+eps);\n            if (!std::isfinite(y[i]) || std::abs(y[i]-ref)>1e-5*(1+std::abs(ref)))\n                throw std::runtime_error(\"reference mismatch\");\n        }\n        check(cudaFree(dy));dy=nullptr;\n        check(cudaFree(dx));dx=nullptr;\n    } catch (...) {\n        if(dy) cudaFree(dy);\n        if(dx) cudaFree(dx);\n        throw;\n    }\n}\n\nint main() {\n    try {\n        bool too_large=false;\n        try {checked_size(static_cast<size_t>(std::numeric_limits<int>::max())-255u);}\n        catch(const std::invalid_argument&) {too_large=true;}\n        if(!too_large) throw std::runtime_error(\"oversized vector accepted\");\n        run_case({3.f});\n        run_case(std::vector<float>(511,2.f));\n        run_case({-3.f,0.f,2.f,5.f});\n        std::vector<float> x(1031);\n        for(int i=0;i<(int)x.size();++i) x[i]=(float)((i%29)-14);\n        run_case(x);\n        bool rejected=false;\n        try {run_case({});} catch(const std::invalid_argument&) {rejected=true;}\n        if(!rejected) throw std::runtime_error(\"empty vector accepted\");\n        std::puts(\"PASS CUDA norm reference, constant, singleton, tail and empty input\");\n        return 0;\n    } catch(const std::exception& e) {\n        std::fprintf(stderr,\"FAIL: %s\\n\",e.what());\n        return 1;\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-inference-381",
+      "title": "12 在线 softmax 与页表寻址的数值参照",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 手写在线 softmax，为什么分块仍等价？非连续 KV 页怎样按逻辑顺序参与 attention？"
+        },
+        {
+          "type": "paragraph",
+          "text": "分块不应改变逻辑上的 attention，页表也不能改变 token 顺序。 下面先以完整矩阵 attention 作参照，再比较分块在线 softmax，以及打散物理页后按逻辑页表还原的结果。读代码时先在纸上追踪一个逻辑页到物理页的映射，再检查在线 softmax 如何重新缩放已有累加量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试包含非整页、长度 1、大分数、零隐藏宽度和非法页表。attention 隐藏宽度必须为正，避免除以 √0。这是解释计算重排等价性的数学实现；真实引擎还需要页共享、写时复制、并发调度与 GPU kernel，不能把参照实现当成完整引擎。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "inference/paged_attention_reference.py",
+          "value": "\"\"\"Numerical reference for tiled attention and logical page addressing.\"\"\"\nimport numpy as np\n\ndef reference(q, k, v):\n    scores = q @ k.T / np.sqrt(q.shape[-1])\n    scores -= np.max(scores, axis=1, keepdims=True)\n    p = np.exp(scores)\n    return (p / p.sum(axis=1, keepdims=True)) @ v\n\ndef tiled(q, k, v, block):\n    if block < 1 or q.ndim != 2 or k.ndim != 2 or v.ndim != 2:\n        raise ValueError(\"shape/block\")\n    if q.shape[1] < 1 or not len(k) or len(k) != len(v) or q.shape[1] != k.shape[1]:\n        raise ValueError(\"shape\")\n    m = np.full((len(q), 1), -np.inf)\n    l = np.zeros((len(q), 1))\n    acc = np.zeros((len(q), v.shape[1]))\n    for start in range(0, len(k), block):\n        s = q @ k[start:start+block].T / np.sqrt(q.shape[-1])\n        new_m = np.maximum(m, np.max(s, axis=1, keepdims=True))\n        alpha = np.exp(m-new_m)\n        p = np.exp(s-new_m)\n        acc = alpha*acc + p @ v[start:start+block]\n        l = alpha*l + p.sum(axis=1, keepdims=True)\n        m = new_m\n    return acc/l\n\ndef unpage(pages, table, length):\n    if not isinstance(length, int) or length < 1 or not table:\n        raise ValueError(\"length/table\")\n    if any(type(i) is not int or not 0 <= i < len(pages) for i in table):\n        raise ValueError(\"page id\")\n    size = pages.shape[1]\n    if len(table) != (length+size-1)//size:\n        raise ValueError(\"wrong block count\")\n    return pages[table].reshape(-1, pages.shape[-1])[:length]\n\ndef main():\n    rng = np.random.default_rng(7)\n    cases = 0\n    for length in (1, 2, 17, 32):\n        q = rng.normal(size=(3, 8)); k = rng.normal(size=(length, 8)); v = rng.normal(size=(length, 5))\n        for block in (1, 4, 64):\n            np.testing.assert_allclose(tiled(q,k,v,block), reference(q,k,v), rtol=1e-12,atol=1e-12); cases+=1\n        n = (length+3)//4; order = rng.permutation(n).tolist()\n        kp = np.zeros((n,4,8)); vp = np.zeros((n,4,5))\n        for logical, physical in enumerate(order):\n            valid = min(4,length-logical*4)\n            kp[physical,:valid] = k[logical*4:logical*4+valid]\n            vp[physical,:valid] = v[logical*4:logical*4+valid]\n        np.testing.assert_allclose(reference(q,unpage(kp,order,length),unpage(vp,order,length)), reference(q,k,v)); cases+=1\n        assert 0 <= n*4-length < 4  # per-sequence tail slack, not total allocator overhead\n    q=np.array([[10000.,-10000.]]);k=np.array([[1.,-1.],[0.,0.],[-1.,1.]]);v=np.eye(3)\n    np.testing.assert_allclose(tiled(q,k,v,1),reference(q,k,v)); cases+=1\n    try: unpage(np.zeros((2,4,8)),[0],5); raise AssertionError()\n    except ValueError: cases+=1\n    try: tiled(np.zeros((1,0)),np.zeros((1,0)),np.ones((1,1)),1); raise AssertionError()\n    except ValueError: cases+=1\n    print(f\"PASS {cases} numerical cases: online softmax, shuffled page tables, tail slack.\")\n\nif __name__ == '__main__': main()\n"
+        }
+      ]
+    }
+  ]
+}

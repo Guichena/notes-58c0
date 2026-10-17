@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-5-5",
+  "entryId": "bg-mysql-5",
+  "expectedOriginalHash": "5c40c82eb43f59726ffa185e90df0264922d09c07500b171e8d98d7275b7caee",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "动态 feed 与写端 CAS 分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "用删除一行看 OFFSET 为什么会漏：首屏是 id=6、5，之后 6 被删，列表整体前移；第二页再 OFFSET 2，可能从 3 开始，跳过了 4。若记住上一页末项 5，下一页沿 <5 继续，就不受这次位置前移影响。但排序键更新、权限改变或历史回填，仍可能改变后续集合，游标不是固定快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以尽量选不可变、非 NULL 的排序字段，再用唯一键打破并列。游标应绑定筛选条件、租户、排序版本和最后键，并可加签名或完整性保护及过期管理；每页仍重新校验当前权限。往前翻页要反转边界和排序，取出后再恢复展示顺序；任意跳到第 10000 页则不是 keyset 擅长的访问。"
+    },
+    {
+      "type": "paragraph",
+      "text": "feed_item 的 version 条件更新解决编辑竞争，分页游标解决读位置，两者无替代关系。UPDATE 影响零行可能是旧版本、记录不存在、错误租户或状态变化，不应自动当作重复成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "版本不匹配时，应重新读取并合并允许合并的修改，或明确拒绝冲突；不能只取新 version，再把整份旧内容盲目覆盖。CAS 更新仍会取得数据库写锁，高冲突下反复重试也会放大压力，应限制次数和截止时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果面试上下文正在谈 Elasticsearch，应先回答它的分页：from/size 的深度会扩大分片候选收集与合并工作；连续翻页用 search_after，携带上一页完整 sort 数组并保持筛选和稳定排序，需要固定视图时结合 PIT。还要说明最新 PIT ID、续期与关闭、权限复核、部分失败不推进游标，以及过期后的重新开始。具体推导见《Elasticsearch 检索原理与系统设计面试手册》第 6 章“稳定分页与深分页”，完整 Java 调用与清理见第 10 章。这里的 MySQL LIMIT、延迟关联和复合游标回答对应关系库条件；不能把 ES 的 PIT 参数复制到 MySQL，或认为普通 MySQL 游标分页自动保持跨请求快照。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "动态列表与独立版本更新"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 feed_item.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/feed_item.sql",
+      "value": "CREATE TABLE feed_item (\n tenant_id BIGINT NOT NULL, item_id BIGINT NOT NULL, state VARCHAR(16) NOT NULL,\n created_us BIGINT NOT NULL, version BIGINT NOT NULL CHECK(version>=0), body TEXT NOT NULL,\n PRIMARY KEY(tenant_id,item_id)\n);\nCREATE INDEX ix_feed_page ON feed_item(tenant_id,state,created_us,item_id);\nINSERT INTO feed_item VALUES\n (7,6,'visible',100,0,'six'),(7,5,'visible',100,0,'five'),\n (7,4,'visible',100,0,'four'),(7,3,'visible',90,0,'three'),\n (8,9,'visible',200,0,'other tenant'),(7,8,'hidden',300,0,'hidden');\nSELECT item_id,created_us,version,body FROM feed_item\n WHERE tenant_id=7 AND state='visible' ORDER BY created_us DESC,item_id DESC LIMIT 2;\n-- Next page after cursor (100,5), expected 4,3:\nSELECT item_id,created_us,version,body FROM feed_item\n WHERE tenant_id=7 AND state='visible' AND(created_us<100 OR(created_us=100 AND item_id<5))\n ORDER BY created_us DESC,item_id DESC LIMIT 2;\nUPDATE feed_item SET body='edited',version=version+1\n WHERE tenant_id=7 AND item_id=4 AND version=0 AND state='visible';\nSELECT ROW_COUNT() AS first_update_expected_one;\nUPDATE feed_item SET body='stale',version=version+1\n WHERE tenant_id=7 AND item_id=4 AND version=0 AND state='visible';\nSELECT ROW_COUNT() AS stale_update_expected_zero;\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "5"
+}

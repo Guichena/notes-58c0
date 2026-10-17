@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-own-spring-persistence-q-own-spring-jdbc-protocol",
+  "entryId": "own-spring-persistence",
+  "expectedOriginalHash": "68fd65900afc7c97306b2ffc5f76745761c8e47c103a25fdb58ebf2673f21004",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第34章 JDBC、连接池与参数化 SQL"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 持久化正确性的核心，是把可信身份、SQL 参数、资源所有权和真实提交边界一起设计；框架名字和一条注解都不能替代这些约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本章的 SQL 教学基线为 MySQL 8.4.0、InnoDB，Java 基线为 JDK 21，驱动示例固定 Connector/J 8.4.0。它们是便于复现的版本选择，不表示任何项目实际用了这些版本。所有 SQL 都是教学示例，未在 MySQL 服务上执行。只应在获准使用的本地独立空 schema 中练习；同名表已经存在就换 schema，不覆盖原数据。带 ? 的语句是 JDBC 模板，不能原样粘贴到普通 SQL 控制台执行。纯 Java 自检不连接数据库。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. 从一次 JDBC 调用说清资源和事务"
+    },
+    {
+      "type": "paragraph",
+      "text": "Connection 表示数据库会话；PreparedStatement 表示已确定结构、待绑定值的语句；ResultSet 表示查询结果，谁创建资源，谁负责关闭自己拥有的那一层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若方法接收调用方传入的 Connection，只关闭自己创建的 Statement 和 ResultSet，不能擅自关闭连接、提交或回滚调用方事务。若业务入口从 DataSource 借连接，就负责借还、事务成功提交和异常回滚。try-with-resources 按逆序调用 close，不会自动执行 rollback；事务回滚仍须显式处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "资源清理失败时，首先保护原来的错误。手写分支遇到不同的清理异常，应附为 suppressed；如果它与主异常是同一个对象，先按身份跳过，否则 addSuppressed 会抛 IllegalArgumentException，反而替换原错误。本手册 JDBC 回滚分支只捕获 SQLException；驱动或替身若从 rollback 抛 RuntimeException 或 Error，仍可能替换主异常，这不在窄示例的保护范围内。"
+    },
+    {
+      "type": "paragraph",
+      "text": "try-with-resources 也不是任意故障下的身份保留保证。若业务体和 close 重抛同一 Throwable，语言生成的自抑制仍会失败。因此要分清“通常自动关闭资源”和“所有异常组合都保留同一个主对象”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "四个并发演示的手写线程池 finally 会保留已有 Exception/Error；没有主异常时保留第一个清理失败，后续不同对象按身份去重再附加。一次取消或 abort 失败，不会跳过其余取消、abort、shutdownNow、限时 awaitTermination 的调用尝试；等待被中断时恢复中断标志，仍沿用原等待期限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些规则保护的是清理编排与异常传播，不能强制不合作的驱动或线程终止，也不保证 abort 调用本身有期限。它们不证明驱动、网络或真实数据库的全部故障行为，不授权确认消息，更不能把 COMMIT UNKNOWN 改判成未提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "新 JDBC 连接通常是 autoCommit=true。一条语句完成后形成自己的事务，不等于三个 DAO 方法天然同成同败。显式事务使用同一连接先 setAutoCommit(false)，再执行业务，最后 commit 或 rollback。把 autoCommit 从 false 改回 true 可能提交当前事务，不能把它当异常后的通用“清理”动作。关闭仍有活动事务的连接，其结果由实现决定，因此先明确结束事务，再关闭。DDL、非事务表、消息、HTTP 调用不能靠同一个 rollback 全部撤销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查询失败必须向上暴露，不能 catch(SQLException) 后返回空列表，让“数据库不可用”看起来像“用户没有数据”。getLong/getInt 读取 SQL NULL 会得到零值，需要 wasNull 或合适的对象读取方式；金额用 BigDecimal，别先转 double 再恢复。事务异常的重试单位是完整业务事务，不是随意重发最后一条 SQL。COMMIT 应答丢失时可能已经提交，只有稳定业务键、结果收据和重新查询能帮助确定后续动作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JDBC 的保存点用于同一物理事务中的局部回退：在 autoCommit=false 且驱动支持时调用 setSavepoint，局部失败可 rollback(savepoint)，随后仍须由事务所有者决定最终 commit 或整体 rollback。releaseSavepoint 只释放保存点，不提交此前写入；整笔事务提交或回滚后，旧保存点不能继续使用。MySQL 的 ROLLBACK TO SAVEPOINT 不终止事务，也不能假定释放其后取得的全部行锁；InnoDB 对回滚掉的新插入行有相应锁释放细节。因此保存点既不是 REQUIRES_NEW，也不能撤销 HTTP 或消息副作用。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "q-own-spring-jdbc-protocol",
+  "targetOrigin": "authored"
+}

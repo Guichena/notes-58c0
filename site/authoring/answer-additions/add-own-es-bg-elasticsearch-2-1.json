@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-es-bg-elasticsearch-2-1",
+  "entryId": "bg-elasticsearch-2",
+  "expectedOriginalHash": "55b2e7386a6f0ea44d49ffcf1f46d615de9aca25c16d8452f8ac31a51dfabba9",
+  "title": "查询语义、布尔默认值与缺字段条件",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4.1 match term phrase prefix 各在问什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "match 面向全文文本：先用查询分析器生成词项，再按选定操作符构造查询。term 面向已索引词项，常用于 keyword、状态、编号；它不会把一段自然语言按 match 的方式分析。keyword 的 normalizer 仍可能参与支持的查询路径，因此判断是否相等必须结合 mapping。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如文档写入“Redis Cache”，索引分析得到 redis 与 cache。对 text 发 term=\"Redis Cache\" 通常不是查整句的正确方法；match 可以分别匹配词项。想精确查完整标题，使用 title.raw 这样的 keyword 子字段。match 的默认 OR 可能只命中一个词；若业务要求所有分析后词项都匹配，应明确 operator 或 minimum_should_match，并观察停用词、同义词图怎样影响实际词项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "match_phrase 使用词项位置表达短语，slop 允许一定位置移动。它不是比较原文字符串完全相等：大小写、停用词、同义词和分析位置都会改变匹配。需要错误码、路径、商品型号逐字符相等时仍应使用独立精确字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "prefix 匹配某个索引词项的前缀，适合受控前缀查找；它不等于任意正文子串检索。edge_ngram 在索引期保存从词首开始的若干前缀，ngram 保存内部片段，能够把一部分查询工作前移到写入，但增加词项数、磁盘、构建与 merge 成本。min_gram、max_gram 和查询分析策略决定可匹配长度；不能把 max_gram 之外的输入任意截短后还声称保持精确语义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "wildcard 可表达模式匹配，但宽泛模式尤其前导星号可能枚举大量词项。通配符不是全文分析，也不应无界暴露给用户。先限制模式长度、模式复杂度、目标字段与时间范围，再用真实查询测成本；频繁的固定用途应考虑适合的字段模型。fuzzy 处理编辑距离，不保证理解业务同义词，更不能把 A-100 与 A-100S 自动当同型号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "遇到“存了却搜不到”，按索引/别名、routing、mapping、分析后词项、布尔条件、版本、refresh 的顺序定位。先用 analyze 检查词项，再用 explain 检查一篇具体文档的匹配和评分，不要马上加 wildcard 或把所有过滤删掉。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4.2 bool 的四种条件和 should 默认值"
+    },
+    {
+      "type": "paragraph",
+      "text": "must 表示必须满足且可参与评分，filter 表示必须满足但不贡献评分，must_not 排除匹配文档，should 表达可选加分或至少命中若干分支，具体取决于 minimum_should_match。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ES 8.15 的默认值要看同一层 bool 中还有什么："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "只有 should，没有 must 或 filter：minimum_should_match 默认是 1，至少命中一路。",
+        "加入 must 或 filter：默认变成 0，should 可以只加分。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，同一个搜索在加入 tenant filter 后，若搜索词仍放在 should 且没有显式最少匹配数，就可能从“至少匹配搜索词”变成“返回租户内全部文档，再给匹配词的文档加分”。问题出在资格条件变了，不是租户过滤本身让文本匹配变宽。"
+    },
+    {
+      "type": "paragraph",
+      "text": "当“标题或正文至少匹配一路”属于资格时，显式写 minimum_should_match=1，或把一个 should 最少匹配一项的内层 bool 放进 must。不同层的默认值分别计算，外层出现 filter 并不自动修改所有内层的合同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "filter 不计算相关性，但不是每次必然缓存，也不是查询完全没有成本。缓存是否合适取决于可复用性、segment 生命周期、查询形态与系统策略；一次性高基数条件未必受益。过滤可以减少后续候选与取回量，真实执行顺序由查询引擎优化，不能仅按 JSON 数组顺序推断逐文档执行流程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“禁止字段含某值”和“要求字段必须存在且不等于某值”也不同。must_not term 会保留没有该字段的文档；若缺失不合格，还要加 exists。SQL NULL 的三值逻辑不能直接套成 bool 排除。广告多属性的组内 OR、组间 AND、有限全集上的 NOT，沿用第一章完整集合语义，不另改一套空集合规则。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4.7 连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "“filter 比 must 快多少？”先说是否需要评分和可缓存性，再测相同语义，不能给固定倍数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“为什么加租户过滤后无关结果反而多了？”检查 should 默认是否从必选变成可选，再检查 query 的实际分析词项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“相关性高为什么还要回查？”因为相关性只说明匹配程度，不能证明当前权限、删除状态和版本适用性。回查补的是事实资格，不能把它当全文召回的替代品。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    }
+  ],
+  "questionId": "1"
+}

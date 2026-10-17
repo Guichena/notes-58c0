@@ -1,0 +1,91 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">MySQL 主从复制原理是什么？读写分离会遇到什么问题？如何解决主从延迟？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">主从复制是大厂高频架构题。不要只说“主写从读”，还要讲复制延迟导致的读己之写不一致。</p>
+<p class="md-p">用户刚写完数据，如果马上从库读，可能读不到。比如用户上传文件后立刻刷新列表，从库还没同步，就会以为上传失败。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>主库写 binlog。</li><li>从库 IO 线程拉取 binlog 写 relay log。</li><li>副本 applier 应用 relay log；并行复制还包含 coordinator 与 worker。</li><li>主从延迟：从库重放落后主库。</li><li>读写分离：写主，读从。</li><li>读己之写：用户写后立即读要保证看到自己的写入。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">主从复制简化流程：</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>主库提交事务写 binlog。</li><li>从库 IO 线程连接主库，拉取 binlog 到 relay log。</li><li>从库 SQL 线程重放 relay log，得到相同数据。</li></ol></div>
+<p class="md-p">读写分离问题：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li>主从延迟导致刚写入的数据在从库不可见。</li><li>大事务会加剧延迟。</li><li>从库故障或复制中断可能读到旧数据。</li></ul></div>
+<p class="md-p">解决方案：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li>写后短时间读主库只是经验窗口，不能证明窗口结束时副本已追平；严格读己之写应在新的查询快照中读确认包含本次提交的可信主库，或在选定副本限时等待本次提交的 GTID 执行成功，再在同一节点建立新的查询快照。超时或失败时按预算回主或明确重试，不能继续把旧读当作最新结果。</li><li>对强一致接口强制读主库。</li><li>根据主从延迟动态摘除落后从库。</li><li>使用 GTID/binlog 位点，等待从库追上后再读。</li><li>优化大事务，避免一次更新太多行。</li></ul></div></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：什么场景不能读从库？</strong></p>
+<p class="md-p">问题分析：强一致读不能接受延迟。</p>
+<p class="md-p">知识点：一致性要求。</p>
+<p class="md-p">答案：支付结果、库存、刚提交的订单、权限变更后校验等强一致场景读主库。</p>
+<p class="md-p"><strong>变体 2：主从延迟怎么监控？</strong></p>
+<p class="md-p">问题分析：需要量化延迟。</p>
+<p class="md-p">知识点：seconds behind master、心跳表。</p>
+<p class="md-p">答案：监控复制延迟指标；更可靠的是写心跳表，比较从库重放到的时间戳。</p>
+<p class="md-p"><strong>变体 3：从库并行复制能完全解决延迟吗？</strong></p>
+<p class="md-p">问题分析：并行复制提升吞吐但不是万能。</p>
+<p class="md-p">知识点：大事务、热点行、资源瓶颈。</p>
+<p class="md-p">答案：不能。大事务、DDL、热点更新、从库 IO/CPU 不足都会导致延迟。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-distributed-s245">分布式手册：完整机制、条件与故障推演</h2><h2 class="md-h md-h2">1.5 怎样实现Master-Slave同步，并防止从节点长期返回旧数据</h2><p class="md-p">主从同步要以持久提交日志、连续应用水位和一致快照恢复为基础，读取再按所需新鲜度等待、回主或拒绝。</p><p class="md-p">常见问法：怎样实现主从同步；副本一直读到旧数据如何处理；怎样实现读己之写。</p><h3 class="md-h md-h3">适用条件</h3><p class="md-p">把主从同步限定为单写权威与只读副本。先区分副本返回已提交旧值和读取未提交事务：前者是复制新鲜度问题，后者是事务隔离问题。</p><h3 class="md-h md-h3">先定义提交与复制协议</h3><p class="md-p">主节点给已提交变化分配稳定logIndex/事务身份和leaderEpoch，按确定顺序写持久日志；副本从已持久水位拉取/接收日志，验证来源、epoch、连续序号/内容hash，按同一状态机应用。业务效果与appliedIndex同事务/原子持久边界，防已标进度却未写数据或重放二次效果。</p><p class="md-p">ACK应说明“收到”“落盘”“已应用”哪一级；同步等待哪些副本、是否多数确认影响RPO/写延迟和分区可用性。异步主确认后退出可能丢未复制的已确认写，不能仅有两台服务器就承诺零丢。这里不是把任何手写复制自动升级为Raft共识。</p><h3 class="md-h md-h3">首次同步、断线续传和缺口恢复</h3><p class="md-p">装快照要先定义它覆盖到哪个提交水位 S，再补 S 之后的日志。副本先原子安装完整快照，随后应用保留日志；生成快照期间的新写不能漏，也不能重复算。</p><p class="md-p">manifest 要带 schema、epoch、水位、文件列表和 hash，全部校验完成后才切换活跃指针。不能一边覆盖文件，一边向用户提供半份快照。</p><p class="md-p">短断线从lastApplied/持久位置继续；遇缺口停止应用并补拉，日志已被清理则重做完整快照。删除/权限收紧也要传播，不能只复制存在的值。重复日志要核对身份与内容，不能同序号不同payload也当已处理成功。保留长度按最长离线/备份恢复窗口和容量选择。</p><h3 class="md-h md-h3">故障切换必须先保护写权威</h3><p class="md-p">监测到失联只证明不可达，不证明旧主停止。选新主前验证其包含必要已提交前缀，并通过共识/受控故障转移或隔离旧主保证只有一个合法writer；新epoch在写资源和副本侧校验，客户端更新路由/连接。不能简单选offset最大者就证明数据安全。</p><p class="md-p">同步序号、提交索引、leaderEpoch和成员资格不是随便自增数字即可；其合法性来自协调协议。没有多数派或无法隔离旧主时，严格单写应拒绝冲突写，而非两边继续卖同一库存。切换中响应未知的业务请求仍用稳定operationId查结果。</p><h3 class="md-h md-h3">读新鲜度需要明确策略</h3><p class="md-p">读副本之前，先问能接受多旧。允许陈旧读的接口，可以返回副本结果并暴露 appliedIndex、版本和复制延迟；读己之写则带上主提交 token，等副本追到相应已提交前缀才读。</p><p class="md-p">没追上时，在 deadline 内等待、回主，或明确返回暂不可用。写后固定等一秒不能保证故障时也追上，固定读同一个副本也未必永远不倒退。</p><p class="md-p">要求线性一致时，读主也要确认当前合法leader/提交屏障，旧隔离主不能无限服务“最新读”。按产品使用已验证的读索引/租约/同步屏障，不能用异步副本秒级延迟指标冒充强一致。schema、缓存和路由旧数据也可能造成看似同步问题，逐层核对。</p><h3 class="md-h md-h3">一直旧不是靠多等一会儿解决</h3><p class="md-p">监控received/durable/applied三类水位差、最老未应用时间、错误/重试、磁盘空间、日志缺口和schema冲突。复制线程停止、毒事务、权限失败或日志保留不足会永久卡住，健康检查需判定可读新鲜度，超限副本摘出相应读池并告警/修复或重建。</p><p class="md-p">不能为“让复制往下跑”跳过未知事务而假装准确；修复需保留原因并对账。数据库未提交脏读是隔离级别问题，与异步副本读到已提交旧版本不同，答题应先澄清原词。</p><h3 class="md-h md-h3">Java 模型的能力与边界</h3><p class="md-p">ReplicaState Java实现受信已提交前缀的按序应用、重复冲突检查、缺口拒绝、epoch、不可变快照、删除和读水位门槛。它拒绝倒退快照和同前缀不同状态；快照后没有旧日志去重证据时拒绝旧事件并要求上游核实，不悄悄接受。</p><p class="md-p">这是内存参考状态机，调用install的协调器必须事先证明快照属于合法完整提交前缀；模型没有选主/多数派、磁盘日志、网络、认证或事务存储，不能作为生产复制服务。测试应覆盖上述边界；生产还须结合真实持久日志、故障转移与快照断电恢复验证。</p><h3 class="md-h md-h3">完整 Java 代码 ReplicaState.java</h3><p class="md-p">下面的Java模型只验证受信提交前缀的应用，不实现选主、网络或持久复制。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">001/ReplicaState.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.util.*;
+
+/** Certified committed-prefix apply model only. No leader election, consensus, transport or disk journal. */
+public final class ReplicaState {
+    public record Entry(long epoch,long index,String key,String value) {
+        public Entry {if(epoch&lt;1||index&lt;1||key==null||key.isBlank())throw new IllegalArgumentException();}
+    }
+    public record Snapshot(long epoch,long index,Map&lt;String,String&gt; state) {
+        public Snapshot {if(epoch&lt;1||index&lt;0)throw new IllegalArgumentException();state=Map.copyOf(state);}
+    }
+    private long epoch=1,index;
+    private Map&lt;String,String&gt; state=new HashMap&lt;&gt;();
+    private final Map&lt;Long,Entry&gt; receipts=new HashMap&lt;&gt;();
+    public synchronized boolean apply(Entry e) {
+        Objects.requireNonNull(e);
+        if(e.epoch()!=epoch)throw new IllegalArgumentException(&quot;wrong leader epoch&quot;);
+        if(e.index()&lt;=index) {
+            Entry prior=receipts.get(e.index());
+            if(prior==null)throw new IllegalStateException(&quot;old entry below snapshot/retention boundary; revalidate upstream&quot;);
+            if(!prior.equals(e))throw new IllegalArgumentException(&quot;same index conflict&quot;);
+            return false;
+        }
+        if(e.index()!=Math.addExact(index,1))throw new IllegalStateException(&quot;log gap&quot;);
+        if(e.value()==null)state.remove(e.key());else state.put(e.key(),e.value());
+        receipts.put(e.index(),e);index=e.index();return true;
+    }
+    /** Only a trusted coordinator may install a verified complete committed snapshot. */
+    public synchronized void install(Snapshot s) {
+        Objects.requireNonNull(s);
+        if(s.epoch()&lt;epoch||s.index()&lt;index)throw new IllegalArgumentException(&quot;rollback snapshot&quot;);
+        if(s.index()==index&amp;&amp;!s.state().equals(state))throw new IllegalArgumentException(&quot;same prefix different state&quot;);
+        state=new HashMap&lt;&gt;(s.state());epoch=s.epoch();index=s.index();receipts.clear();
+    }
+    public synchronized String read(String key,long requiredEpoch,long minCommittedIndex) {
+        if(requiredEpoch&lt;1||minCommittedIndex&lt;0)throw new IllegalArgumentException();
+        if(epoch&lt;requiredEpoch||index&lt;minCommittedIndex)throw new IllegalStateException(&quot;replica not caught up&quot;);
+        return state.get(key);
+    }
+    public synchronized Snapshot snapshot(){return new Snapshot(epoch,index,state);}
+    private static void check(boolean x){if(!x)throw new AssertionError();}
+    private static void rejected(Runnable r){try{r.run();throw new AssertionError();}catch(IllegalArgumentException|IllegalStateException expected){}}
+    public static void main(String[] args) {
+        ReplicaState s=new ReplicaState();Entry first=new Entry(1,1,&quot;a&quot;,&quot;one&quot;);
+        check(s.apply(first));check(!s.apply(first));
+        rejected(()-&gt;s.apply(new Entry(1,1,&quot;a&quot;,&quot;wrong&quot;)));
+        rejected(()-&gt;s.apply(new Entry(1,3,&quot;a&quot;,&quot;three&quot;)));
+        rejected(()-&gt;s.read(&quot;a&quot;,1,2));check(s.read(&quot;a&quot;,1,1).equals(&quot;one&quot;));
+        Map&lt;String,String&gt; mutable=new HashMap&lt;&gt;();mutable.put(&quot;a&quot;,&quot;two&quot;);
+        Snapshot replacement=new Snapshot(2,2,mutable);mutable.put(&quot;a&quot;,&quot;tampered&quot;);
+        s.install(replacement);check(s.read(&quot;a&quot;,2,2).equals(&quot;two&quot;));
+        rejected(()-&gt;s.apply(new Entry(1,3,&quot;a&quot;,&quot;old leader&quot;)));
+        check(s.apply(new Entry(2,3,&quot;a&quot;,null)));check(s.read(&quot;a&quot;,2,3)==null);
+        rejected(()-&gt;s.install(new Snapshot(3,2,Map.of())));
+        rejected(()-&gt;s.install(new Snapshot(3,3,Map.of(&quot;a&quot;,&quot;resurrect&quot;))));
+        s.install(new Snapshot(3,3,Map.of()));
+        rejected(()-&gt;s.apply(new Entry(3,3,&quot;a&quot;,null))); // no dedup proof below snapshot boundary
+        check(s.apply(new Entry(3,4,&quot;b&quot;,&quot;four&quot;)));
+        Snapshot copy=s.snapshot();rejected(()-&gt;s.read(&quot;b&quot;,4,4));
+        try{copy.state().put(&quot;b&quot;,&quot;bad&quot;);throw new AssertionError();}catch(UnsupportedOperationException expected){}
+        check(s.read(&quot;b&quot;,3,4).equals(&quot;four&quot;));
+        System.out.println(&quot;PASS ReplicaState: ordered committed apply, exact duplicate/conflict, gap rejection, read watermark, snapshot isolation, stale leader rejection, tombstone deletion, rollback/prefix conflict, retention-boundary rejection. In-memory trusted-prefix model only.&quot;);
+    }
+}
+</pre></div></div><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-distributed-guide">学习路线、版本与验证范围</a></li></ul><h2 class="md-h md-h2" id="add-own-mysql-database-91">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">26.4 副本为什么不能替代备份？</h3><p class="md-p">副本会复制正常写，也可能迅速复制误删；提升副本只能利用它已经拥有、能够安全应用的历史。源库本地 redo 与 binlog 都可靠落盘，并不意味着任意异步副本都已经收到最后几笔提交。</p><p class="md-p">半同步能够改变确认等待点，但需要区分收到并写入、同步 relay log 与实际应用。ACK 不等于副本上的普通 SELECT 已能看到新值；超时降级、确认副本数量和最终提升哪个副本也影响保证。</p><p class="md-p">本章给复制与分片恢复留下三个接口：提交事实对应的事务身份或位点、候选新主的接收/应用进度、阻止旧主继续写入的隔离条件。复制协议和切换实现应分别验证；跨分片也不能把各分片“各自恢复到差不多时间”当成全局一致快照。涉及跨分片业务事务时，还需共同恢复点、协调记录或业务对账规则。</p><h2 class="md-h md-h2">第28章 复制接收 应用与因果读</h2><p class="md-p">复制把事务日志传播并应用到副本，收到、持久化和应用提交是不同进度；因此半同步 ACK 不能直接证明副本 SELECT 已经读到刚写的数据。</p><p class="md-p">可能的问法：主从复制怎么同步？为什么写完副本查不到？主节点怎样知道副本写成功？“攒到一定量再同步”是什么？如何实现读自己的写？</p><p class="md-p">以 MySQL 8.4.0 为基线，源库为复制连接提供 binlog 发送工作，副本 receiver 接收后写 relay log，applier 负责应用。并行副本还有 coordinator 与 worker，事务依赖决定哪些工作能并行，不能把复制永远画成单个 SQL 线程。ROW 格式记录行变更，STATEMENT 记录语句，MIXED 根据规则选择；在 RC 下修改 InnoDB 数据需要行日志，MIXED 可转用 ROW，不能说配置项只允许写 ROW。</p><img src="assets/imported/own-mysql/replication-boundaries.png" alt="复制接收、持久化和应用可见是三个进度；等待 GTID 应先于业务快照。" loading="lazy" decoding="async"><p class="md-p">图中的箭头是因果阶段，不声称所有本机提交与发送动作在每种配置下只有一种调度顺序。MySQL 内部协调引擎与 binlog 的提交，不等于协调副本完成应用；启用半同步后，默认等待点 AFTER_SYNC 在 binlog 同步之后、引擎提交之前等待副本确认，AFTER_COMMIT 则在引擎提交之后等待。后一种情况下其他会话可能先观察到源上的提交，而发起事务的客户端仍在等 ACK。</p><h3 class="md-h md-h3">MySQL 主从延迟如何定位、治理，并保证关键写后读？</h3><p class="md-p">主从延迟要沿日志生成、传输、接收和应用分别定位；关键写后读用主读或明确 GTID 等待，不能把收到日志当作已经可见。</p><p class="md-p">可能的问法：MySQL 主从延迟如何定位、治理，并保证关键写后读？</p><h3 class="md-h md-h3">先止住业务错误，再拆延迟</h3><p class="md-p">刚写的订单在副本查不到，先保护业务结果：关键写后读临时读主库，别把延迟误报成订单不存在。“写后几秒走主”只是经验窗口，复制比它更慢时仍会失效。更精确的做法是取得这次提交的 GTID，让选中的副本限时等待它执行完成，再建立查询快照；超时则按预算回主或返回明确可重试状态。RR 若早已建好旧视图，等待完成也不会自动刷新它。</p><p class="md-p">然后再找慢在哪一段：源库生成事务、网络传输、receiver 接收、relay log 积压、worker 应用，分别查进度。若堵在 apply，升级网络不会解决；超大事务或 DDL、热点依赖、缺索引造成的定位成本、磁盘瓶颈、读负载抢资源，都可能拖慢应用。应结合复制状态、worker 错误、事务时间戳与队列积压，不能用单个 Seconds_Behind 值证明任意读请求都足够新。</p><h3 class="md-h md-h3">可选治理及其代价</h3><p class="md-p">减小事务批次，控制大批量写和DDL窗口；修复副本索引/数据不一致和应用错误；调节并行应用能力，但事务依赖和单热点限制并行收益；给副本足够I/O和CPU，拆离重报表与线上只读流量。重建落后过久且日志已不可追的副本时，使用一致的基线备份并接续正确日志位点，不能随便跳过报错事务伪造追平。</p><p class="md-p">半同步确认的是指定数量副本收到并持久化日志，不是所有副本已执行。它改善部分故障下的数据丢失风险，但不会自动解决读延迟，超时降为异步还须监控。因果读等待同样不能替代安全主从切换：必须隔离旧主、确认提升节点的进度和丢失窗口。</p><h3 class="md-h md-h3">验证计划与成本</h3><p class="md-p">在测试环境分别制造网络延迟、阻塞apply的长事务、从库资源不足，验证普通副本读可能旧、GTID等待后新、超时路由行为正确。记录p95/p99等待、回主比例、复制队列恢复时间、主库额外负载，避免故障时全部回主造成二次过载。</p><p class="md-p">读自己的写通常只需会话级因果性，报表可接受秒级旧值，库存扣减则应由权威写路径保证。先按业务定义一致性契约，才能决定同步、等待、主读或降级，不应笼统承诺“加从库后强一致”。</p><h3 class="md-h md-h3">binlog写入、批量刷盘、复制ACK与“主从强一致”分别保证什么？</h3><p class="md-p">binlog 写入、刷盘、副本接收、持久化与应用分别提供不同保证，ACK 的含义必须精确落在其中一个阶段。</p><p class="md-p">可能的问法：binlog写入、批量刷盘、复制ACK与“主从强一致”分别保证什么？</p><h3 class="md-h md-h3">题意与假设</h3><p class="md-p">“达到一定量才同步”可能指刷盘、组提交或复制发送；“主怎么知道从写成功”也可能指 MySQL 或 Redis，先确认语境与成功层级。</p><h3 class="md-h md-h3">binlog不是每发一条SQL就落盘一条</h3><p class="md-p">事务性变更先收集到事务binlog缓存，提交阶段将事务事件写入binlog并按刷盘策略持久化；普通SELECT通常不产生变更日志，一条更新多行的SQL在ROW格式下可对应多条行事件，一笔事务也可包含多条SQL。DDL、非事务表和具体格式另有规则，因此SQL条数、event条数、write和fsync次数不相等。</p><p class="md-p">group commit把多笔提交共享写/同步开销，sync_binlog控制同步频率，redo还有自己的innodb_flush_log_at_trx_commit。所谓“达到一定量才同步”可能说这些缓冲/组提交机制，不足以推导复制必须攒固定条数才发送；阈值需要具体配置，不能仅凭这句话确定。内存缓冲、OS页缓存、持久介质与副本应用是四个不同进度。</p><h3 class="md-h md-h3">MySQL ACK与读一致性</h3><p class="md-p">传统异步复制主库不等待副本应用即可提交，所以写后副本读易旧，主库故障时提升落后副本还可能丢已确认写。半同步等待配置数量副本接收并持久化relay log的确认，通常不是已经执行事务；超时退回异步和提升哪个副本同样影响保证。源库本地双1持久化不消除副本延迟。</p><p class="md-p">业务读自己的写可路由主库或对所读副本等待明确GTID执行；这解决因果可见性，不自动解决安全故障切换。需要更强复制契约可评估Group Replication/InnoDB Cluster及明确一致性模式，BEFORE/AFTER等控制读取/提交等待，仍要考虑法定组、网络分区、旧主隔离、超时和可用性代价。不存在一个“普通异步复制强一致=true”的万能开关。</p><h3 class="md-h md-h3">若问题指Redis主从</h3><p class="md-p">以 Redis 7.2.0 的 WAIT 语义为例，副本按复制offset确认进度，WAIT可等待当前连接此前写入达到指定副本确认数量，返回实际满足数；它不等价于这些副本已按AOF持久化，也不把Redis转换成强一致CP数据库。故障切换选举和复制/持久化窗口仍可能使已确认写丢失，锁安全还受lease过期和旧持有者恢复影响。</p><p class="md-p">因此回答“主怎么知道从写成功”时先明确成功指接收、内存应用、刷盘还是业务提交。协议携带事务ID/位点/offset并返回ACK才能建立对应进度，TCP发送成功本身只证明传输层部分事实，不证明数据库持久化或业务可读。</p><h3 class="md-h md-h3">故障验证</h3><p class="md-p">画出本地修改→日志写出→fsync→副本接收→副本持久化→副本应用→客户端读的时间线，每个故障点标允许丢失/旧读的范围。测试副本落后、半同步超时、ACK后主故障、读路由切换与提交应答丢失，观察最终业务键和复制水位。验收应记录实际配置、候选提升节点、各阶段水位和客户端观察结果。</p><h3 class="md-h md-h3">将写后读做成有预算的协议</h3><p class="md-p">先在源提交后取得本次事务的 GTID，而不是随便记录当前时间。MySQL 可以通过会话跟踪提供提交事务标识；应用必须使用驱动支持的真实会话状态接口，不能把整个全局 executed 集当作“这一个事务”。全局集合至多提供更宽的屏障，还可能让等待被无关事务拖长。</p><p class="md-p">在选中的副本上，以毫秒级请求总预算折算有限等待时间，调用 WAIT_FOR_EXECUTED_GTID_SET(gtid_set,timeout)。返回 0 表示等待条件满足，1 表示超时；错误或 NULL 结果不当作成功。等待必须发生在建立目标业务一致性读快照之前，并保证等待和业务读取落在同一副本。连接代理在两条语句之间换节点，或 RR 事务早已建立旧 Read View，都会破坏“等完就读新值”的推导。</p><p class="md-p">等待成功后再开始读取事务，或使用满足需求的自动提交读取。等待超时可按预算回主，但回主比例必须限流；复制故障时所有只读流量瞬间压主库可能造成第二次故障。也可以返回“写入已受理、读取稍后重试”的明确状态，不能把延迟当作订单不存在。</p><p class="md-p">因果读取只解决该请求所需的可见性，不保证源一定是安全主，也不保证新主包含所有已确认写。读路由、写权和提升水位仍须按高可用协议处理。</p><h3 class="md-h md-h3">两个故障时点</h3><p class="md-p">时点一：源按本机持久化策略确认事务 T，副本尚未收到 T，源永久丢失。异步提升该副本会丢失 T；本机 fsync 成功不能让远端凭空拥有它。</p><p class="md-p">时点二：半同步副本已把 T 刷入 relay log 并 ACK，但 applier 被长事务或资源瓶颈挡住。此时客户端可能已收到写成功，副本普通查询仍旧。提升前须选择持有所需日志且满足恢复策略的节点，并完成适当恢复与应用，不能任意挑一台“在线副本”。</p><p class="md-p">半同步等待超时退回异步后，保证应按实际生效状态重新判断。监控至少包括半同步状态与超时、接收和执行 GTID、receiver/worker 错误、relay 积压及业务写入到读取可见的延迟；单一 Seconds_Behind_Source 数字不能证明每个请求都新鲜。</p><p class="md-p">副本通过 binlog 文件与位置，或通过 GTID 自动定位，说明自己从哪里继续接收缺失事务。日志已被清理时，只有事务身份而没有事件内容仍无法凭空补齐，必须建立可接续的一致基线。所谓“全同步”是需要明确应答条件的概念；NDB Cluster 的同步复制、Group Replication 的组通信与一致性级别，不能视为传统异步复制的一键等价模式。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul><p class="md-p">ReplicaState 的 receipts 在一次快照安装之间随日志数量增长，key/value 与快照也没有字节上限；这是受信、有限输入教学模型，生产入口需有界容量、检查点/保留策略和资源预算。它的 epoch 水位读取不验证真实领导权，不能冒充 MySQL 实现或共识协议。</p></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-add4b68ac5301789",
+  "entryId": "ai-模型与评测-3",
+  "expectedOriginalHash": "4c84a28b227b273c8555569e1f1ffa766f839f80e56b5814a2613a928b9fda65",
+  "title": "跨册场景补充：PagedAttention与FlashAttention怎样协作，推理引擎如何按指标选型",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "PagedAttention与FlashAttention怎样协作，推理引擎如何按指标选型"
+    },
+    {
+      "type": "paragraph",
+      "text": "PagedAttention 优化 KV 缓存的分配与访问组织，FlashAttention 优化 attention 计算与内存 I/O；两者可以在兼容内核中叠加，但收益必须在固定负载与硬件上测量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问："
+    },
+    {
+      "type": "paragraph",
+      "text": "- 主问题：你项目里用了 vLLM 对吧？讲下 PagedAttention 核心原理，和传统 KV Cache 比解决了什么核心问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 1：它和 FlashAttention 什么关系？互斥还是叠加？各自优化瓶颈是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 2：实际部署中，PagedAttention 有没有出现显存碎片化更严重？什么场景吞吐收益明显下降？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 追问 3：还对比过哪些推理框架？最终选型核心指标和数值是多少？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LLM 推理优化做过哪些工作？用过 continuous batching、KV Cache、vLLM 吗？线上高峰吞吐量多少？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Transformer 里面用 Flash Attention 跟 Paged Attention 优化，它们的区别和原理是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有哪些推理引擎？大模型推理有哪些指标？"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "KV缓存和分页各解决什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "decode时缓存先前token的K/V，避免每步重算整个前缀；序列不断增长且长度差异大，若预分配最大连续空间会浪费，动态连续搬迁也有成本。PagedAttention把逻辑KV序列切固定大小块，经block table映射到非连续物理块，按需分配/释放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整块可在合法条件下共享前缀，引用计数和写时复制避免分支写污染；尾块仍有内部未用槽，表、引用计数、缓存保留和其他GPU分配也占空间。分页块不同于CUDA thread block，不能把逻辑页等同于操作系统自动换页。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "FlashAttention的确切计算思想"
+    },
+    {
+      "type": "paragraph",
+      "text": "标准attention计算softmax(QKᵀ/√d)V，完整N×N中间矩阵会产生大量HBM访存。FlashAttention按tile把Q/K/V子块搬到较快片上存储，融合计算并使用在线softmax维护每行最大值m、归一化和l及加权累加，避免把完整注意力矩阵反复写回HBM。"
+    },
+    {
+      "type": "paragraph",
+      "text": "合并一块新分数时m′=max(m,max(s))，旧l与输出累加乘exp(m−m′)，新块用exp(s−m′)加入，最后输出acc/l。数学上是同一精确attention算法重排，浮点舍入可能不同；它不把一般dense attention的二次算术复杂度变成线性。反向可重算部分中间量以省显存。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "两者原则上可叠加，但看具体kernel兼容"
+    },
+    {
+      "type": "paragraph",
+      "text": "分页关注KV存储分配与共享，Flash关注attention计算和内存IO；支持paged KV布局的attention kernel可同时利用两种思路。官方flash-attention库有带block_table的KV接口作为存在性例子，但硬件、dtype、head维度、mask和版本限制需核对，不能任意开两个开关就保证兼容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "prefill与decode瓶颈不同，长prefill可能算力密集，decode常受权重/KV带宽与batch影响；Flash也有推理专用路径，不宜简单说“Flash只训练，Paged只推理所以毫无关系”。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "碎片更严重和收益下降怎样回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "回答“分页后碎片是否更严重”，先拆开占用来源。分页降低 KV 连续分配的外部碎片，但大块遇到大量短序列仍会浪费尾槽；块太小，又会增加页表、访问和调度开销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "其他张量、CUDA Graph 保留、模型 workspace 和缓存淘汰也会影响可分配空间。因此分别量 reserved、allocated、有效 KV、尾槽和非 KV 占用，再判断是哪项增长；分页不能保证全部 GPU 内存零碎片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "低并发/短输入、模型已轻松容纳、CPU调度或网络成为瓶颈、预占重算频繁、长短请求不合理混排时，分页的容量收益可能不转成吞吐。检查KV使用率、等待、preemption、batch token预算及服务分布，不能无证据说自己遇到过更严重碎片或固定几倍收益。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "引擎比较与连续批处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "可比较vLLM、SGLang、TensorRT-LLM及适合本地CPU/量化的llama.cpp等，但支持模型/硬件/量化/工具调用和部署接口随版本变化。连续批处理在生成迭代边界移出结束请求、加入新请求，相比整个batch等最慢者结束提升利用；也需公平、最大token/KV准入与长请求防饿死。"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定模型权重、tokenizer、精度/量化质量、硬件拓扑、输入输出长度分布、并发到达和缓存状态，报告请求/s、输入/输出token/s、TTFT、ITL/TPOT、端到端p95/p99、错误/OOM、峰值显存、成本与满足SLO的goodput。开放到达负载和长短混合更能暴露排队，不只报离线最大batch吞吐。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "代码能证明哪一层"
+    },
+    {
+      "type": "paragraph",
+      "text": "attention_model.py用CPU NumPy对照完整softmax与分块在线softmax，再将KV打散到物理页、按逻辑页表还原，与连续KV得到相同数值；覆盖非整块、长度1、多个块大小和极大分数的稳定性。每序列尾槽小于块长的算术不等于全系统总浪费界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是可运行数学与寻址模型，未实现CUDA kernel、零拷贝、真实prefix共享/写时复制、调度器或GPU性能。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整源码：attention_model.py"
+    },
+    {
+      "type": "paragraph",
+      "text": "CPU NumPy对照测试，仅证明数学与页表寻址；不宣称运行GPU优化内核。"
+    }
+  ],
+  "questionId": "2",
+  "related": [
+    {
+      "entryId": "ai-模型与评测-4",
+      "label": "相同原文的规范入口",
+      "questionId": "2"
+    }
+  ]
+}

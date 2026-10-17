@@ -1,0 +1,236 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-p-hash",
+  "entryId": "p-hash",
+  "expectedOriginalHash": "519d54615034f7578abad7885c797a82f194a1133b2f0b9bd1e8ed15b59d62f5",
+  "title": "算法练习补充：精确成员查询、Bloom 与可删除过滤器",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "精确成员查询、Bloom 与可删除过滤器"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bitmap 能对有界整数域给出精确答案，Bloom 和 Cuckoo Filter 则用更少空间回答“肯定没有”或“可能有”；需要精确存在性时，可能有还要查权威数据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "四十亿个不同的无序 unsigned int，怎样快速查一个数"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确认 unsigned int 的位宽和可用内存；若是 32 位无符号整数，整个取值域只有 2³² 种，一位表示一种值即可精确查找。"
+    },
+    {
+      "type": "paragraph",
+      "text": "位图载荷为 2^32/8 = 536,870,912 字节，即 512 MiB，与已有元素数无关。读四十亿个数逐一置位，预处理 O(N)，之后每次查询 O(1)。不能把预处理成本漏掉，也不能说无序数据的一次查询无需读取就一定能 O(1) 完成。若只有一次查询且没有索引，最坏仍需要扫描；如果允许多次查询，预处理才有收益。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 没有 unsigned int 类型，可以用 long 接收 0～4294967295，或用 Integer.toUnsignedLong 解释某个 int 的全部 32 位。下方位图按高 16 位定位页面，低 16 位定位页内 bit；页面惰性分配，因此测试少量值时不必一次分配 512 MiB。密集数据最终仍会使用接近完整位图载荷，另有页面对象与引用数组开销；删除后本实现不扫描并释放空页面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果位宽是 64、内存不足或数据需要落盘，选择会不同：可做外部排序后二分、按高位分区后只查对应分区、建立磁盘索引，或先用近似过滤器减少需要读取的数据。Bloom 的“可能存在”不能当作这道精确判断题的最终肯定答案。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Bloom Filter 的原理和参数"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom 用 m 个 bit 和 k 个哈希位置表示集合，插入时置 1，查询时任一位是 0 就能确认不存在，全部为 1 只能说可能存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同键共享位，所以会误报存在；在没有丢失更新、错误清位、配置变化或数据同步滞后的前提下，已经插入的键不会被判为不存在。普通 Bloom 不能安全删除：清除某个键占据的 bit，可能清掉其他键还需要的标记。"
+    },
+    {
+      "type": "paragraph",
+      "text": "理想独立均匀哈希模型中，插入 n 个不同键后误报率常用近似 p≈(1-exp(-kn/m))^k，最优哈希数约为 k=(m/n)ln2，给定目标 p 时 m≈-n ln p/(ln2)^2。例如一百万键、目标约 1% 时，理论位数约 960 万 bit，约 1.2 MB 十进制字节，k 取 7 左右。取整、实际哈希相关性、键分布和实现布局会影响实际误报率，公式不是对任意恶意输入的保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复插入同一键通常不会继续增加已置位集合；超过规划容量持续加入新键，会让更多位变为 1，过滤能力下降，极端时所有请求都被判为可能有。bit 变满并不必然导致插入异常，但意味着过滤器失去价值。监控位占用、实际后端漏过率和数据规模，按容量重建或采用有明确整体误差预算的分层扩展结构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例从 SHA-256 摘要提取两个 64 位值，通过双重哈希形成位置；位数取 2 的幂、步长取奇数，使一轮位置在完整周期内不重复。它是清晰可复现的教学实现，不是性能最优或攻击安全的承诺。双重哈希降低生成多个位置的成本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "过滤器放在 Redis 前还是后"
+    },
+    {
+      "type": "paragraph",
+      "text": "先画出一次查询要经过哪些地方，再决定过滤器的位置。要比较过滤器先挡请求能省下多少访问，也要检查它的否定结果是否足以拒绝这次查询；链路成本和一致性合同共同决定顺序，数据库准确本身还不够。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地 Bloom 在远端缓存前，可以先挡掉明显不存在的请求，减少缓存网络访问；缓存命中率高时，先读缓存再对未命中请求用过滤器，也可能更合适。若缓存含临时值、过滤器只覆盖持久化数据，过早拒绝还会改变语义。应把两条链路的命中率、访问延迟、过滤器维护成本和容量一起估算，再压测验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "误报通常意味着多查一次缓存或数据库，不应直接向用户返回不存在。可以沿一个新增请求检查时序：记录已经生效，过滤器却还没更新，此时若根据过滤器拒绝查询，就会漏查。这个失败来自数据同步的空档，不是 Bloom 数学模型允许的误报。可在数据变为可查询之前更新过滤器，或在更新/重建期间绕过否定结果，并通过持久事件和版本切换保证恢复路径。删除数据后保留旧 bit 只会增加误报，一般比盲目清 bit 更安全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "涉及项目参数时，应说清预计 n、选择的 p、由此算出的 m 与 k、业务能承受的额外查询量；没有实际测量，就不要虚构“项目用了几个哈希”“准确率提高多少”。分片哈希只能改善键分布，单个极热键仍可能集中到一个分片，哈希扰动不能自动消除业务热度倾斜。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Counting Bloom 怎样支持删除与计数"
+    },
+    {
+      "type": "paragraph",
+      "text": "把 bit 换成计数器，插入时对对应位置加一，删除一次真实插入时减一；查询的多个计数器最小值是该键当前插入次数的上界估计，碰撞可能让它偏大。"
+    },
+    {
+      "type": "paragraph",
+      "text": "删除前需要证明“这次插入确实成功过，而且尚未删除”。mightContain 只给近似存在性，肯定结果可能是误报，不能承担这个证明。若删除一个从未成功插入的键，就可能扣掉其他键的计数，制造假阴性。另一个危险是计数器溢出：回绕会直接破坏正确性，饱和后再减也可能丢失真实计数。本实现先检查全部计数器是否有空间，再统一更新，溢出则拒绝本次插入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为让教学接口真正约束删除，add 返回一个不可伪造的本实例 Token，remove 只接受尚未消费的 Token，且每个 Token 最多删除一次。它不保存原键，只保存这次插入的位置；Token 的 O(k) 空间由调用者持有，全部活动 Token 的空间必须计入系统成本。生产中若已有权威插入/删除日志，可以由那个系统证明删除合法；不能忽略这些证据成本后，把本示例宣传成纯固定空间的精确计数器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom 的位载荷 O(m)，Counting Bloom 的计数器载荷 O(mw)，w 为计数器位数。每次插入、查询、合法删除需要计算摘要与 O(k) 个位置，本例摘要计算还与键字节长度成正比。这些类按单线程使用；并发置位、计数和删除需要整体同步或经证明的原子协议，不能直接共享普通数组。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Cuckoo Filter 怎么实现“计数”"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 Cuckoo Filter 存储短指纹，核心能力是近似成员查询和删除，它本身不等于精确的键频数表。"
+    },
+    {
+      "type": "paragraph",
+      "text": "键先得到指纹 f 和候选桶 i1，另一个桶由 i2=i1 XOR hash(f) 得到，因此搬迁指纹时不需要保留完整键。插入在两个桶中找空位，必要时踢出一个指纹放到它的另一候选桶；达到搬迁上限可能失败，需要安全回滚、扩容或备用结构，不能在失败过程中把既有成员丢失。删除也必须针对确实存在的插入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计数可以采用两类扩展：重复插入占据多个指纹槽，查询统计候选桶中的匹配指纹；或把等价指纹条目改成“指纹+计数器”，增加、删除时改变计数。两者仍受指纹碰撞影响，不能恢复精确键身份，且要处理重复次数占容量、计数溢出和删除合法性。不同产品选择不同实现，不能把某个 API 推广为所有 Cuckoo Filter 的固定规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 Redis 的 CF.COUNT 返回某项插入次数的估计，可能偏大；删除未真正插入的项会破坏保证，不能先用近似存在性查询为删除背书。CF.COUNT 的近似计数与 CF.DEL 的删除都须遵守这些前提。若业务要求精确账本、去重后不可误丢数据或精确频次，仍要保留权威键集合或计数表。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.nio.ByteBuffer;\nimport java.security.MessageDigest;\nimport java.security.NoSuchAlgorithmException;\nimport java.util.*;\n\n/** Single-threaded examples. Byte keys use exact byte identity, no implicit text normalization. */\npublic final class MembershipStructures {\n    private MembershipStructures() {}\n    private static void shape(int slots,int hashes){if(slots<64||slots>(1<<30)||(slots&(slots-1))!=0||hashes<1||hashes>64)throw new IllegalArgumentException(\"power-of-two slots 64..2^30, hashes 1..64\");}\n    private static int[] positions(byte[] key,int slots,int hashes){\n        Objects.requireNonNull(key);byte[] digest;\n        try{digest=MessageDigest.getInstance(\"SHA-256\").digest(key);}catch(NoSuchAlgorithmException e){throw new IllegalStateException(\"SHA-256 unavailable\",e);}\n        ByteBuffer buffer=ByteBuffer.wrap(digest);long first=buffer.getLong(),step=buffer.getLong()|1L;int[] out=new int[hashes];\n        for(int i=0;i<hashes;i++)out[i]=(int)(first+i*step)&(slots-1);return out;\n    }\n    public static final class Bloom {\n        private final int bits,hashes;private final long[] words;\n        public Bloom(int bits,int hashes){shape(bits,hashes);this.bits=bits;this.hashes=hashes;words=new long[(int)((bits+63L)/64)];}\n        public void add(byte[] key){for(int bit:positions(key,bits,hashes))words[bit>>>6]|=1L<<(bit&63);}\n        public boolean mightContain(byte[] key){for(int bit:positions(key,bits,hashes))if((words[bit>>>6]&(1L<<(bit&63)))==0)return false;return true;}\n        /** Classical independent-hash approximation, not a guarantee for every key distribution. */\n        public double estimatedFalsePositive(long distinctInserted){if(distinctInserted<0)throw new IllegalArgumentException(\"nonnegative insert count\");return Math.pow(-Math.expm1(-((double)hashes*distinctInserted)/bits),hashes);}\n        public int setBits(){int n=0;for(long word:words)n+=Long.bitCount(word);return n;}\n    }\n    public static final class CountingBloom {\n        private final int[] counters;private final int hashes,maximum;\n        public static final class Token {private final CountingBloom owner;private final int[] positions;private boolean removed;private Token(CountingBloom owner,int[] positions){this.owner=owner;this.positions=positions;}}\n        public CountingBloom(int slots,int hashes){this(slots,hashes,Integer.MAX_VALUE);}\n        public CountingBloom(int slots,int hashes,int maximum){shape(slots,hashes);if(maximum<1)throw new IllegalArgumentException(\"positive maximum\");this.hashes=hashes;this.maximum=maximum;counters=new int[slots];}\n        /** Token authorizes exactly one removal of this insertion. Caller owns its O(hashes) memory. */\n        public Token add(byte[] key){int[] p=positions(key,counters.length,hashes);for(int i:p)if(counters[i]==maximum)throw new ArithmeticException(\"counter overflow\");for(int i:p)counters[i]++;return new Token(this,p);}\n        public boolean mightContain(byte[] key){return estimatedCount(key)>0;}\n        /** Upper estimate of active multiplicity, under correct token removal and no overflow. */\n        public int estimatedCount(byte[] key){int min=Integer.MAX_VALUE;for(int i:positions(key,counters.length,hashes))min=Math.min(min,counters[i]);return min;}\n        public void remove(Token token){Objects.requireNonNull(token);if(token.owner!=this||token.removed)throw new IllegalArgumentException(\"foreign or consumed token\");for(int i:token.positions)if(counters[i]<=0)throw new IllegalStateException(\"counter invariant\");for(int i:token.positions)counters[i]--;token.removed=true;}\n    }\n    /** Exact uint32 bitmap. Lazy 2^16-bit pages; dense payload is 512 MiB plus page/reference overhead. */\n    public static final class UInt32Bitmap {\n        private final long[][] pages=new long[1<<16][];private long size;\n        private static void valid(long unsigned){if(unsigned<0||unsigned>0xffff_ffffL)throw new IllegalArgumentException(\"uint32 range\");}\n        public boolean add(long unsigned){valid(unsigned);int page=(int)(unsigned>>>16),within=(int)(unsigned&0xffff);if(pages[page]==null)pages[page]=new long[1<<10];long mask=1L<<(within&63);int word=within>>>6;if((pages[page][word]&mask)!=0)return false;pages[page][word]|=mask;size++;return true;}\n        public boolean contains(long unsigned){valid(unsigned);int page=(int)(unsigned>>>16),within=(int)(unsigned&0xffff);return pages[page]!=null&&(pages[page][within>>>6]&(1L<<(within&63)))!=0;}\n        public boolean containsIntBits(int bits){return contains(Integer.toUnsignedLong(bits));}\n        public boolean remove(long unsigned){valid(unsigned);int page=(int)(unsigned>>>16),within=(int)(unsigned&0xffff);if(pages[page]==null)return false;long mask=1L<<(within&63);int word=within>>>6;if((pages[page][word]&mask)==0)return false;pages[page][word]&=~mask;size--;return true;}\n        public long size(){return size;}\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试只对必须成立的性质作确定断言：插入项不漏报、合法删除后的计数上界、溢出不部分提交、Token 不能重复/跨实例删除、位图与精确集合一致。有限样本的误报率可以另作观测，不能把某一次随机比例当成普遍正确性证明。位图测试还应覆盖不同页和 uint32 极值；小样本正确性检查不能替代目标规模下的资源评估。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.nio.charset.StandardCharsets;\nimport java.util.*;\npublic final class MembershipStructuresTest {\n    static long checks;static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|ArithmeticException|NullPointerException e){return;}throw new AssertionError(\"invalid accepted\");}\n    static byte[] key(int n){return Integer.toString(n).getBytes(StandardCharsets.UTF_8);}\n    public static void main(String[] args){Random random=new Random(20261030);var bloom=new MembershipStructures.Bloom(1<<17,7);Set<Integer> inserted=new HashSet<>();for(int i=0;i<5000;i++){int n=random.nextInt(100000);inserted.add(n);bloom.add(key(n));}for(int n:inserted)eq(bloom.mightContain(key(n)),true);eq(bloom.estimatedFalsePositive(0),0.0);eq(bloom.estimatedFalsePositive(10000)>bloom.estimatedFalsePositive(1000),true);\n        var counting=new MembershipStructures.CountingBloom(1<<14,6);List<MembershipStructures.CountingBloom.Token> tokens=new ArrayList<>();List<Integer> keys=new ArrayList<>();Map<Integer,Integer> counts=new HashMap<>();\n        for(int i=0;i<15000;i++){if(tokens.isEmpty()||random.nextBoolean()){int k=random.nextInt(200);tokens.add(counting.add(key(k)));keys.add(k);counts.merge(k,1,Integer::sum);}else{int p=random.nextInt(tokens.size());counting.remove(tokens.remove(p));int k=keys.remove(p),n=counts.get(k);if(n==1)counts.remove(k);else counts.put(k,n-1);}for(var e:counts.entrySet()){eq(counting.mightContain(key(e.getKey())),true);eq(counting.estimatedCount(key(e.getKey()))>=e.getValue(),true);}}\n        for(var token:tokens)counting.remove(token);for(int i=0;i<500;i++)eq(counting.estimatedCount(key(i)),0);\n        var small=new MembershipStructures.CountingBloom(64,64,2);var a=small.add(key(1));var b=small.add(key(1));eq(small.estimatedCount(key(1)),2);bad(()->small.add(key(2)));eq(small.estimatedCount(key(1)),2);small.remove(a);eq(small.estimatedCount(key(1)),1);bad(()->small.remove(a));small.remove(b);eq(small.estimatedCount(key(1)),0);bad(()->counting.remove(a));\n        var bitmap=new MembershipStructures.UInt32Bitmap();Set<Long> exact=new HashSet<>();for(int i=0;i<80000;i++){long n=((long)random.nextInt(32)<<16)|random.nextInt(65536);if(random.nextBoolean())eq(bitmap.add(n),exact.add(n));else eq(bitmap.remove(n),exact.remove(n));eq(bitmap.contains(n),exact.contains(n));eq(bitmap.size(),(long)exact.size());}\n        for(long n:new long[]{0,63,64,65535,65536,0x7fff_ffffL,0x8000_0000L,0xffff_ffffL}){bitmap.add(n);eq(bitmap.contains(n),true);eq(bitmap.containsIntBits((int)n),true);}\n        bad(()->bitmap.add(-1));bad(()->bitmap.contains(0x1_0000_0000L));bad(()->new MembershipStructures.Bloom(100,3));bad(()->new MembershipStructures.Bloom(64,65));bad(()->new MembershipStructures.CountingBloom(64,1,0));\n        System.out.println(\"MembershipStructuresTest PASS \"+checks);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "字符串里出现最多的所有字符"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整答案应返回所有并列最高频字符，不能在找到第一个最大值后丢掉其他并列项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里按 Unicode 码点计数，并按第一次出现的顺序返回所有并列者。空串返回空数组；😀a😀abb 返回 😀、a、b。若只允许英文字母可用定长数组；若要忽略大小写、只算字母或按字典序输出，要在计数前后加入对应规范化和排序，不能默认把标点或其他文字过滤掉。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "出现最多的字母：全部并列项和次数都要返回"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按约定的字母范围逐个码点计数，再求最大次数，最后输出所有达到最大次数的字母及其次数；只返回字母列表还没有完成题目的输出要求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：给一个字符串，输出出现次数最多的字母和次数，并列时全部输出；如果包含数字、标点、大小写或补充平面字符，统计范围怎样定义？"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确认哪些字符算“字母”。下面有两种接口：ASCII_LATIN 只统计 A–Z、a–z；UNICODE_LETTERS 按本书 Java 21 环境的 Character.isLetter 判断字母。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两者都区分大小写，不做 Unicode 规范化，忽略所选范围以外的码点；孤立代理码元也按非字母忽略。并列项按第一次出现的顺序返回，每项同时携带码点和正整数次数。空串或没有字母时返回空列表，null 输入或范围参数则拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计数表的不变量是：扫描到当前位置时，每个键的次数恰好等于已扫描前缀中该字母的出现次数，maximum 是这些次数的最大值。扫描结束后遍历所有条目，只保留次数等于 maximum 的项，既不漏掉并列者，也不会把较少的字母混入结果。字符按码点前进，补充平面字母不会被拆成两个 char。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 bbaaA!!11😀 在 ASCII 范围内输出 b 2、a 2；A 只出现一次，数字、标点和 emoji 不参与。若只想统计全部码点而不筛字母，继续使用前面的 InterfaceAlgorithms.mostFrequentCodePoints，两种接口的返回内容不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设字符串有 n 个 UTF-16 码元、u 个不同的有效字母，期望时间 O(1+n+u)，计数状态及结果空间 O(1+u)。ASCII 范围下 u≤52。单项计数不超过字符串长度，int 足够；若累计多个流式输入，则应另用 long 并检查溢出。忽略大小写、字素聚合或字典序输出需要另定规范化与排序合同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整实现："
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.ArrayList;\nimport java.util.LinkedHashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\n\npublic final class LetterFrequencies {\n    private LetterFrequencies() {}\n    public enum Domain { ASCII_LATIN, UNICODE_LETTERS }\n    public record Frequency(int codePoint, int count) {}\n\n    // 区分大小写，忽略所选字母范围以外的码点，并列项按首次出现顺序返回。\n    public static List<Frequency> mostFrequent(String text, Domain domain) {\n        Objects.requireNonNull(text, \"text\");\n        Objects.requireNonNull(domain, \"domain\");\n        Map<Integer, Integer> counts = new LinkedHashMap<>();\n        int maximum = 0;\n        for (int offset = 0; offset < text.length();) {\n            int cp = text.codePointAt(offset);\n            offset += Character.charCount(cp);\n            boolean letter = domain == Domain.ASCII_LATIN\n                    ? (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')\n                    : Character.isLetter(cp);\n            if (!letter) continue;\n            int count = counts.getOrDefault(cp, 0) + 1;\n            counts.put(cp, count);\n            maximum = Math.max(maximum, count);\n        }\n        List<Frequency> result = new ArrayList<>();\n        for (Map.Entry<Integer, Integer> entry : counts.entrySet())\n            if (entry.getValue() == maximum)\n                result.add(new Frequency(entry.getKey(), entry.getValue()));\n        return List.copyOf(result);\n    }\n\n    public static void main(String[] args) {\n        for (Frequency item : mostFrequent(\"bbaaA!!11😀\", Domain.ASCII_LATIN))\n            System.out.println(new String(Character.toChars(item.codePoint())) + \" \" + item.count());\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "七个标签，十万条记录去重并按最后一项排序"
+    },
+    {
+      "type": "paragraph",
+      "text": "把七个有界整数无损编码成一个 long，就能用原生数组去重和排序，避免每条记录创建数组或装箱对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "七项范围分别为：两项 0～15、四项 0～200、一项 100～20000。前两项各需 4 位，中间四项各需 8 位，最后一项减去 100 后需 15 位，共 55 位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "排序键怎样安排，取决于先比较哪个字段。把最后一项放在最高的 15 位，非负 long 的数值排序就首先比较它；相同时，再由其余字段决定顺序。去重仍要比较整条编码：只有相邻编码完全相同才是重复记录，不能只按最后一项去重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下方 uniqueTagsSortedByLast 先编码，再排序，最后压缩相等值，时间 O(n log n)，额外结果数组 O(n)。十万条的编码载荷是 800,000 字节；这是 long[] 元素载荷，不包含数组对象头、原输入或结果副本，更不能拿它估算 HashSet<Long> 的实际内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若还要压缩落盘，可以每条写 7 字节。所有合法状态一共有 16² × 201⁴ × 19901 = 8,315,705,390,259,456 种，信息下界是 53 位；混合进位编码可以做到 53 位，但独立按整字节存储仍需 7 字节。固定字段 55 位更便于掩码提取。若输入已经去重且只需按最后一项分组，该项只有 19,901 个值，也可用计数/桶排序做到 O(n+19901)；普通排序接口则不依赖额外的稳定性约定。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

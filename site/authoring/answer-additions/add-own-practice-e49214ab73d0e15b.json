@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-e49214ab73d0e15b",
+  "entryId": "ai-agent-5",
+  "expectedOriginalHash": "ace4ff5852a55efa804af967d87fdb52ac25f739c38422caf421caa781e42f54",
+  "title": "跨册场景补充：任务队列怎样防并发调度冲突，多Agent路由如何平衡准确性与效率",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "任务队列怎样防并发调度冲突，多Agent路由如何平衡准确性与效率"
+    },
+    {
+      "type": "paragraph",
+      "text": "原子认领、版本或 epoch 提交校验、外部效果幂等是三道不同保证；模型路由负责提出候选，确定性调度器负责权限、依赖和可靠派发。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问："
+    },
+    {
+      "type": "paragraph",
+      "text": "- 任务队列怎么设计的，怎么保证调度的时候不会冲突。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果让你设计一个调度的agent，你会怎么做呢，需要哪些数据"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "先分开业务任务、派发尝试与Agent路由"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久任务包含taskId、tenant、输入/计划版本、依赖、优先级、deadline、状态、attempt、owner和lease/epoch；同一业务操作另有稳定operationId。任务队列存待执行责任或其引用，模型决定交哪个专业Agent只是路由提案，可靠派发和权限裁决属于确定性调度器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "依赖完成才能入ready队列，检测DAG环；新请求幂等入账，任务与outbox同事务避免“已建任务未发消息”。多实例竞争用DB条件claim/锁定读SKIP LOCKED或队列认领协议，不用每进程一把锁假装全局互斥。租约过期可重取，但旧worker可能仍活着，提交必须携epoch并被权威状态/目的端拒绝旧版本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "不冲突需要三道不同保证"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以用同一个任务说明三道保护。原子 claim 让当前任务记录只有一个 owner；提交状态时用 expectedVersion/epoch，拒绝已经失去资格的旧 worker；真正的外部业务效果，再用 operationId+唯一约束/条件状态机防止第二次发生。"
+    },
+    {
+      "type": "paragraph",
+      "text": "前两道检查管不到已经发往不支持 fencing 的外部服务的旧请求。因此还要有目的端幂等或可查询动作账。练习时让租约过期前发出的请求晚到，指出单靠新 owner 领取成功为什么还不足够。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完成结果和后继任务责任原子提交，再ACK；完成后未ACK导致重投时读已完成回执，不再执行。超时不等确定失败，查原operation；永久失败/次数用尽进入可查询失败或人工待办。任务优先级需要老化/公平配额，长任务不能永久饿死，取消也要检查在途效果。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "路由准确与开销怎么权衡"
+    },
+    {
+      "type": "paragraph",
+      "text": "先用可确定的规则和输入/权限/能力过滤，简单确定任务直达固定流程；多候选或复杂语义可用轻量分类/检索路由，必要时主模型规划。用标注集校准阈值和混淆矩阵，低置信度澄清/退到通用只读，不把模型自己报0.99当真实概率。错误路由要有可恢复的“能力不匹配”反馈，限制转交次数和A→B→A循环。"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立子任务可有限并行，存在数据依赖或共同写资源的任务排顺序；共享只读artifact而非复制整段历史，按任务需要裁剪上下文。路由缓存绑定任务特征、权限与能力/Prompt版本，不能把不同租户相似问题混用。多Agent准确率提升需和额外模型调用、通信、排队和汇总错误一起衡量。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "例子和验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个调度器同时领取T，只有一次claim成功；owner1停顿租约过期，owner2以epoch2完成，owner1恢复的epoch1结果必须被拒，若外部写已发生则由稳定operationId核对。测试重复消息、失联、lease续期失败、状态提交前后崩溃、乱序回执和取消；路由测长尾/跨域/歧义及成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "合理承诺是明确故障模型下的幂等效果与可恢复责任；真实broker、Rust/Java服务和多实例调度仍需端到端故障验证。"
+    }
+  ],
+  "questionId": "11",
+  "related": [
+    {
+      "entryId": "ai-agent-5",
+      "label": "相同原文的规范入口",
+      "questionId": "3"
+    }
+  ]
+}

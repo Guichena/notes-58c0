@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s6008",
+  "entryId": "own-mysql-ch24",
+  "expectedOriginalHash": "3fd369b00a99711e4b90488e08756bf8871a552a736aee379300cd9daeaa6d30",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.11 分桶库存如何防超卖，桶间调拨怎样保证守恒"
+    },
+    {
+      "type": "paragraph",
+      "text": "分桶只有在各桶额度之和受控时才防超卖，调拨须先冻结源额度再按稳定操作身份入目的桶。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：分桶库存怎么防超卖；桶间调拨怎样守恒；确认丢了能否把源额度退回。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定总库存预分配为互不重叠桶额度，本例不含补货退货，库存预留确认与释放需另建状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "配额与本地条件操作"
+    },
+    {
+      "type": "paragraph",
+      "text": "初始化冻结一份总库存S，分给桶q1…qB并保留可选中央未分配U，要求U+Σqi=S。每桶available+held+consumed等于当前合法归属额度；按订单/用户稳定路由到桶，桶内条件扣available并写reservation/request/outbox同事务。库存大于0的先查后无条件扣仍有竞态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分桶减少热点行竞争，却可能某桶卖光、另一桶还有余量。桶数 B 越大，额度越可能碎片化，因此要明确是换桶尝试、等调拨，还是暂时拒绝，不能直接说全局售罄。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨桶重试仍需稳定 reservationId 和明确的一次归属。否则 A 桶成功、回包丢失，再去 B 桶成功，就变成重复预留。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "调拨先冻结源额度，再入目的桶"
+    },
+    {
+      "type": "paragraph",
+      "text": "给一次move固定transferId、sku、source/destination bucket、qty与源版本。源事务检查可用量和当前ownerEpoch，把qty从available扣出并保存FROZEN转移事实及待发责任；只有持久成功后才允许目的桶消费这份授权。中途退出时额度暂不可售，安全但可能降低可用量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调拨确认丢失，不能把源额度退回。目的桶先核对可信来源和完整参数，以 transferId 建唯一 receipt；插 receipt 与增加 available 同事务，提交后再发确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使源仍显示 FROZEN，目的 receipt 也能证明已经入账。重复投递同 ID 只返回原结果，不再加库存；源收到可验证确认才标 DELIVERED，不能因超时自行加回。"
+    },
+    {
+      "type": "paragraph",
+      "text": "全局核账必须把“源已扣、目的尚未入账”的在途额度单算；目的已入账而源未标完成时不再把该份在途又加一次。跨库对账需要共同水位/逐transfer核对，不用不同时间的汇总快照误判。要撤销调拨，必须有目的端未接收且以后不得接收的拒绝/取消协议，再让源返还；本示例故意不提供超时退款。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "fencing与故障边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "桶owner迁移时在真正权威资源推进epoch，任何旧owner扣库存/发新调拨都要在资源侧原子校验。仅锁服务租约失效不会杀死旧线程，随机token也不能判断新旧。已经合法冻结的transfer可以可靠重放，但不能把旧owner的新任意请求伪装成旧转移。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Cluster若每桶含库存/预留/事件多key，需要同slot才能局部脚本；跨桶跨slot调拨不能靠一条普通Lua原子完成。还要证明Redis持久/切换丢写不会恢复已转出额度；追求严格库存通常选择具有所需提交恢复保证的权威DB/共识边界，Redis只预筛。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码验证与扩展边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "BucketEscrow使用一个真实H2文件，但源冻结和目的入账分别提交，测试冻结后关闭重开、目的失败回滚、目的成功但源确认未写、30次重复入账一次、100个预留争60额度、30同预留只扣一次、payload冲突、旧epoch和反向调拨，静止时总量始终100。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它用同库查询模拟可信源转移证据，并未实现跨数据库签名消息、outbox relay、Redis、网络故障或分布式事务；审计total在工作者停止后读取，不能当并发一致快照。示例预留只增加held，不含支付/取消/回收，输入来自授权内部服务。生产要补身份/配额初始分配、可靠传播、保留/归档与跨库恢复验证。同桶行串行，扩展来自不同桶而非同桶无限并发。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下代码可独立运行；其测试不代表外部服务联调。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "017/BucketEscrow.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Two separately committed transfer steps in one H2 file. No distributed DB, Redis or network. */\npublic final class BucketEscrow {\n    private final String url;\n    public record Move(String id,int from,int to,long qty) {}\n    public BucketEscrow(String url)throws SQLException {\n        this.url=url;\n        try(Connection c=open();Statement s=c.createStatement()){\n            s.execute(\"CREATE TABLE IF NOT EXISTS buckets(id INT PRIMARY KEY,available BIGINT NOT NULL CHECK(available>=0),epoch BIGINT NOT NULL)\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS holds(rid VARCHAR PRIMARY KEY,bucket INT,qty BIGINT CHECK(qty>0))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS moves(mid VARCHAR PRIMARY KEY,src INT,dst INT,qty BIGINT CHECK(qty>0),state VARCHAR)\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS receipts(mid VARCHAR PRIMARY KEY,dst INT,qty BIGINT CHECK(qty>0))\");\n        }\n    }\n    private Connection open()throws SQLException{return DriverManager.getConnection(url);}\n    public void create(int id,long qty)throws SQLException{\n        if(qty<0)throw new IllegalArgumentException();\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"INSERT INTO buckets VALUES(?,?,1)\")){p.setInt(1,id);p.setLong(2,qty);p.executeUpdate();}\n    }\n    private long lock(Connection c,int id,long epoch)throws SQLException{\n        try(PreparedStatement p=c.prepareStatement(\"SELECT available,epoch FROM buckets WHERE id=? FOR UPDATE\")){\n            p.setInt(1,id);try(ResultSet r=p.executeQuery()){if(!r.next()||r.getLong(2)!=epoch)throw new IllegalStateException(\"missing bucket/stale epoch\");return r.getLong(1);}}\n    }\n    private void set(Connection c,int id,long qty)throws SQLException{\n        try(PreparedStatement p=c.prepareStatement(\"UPDATE buckets SET available=? WHERE id=?\")){p.setLong(1,qty);p.setInt(2,id);if(p.executeUpdate()!=1)throw new SQLException(\"missing bucket\");}\n    }\n    public void nextEpoch(int id)throws SQLException{\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"UPDATE buckets SET epoch=epoch+1 WHERE id=? AND epoch<9223372036854775807\")){p.setInt(1,id);if(p.executeUpdate()!=1)throw new IllegalArgumentException();}\n    }\n    public boolean reserve(String rid,int bucket,long epoch,long qty)throws SQLException{\n        if(rid==null||rid.isBlank()||qty<=0)throw new IllegalArgumentException();\n        try(Connection c=open()){\n            c.setAutoCommit(false);\n            try{\n                long available=lock(c,bucket,epoch);\n                try(PreparedStatement p=c.prepareStatement(\"SELECT bucket,qty FROM holds WHERE rid=?\")){\n                    p.setString(1,rid);try(ResultSet r=p.executeQuery()){if(r.next()){\n                        if(r.getInt(1)!=bucket||r.getLong(2)!=qty)throw new IllegalArgumentException(\"reservation conflict\");c.commit();return true;}}}\n                if(available<qty){c.rollback();return false;}\n                set(c,bucket,available-qty);\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO holds VALUES(?,?,?)\")){p.setString(1,rid);p.setInt(2,bucket);p.setLong(3,qty);p.executeUpdate();}\n                c.commit();return true;\n            }catch(SQLException|RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public boolean freeze(Move m,long epoch,boolean fail)throws SQLException {\n        if(m.id()==null||m.id().isBlank()||m.qty()<=0||m.from()==m.to())throw new IllegalArgumentException();\n        try(Connection c=open()){\n            c.setAutoCommit(false);\n            try{\n                long available=lock(c,m.from(),epoch);\n                try(PreparedStatement p=c.prepareStatement(\"SELECT 1 FROM buckets WHERE id=?\")){\n                    p.setInt(1,m.to());try(ResultSet r=p.executeQuery()){if(!r.next())throw new IllegalArgumentException(\"unknown destination bucket\");}}\n                try(PreparedStatement p=c.prepareStatement(\"SELECT src,dst,qty FROM moves WHERE mid=?\")){\n                    p.setString(1,m.id());try(ResultSet r=p.executeQuery()){if(r.next()){\n                        if(r.getInt(1)!=m.from()||r.getInt(2)!=m.to()||r.getLong(3)!=m.qty())throw new IllegalArgumentException(\"move conflict\");c.commit();return true;}}}\n                if(available<m.qty()){c.rollback();return false;}\n                set(c,m.from(),available-m.qty());\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO moves VALUES(?,?,?,?,'FROZEN')\")){\n                    p.setString(1,m.id());p.setInt(2,m.from());p.setInt(3,m.to());p.setLong(4,m.qty());p.executeUpdate();}\n                if(fail)throw new SQLException(\"injected freeze rollback\");\n                c.commit();return true;\n            }catch(SQLException|RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public void receive(Move m,long destinationEpoch,boolean fail)throws SQLException {\n        try(Connection c=open()){\n            c.setAutoCommit(false);\n            try{\n                long available=lock(c,m.to(),destinationEpoch);\n                // A real cross-shard receiver validates an authenticated durable source certificate.\n                try(PreparedStatement p=c.prepareStatement(\"SELECT src,dst,qty FROM moves WHERE mid=?\")){\n                    p.setString(1,m.id());try(ResultSet r=p.executeQuery()){\n                        if(!r.next()||r.getInt(1)!=m.from()||r.getInt(2)!=m.to()||r.getLong(3)!=m.qty())throw new IllegalArgumentException(\"no matching frozen transfer\");}}\n                try(PreparedStatement p=c.prepareStatement(\"SELECT dst,qty FROM receipts WHERE mid=?\")){\n                    p.setString(1,m.id());try(ResultSet r=p.executeQuery()){if(r.next()){\n                        if(r.getInt(1)!=m.to()||r.getLong(2)!=m.qty())throw new IllegalArgumentException(\"receipt conflict\");c.commit();return;}}}\n                set(c,m.to(),Math.addExact(available,m.qty()));\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO receipts VALUES(?,?,?)\")){p.setString(1,m.id());p.setInt(2,m.to());p.setLong(3,m.qty());p.executeUpdate();}\n                if(fail)throw new SQLException(\"injected receive rollback\");\n                c.commit();\n            }catch(SQLException|RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public void acknowledge(String id)throws SQLException{\n        // This method models a validated destination receipt; never a timeout-based source refund.\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"UPDATE moves SET state='DELIVERED' WHERE mid=? AND EXISTS(SELECT 1 FROM receipts WHERE receipts.mid=moves.mid)\")){\n            p.setString(1,id);if(p.executeUpdate()!=1)throw new IllegalStateException(\"receipt not found\");}\n    }\n    public long scalar(String sql)throws SQLException{\n        try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery(sql)){r.next();return r.getLong(1);}\n    }\n    public long total()throws SQLException {\n        // Quiescent audit: separate reads are not a common concurrent snapshot.\n        long available=scalar(\"SELECT COALESCE(SUM(available),0) FROM buckets\");\n        long reserved=scalar(\"SELECT COALESCE(SUM(qty),0) FROM holds\");\n        long transit=scalar(\"SELECT COALESCE(SUM(qty),0) FROM moves m WHERE NOT EXISTS(SELECT 1 FROM receipts r WHERE r.mid=m.mid)\");\n        return Math.addExact(Math.addExact(available,reserved),transit);\n    }\n    private static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args)throws Exception{\n        BucketEscrow s=new BucketEscrow(\"jdbc:h2:\"+args[0]+\";LOCK_TIMEOUT=20000\");s.create(0,100);s.create(1,0);\n        Move m=new Move(\"m\",0,1,40);check(s.freeze(m,1,false));check(s.total()==100);\n        s=new BucketEscrow(s.url);check(s.total()==100);final BucketEscrow store=s;\n        try{s.receive(m,1,true);throw new AssertionError();}catch(SQLException e){check(e.getMessage().contains(\"injected\"));}\n        check(s.scalar(\"SELECT available FROM buckets WHERE id=1\")==0&&s.scalar(\"SELECT COUNT(*) FROM receipts\")==0);\n        s.receive(m,1,false);check(s.total()==100&&s.scalar(\"SELECT COUNT(*) FROM moves WHERE state='FROZEN'\")==1);\n        // Destination committed, source still FROZEN: replay must not create another 40.\n        ExecutorService pool=Executors.newFixedThreadPool(12);\n        try{\n            List<Callable<Boolean>> jobs=new ArrayList<>();\n            for(int i=0;i<30;i++)jobs.add(()->{store.receive(m,1,false);return true;});\n            for(Future<Boolean> f:pool.invokeAll(jobs))check(f.get());\n            check(s.scalar(\"SELECT available FROM buckets WHERE id=1\")==40);s.acknowledge(\"m\");\n            jobs.clear();for(int i=0;i<100;i++){String rid=\"r\"+i;jobs.add(()->store.reserve(rid,0,1,1));}\n            int accepted=0;for(Future<Boolean> f:pool.invokeAll(jobs))if(f.get())accepted++;\n            check(accepted==60&&s.total()==100&&s.scalar(\"SELECT available FROM buckets WHERE id=0\")==0);\n            jobs.clear();for(int i=0;i<30;i++)jobs.add(()->store.reserve(\"same\",1,1,3));\n            for(Future<Boolean> f:pool.invokeAll(jobs))check(f.get());\n            check(s.scalar(\"SELECT available FROM buckets WHERE id=1\")==37&&s.total()==100);\n        }finally{pool.shutdownNow();}\n        try{s.freeze(new Move(\"m\",0,1,41),1,false);throw new AssertionError();}catch(IllegalArgumentException ok){}\n        try{s.freeze(new Move(\"rollback\",1,0,5),1,true);throw new AssertionError();}catch(SQLException e){check(e.getMessage().contains(\"injected\"));}\n        check(s.total()==100&&s.scalar(\"SELECT COUNT(*) FROM moves WHERE mid='rollback'\")==0);\n        s.nextEpoch(1);try{s.reserve(\"stale\",1,1,1);throw new AssertionError();}catch(IllegalStateException ok){}\n        try{s.freeze(new Move(\"unknown\",1,99,1),2,false);throw new AssertionError();}catch(IllegalArgumentException ok){}\n        try{s.freeze(new Move(\"zero\",1,0,0),2,false);throw new AssertionError();}catch(IllegalArgumentException ok){}\n        try{s.reserve(\"negative\",1,2,-1);throw new AssertionError();}catch(IllegalArgumentException ok){}\n        Move back=new Move(\"back\",1,0,7);check(s.freeze(back,2,false));s.receive(back,1,false);s.acknowledge(\"back\");\n        check(new BucketEscrow(s.url).total()==100);\n        System.out.println(\"PASS BucketEscrow: conservation across freeze/reopen/receive/lost-ack, atomic rollback, 30 duplicate credits once, 100 reservations admit60, 30 same reservations once, payload conflict, epoch fencing, invalid destination/quantity, reverse transfer; single H2 only\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mysql-s5621",
+  "targetOrigin": "authored"
+}

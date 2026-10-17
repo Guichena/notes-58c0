@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-moderation",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "评论审核怎样实现暂存、幂等提交和有版本的人审闭环？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-moderation",
+      "order": 5688,
+      "question": "评论审核怎样实现暂存、幂等提交和有版本的人审闭环？",
+      "shortAnswer": "先审后发的示例中只允许明确 ALLOW 发布；UNKNOWN 和异常转人工，终态和版本由确定性服务控制。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "AI Coding 如何实现违规评论审核，并解释异常兜底与人工复核"
+        },
+        {
+          "type": "paragraph",
+          "text": "评论审核应先把提交、判定、暂存、人工复核和结果查询做成可验证的状态闭环，再把模型接到受限分类接口上；模型异常或语义不确定时，不能默认放行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能这样问："
+        },
+        {
+          "type": "paragraph",
+          "text": "- 用 AI Coding 实现 AI 处理违规评论，最小可运行版本包含什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 模型调用超时、输出格式不对或者判断不确定怎么办？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 同一条评论重复提交、两个审核员同时操作，怎样避免重复或相互覆盖？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 你刚才使用 AI Coding 的过程出了哪些问题？生成很慢、构建文件被误删时怎样恢复？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 你认为 AI Coding 是机会还是挑战，开发者还需要负责什么？"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先把题目和演示合同分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "“处理违规评论”没有唯一实现：可能先审后发，也可能先发后审；违规类型、处理尺度、申诉机制和审核权限都需要确认。不能把自己补充的关键词、阈值或处罚办法当成题目原有要求，更不能将演示代码包装成曾经上线的项目。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果面试官允许先做一个先审后发的最小版本，可以约定：提交后暂不公开；分类结果只允许 ALLOW、BLOCK、UNKNOWN；ALLOW 进入可见集合，BLOCK 保留为拒绝记录，UNKNOWN 和调用失败转人工；人工只能处理暂存记录，不能任意改写终态。这里的 BLOCK 是拒绝展示该评论，不包括删账号、封禁用户或其他处罚。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面是这一条件下的 Java 21 单进程教学实现。它具有真实可调用接口、状态守卫、并发测试和命令行输入输出，但使用内存存储和固定分类夹具，没有数据库、网页、真实模型、外部发布或发送行为。重启后数据和幂等记录丢失，因此不能直接承担线上审核责任。"
+        },
+        {
+          "type": "paragraph",
+          "text": "分类夹具只认识两个完整字符串：fixture-safe 返回 ALLOW，fixture-violation 返回 BLOCK，其他文本全部返回 UNKNOWN。这只是让状态分支可复现的测试替身，不是关键词审核算法，也不代表任何真实内容的违规判定或模型准确率。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "最小输入输出与安全边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "提交输入是 requestKey、commentId、authorId、text；文本不可空白，最多 2000 个 Unicode 码点，拒绝控制字符、格式控制字符和孤立代理项。ID 采用长度为 1～64 的 ASCII 字母、数字、下划线或连字符。服务最多接受 10000 条评论，避免这个演示实例无限增长。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Principal 表示由可信入口提供的身份上下文。提交者必须与 authorId 相符；复核者必须具有 REVIEWER 角色。命令行仅用于本地可信演示，REVIEW 固定使用 demo-reviewer，绝不等同于登录鉴权。接入 Web 时，不能让前端自行构造 Principal 或 role；需要服务端认证、租户隔离和每次查询的授权。GET 和公开列表在本例中也是域服务接口，不是开放互联网接口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "输出 View 包含评论 ID、状态、版本、visible、固定原因码和不可变事件快照，不返回模型异常原文。publicComments 仅选取 PUBLISHED 记录；返回的正文仍是普通数据，网页展示时还必须按 HTML 上下文转义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "状态定义如下："
+        },
+        {
+          "type": "paragraph",
+          "text": "- PENDING：已受理，等待处理，版本为 0，不可见"
+        },
+        {
+          "type": "paragraph",
+          "text": "- CLASSIFYING：分类任务已经领取，版本递增，不可见"
+        },
+        {
+          "type": "paragraph",
+          "text": "- HELD：不确定、失败、过载或超时，暂存待人工，不可见"
+        },
+        {
+          "type": "paragraph",
+          "text": "- PUBLISHED：逻辑上允许展示，可出现在公开列表"
+        },
+        {
+          "type": "paragraph",
+          "text": "- REJECTED：逻辑上拒绝展示，记录保留"
+        },
+        {
+          "type": "paragraph",
+          "text": "允许的边只有 PENDING → CLASSIFYING，CLASSIFYING → PUBLISHED / REJECTED / HELD，以及 HELD → PUBLISHED / REJECTED。每次迁移在同一把实例锁下更新状态、版本和事件。终态不能继续迁移；申诉、撤回和政策重审如果需要，应另建明确流程，不能偷用重复分类修改既有结果。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "幂等和并发不是同一个问题"
+        },
+        {
+          "type": "paragraph",
+          "text": "相同 requestKey 与相同提交内容重复出现，返回同一评论的当前视图，不创建第二条记录；同键不同内容直接报冲突。相同 commentId 换一个提交键也报冲突，不能借此覆盖正文。这里保证的是同一业务身份，而不是每次响应字节都相同，评论可能已经从 PENDING 推进到终态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "人工复核使用独立的 reviewKey，同时绑定评论、期望版本、审核员和决定。同键同请求重放原结果；同键不同决定冲突。首次复核还要求当前状态为 HELD 且版本匹配。两个审核员同时拿版本 2 提交，只能一个成功，另一个得到冲突，必须重新查看，不能覆盖先前决定。重放前也会检查角色，幂等不能绕开当前入口的授权检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单实例的 synchronized 只能解决该实例内竞争。生产多实例需要数据库唯一键、事务或条件更新，例如按租户和 requestKey 建唯一约束，按 commentId、state、version 条件更新审核记录。把内存锁换成 Redis 锁，并不能自动获得持久事件和崩溃恢复。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "分类调用为什么放在锁外"
+        },
+        {
+          "type": "paragraph",
+          "text": "只在锁内领取任务并取得 claimVersion，随后到有界线程池执行分类，避免模型延迟把整个评论库锁住。再次处理非 PENDING 记录只返回当前状态，不会触发第二次模型调用。领取和最终提交之间仍通过状态加版本确认责任。"
+        },
+        {
+          "type": "paragraph",
+          "text": "调用等待预算包括提交到线程池之后的排队和执行时间。队列满立即 HELD；null、未知标签、错误政策版本、异常、取消和中断也不会放行。使用固定服务端原因码，避免把模型自述或异常中的秘密写进结果。真正准备自动提交允许或拒绝决定时，还重新检查线程中断和剩余时间，不能仅因未来对象恰好完成就越过期限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "超时取消 Future 后立即回到 HELD。即使分类器忽略中断并稍后返回，返回值也不能在后台改写评论，更不能覆盖已经完成的人工复核。关闭服务会把正在分类的记录转 HELD，取消排队任务；已经受理但尚未处理的 PENDING 数据仍只是内存记录，关闭和重启都没有持久恢复承诺。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 中断不能强制杀死不合作的回调。工作线程设为 daemon 只保证演示进程可以退出，不等于释放了仍在运行的任务资源。有界池限制并发与排队，却不能把恶意或无限循环代码变安全。生产分类适配器应是受控、只读的调用，落实连接、读取和总超时；需要强制隔离时用可终止进程或外部服务，并保持过载时转人工的策略。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从命令输入跑完整链路"
+        },
+        {
+          "type": "paragraph",
+          "text": "把后面的两个 Java 文件分别保存到 src/CommentModeration.java、tests/CommentModerationTest.java。在工作目录运行下面的命令，生成字段间使用真正 Tab 的 fixtures/moderation.tsv；不要用空格替代字段分隔符。"
+        },
+        {
+          "type": "paragraph",
+          "text": "命令合同：SUBMIT 后依次是请求键、评论 ID、作者 ID、正文；PROCESS 和 GET 后是评论 ID；REVIEW 后依次是复核键、评论 ID、期望版本、PUBLISHED 或 REJECTED。输入采用 UTF-8、LF 或 CRLF，最多 1 MiB、20000 条非空命令；不支持单字段内的 Tab 或换行。命令逐行执行，单条错误输出 ERROR、非空命令序号和异常类型后继续，不能假装整批具有事务性。超大或编码错误的整批输入拒绝执行。"
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "从命令输入跑完整链路",
+          "value": "set -eu\nmkdir -p fixtures\nprintf '%b\\n' \\\n  'SUBMIT\\ts1\\tc1\\talice\\tfixture-safe' \\\n  'PROCESS\\tc1' \\\n  'SUBMIT\\ts2\\tc2\\talice\\tfixture-violation' \\\n  'PROCESS\\tc2' \\\n  'SUBMIT\\ts3\\tc3\\talice\\t上下文不足的演示评论' \\\n  'PROCESS\\tc3' \\\n  'REVIEW\\tv1\\tc3\\t2\\tPUBLISHED' \\\n  'REVIEW\\tv1\\tc3\\t2\\tPUBLISHED' \\\n  'GET\\tc3' > fixtures/moderation.tsv\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "使用包含 jdk.compiler 模块的 JDK 21 运行，不需要 Maven、pom.xml 或第三方依赖："
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "从命令输入跑完整链路",
+          "value": "mkdir -p classes\njava com.sun.tools.javac.Main -encoding UTF-8 -d classes src/CommentModeration.java tests/CommentModerationTest.java\njava -cp classes CommentModerationTest\njava -cp classes CommentModeration < fixtures/moderation.tsv\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "预期业务输出如下，使用 \\t 标记每个制表符以便阅读；程序实际输出的是 Tab 字符："
+        },
+        {
+          "type": "code",
+          "language": "plain text",
+          "label": "从命令输入跑完整链路",
+          "value": "RESULT\\tc1\\tPENDING\\t0\\tfalse\\tSUBMITTED\nRESULT\\tc1\\tPUBLISHED\\t2\\ttrue\\tMODEL_ALLOW\nRESULT\\tc2\\tPENDING\\t0\\tfalse\\tSUBMITTED\nRESULT\\tc2\\tREJECTED\\t2\\tfalse\\tMODEL_BLOCK\nRESULT\\tc3\\tPENDING\\t0\\tfalse\\tSUBMITTED\nRESULT\\tc3\\tHELD\\t2\\tfalse\\tMODEL_UNKNOWN\nRESULT\\tc3\\tPUBLISHED\\t3\\ttrue\\tMANUAL_PUBLISHED\nRESULT\\tc3\\tPUBLISHED\\t3\\ttrue\\tMANUAL_PUBLISHED\nRESULT\\tc3\\tPUBLISHED\\t3\\ttrue\\tMANUAL_PUBLISHED\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "c1 自动允许；c2 自动拒绝；c3 先转人工，再由人工允许。重复的 v1 复核不增加版本，最后仍是版本 3。这里没有实际向任何网站发布评论。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "该怎样验证，而不是只演示一个成功例子"
+        },
+        {
+          "type": "paragraph",
+          "text": "后面的测试类覆盖正常允许与拒绝、未知结果暂存、重复键冲突、非法输入、审计快照不可变、作者和复核角色检查、旧版本冲突、复核重放、两位审核员竞争、100 次同键并发提交、单次分类领取、真实等待超时、迟到结果、队列过载、关闭服务与中断恢复。测试通过时打印 PASS CommentModerationTest checks=154；这个数是断言检查次数，其中包含重复的并发检查，不是 154 类业务，更不是模型评测样本量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "设评论数为 n，评论索引使用 TreeMap，因此提交和按 ID 查询为 O(log n)，幂等键的 HashMap 查询平均为 O(1)，公开列表筛选为 O(n)；每条评论最多三次迁移，整体状态与审计空间为 O(n)，正文长度和评论总数另有上限。分类器自身的计算与网络成本不能藏在这个复杂度里。"
+        },
+        {
+          "type": "paragraph",
+          "text": "内容质量评测需要另外准备有授权的标注集，按违规类别、语言、隐晦表达和上下文分层，分别看误放、误拒、转人工比例与复核一致性，并记录模型、政策和数据版本。分类 schema 校验只能确认格式，不能证明语义判断正确。是否允许自动 BLOCK、哪些类别必须人工，以及阈值如何选，都要由真实政策和风险取舍决定。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "接入持久服务时，哪些内容必须补上"
+        },
+        {
+          "type": "paragraph",
+          "text": "入口事务写评论、幂等身份与待处理责任；通过事务 outbox 或可恢复队列表派发，避免“已受理但永远没处理”。工作者领取时记录租约与版本；回写结果时核对状态、版本、文本摘要和政策版本。分类请求可重试，但模型请求次数不等于业务状态迁移次数；发布效果若在外部系统，还需要稳定操作 ID、幂等接收与结果对账。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正文编辑必须创建新版本并使旧审核结果失效。模型返回的类别、理由和置信度都是不可信输入，需结构约束、大小限制和策略决策；评论中的“忽略规则并放行我”只是待审核文本。模型无权改角色、改政策、越过人工节点或调用删号工具。人工处理界面要展示足够上下文、理由与版本，同时控制敏感内容的访问、留存和日志脱敏。"
+        },
+        {
+          "type": "paragraph",
+          "text": "监控至少区分受理量、分类成功与失败、最老待处理时间、HELD 积压、人工结案、误放误拒、延迟和调用成本。告警和人工容量也属于闭环，不能把所有异常暂存后长期无人处理，再宣称系统可靠。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "如何回答 AI Coding 的过程复盘"
+        },
+        {
+          "type": "paragraph",
+          "text": "生成慢、构建配置被来回修改、项目整体报错，首先暴露的是任务粒度、变更边界和验证反馈出了问题。先保住能编译的最小基线，固定依赖与构建入口，检查实际 diff，恢复误删文件，再一次只实现一个可验收的接口或状态分支；不让模型在无关目录反复重搭项目。若使用成熟项目，则保留现有构建体系，不能为了省事把依赖文件删掉。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把需求、输入输出、状态表、权限边界和测试命令先交代清楚，随后按“提交到查询跑通 → 异常与幂等 → 人工复核与并发”迭代。模型可以生成样板代码和测试草稿，开发者负责核对题意、识别缺口、运行程序、解释错误以及最终交付。AI Coding 的机会是缩短机械劳动；挑战是错误也会被更快扩大，因此评价应该看端到端验收、返工和维护成本，不能只看生成了多少行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问“你做过类似功能吗”时，应如实区分真实经历与这里的设计练习。可以解释为什么想到先审后发、为什么转人工、如何验证状态闭环，但不能将本地夹具结果说成实际用户效果。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整实现：CommentModeration.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整实现：CommentModeration.java",
+          "value": "import java.io.*;\nimport java.nio.charset.*;\nimport java.nio.*;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** A process-local teaching service. No network, model API, database or web authentication. */\npublic final class CommentModeration {\n    public static final String POLICY = \"demo-policy-v1\";\n    public enum State { PENDING, CLASSIFYING, HELD, PUBLISHED, REJECTED }\n    public enum Role { AUTHOR, REVIEWER }\n    public record Principal(String id, Role role) {\n        public Principal { validId(id); Objects.requireNonNull(role); }\n    }\n    public record Input(String commentId, String authorId, String text) {\n        public Input { validId(commentId); validId(authorId); validText(text, 2000); }\n    }\n    public record Classification(String label, String policyVersion) { }\n    @FunctionalInterface public interface Classifier {\n        Classification classify(String text) throws Exception;\n    }\n    public record Event(long version, State from, State to, String reason, String actor) { }\n    public record View(String id, State state, long version, boolean visible,\n                       String reason, List<Event> events) { }\n    public record PublicComment(String id, String text) { }\n    private record Review(String id, long expectedVersion, Principal actor, State decision) { }\n    private record Receipt(Review request, View result) { }\n    private static final class Entry {\n        final Input input;\n        State state = State.PENDING;\n        long version;\n        String reason = \"SUBMITTED\";\n        final List<Event> events = new ArrayList<>();\n        Entry(Input input) { this.input = input; }\n        View view() { return new View(input.commentId(), state, version,\n                state == State.PUBLISHED, reason, List.copyOf(events)); }\n    }\n    public static final class Service implements AutoCloseable {\n        private final Map<String, Input> submissions = new HashMap<>();\n        private final Map<String, Entry> entries = new TreeMap<>();\n        private final Map<String, Receipt> reviews = new HashMap<>();\n        private final Classifier classifier;\n        private final ThreadPoolExecutor pool;\n        private final long timeoutNanos;\n        private boolean closed;\n        public Service(Classifier classifier, Duration timeout, int workers, int queueCapacity) {\n            this.classifier = Objects.requireNonNull(classifier);\n            Objects.requireNonNull(timeout);\n            if (timeout.isZero() || timeout.isNegative() || timeout.compareTo(Duration.ofSeconds(30)) > 0\n                    || workers < 1 || workers > 8 || queueCapacity < 1 || queueCapacity > 100)\n                throw new IllegalArgumentException(\"CONFIG\");\n            timeoutNanos = timeout.toNanos();\n            pool = new ThreadPoolExecutor(workers, workers, 0, TimeUnit.SECONDS,\n                    new ArrayBlockingQueue<>(queueCapacity), r -> {\n                        Thread t = new Thread(r, \"fixture-classifier\");\n                        t.setDaemon(true); // An uncooperative adapter cannot keep this demo JVM alive.\n                        return t;\n                    }, new ThreadPoolExecutor.AbortPolicy());\n        }\n        public synchronized View submit(String requestKey, Principal actor, Input input) {\n            open(); validId(requestKey); Objects.requireNonNull(actor); Objects.requireNonNull(input);\n            if (!actor.id().equals(input.authorId())) throw new SecurityException(\"AUTHOR_MISMATCH\");\n            Input old = submissions.get(requestKey);\n            if (old != null) {\n                if (!old.equals(input)) throw new IllegalStateException(\"IDEMPOTENCY_CONFLICT\");\n                return entries.get(old.commentId()).view();\n            }\n            if (entries.containsKey(input.commentId())) throw new IllegalStateException(\"COMMENT_EXISTS\");\n            if (entries.size() >= 10000) throw new IllegalStateException(\"CAPACITY\");\n            Entry entry = new Entry(input);\n            entries.put(input.commentId(), entry); submissions.put(requestKey, input);\n            return entry.view();\n        }\n        public View process(String id) {\n            final Entry entry; final long claimVersion;\n            synchronized (this) {\n                open(); entry = require(id);\n                if (entry.state != State.PENDING) return entry.view();\n                move(entry, State.CLASSIFYING, \"CLAIMED\", \"system\"); claimVersion = entry.version;\n            }\n            State decision = State.HELD; String reason = \"MODEL_ERROR\";\n            Future<Classification> future = null;\n            long start = System.nanoTime();\n            try {\n                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();\n                future = pool.submit(() -> classifier.classify(entry.input.text()));\n                long remaining = timeoutNanos - (System.nanoTime() - start);\n                if (remaining <= 0) throw new TimeoutException();\n                Classification result = future.get(remaining, TimeUnit.NANOSECONDS);\n                // Deadline is a commit constraint as well as a wait timeout.\n                if (System.nanoTime() - start >= timeoutNanos) throw new TimeoutException();\n                if (result == null || !POLICY.equals(result.policyVersion())) reason = \"INVALID_RESULT\";\n                else if (\"ALLOW\".equals(result.label())) { decision = State.PUBLISHED; reason = \"MODEL_ALLOW\"; }\n                else if (\"BLOCK\".equals(result.label())) { decision = State.REJECTED; reason = \"MODEL_BLOCK\"; }\n                else if (\"UNKNOWN\".equals(result.label())) reason = \"MODEL_UNKNOWN\";\n                else reason = \"INVALID_RESULT\";\n            } catch (RejectedExecutionException e) { reason = \"OVERLOADED\"; }\n              catch (TimeoutException e) { reason = \"TIMEOUT\"; }\n              catch (InterruptedException e) { reason = \"INTERRUPTED\"; Thread.currentThread().interrupt(); }\n              catch (ExecutionException | CancellationException e) { reason = \"MODEL_ERROR\"; }\n            finally {\n                if (future != null && !future.isDone()) {\n                    future.cancel(true);\n                    if (future instanceof Runnable task) pool.remove(task);\n                }\n            }\n            synchronized (this) {\n                if (entry.state == State.CLASSIFYING && entry.version == claimVersion) {\n                    if (Thread.currentThread().isInterrupted()) { decision = State.HELD; reason = \"INTERRUPTED\"; }\n                    else if (decision != State.HELD && System.nanoTime() - start >= timeoutNanos) {\n                        decision = State.HELD; reason = \"TIMEOUT\";\n                    }\n                    move(entry, decision, reason, \"system\");\n                }\n                return entry.view();\n            }\n        }\n        public synchronized View review(String reviewKey, String id, long expectedVersion,\n                                        Principal actor, State decision) {\n            open(); validId(reviewKey); Objects.requireNonNull(actor);\n            if (actor.role() != Role.REVIEWER) throw new SecurityException(\"REVIEWER_REQUIRED\");\n            if (decision != State.PUBLISHED && decision != State.REJECTED)\n                throw new IllegalArgumentException(\"REVIEW_DECISION\");\n            Review request = new Review(id, expectedVersion, actor, decision);\n            Receipt old = reviews.get(reviewKey);\n            if (old != null) {\n                if (!old.request().equals(request)) throw new IllegalStateException(\"IDEMPOTENCY_CONFLICT\");\n                return old.result();\n            }\n            Entry e = require(id);\n            if (e.state != State.HELD || e.version != expectedVersion)\n                throw new IllegalStateException(\"STATE_OR_VERSION_CONFLICT\");\n            move(e, decision, \"MANUAL_\" + decision, actor.id());\n            View result = e.view(); reviews.put(reviewKey, new Receipt(request, result));\n            return result;\n        }\n        public int queuedRequests() { return pool.getQueue().size(); }\n        public synchronized View get(String id) { return require(id).view(); }\n        public synchronized List<PublicComment> publicComments() {\n            return entries.values().stream().filter(e -> e.state == State.PUBLISHED)\n                    .map(e -> new PublicComment(e.input.commentId(), e.input.text())).toList();\n        }\n        private Entry require(String id) {\n            validId(id); Entry e = entries.get(id);\n            if (e == null) throw new IllegalArgumentException(\"NOT_FOUND\"); return e;\n        }\n        private void open() { if (closed) throw new IllegalStateException(\"CLOSED\"); }\n        private void move(Entry e, State to, String reason, String actor) {\n            boolean legal = switch (e.state) {\n                case PENDING -> to == State.CLASSIFYING;\n                case CLASSIFYING -> to == State.PUBLISHED || to == State.REJECTED || to == State.HELD;\n                case HELD -> to == State.PUBLISHED || to == State.REJECTED;\n                default -> false;\n            };\n            if (!legal) throw new IllegalStateException(\"ILLEGAL_TRANSITION\");\n            Event event = new Event(++e.version, e.state, to, reason, actor);\n            e.state = to; e.reason = reason; e.events.add(event);\n        }\n        @Override public synchronized void close() {\n            if (closed) return;\n            closed = true;\n            for (Entry e : entries.values())\n                if (e.state == State.CLASSIFYING) move(e, State.HELD, \"SERVICE_CLOSED\", \"system\");\n            // Drain queued tasks and wake callers waiting on their futures.\n            for (Runnable r : pool.shutdownNow()) if (r instanceof Future<?> f) f.cancel(true);\n        }\n    }\n    public static Classifier fixtureClassifier() {\n        // Exact fixtures, NOT keyword moderation or an accuracy evaluation.\n        return text -> switch (text) {\n            case \"fixture-safe\" -> new Classification(\"ALLOW\", POLICY);\n            case \"fixture-violation\" -> new Classification(\"BLOCK\", POLICY);\n            default -> new Classification(\"UNKNOWN\", POLICY);\n        };\n    }\n    static void validId(String s) {\n        if (s == null || !s.matches(\"[A-Za-z0-9_-]{1,64}\")) throw new IllegalArgumentException(\"ID\");\n    }\n    static void validText(String s, int max) {\n        if (s == null || s.isBlank() || s.codePointCount(0, s.length()) > max)\n            throw new IllegalArgumentException(\"TEXT\");\n        for (int i = 0; i < s.length(); ) {\n            int cp = s.codePointAt(i);\n            if (Character.isISOControl(cp) || Character.getType(cp) == Character.FORMAT\n                    || Character.getType(cp) == Character.LINE_SEPARATOR\n                    || Character.getType(cp) == Character.PARAGRAPH_SEPARATOR\n                    || cp >= 0xD800 && cp <= 0xDFFF) throw new IllegalArgumentException(\"TEXT_CONTROL\");\n            i += Character.charCount(cp);\n        }\n    }\n    static String result(View v) {\n        return \"RESULT\\t\" + v.id() + \"\\t\" + v.state() + \"\\t\" + v.version() + \"\\t\" + v.visible() + \"\\t\" + v.reason();\n    }\n    public static void run(InputStream input, PrintStream out) throws Exception {\n        byte[] bytes = input.readNBytes(1_048_577);\n        if (bytes.length > 1_048_576) throw new IllegalArgumentException(\"INPUT_LIMIT\");\n        String text = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)\n                .decode(ByteBuffer.wrap(bytes)).toString();\n        List<String> commands = new ArrayList<>();\n        for (String rawLine : text.split(\"\\n\", -1)) {\n            String line = rawLine.endsWith(\"\\r\") ? rawLine.substring(0, rawLine.length() - 1) : rawLine;\n            if (!line.isEmpty()) commands.add(line);\n            if (commands.size() > 20000) throw new IllegalArgumentException(\"COMMAND_LIMIT\");\n        }\n        try (Service service = new Service(fixtureClassifier(), Duration.ofSeconds(1), 2, 8)) {\n            int count = 0;\n            for (String line : commands) {\n                count++;\n                String[] p = line.split(\"\\t\", -1);\n                try {\n                    View v = switch (p[0]) {\n                        case \"SUBMIT\" -> {\n                            arity(p, 5); yield service.submit(p[1], new Principal(p[3], Role.AUTHOR), new Input(p[2], p[3], p[4]));\n                        }\n                        case \"PROCESS\" -> { arity(p, 2); yield service.process(p[1]); }\n                        case \"GET\" -> { arity(p, 2); yield service.get(p[1]); }\n                        case \"REVIEW\" -> {\n                            arity(p, 5); yield service.review(p[1], p[2], Long.parseLong(p[3]),\n                                    new Principal(\"demo-reviewer\", Role.REVIEWER), State.valueOf(p[4]));\n                        }\n                        default -> throw new IllegalArgumentException(\"COMMAND\");\n                    };\n                    out.println(result(v));\n                } catch (IllegalArgumentException | IllegalStateException | SecurityException e) {\n                    out.println(\"ERROR\\t\" + count + \"\\t\" + e.getClass().getSimpleName());\n                }\n            }\n        }\n    }\n    static void arity(String[] p, int n) { if (p.length != n) throw new IllegalArgumentException(\"ARITY\"); }\n    public static void main(String[] args) {\n        if (args.length != 0) { System.err.println(\"Usage: CommentModeration < commands.tsv\"); System.exit(2); }\n        try { run(System.in, System.out); }\n        catch (Exception e) { System.err.println(\"ERROR: invalid input or I/O failure\"); System.exit(2); }\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整测试：CommentModerationTest.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整测试：CommentModerationTest.java",
+          "value": "import java.io.*;\nimport java.nio.charset.StandardCharsets;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.function.BooleanSupplier;\n\npublic final class CommentModerationTest {\n    private static int checks;\n    static void check(boolean condition, String name) { checks++; if (!condition) throw new AssertionError(name); }\n    static void throwsType(Class<? extends Throwable> type, Runnable r) {\n        checks++;\n        try { r.run(); } catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError(t); }\n        throw new AssertionError(\"Expected \" + type.getSimpleName());\n    }\n    static CommentModeration.Principal author() { return new CommentModeration.Principal(\"alice\", CommentModeration.Role.AUTHOR); }\n    static CommentModeration.Principal reviewer() { return new CommentModeration.Principal(\"reviewer\", CommentModeration.Role.REVIEWER); }\n    static CommentModeration.Input input(String id, String text) { return new CommentModeration.Input(id, \"alice\", text); }\n    static CommentModeration.Service service(CommentModeration.Classifier c, long millis) {\n        return new CommentModeration.Service(c, Duration.ofMillis(millis), 1, 1);\n    }\n    static void await(BooleanSupplier p) throws InterruptedException {\n        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);\n        while (!p.getAsBoolean()) {\n            if (System.nanoTime() > deadline) throw new AssertionError(\"wait deadline\");\n            Thread.sleep(1);\n        }\n    }\n    static void signal(CountDownLatch latch) throws InterruptedException {\n        if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError(\"latch deadline\");\n    }\n    static void basic() {\n        try (var s = service(CommentModeration.fixtureClassifier(), 1000)) {\n            var pending = s.submit(\"r1\", author(), input(\"c1\", \"fixture-safe\"));\n            check(pending.state() == CommentModeration.State.PENDING && !pending.visible(), \"submit hidden\");\n            var allowed = s.process(\"c1\");\n            check(allowed.state() == CommentModeration.State.PUBLISHED && allowed.version() == 2 && allowed.visible(), \"allow\");\n            check(s.process(\"c1\").equals(allowed), \"process idempotent\");\n            check(s.submit(\"r1\", author(), input(\"c1\", \"fixture-safe\")).equals(allowed), \"submit returns current view\");\n            check(!pending.visible() && pending.events().isEmpty(), \"snapshot immutable\");\n            throwsType(UnsupportedOperationException.class, () -> allowed.events().clear());\n            throwsType(IllegalStateException.class, () -> s.submit(\"r1\", author(), input(\"c1\", \"changed\")));\n            throwsType(IllegalStateException.class, () -> s.submit(\"r2\", author(), input(\"c1\", \"fixture-safe\")));\n            throwsType(SecurityException.class, () -> s.submit(\"r2\", reviewer(), input(\"c2\", \"x\")));\n            s.submit(\"r2\", author(), input(\"c2\", \"fixture-violation\"));\n            check(s.process(\"c2\").state() == CommentModeration.State.REJECTED, \"block\");\n            s.submit(\"r3\", author(), input(\"c3\", \"待人工确认的普通示例\"));\n            var held = s.process(\"c3\");\n            check(held.state() == CommentModeration.State.HELD && !held.visible(), \"unknown hold\");\n            check(s.publicComments().size() == 1 && s.publicComments().getFirst().id().equals(\"c1\"), \"public filter\");\n            throwsType(SecurityException.class, () -> s.review(\"v1\", \"c3\", 2, author(), CommentModeration.State.PUBLISHED));\n            throwsType(IllegalArgumentException.class, () -> s.review(\"v1\", \"c3\", 2, reviewer(), CommentModeration.State.PENDING));\n            throwsType(IllegalStateException.class, () -> s.review(\"v1\", \"c3\", 1, reviewer(), CommentModeration.State.PUBLISHED));\n            var reviewed = s.review(\"v1\", \"c3\", 2, reviewer(), CommentModeration.State.PUBLISHED);\n            check(reviewed.version() == 3 && reviewed.visible(), \"manual publish\");\n            check(s.review(\"v1\", \"c3\", 2, reviewer(), CommentModeration.State.PUBLISHED).equals(reviewed), \"review replay\");\n            throwsType(SecurityException.class, () -> s.review(\"v1\", \"c3\", 2, author(), CommentModeration.State.PUBLISHED));\n            throwsType(IllegalStateException.class, () -> s.review(\"v1\", \"c3\", 2, reviewer(), CommentModeration.State.REJECTED));\n            throwsType(IllegalStateException.class, () -> s.review(\"v2\", \"c3\", 3, reviewer(), CommentModeration.State.REJECTED));\n            check(reviewed.events().getLast().actor().equals(\"reviewer\"), \"audit actor\");\n            throwsType(IllegalArgumentException.class, () -> input(\"x\", \"\\u202Ehidden\"));\n            throwsType(IllegalArgumentException.class, () -> input(\"x\", \"\\uD800\"));\n            throwsType(IllegalArgumentException.class, () -> input(\"x\", \" \"));\n            throwsType(IllegalArgumentException.class, () -> input(\"x\", \"a\".repeat(2001)));\n            throwsType(IllegalArgumentException.class, () -> s.get(\"missing\"));\n        }\n    }\n    static void badModels() {\n        List<CommentModeration.Classifier> models = List.of(\n                t -> null, t -> new CommentModeration.Classification(\"ALLOW\", \"wrong-policy\"),\n                t -> new CommentModeration.Classification(\"ALLOW_AND_DELETE\", CommentModeration.POLICY),\n                t -> { throw new IOException(\"sensitive exception text must not escape\"); });\n        for (var model : models) try (var s = service(model, 1000)) {\n            s.submit(\"r\", author(), input(\"c\", \"x\")); var v = s.process(\"c\");\n            check(v.state() == CommentModeration.State.HELD && !v.visible(), \"invalid or failed model holds\");\n            check(!CommentModeration.result(v).contains(\"sensitive\"), \"error sanitized\");\n            check(s.review(\"v\", \"c\", v.version(), reviewer(), CommentModeration.State.REJECTED).state()\n                    == CommentModeration.State.REJECTED, \"manual reject\");\n        }\n    }\n    static void concurrency() throws Exception {\n        AtomicInteger calls = new AtomicInteger(); CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);\n        try (var s = service(t -> { calls.incrementAndGet(); entered.countDown(); release.await();\n                return new CommentModeration.Classification(\"ALLOW\", CommentModeration.POLICY); }, 2000);\n             var callers = Executors.newFixedThreadPool(8)) {\n            List<Callable<CommentModeration.View>> tasks = new ArrayList<>();\n            for (int i = 0; i < 100; i++) tasks.add(() -> s.submit(\"r\", author(), input(\"c\", \"x\")));\n            for (var f : callers.invokeAll(tasks)) check(f.get().id().equals(\"c\"), \"concurrent same submission\");\n            var first = callers.submit(() -> s.process(\"c\")); signal(entered);\n            check(s.process(\"c\").state() == CommentModeration.State.CLASSIFYING, \"second claim observes in flight\");\n            release.countDown(); check(first.get().state() == CommentModeration.State.PUBLISHED, \"first commits\");\n            check(calls.get() == 1, \"one model invocation\");\n        } finally { release.countDown(); }\n    }\n    static void competingReviews() throws Exception {\n        try (var s = service(CommentModeration.fixtureClassifier(), 1000);\n             var callers = Executors.newFixedThreadPool(2)) {\n            s.submit(\"r\", author(), input(\"c\", \"unknown\")); s.process(\"c\");\n            CountDownLatch start = new CountDownLatch(1); AtomicInteger successes = new AtomicInteger();\n            List<Future<?>> futures = new ArrayList<>();\n            for (int i = 0; i < 2; i++) {\n                final int n = i;\n                futures.add(callers.submit(() -> {\n                    try {\n                        start.await();\n                        s.review(\"review\" + n, \"c\", 2, reviewer(), n == 0\n                                ? CommentModeration.State.PUBLISHED : CommentModeration.State.REJECTED);\n                        successes.incrementAndGet();\n                    } catch (IllegalStateException expected) { }\n                      catch (InterruptedException e) { throw new AssertionError(e); }\n                }));\n            }\n            start.countDown(); for (var f : futures) f.get(3, TimeUnit.SECONDS);\n            check(successes.get() == 1, \"only one concurrent reviewer commits\");\n            check(s.get(\"c\").version() == 3 && s.get(\"c\").events().size() == 3, \"one final review event\");\n        }\n    }\n    static void timeoutAndLateResult() throws Exception {\n        CountDownLatch release = new CountDownLatch(1), done = new CountDownLatch(1);\n        try (var s = service(t -> {\n            boolean stop = false;\n            while (!stop) try { release.await(); stop = true; } catch (InterruptedException ignored) { }\n            done.countDown(); return new CommentModeration.Classification(\"BLOCK\", CommentModeration.POLICY);\n        }, 40)) {\n            s.submit(\"r\", author(), input(\"c\", \"x\")); var v = s.process(\"c\");\n            check(v.state() == CommentModeration.State.HELD && v.reason().equals(\"TIMEOUT\"), \"real wait timeout\");\n            var manual = s.review(\"v\", \"c\", v.version(), reviewer(), CommentModeration.State.PUBLISHED);\n            release.countDown(); signal(done);\n            check(s.get(\"c\").equals(manual), \"late result cannot overwrite review\");\n        } finally { release.countDown(); }\n    }\n    static void overloadAndClose() throws Exception {\n        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);\n        try (var s = service(t -> { entered.countDown(); release.await();\n                return new CommentModeration.Classification(\"ALLOW\", CommentModeration.POLICY); }, 2000);\n             var callers = Executors.newFixedThreadPool(2)) {\n            for (int i = 1; i <= 3; i++) s.submit(\"r\" + i, author(), input(\"c\" + i, \"x\"));\n            var first = callers.submit(() -> s.process(\"c1\")); signal(entered);\n            var second = callers.submit(() -> s.process(\"c2\")); await(() -> s.queuedRequests() == 1);\n            var overloaded = s.process(\"c3\");\n            check(overloaded.state() == CommentModeration.State.HELD && overloaded.reason().equals(\"OVERLOADED\"), \"bounded queue overload\");\n            s.close(); release.countDown(); first.get(3, TimeUnit.SECONDS); second.get(3, TimeUnit.SECONDS);\n            check(s.get(\"c1\").reason().equals(\"SERVICE_CLOSED\") && s.get(\"c2\").reason().equals(\"SERVICE_CLOSED\"), \"close holds in flight\");\n            check(s.publicComments().isEmpty(), \"close no late publishing\");\n            throwsType(IllegalStateException.class, () -> s.process(\"c1\"));\n        } finally { release.countDown(); }\n    }\n    static void interruption() throws Exception {\n        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);\n        AtomicReference<CommentModeration.View> result = new AtomicReference<>(); AtomicBoolean interrupted = new AtomicBoolean();\n        try (var s = service(t -> { entered.countDown(); release.await();\n                return new CommentModeration.Classification(\"ALLOW\", CommentModeration.POLICY); }, 2000)) {\n            s.submit(\"r\", author(), input(\"c\", \"x\"));\n            Thread caller = new Thread(() -> { result.set(s.process(\"c\")); interrupted.set(Thread.currentThread().isInterrupted()); });\n            caller.start(); signal(entered); caller.interrupt(); caller.join(3000);\n            check(!caller.isAlive() && interrupted.get(), \"interrupt flag restored\");\n            check(result.get().state() == CommentModeration.State.HELD && result.get().reason().equals(\"INTERRUPTED\"), \"interrupt hold\");\n        } finally { release.countDown(); }\n    }\n    static void cli() throws Exception {\n        String commands = \"SUBMIT\\tr1\\tc1\\talice\\tfixture-safe\\nPROCESS\\tc1\\nGET\\tc1\\nREVIEW\\tv1\\tc1\\t2\\tREJECTED\\n\";\n        ByteArrayOutputStream bytes = new ByteArrayOutputStream();\n        CommentModeration.run(new ByteArrayInputStream(commands.getBytes(StandardCharsets.UTF_8)), new PrintStream(bytes, true, StandardCharsets.UTF_8));\n        String out = bytes.toString(StandardCharsets.UTF_8);\n        check(out.contains(\"RESULT\\tc1\\tPENDING\\t0\\tfalse\\tSUBMITTED\"), \"CLI submit\");\n        check(out.contains(\"RESULT\\tc1\\tPUBLISHED\\t2\\ttrue\\tMODEL_ALLOW\"), \"CLI process\");\n        check(out.contains(\"ERROR\\t4\\tIllegalStateException\"), \"CLI illegal terminal review\");\n    }\n    public static void main(String[] args) throws Exception {\n        basic(); badModels(); concurrency(); competingReviews(); timeoutAndLateResult(); overloadAndClose(); interruption(); cli();\n        System.out.println(\"PASS CommentModerationTest checks=\" + checks);\n    }\n}\n"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

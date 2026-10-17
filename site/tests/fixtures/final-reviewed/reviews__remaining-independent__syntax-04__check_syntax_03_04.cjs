@@ -1,0 +1,16 @@
+const fs=require('fs'),vm=require('vm'),crypto=require('crypto');
+const base='site/notes-58c0-refactor/dist/',app=fs.readFileSync(base+'assets/app.js','utf8'),catalog=JSON.parse(fs.readFileSync(base+'data/catalog.json'));
+const sha=s=>crypto.createHash('sha256').update(s).digest('hex');
+const extract=n=>{const a=app.indexOf('function '+n+'(');if(a<0)throw Error(n);const b=app.indexOf('\nfunction ',a+1);return app.slice(a,b<0?undefined:b)};
+const all=catalog.entries.map(e=>{const chunk=JSON.parse(fs.readFileSync(base+e._chunk));return chunk.entries.find(x=>x.id===e.id)});
+for(const b of ['03','04'])for(const e of JSON.parse(fs.readFileSync('reviews/remaining-independent/syntax-'+b+'/composed-entries.json'))){let i=all.findIndex(x=>x.id===e.id);if(i<0)throw Error(e.id);all[i]=e;}
+const by=new Map(all.map(e=>[e.id,e]));
+const registry=JSON.parse(app.match(/const LEARNING_ORDER_REGISTRY = (.*);\n/)[1]);const syntaxOrder=registry.modules.find(m=>m.mod==='syntax').parts.flatMap(p=>p.categories.flatMap(c=>c.entryIds));
+const c={h:s=>String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),pageHead:()=>'',sec:(t,b)=>b,relatedLinks:()=>'',learnerLabel:(k,v)=>v,TREE:{syntax:{all:syntaxOrder.map(id=>by.get(id))}}};vm.createContext(c);
+vm.runInContext(app.match(/const href = .*;\n/)[0],c);for(const n of ['pager','renderSyntax'])vm.runInContext(extract(n),c);
+for(const b of ['03','04']){const p='reviews/remaining-independent/syntax-'+b+'/',es=JSON.parse(fs.readFileSync(p+'composed-entries.json')),results=[];
+for(const draft of es){const e=by.get(draft.id),r=c.renderSyntax(e);for(const f of ['html','supplementHtml','readingNotesHtml'])if(e[f]&&!r.includes(e[f]))throw Error(e.id+f);
+let links=[];for(const m of r.matchAll(/href="([^"]+)"/g)){const u=m[1];if(u.startsWith('#/e/')){let parts=u.slice(4).split('/'),target=by.get(decodeURIComponent(parts[0]));if(!target)throw Error('missing '+u);if(parts[1]&&!target.items?.some(x=>x.id===decodeURIComponent(parts[1])))throw Error('missing question '+u);links.push({href:u,exists:true});}else if(u.startsWith('#')&&!u.startsWith('#/')){const id=u.slice(1);if(!r.includes('id="'+id+'"'))throw Error('missing anchor '+u);links.push({href:u,exists:true});}}
+const i=syntaxOrder.indexOf(e.id);for(const neighbor of [syntaxOrder[i-1],syntaxOrder[i+1]].filter(Boolean))if(!r.includes('#/e/'+neighbor))throw Error('missing pager '+neighbor);
+fs.writeFileSync(p+e.id+'-rendered.html',r);results.push({entryId:e.id,bodyAndSupplementsExact:true,wholeActualRenderSyntax:true,wholeActualPager:true,actualHref:true,full44EntrySyntaxOrder:true,previous:syntaxOrder[i-1]||null,next:syntaxOrder[i+1]||null,links});}
+fs.writeFileSync(p+'renderer-check.json',JSON.stringify({appSha256:sha(app),catalogSha256:sha(fs.readFileSync(base+'data/catalog.json')),method:'Exact whole renderSyntax and pager plus actual href, full catalog-loaded syntax order from actual learning registry. Peripheral pageHead, sec, relatedLinks, learnerLabel stubbed. No browser/layout/copy claim.',results},null,2)+'\n');fs.writeFileSync(p+'renderer-source.js',extract('renderSyntax')+'\n'+extract('pager')+'\n'+app.match(/const href = .*;\n/)[0]);console.log(b,'PASS',results.length);}

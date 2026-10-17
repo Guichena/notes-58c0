@@ -1,0 +1,129 @@
+{
+  "entries": [
+    {
+      "id": "handwrite-66",
+      "number": 21,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第六章：项目定制系统设计",
+      "flat": false,
+      "title": "分片上传、断点续传和秒传",
+      "questionHtml": "<p class=\"md-p\">结合你的 NoteWeave 项目：设计一个大文件上传系统，支持分片上传、断点续传、秒传去重、上传完成后异步解析与索引。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题非常贴合你的简历。面试官会从“你写了 Redis Bitmap、MD5/SHA-256、MinIO、Kafka/Redis Stream”切入，追问完整链路和异常处理。</p>\n<p class=\"md-p\">核心问题有四个：大文件不能一次传；网络中断后不能重传全部；重复文件应秒传；上传成功不代表解析索引完成，需要异步任务状态机。</p>",
+      "knowledge": [
+        "分片上传：客户端按固定大小切片，每片带 <code class=\"tok-inline\">fileHash</code>、<code class=\"tok-inline\">chunkIndex</code>、<code class=\"tok-inline\">chunkSize</code>、<code class=\"tok-inline\">totalChunks</code>。",
+        "断点续传：服务端记录已上传分片，客户端查询缺失分片后补传。",
+        "秒传：用文件内容哈希判断文件是否已存在，存在则只建立用户文件引用。",
+        "Redis Bitmap：适合记录分片是否上传，空间小，<code class=\"tok-inline\">BITCOUNT</code> 可快速统计完成数。",
+        "对象存储：分片临时存储，合并后保存完整文件。",
+        "异步索引：上传完成后发消息，解析、切片、Embedding、ES 写入、Wiki 编译解耦执行。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐链路：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>初始化上传：客户端先计算 SHA-256，请求 <code class=\"tok-inline\">initUpload(fileHash, fileName, size, totalChunks)</code>。</li><li>秒传判断：服务端查 <code class=\"tok-inline\">file_hash</code> 表，如果完整文件已存在，直接创建用户文件记录并返回完成。</li><li>返回上传状态：如果未完成，服务端返回已上传分片 Bitmap 或缺失分片列表。</li><li>上传分片：每片上传到 MinIO 临时路径，成功后设置 Redis Bitmap 对应位。</li><li>完成合并：当 <code class=\"tok-inline\">BITCOUNT == totalChunks</code>，抢占合并锁，按序合并分片，校验 SHA-256。</li><li>状态落库：文件状态从 <code class=\"tok-inline\">UPLOADING</code> 变为 <code class=\"tok-inline\">UPLOADED</code>，写入完整对象地址。</li><li>异步处理：投递 <code class=\"tok-inline\">FILE_UPLOADED</code> 事件，消费者执行解析、切片、Embedding、索引写入和 Wiki 编译。</li></ol></div>\n<p class=\"md-p\">核心表设计：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE file_asset (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    sha256 CHAR(64) NOT NULL,\n    size BIGINT NOT NULL,\n    object_key VARCHAR(512) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_sha256_size (sha256, size)\n);\n\nCREATE TABLE user_file (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    user_id BIGINT NOT NULL,\n    file_asset_id BIGINT NOT NULL,\n    file_name VARCHAR(255) NOT NULL,\n    created_at DATETIME NOT NULL,\n    KEY idx_user_created (user_id, created_at)\n);</pre></div></section>\n<p class=\"md-p\">Redis Key 示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">upload:bitmap:{uploadId}       # bitmap 记录分片完成情况\nupload:meta:{uploadId}         # hash 记录 fileHash、totalChunks、size\nupload:merge-lock:{uploadId}   # 防止重复合并</pre></div></section>\n<p class=\"md-p\">伪代码：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public void uploadChunk(String uploadId, int chunkIndex, byte[] bytes) {\n    UploadMeta meta = loadMeta(uploadId);\n    minio.putObject(tempKey(uploadId, chunkIndex), bytes);\n    redis.setBit(&quot;upload:bitmap:&quot; + uploadId, chunkIndex, true);\n\n    long uploaded = redis.bitCount(&quot;upload:bitmap:&quot; + uploadId);\n    if (uploaded == meta.totalChunks() &amp;&amp; tryLock(&quot;upload:merge-lock:&quot; + uploadId)) {\n        mergeAndPublish(uploadId, meta);\n    }\n}</pre></div></section>\n<p class=\"md-p\">注意：合并和发消息必须处理一致性。简单方案是本地事务更新文件状态后再发 MQ；更稳的是 Outbox 表，事务内写业务状态和事件表，再由后台任务投递 MQ。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：客户端传来的 MD5 能信吗？</strong></p>\n<p class=\"md-p\">分析：不能完全信。答案：客户端哈希可用于预检查，服务端合并后必须重新计算 SHA-256 校验，安全场景还要做文件类型校验、病毒扫描和权限校验。</p>\n<p class=\"md-p\"><strong>变体 2：合并过程中服务挂了怎么办？</strong></p>\n<p class=\"md-p\">分析：可能出现 Bitmap 已满但文件未合并完成。答案：文件状态机增加 <code class=\"tok-inline\">MERGING</code>，后台定时扫描超时中间态，重新抢锁合并；合并操作按目标 object key 幂等覆盖或先写临时 key 再 rename/copy。</p>\n<p class=\"md-p\"><strong>变体 3：上传完成后解析失败怎么办？</strong></p>\n<p class=\"md-p\">分析：上传和索引是两个状态。答案：文件状态拆成 <code class=\"tok-inline\">upload_status</code> 和 <code class=\"tok-inline\">index_status</code>；解析失败进入 <code class=\"tok-inline\">INDEX_FAILED</code>，记录错误，支持重试，不影响用户看到原文件。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "项目定制系统设计"
+    },
+    {
+      "id": "handwrite-67",
+      "number": 22,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第六章：项目定制系统设计",
+      "flat": false,
+      "title": "RAG 混合检索链路设计",
+      "questionHtml": "<p class=\"md-p\">结合你的 NoteWeave 项目：设计一个团队知识库 RAG 检索链路。资料规模大、权限复杂、查询表达多样，要求召回相关、覆盖充分、可追溯，并能处理 BM25、向量召回和知识页召回的融合。</p>",
+      "analysisHtml": "<p class=\"md-p\">这是你简历里最亮的项目点，面试官很可能追问 Weighted RRF、权限过滤、chunk 去重、相邻片段合并、引用映射。回答时不要只说“向量数据库 + LLM”，那会显得很浅。</p>\n<p class=\"md-p\">RAG 检索目标不是单纯相似度最高，而是“答案所需证据足够、来源可信、权限正确、上下文不冗余”。</p>",
+      "knowledge": [
+        "BM25：关键词匹配强，适合专有名词、错误码、精确短语。",
+        "向量检索：语义泛化强，适合改写后的自然语言问题。",
+        "元数据过滤：团队、空间、文档权限、时间、类型。",
+        "RRF：按各召回通道排名做融合，避免不同通道分数不可比。",
+        "去重与合并：同 chunk 去重、相邻 chunk 合并、同文档限流。",
+        "引用溯源：答案必须带 docId、chunkId、页码/段落信息。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐链路：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>Query 理解：识别意图、关键词、实体、时间范围、权限上下文。</li><li>多路召回：BM25 召回、向量 kNN 召回、高质量 Wiki 页召回。</li><li>权限过滤：在召回前或召回后确保用户只能看到有权限的文档。</li><li>RRF 融合：把各通道排名转换为融合分。</li><li>后处理：chunk 去重、相邻片段合并、同文档限流、多样性控制。</li><li>重排：可选 cross-encoder 或 LLM rerank。</li><li>上下文组装：按 token 预算选择证据，保留引用映射。</li><li>生成答案：要求模型基于证据回答，输出引用。</li></ol></div>\n<p class=\"md-p\">Weighted RRF 伪代码：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public Map&lt;String, Double&gt; weightedRrf(List&lt;SearchResult&gt; bm25,\n                                      List&lt;SearchResult&gt; vector,\n                                      List&lt;SearchResult&gt; wiki) {\n    Map&lt;String, Double&gt; score = new HashMap&lt;&gt;();\n    add(score, bm25, 1.0, 60);\n    add(score, vector, 0.9, 60);\n    add(score, wiki, 1.2, 60);\n    return score;\n}\n\nprivate void add(Map&lt;String, Double&gt; score, List&lt;SearchResult&gt; list, double weight, int k) {\n    for (int i = 0; i &lt; list.size(); i++) {\n        String chunkId = list.get(i).chunkId();\n        score.merge(chunkId, weight / (k + i + 1), Double::sum);\n    }\n}</pre></div></section>\n<p class=\"md-p\">权限处理要主动讲清楚：如果权限字段能进入 ES filter，应尽量在召回阶段过滤，减少越权风险和无效候选；如果向量库过滤能力弱，则召回数量要扩大，再做严格后过滤，但必须防止过滤后候选不足。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么不用单纯向量检索？</strong></p>\n<p class=\"md-p\">分析：向量检索对语义相近有效，但对编号、术语、代码、错误码、精确标题不一定稳。答案：BM25 + 向量混合召回能互补。</p>\n<p class=\"md-p\"><strong>变体 2：RRF 为什么比直接加权相似度好？</strong></p>\n<p class=\"md-p\">分析：BM25 分数和向量相似度量纲不同，直接相加不稳定。RRF 基于排名融合，不依赖原始分数可比性。</p>\n<p class=\"md-p\"><strong>变体 3：如何避免一个文档占满上下文？</strong></p>\n<p class=\"md-p\">分析：同一文档可能召回很多相邻 chunk。答案：同文档限流、相邻片段合并、多样性约束，让上下文覆盖更多证据来源。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "项目定制系统设计"
+    },
+    {
+      "id": "handwrite-68",
+      "number": 23,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第六章：项目定制系统设计",
+      "flat": false,
+      "title": "多会话流式生成与中断恢复",
+      "questionHtml": "<p class=\"md-p\">结合你的 NoteWeave 项目：设计一个支持多会话、WebSocket 流式生成、中断停止、会话切换和上下文恢复的后端执行框架。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题会从你“多会话知识工作台底座”展开。面试官想听到会话状态管理、流式 token 推送、取消信号、Redis 运行态、MySQL 归档、上下文加载和幂等恢复。</p>\n<p class=\"md-p\">难点是生成过程很长，用户可能刷新页面、切换会话、点击停止，服务也可能重启。不能只把状态放 JVM 内存。</p>",
+      "knowledge": [
+        "WebSocket/SSE：服务端持续推送生成片段。",
+        "会话状态：<code class=\"tok-inline\">RUNNING</code>、<code class=\"tok-inline\">STOPPING</code>、<code class=\"tok-inline\">STOPPED</code>、<code class=\"tok-inline\">COMPLETED</code>、<code class=\"tok-inline\">FAILED</code>。",
+        "Redis 运行态：当前任务 ID、进度、取消标记、短期上下文窗口。",
+        "MySQL 持久化：消息、引用、产物、最终状态。",
+        "中断语义：停止生成不等于删除已生成内容，需要落库部分结果。",
+        "上下文恢复：近期消息 + 摘要 + 稳定记忆，不全量回放长历史。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐架构：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>用户发送消息，服务端生成 <code class=\"tok-inline\">runId</code>，MySQL 写入用户消息和 assistant 占位消息。</li><li>Redis 写 <code class=\"tok-inline\">session:{id}:run</code>，状态为 <code class=\"tok-inline\">RUNNING</code>，并记录取消标记为 false。</li><li>执行器加载上下文：近期消息、会话摘要、稳定记忆、检索证据。</li><li>调用模型流式接口，每收到一个 token 就通过 WebSocket 推送，同时按批次追加到 Redis buffer。</li><li>后台定期 flush buffer 到 MySQL，避免服务崩溃丢失太多内容。</li><li>用户点击停止时设置 Redis cancel flag，执行器检测后取消下游请求，状态改为 <code class=\"tok-inline\">STOPPED</code>。</li><li>生成完成后写引用、产物和最终消息，状态改为 <code class=\"tok-inline\">COMPLETED</code>。</li><li>用户重连时读取 MySQL 最终内容 + Redis 当前运行态，决定继续订阅还是展示结果。</li></ol></div>\n<p class=\"md-p\">关键状态：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">run:{runId}:status = RUNNING | STOPPING | STOPPED | COMPLETED | FAILED\nrun:{runId}:cancel = true | false\nrun:{runId}:buffer = 当前尚未 flush 的生成片段</pre></div></section>\n<p class=\"md-p\">中断检查伪代码：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">while (modelStream.hasNext()) {\n    if (redis.getBoolean(cancelKey(runId))) {\n        modelStream.cancel();\n        markStopped(runId);\n        break;\n    }\n    String delta = modelStream.next();\n    websocket.send(sessionId, delta);\n    buffer.append(delta);\n    if (buffer.length() &gt; 1024) {\n        flushToDb(runId, buffer);\n    }\n}</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：服务重启后 RUNNING 状态怎么办？</strong></p>\n<p class=\"md-p\">分析：内存中的模型调用已经没了，但 Redis/MySQL 可能仍显示运行中。答案：启动恢复任务扫描超时 RUNNING，标记为 FAILED 或 INTERRUPTED，并保留已落库内容。</p>\n<p class=\"md-p\"><strong>变体 2：用户多开页面同时发送消息怎么办？</strong></p>\n<p class=\"md-p\">分析：同一会话可能并发 run。答案：按会话加互斥或队列，保证上下文顺序；或者允许并发但每个 run 独立，并在 UI 明确分支。</p>\n<p class=\"md-p\"><strong>变体 3：长对话上下文太长怎么办？</strong></p>\n<p class=\"md-p\">分析：不能全量回放。答案：近期消息保真、较早内容摘要、稳定事实记忆结构化存储，并按当前问题相关性检索加载。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "项目定制系统设计"
+    },
+    {
+      "id": "handwrite-69",
+      "number": 24,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第六章：项目定制系统设计",
+      "flat": false,
+      "title": "Agent 任务 checkpoint/resume",
+      "questionHtml": "<p class=\"md-p\">结合你的本地代码 Agent Harness：设计一个长链路 Agent 任务执行框架，支持工具调用、上下文预算裁剪、checkpoint 保存、中断后 resume，并保证不会误信旧状态继续执行。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题属于项目深挖。面试官会问你 checkpoint 存什么、什么时候存、恢复时怎么判断 workspace 漂移、如何保证结果可复现。</p>\n<p class=\"md-p\">核心不是“把聊天记录存起来”，而是保存可恢复的执行状态：当前目标、计划、已完成步骤、工具调用结果、关键文件快照、上下文摘要、预算状态和运行工件。</p>",
+      "knowledge": [
+        "checkpoint：任务状态快照，不只是日志。",
+        "resume：从最近一致点恢复，而不是重跑所有步骤。",
+        "workspace 漂移：文件或分支变化导致旧计划不可信。",
+        "上下文裁剪：保留当前任务必要信息，历史信息摘要化。",
+        "审计工件：工具输入输出、模型决策、测试结果要可追踪。"
+      ],
+      "answerHtml": "<p class=\"md-p\">checkpoint 结构：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"json\">{\n  &quot;taskId&quot;: &quot;t-001&quot;,\n  &quot;objective&quot;: &quot;fix failing tests&quot;,\n  &quot;plan&quot;: [\n    {&quot;step&quot;: &quot;inspect failure&quot;, &quot;status&quot;: &quot;completed&quot;},\n    {&quot;step&quot;: &quot;patch parser&quot;, &quot;status&quot;: &quot;in_progress&quot;}\n  ],\n  &quot;workspace&quot;: {\n    &quot;root&quot;: &quot;D:/java-projects&quot;,\n    &quot;gitHead&quot;: &quot;abc123&quot;,\n    &quot;dirtyFilesHash&quot;: {\n      &quot;src/A.java&quot;: &quot;sha256...&quot;\n    }\n  },\n  &quot;artifacts&quot;: [&quot;logs/test-001.txt&quot;],\n  &quot;memory&quot;: {\n    &quot;summary&quot;: &quot;Parser fails when input is empty...&quot;,\n    &quot;constraints&quot;: [&quot;do not edit unrelated files&quot;]\n  }\n}</pre></div></section>\n<p class=\"md-p\">恢复流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>读取最近 checkpoint。</li><li>校验 workspace：路径、分支、HEAD、关键文件 hash、用户新改动。</li><li>如果无漂移，加载计划和摘要，从 <code class=\"tok-inline\">in_progress</code> 步骤继续。</li><li>如果有漂移，不直接执行旧计划，而是重新读取受影响文件，修正计划。</li><li>恢复后继续记录新的 checkpoint，避免再次中断从头开始。</li></ol></div>\n<p class=\"md-p\">上下文治理策略：近期工具结果原文保留；较早步骤摘要化；关键约束和失败原因结构化固定保留；无关日志落工件，只保留路径引用。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：如何判断 checkpoint 过期？</strong></p>\n<p class=\"md-p\">分析：只看时间不够。答案：校验 git HEAD、关键文件 hash、依赖版本、工作目录和用户最新指令。</p>\n<p class=\"md-p\"><strong>变体 2：恢复时发现用户改了同一个文件怎么办？</strong></p>\n<p class=\"md-p\">分析：不能覆盖用户改动。答案：读取 diff，理解用户变更，把自己的后续修改建立在新状态上；冲突无法自动判断时再询问。</p>\n<p class=\"md-p\"><strong>变体 3：如何评测 resume 是否正确？</strong></p>\n<p class=\"md-p\">分析：要构造中断点。答案：设计多组任务，在不同阶段强制中断，恢复后比较最终结果、工具调用次数、是否重复读取、是否误用旧状态。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "项目定制系统设计"
+    },
+    {
+      "id": "handwrite-70",
+      "number": 25,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第六章：项目定制系统设计",
+      "flat": false,
+      "title": "AI 知识工作台项目生产级优化",
+      "questionHtml": "<p class=\"md-p\">结合你的 NoteWeave 项目，如果面试官问“这个项目从 Demo 到生产级还需要怎么优化”，你如何从性能、可靠性、安全、成本、效果评估几个维度回答？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是项目终局追问。面试官不是要听“加缓存、加 MQ”这种口号，而是看你能否把项目拆成上传索引链路、检索链路、生成链路、会话状态链路和运营评估链路，并分别说明瓶颈、优化手段和兜底策略。</p>\n<p class=\"md-p\">好的回答要有层次：先按链路拆，再按指标补，最后讲取舍。比如 RAG 优化不能只说“换更好的 embedding”，还要讲召回日志、RRF 融合、rerank、权限过滤、chunk 质量、引用命中率和离线评测。</p>",
+      "knowledge": [
+        "文件接入：分片上传、秒传、断点续传、对象存储、合并锁、哈希校验。",
+        "异步索引：Outbox、Kafka/Redis Stream、任务状态机、pending 消息恢复、死信和补偿。",
+        "RAG 检索：BM25、向量检索、元数据过滤、RRF、rerank、chunk 去重、相邻片段合并、同文档限流。",
+        "生成链路：流式输出、取消、超时、token 预算、结果落库、引用约束。",
+        "多租户安全：权限过滤、对象存储 key 隔离、越权二次校验、审计日志。",
+        "可观测性：队列积压、索引耗时、召回命中、生成延迟、错误率、token 成本。",
+        "效果评估：Recall@K、MRR、引用命中率、人工反馈、bad case 归因。"
+      ],
+      "answerHtml": "<p class=\"md-p\">可以按“五条链路 + 四类指标”回答。</p>\n<p class=\"md-p\"><strong>1. 文件上传与索引链路</strong></p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>上传大文件时支持客户端并行分片，服务端用 Redis Bitmap 记录分片完成度。</li><li>用 SHA-256 做内容指纹，命中文件资产后只创建用户文件引用，避免重复存储。</li><li>合并分片前抢占 <code class=\"tok-inline\">merge-lock</code>，防止多个请求重复合并。</li><li>合并后服务端重新计算 SHA-256，不能完全信任客户端 hash。</li><li>上传完成只代表文件可用，解析和索引是独立状态，失败可以重试，不回滚上传。</li><li>索引任务进入状态机：<code class=\"tok-inline\">PENDING -&gt; PARSING -&gt; CHUNKING -&gt; EMBEDDING -&gt; INDEXING -&gt; READY/FAILED</code>。</li><li>如果用 Redis Stream，消费者处理成功后 <code class=\"tok-inline\">XACK</code>；pending 太久的消息用 <code class=\"tok-inline\">XPENDING/XAUTOCLAIM</code> 之类机制转移给健康消费者。</li></ul></div>\n<p class=\"md-p\"><strong>2. RAG 检索链路</strong></p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>召回层使用 BM25、向量召回、Wiki 高质量页多路召回。</li><li>融合层使用 RRF，避免 BM25 分数和向量相似度不可比。</li><li>权限过滤优先前置到 ES/向量检索 metadata filter，返回前再用 MySQL ACL 做强校验。</li><li>后处理做 chunk 去重、相邻片段合并、同文档限流，避免一个文档占满上下文。</li><li>对高价值问题增加 rerank，低价值问题只走轻量 RRF，控制延迟和成本。</li><li>建召回日志：记录 query、召回通道、候选 chunk、最终引用、用户反馈，用于 bad case 分析。</li></ul></div>\n<p class=\"md-p\"><strong>3. 会话与生成链路</strong></p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>WebSocket/SSE 只负责流式推送，Redis 记录运行态和取消标记，MySQL 记录最终消息和引用。</li><li>token 流不要每个 token 都写 DB，按时间或长度批量 flush。</li><li>每次生成有 <code class=\"tok-inline\">runId</code>，消息落库和引用落库都用 <code class=\"tok-inline\">runId</code> 做幂等。</li><li>长会话上下文按“近期消息 + 摘要 + 稳定记忆 + 当前检索证据”加载，避免全量回放。</li><li>对模型调用设置超时、重试和降级。检索失败时可以降级成仅基于会话上下文回答，生成失败时保留已生成片段和失败状态。</li></ul></div>\n<p class=\"md-p\"><strong>4. 可靠性与削峰</strong></p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>主链路只做上传确认和任务投递，解析、embedding、索引写入全部异步。</li><li>用 Outbox 保证“文件状态更新”和“索引事件产生”在同一个本地事务里。</li><li>每个异步任务有幂等键，例如 <code class=\"tok-inline\">fileId + version + jobType</code>。</li><li>队列积压时优先处理用户当前会话依赖的文件，低优先级批量索引延后。</li><li>失败任务按错误类型处理：解析格式不支持直接失败；模型/embedding 超时进入延迟重试；多次失败进入死信。</li></ul></div>\n<p class=\"md-p\"><strong>5. 安全、成本与评估</strong></p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>对象存储 key 不直接暴露真实路径，下载走带权限校验的短期签名 URL。</li><li>团队资料检索必须带 tenant/team/space 权限上下文，返回前二次校验。</li><li>embedding 和生成都做限额：按用户、团队、文件大小、token 数做预算。</li><li>缓存 query rewrite、热门检索结果和稳定 Wiki 页，但权限相关缓存 key 必须包含租户和权限版本。</li><li>指标看板至少包含：上传成功率、索引 P95 耗时、队列 lag、检索 Recall@K、引用命中率、生成首 token 延迟、总 token 成本、失败重试次数。</li></ul></div>\n<p class=\"md-p\">面试中可以这样总结：</p>\n<blockquote class=\"md-quote\">我会把这个 AI 工作台优化成“可恢复、可观测、可评估”的系统。上传和索引用状态机加异步任务保证可靠性；RAG 用混合召回、RRF、rerank 和权限过滤保证效果与安全；生成链路用 runId、批量 flush、取消标记和上下文分层保证体验；最后用召回日志和人工反馈持续优化效果。</blockquote>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：RAG 答案质量不好怎么排查？</strong></p>\n<p class=\"md-p\">问题分析：不要直接怪模型，要先定位是召回不到、排序不对、上下文拼接差，还是生成阶段没遵循证据。</p>\n<p class=\"md-p\">知识点：召回日志、Recall@K、rerank、chunk 质量、引用评估。</p>\n<p class=\"md-p\">答案：先抽样 bad case，看正确证据是否进入候选集。如果没进入，优化 query rewrite、BM25/向量召回和 chunk 切分；如果进入但没排前，优化 RRF 权重和 rerank；如果证据在上下文但答案错，优化 prompt 约束和引用校验。</p>\n<p class=\"md-p\"><strong>变体 2：索引任务大量堆积怎么办？</strong></p>\n<p class=\"md-p\">问题分析：索引链路包含解析、embedding、ES 写入，任意一段都可能成为瓶颈。</p>\n<p class=\"md-p\">知识点：队列 lag、优先级、批处理、限流、降级。</p>\n<p class=\"md-p\">答案：先按任务阶段打点定位瓶颈；embedding 慢就批量调用和限流，ES 写入慢就 bulk 写入并控制 refresh；按用户当前使用文件提权优先级；低优先级历史文件延后处理。</p>\n<p class=\"md-p\"><strong>变体 3：权限过滤导致检索候选不足怎么办？</strong></p>\n<p class=\"md-p\">问题分析：先召回再过滤可能过滤掉大部分候选。</p>\n<p class=\"md-p\">知识点：metadata pre-filter、候选扩容、权限版本。</p>\n<p class=\"md-p\">答案：尽量在召回阶段带权限 metadata filter；如果向量库过滤能力有限，就扩大召回数量并后过滤；候选不足时回退到用户个人 Wiki、会话上下文或提示资料不足。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "项目定制系统设计"
+    }
+  ]
+}

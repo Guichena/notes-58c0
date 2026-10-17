@@ -1,0 +1,45 @@
+
+    
+    <div class="qa-toolbar"><span class="lb">答案显示</span><div class="seg" id="qa-mode">
+      <button type="button" data-m="q" class="" title="只看题目，自测后再翻答案">只看题目</button>
+      <button type="button" data-m="lead" class="" title="先看答题提纲：本质一句 + 要点骨架">先答一句</button>
+      <button type="button" data-m="full" class="on">全部展开</button></div>
+      <button type="button" class="btn ghost" data-act="qa-random">抽一题</button>
+      <span class="grow"></span><span class="stat" id="qa-stat"></span></div>
+    <div class="qa-list" data-mode="full"><div class="qa s0" id="q-1" data-key="own-spring-async:0">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">1</span><div class="qa-q">WebFlux 的响应式边界？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">先给结论</span>WebFlux 的价值，是用非阻塞数据流和少量事件循环线程，协调大量等待 I/O 的请求。它改变并发组织方式，不会让 CPU 或下游本身变快，也不会把阻塞 JDBC 自动变成非阻塞。我会先看整条调用链：主要是阻塞 JDBC、请求模型清楚时，MVC 往往更直接；端到端非阻塞且流式组合较多时，再考虑 WebFlux。暂时无法替换的阻塞调用可以隔离到有界执行器，但仍要限制连接、排队和超时，不能把成本当作消失。</p></div><div class="qa-rest"><h3>先明确改善的是哪一类等待</h3>
+<p class="md-p">WebFlux 主要改变大量 I/O 等待时的并发组织方式：用非阻塞数据流和少量事件循环线程协调许多连接。它不会让 CPU 计算或下游服务本身变快，也不会把阻塞 JDBC 自动变成非阻塞。因此我会先看整条调用链和团队维护成本，再决定是否选择它。</p>
+<h3>追问：已有 MVC，要不要为了高并发换成 WebFlux？</h3>
+<p class="md-p">如果系统主要使用阻塞 JDBC，请求模型也很清楚，MVC 往往更直接；MVC 也能使用 WebClient 或返回响应式类型。若链路能端到端非阻塞，且需要大量流式组合，WebFlux 更值得考虑，但团队要能处理信号、取消和调试。选择框架不能只看依赖名字：同时引入两个 Web starter 时，还要核对自动配置实际选中的应用类型，不能据此认定一定运行在 Reactor Netty 上。</p>
+<h3>追问：Mono、Flux 和事件循环怎样配合？</h3>
+<p class="md-p">理解机制可以从一条流开始。Mono 表示零或一个值，Flux 表示零到多个值；Publisher 通常在订阅后启动执行，Subscriber 通过 demand 表达需要多少数据，上游按协议发送数据、完成或错误信号，算子负责转换、组合和安排执行位置。事件循环不是为每个连接配一个一直等待的线程，而是让少量线程照看许多连接，因此适合协调 I/O 等待。</p>
+<h3>追问：把阻塞调用包进 Flux，为什么仍然阻塞？</h3>
+<p class="md-p">也正因为线程被共享，一个任务在事件循环上阻塞，会拖慢同一线程负责的其他连接。把结果包进 Flux 并不能消除这个问题。例如 Flux.just(blockingCall()) 必须先按 Java 参数求值规则执行 blockingCall，之后才构造流。要延迟调用，可以使用 fromCallable 等合适工厂，但还要结合真实调度与资源限制；“延迟到订阅”与“非阻塞”是两个不同承诺。</p>
+<h3>追问：隔离到 boundedElastic 后，还要付出什么代价？</h3>
+<p class="md-p">暂时无法替换的阻塞调用，可以隔离到有界工作执行器，例如 boundedElastic。这能保护事件循环，代价是等待仍占用工作线程、连接和时间，所以连接上限、队列和超时仍要控制。CPU 密集任务也要限制并发；多创建线程和增加切换，不等于增加计算能力。这里的取舍是把阻塞影响隔离开，而不是宣称阻塞成本消失。</p>
+<h3>追问：怎样安排执行线程，同时处理并发与顺序？</h3>
+<p class="md-p">深入到算子时，publishOn 通常改变其后信号处理的执行位置，subscribeOn 影响订阅及上游源执行路径，具体效果需要沿实际算子链判断。不要用大量线程切换掩盖线程模型不清。组合异步任务可以使用 flatMap 等，并限制并发度；若结果必须有序，可以选择 concatMap 或适合的有序组合，但会牺牲部分并行度。先问业务是否必须顺序，再选算子，比背方法名更容易解释设计。</p>
+<h3>追问：Python 的 event loop 问题能直接套到 Java 吗？</h3>
+<p class="md-p">还有一种跨语言追问：Python 跨 event loop 复用连接池的问题，能否直接套到 Java？共同原则是尊重资源的所属运行上下文，但具体会出什么错，要看各自库对线程、事件循环和资源使用的约束。Java JDBC Connection 不应并发跨线程共享，Netty Channel 的操作也受对应 EventLoop 管理；这些并不是同一种对象归属机制，不能因为都叫事件循环就把诊断结论照搬。</p>
+<details class="answer-related"><summary>其他问法与关联知识</summary><h3 class="md-h md-h3">常见问法</h3><ul class="md-list"><li>项目如何实现响应式编程？</li><li>Mono 与 Flux 是什么？</li><li>事件循环为什么怕阻塞？</li><li>MVC 与 WebFlux 怎么选？</li></ul><h3 class="md-h md-h3">标签</h3><ul class="md-list"><li>Spring</li><li>Java17教学</li></ul></details></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-2" data-key="own-spring-async:1">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">2</span><div class="qa-q">背压 取消与响应式事务？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>背压表示“下游现在要多少数据”，取消表示“这条订阅不再要结果”，响应式事务则沿 Reactor Context 找到资源。这些都是协作协议；能不能真正停下调用、释放连接或回滚，还要看资源适配。</p></div><div class="qa-rest"><h2 class="md-h md-h2">33 背压 取消与响应式事务</h2><p class="md-p">Reactive Streams 的 request(n) 限制上游向下游交付多少元素，但无法凭空控制一个完全不支持背压的外部生产者。桥接 callback、消息或模型 token 时，应选择有界缓冲、丢弃/合并可丢进度、限速或终止策略，明确丢弃对业务结果的影响。collectList 会把全部结果累积到内存，不能在无限流或超大流上滥用。</p><p class="md-p">cancel 后要取消上游订阅并释放可取消资源，使用 doFinally 等按完成、异常、取消分支处理。timeout 通常取消被替换的上游并发出超时信号，但底层阻塞调用是否停止取决于适配器与客户端。对已经发出的支付或写库操作，取消依然不证明未发生。</p><p class="md-p">返回 Mono 并不保证方法里所有 SQL 都在响应式事务中。需要 ReactiveTransactionManager，例如对应的 R2DBC 管理器，并让资源使用留在同一个订阅链里；事务上下文通过 Reactor Context 传播。</p><p class="md-p">方法返回 Publisher 之前已经做完的同步动作，未必处在事务内。若内部手工 subscribe，又会开出另一条订阅，原调用方就难以统一管理它的事务、错误和取消，所以服务方法不应偷偷 fire-and-forget。</p><p class="md-p">TransactionalOperator 可围绕响应式链管理事务。现代 Spring 对取消信号通常执行回滚，若下游 take、next 等早停导致取消，也要考虑事务是否真正完整消费。对流式查询持有事务过久会占用连接，不能为了给客户端慢慢输出而无限延长数据库事务。</p><p class="md-p">继续追问：ThreadLocal 可以直接保存租户吗？线程切换和复用会破坏假设，应采用 Reactor Context 或明确的上下文桥接。Context 保存的是数据与元信息，不应把命令式 Connection 复制进去跨线程共用。ReactiveLab 的验证方案应分别覆盖 demand、Context、取消、超时与错误，不宣称完成了 R2DBC 数据库集成。</p><h2 class="md-h md-h2">61 响应式信号与取消</h2><p class="md-p">响应式正确性体现在 demand、Context、错误、超时和取消信号，而不只是一串算子。</p><p class="md-p">StepVerifier 控制请求数量和虚拟时间，避免靠真实 sleep 猜边界。取消断言只证明源接收到取消，不证明任意第三方 SDK 都会中止 I/O。</p><p class="md-p">原手册 Markdown 的源码路径标签（需从代码块整理文件，本次未运行）：code/framework/src/main/java/handbook/ReactiveLab.java</p><h3 class="md-h md-h3">常见问法</h3><ul class="md-list"><li>慢客户端怎样处理？</li><li>cancel 会不会回滚？</li><li>ThreadLocal 为什么在 Reactor 中失效？</li><li>返回 Mono 为什么事务没有覆盖实际 SQL？</li></ul><h3 class="md-h md-h3">标签</h3><ul class="md-list"><li>Spring</li><li>Java17教学</li></ul></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-3" data-key="own-spring-async:2">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">3</span><div class="qa-q">Async 线程池与上下文传播？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>@Async 经过代理时，会把工作交给执行器，原调用和后台执行从这里分开。事务、请求上下文不会自然一起过去，后台异常、执行器拒绝和取消也需要各自的处理出口。</p></div><div class="qa-rest"><h2 class="md-h md-h2">34 Async 线程池与上下文传播</h2><p class="md-p">@EnableAsync 注册相应基础设施，@Async 描述哪些方法异步以及使用哪个执行器。代理自调用仍可能绕过。返回 Future/CompletableFuture 时，调用方应消费异常结果；void 异步方法的异常不能直接返给原调用方，需要 AsyncUncaughtExceptionHandler 等处理与观测。调用方等待 get/join 会阻塞自己，所以“用了 Future 就没有阻塞”不成立。</p><p class="md-p">假设慢模型调用把共用线程池占满，SSE 发送和租约续期也可能一起排不上。执行器应按工作类型隔离并有界，数据库、外部模型、SSE 和续租不宜轻易共用一个池。</p><p class="md-p">再看 ThreadPoolExecutor 的通常顺序：先用核心线程，然后入队；队列满了才增长到最大线程，最后拒绝。无界队列会让 maximumPoolSize 难以发挥作用。CallerRunsPolicy 虽能让提交方亲自执行，却可能堵住 HTTP 线程或事件循环，也不是通用安全方案。</p><p class="md-p">线程池里的线程会被复用，传播上下文时要同时考虑“本任务需要什么”和“线程原来有什么”。提交时捕获最小必要快照，例如 request id、租户、trace、locale 或安全上下文；执行前保存旧值、设置新值；finally 再恢复旧值或清理。</p><p class="md-p">不清理会污染下一任务，只做 clear 又可能破坏嵌套执行时原有的上下文。MDC 是日志信息，不能当授权凭据；真正权限仍依赖可信主体和执行时的业务约束。</p><p class="md-p">常见集成包括 Spring TaskDecorator、Micrometer Context Propagation 的 ContextSnapshot/ThreadLocalAccessor，以及 Spring Security 的受控执行器包装。Framework 6.1 的 ContextPropagatingTaskDecorator 可借助 Micrometer 捕获与恢复注册的上下文；它不会猜到所有自定义 ThreadLocal，也有快照开销。Reactor Context 与命令式线程上下文桥接时要注册相应访问器并核对版本，而不是到处手动复制整个线程状态。</p><p class="md-p">InheritableThreadLocal 主要在创建子线程时继承，不等于线程池每次提交时传递最新请求。不要复制 TransactionSynchronizationManager 的连接资源到子线程。@Async 任务要写库，应在工作线程通过独立事务服务进入，或者编程式开启局部事务。</p><p class="md-p">继续追问：orTimeout 是否会停止底层任务？它主要改变 CompletableFuture 的完成状态，不保证取消底层 I/O。应同时有任务状态、客户端取消句柄和 deadline 检查，迟到结果通过版本或终态校验拒绝。Java 21 虚拟线程可以减少阻塞线程成本，但不增加数据库连接和供应商配额，NoteWeave 的 Java 17 声明也不证明已经使用虚拟线程。</p><h2 class="md-h md-h2">54 线程池上下文隔离</h2><p class="md-p">上下文应在提交时捕获、执行前安装，并在 finally 中恢复工作线程原值。</p><p class="md-p">验证时可让第二个任务抛异常，再用同一工作线程检查残留；还验证嵌套调用恢复外层值。这段 ThreadLocal 只表示教学租户标签，不构成可信鉴权实现。</p><p class="md-p">原手册 Markdown 的源码路径标签（需从代码块整理文件，本次未运行）：code/jdk/ContextPropagationLab.java</p><h3 class="md-h md-h3">常见问法</h3><ul class="md-list"><li>@EnableAsync 和 @Async 各做什么？</li><li>CompletableFuture 就一定异步吗？</li><li>多 Agent 或异步任务如何避免上下文污染？</li></ul><h3 class="md-h md-h3">标签</h3><ul class="md-list"><li>Spring</li><li>Java17教学</li></ul></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div></div>
+    
+    <section><h2>同专题其它小节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

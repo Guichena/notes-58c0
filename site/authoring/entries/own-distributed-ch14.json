@@ -1,0 +1,691 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-distributed-ch14",
+  "kind": "qa",
+  "module": "ai",
+  "part": "分布式系统工程",
+  "category": "训练推理基础设施",
+  "title": "训练推理基础设施",
+  "tags": [
+    "分布式系统",
+    "故障边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-distributed-pd-disaggregation",
+      "order": 0,
+      "question": "为什么做Prefill/Decode分离，Mooncake是否支持外挂KV Cache",
+      "shortAnswer": "PD分离通过分别调度计算密集的Prefill和访存敏感的Decode减少干扰，收益取决于KV传输与负载分布。",
+      "commonPhrasings": [
+        "为什么做Prefill/Decode分离，Mooncake是否支持外挂KV Cache",
+        "为什么做PD分离",
+        "Mooncake能否外挂KV",
+        "分离后一定更快吗",
+        "PD分离推理的一次请求怎样路由、传KV和接续Decode，速度收益如何验证",
+        "PD请求完整数据流是什么",
+        "节点如何传KV",
+        "怎样证明性能真的提升"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14.1 为什么做Prefill/Decode分离，Mooncake是否支持外挂KV Cache"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：为什么做PD分离；Mooncake能否外挂KV；分离后一定更快吗。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "PD指推理运行时的Prefill与Decode分离，跨节点传KV和共享分层KV存储是不同部署方式。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "分离要解决的资源竞争"
+        },
+        {
+          "type": "paragraph",
+          "text": "PD分离先解决两种负载互相干扰。Prefill并行处理输入token并建立KV，较常表现为大矩阵计算；Decode逐步生成，往往更受访存、批调度和KV容量影响，具体瓶颈仍取决于模型、序列和硬件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "混跑时，长输入Prefill可能抢占资源，拖慢正在Decode的请求。分离后，两边可分别设置批量、并行度和实例数，独立控制TTFT与TPOT目标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "代价是Prefill生成的KV必须到达Decode，增加网络、内存复制、元数据和调度开销。短请求、低负载或网络慢时，传输与碎片化可能抵消收益；不是所有部署都应PD分离。应比较同成本硬件下TTFT、TPOT、吞吐、端到端延迟和利用率，不能只引述厂商某一峰值。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "KV传输需要多少数据及怎样保证可用"
+        },
+        {
+          "type": "paragraph",
+          "text": "标准KV结构下可用2×层数×KV-head数×head维度×token数×每元素字节估算单序列KV原始体积，再按并行切片、量化、页块和元数据调整。传输最低时间受字节量/有效带宽约束，还要加排队和协议延迟；不能把链路标称带宽当实测传输率。"
+        },
+        {
+          "type": "paragraph",
+          "text": "请求调度要知道哪些块在哪、哪些已就绪、目标GPU是否有空间；分块管道化可与计算重叠，但只能消费已完成且版本一致的KV。失败可重传或重算，过早释放源块会使恢复无从进行；缓存引用计数、租约和淘汰需防正在使用的块被回收。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Mooncake的两条官方能力路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "Mooncake有两条需要分开回答的能力路径。原始论文围绕KVCache组织解耦架构；官方vLLM集成文档进一步区分："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "MooncakeConnector：在PD之间传输KV。",
+            "MooncakeStore/MooncakeStoreConnector：提供分布式KV缓存池、前缀缓存和跨实例共享，并描述CPU/Disk offloading。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，“外挂”若指GPU外或分布式共享KV存储，有对应能力；若只指PD直传，不能把这条传输路径称为持久KV数据库。"
+        },
+        {
+          "type": "paragraph",
+          "text": "官方集成页面区分vLLM V1与归档V0路径，接口、connector兼容及配置随版本变化。缓存不是任意对话间可复用：key必须纳入模型/权重、tokenizer、输入前缀、位置编码和适用计算配置等一致性条件，避免相似文本却复用错误张量。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "选型与故障验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "业界思路包括同进程混合批处理、跨进程/跨节点PD直传和分层共享缓存，框架具体支持以所选版本文档为准。RDMA能改善特定路径传输效率，但带宽、注册内存、拓扑和故障恢复成本仍存在，普通TCP后备是否支持也应按实现确认。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试长短请求混合、网络拥塞、缓存命中/未命中、块缺失、模型版本切换、节点失联与资源泄漏。记录重算成本、TTFT/TPOT尾部和每请求KV字节。没有GPU/网络实验，不能照搬官方演示数字当自身收益，也不能将缓存重算恢复称为业务持久化。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14.8 PD分离推理的一次请求怎样路由、传KV和接续Decode，速度收益如何验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "PD分离请求由路由器选择Prefill节点，生成并传递匹配版本的KV后交Decode续算，收益取决于计算隔离是否超过传输和调度成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：PD请求完整数据流是什么；节点如何传KV；怎样证明性能真的提升。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定请求输入、输出长度、batch、模型与互联后再比较，PD分离不能无条件保证大幅提速。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先区分速度指标的歧义"
+        },
+        {
+          "type": "paragraph",
+          "text": "Prefill并行处理输入并构建KV，Decode逐步生成，二者资源/批调度诉求不同；分离可减少长prefill扰动decode，并分别调TTFT与ITL/TPOT，独立配并行度和容量。是否端到端更快、单位成本吞吐更高取决于原瓶颈和KV迁移成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "当前vLLM实验性disaggregated-prefill文档明确强调TTFT/ITL和尾部控制，并指出该功能本身不提高吞吐。短输入、低负载或跨区慢网可能输给混合部署；chunked prefill也是缓解干扰的可比较路线。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一条完整的条件化数据流"
+        },
+        {
+          "type": "paragraph",
+          "text": "PD请求先在入口鉴权，固定模型、权重、adapter、tokenizer、采样配置和输入token，并生成稳定requestId。调度器根据P队列、预计prefill工作量和缓存命中选择Prefill实例。"
+        },
+        {
+          "type": "paragraph",
+          "text": "选择P时也要看候选D的KV空闲块和在途decode预算。先确认D接得住，避免P不断生成KV，后面却没有地方存或执行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "P完成输入计算后，生成KV块和必要输出元信息，再建立transfer描述，记录requestId、模型版本、布局/并行切片、token范围、块ID/位置与就绪状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "D经所选connector拉取或接收KV，确认足够数据可用后，才继续计算下一token。首token由谁产生、谁转发，是否重做最后一步，都取决于具体引擎协议；不能把两个API简单拼接就假定没有重复或漏token。"
+        },
+        {
+          "type": "paragraph",
+          "text": "返回流按requestId和序列位置交给原连接，控制面维护取消/deadline和持有引用。客户断开若政策要求停止则传播取消并回收资源；若继续后台任务则需持久定义，不能任由失联请求无限占KV。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "路由不只是轮询一台P再轮询一台D"
+        },
+        {
+          "type": "paragraph",
+          "text": "P端看输入长度、队列预计服务时间和可复用前缀；D端看已有序列长度/剩余生成预算、KV占用和token调度负载。命中同一兼容前缀可减少prefill，但不能因局部命中把所有请求压成单热点；需要负载与数据本地性的代价函数和背压。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所谓“当前如何路由”只能对选定产品版本或真实项目代码回答。可采用中央逻辑调度加分片/多副本权威，也可由网关/引擎协作；具体路由应由所选实现的接口、状态和调度代码确认。模型/adapter/布局不兼容的节点应在候选筛选时排除，不能只看GPU空闲百分比。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "KV传输、存储与生命周期"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据面可经引擎支持的TCP/RDMA或相应传输层，控制元数据/RPC与大张量传输分开；不同connector可能直传GPU、经CPU staging或共享分层KV存储。Mooncake直传connector与共享Store用途不同，选定版本兼容能力须核对，不把通用对象存储当低延迟GPU互联。"
+        },
+        {
+          "type": "paragraph",
+          "text": "原始KV近似2×层数×KV头数×head维×token数×元素字节，再按TP切片、量化、页块对齐/共享调整。示例80层、8KV头、128维、4096token、2字节约1.25GiB，独立CPU算术测试已验证；这组假设不能替代具体模型的真实配置。传输时间下界为字节/有效带宽，另有排队/注册/拷贝开销。"
+        },
+        {
+          "type": "paragraph",
+          "text": "KV复用先检查身份和兼容性：精确token前缀、模型/adapter版本、位置/布局以及租户授权都要匹配，文本相似不能作为共享依据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "块只有READY后才能消费；引用或租约阻止使用中的块被淘汰，D确认接收前，P不能过早释放恢复仍需的块。失败时可重传或重算KV，但已经发给用户的token不能因此随意重放。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎样证明收益和恢复正确"
+        },
+        {
+          "type": "paragraph",
+          "text": "在相同硬件成本、模型/精度、输入/输出长度分布、到达率下比较混跑与分离，统计TTFT/TPOTp99、端到端延迟、有效吞吐、KV字节和重算比例。热前缀命中与冷启动都测，不能只选一种长输入或忽略网络。"
+        },
+        {
+          "type": "paragraph",
+          "text": "注入P/D进程退出、传输缺块、D内存满、模型滚动升级、重复requestId、客户端取消和发送流断线，验证请求/模型版本不串、块无泄漏和预算可解释。生产性能与故障恢复须在实际GPU、vLLM/Mooncake版本及网络拓扑下验证。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-expert-communication",
+      "order": 1,
+      "question": "EP何时比TP通信少，4EP改2EP×2TP是否一定增大",
+      "shortAnswer": "EP与TP通信量取决于路由、张量布局和复制范围，4EP改2EP加2TP不能仅凭并行度名称判断增减。",
+      "commonPhrasings": [
+        "EP何时比TP通信少，4EP改2EP×2TP是否一定增大",
+        "EP什么时候比TP通信少",
+        "4EP改2EP乘2TP会怎样",
+        "负载不均如何影响耗时",
+        "除DeepSeekV3，谁采用类似专家分组加组内TopK，如何缓解通信不平衡",
+        "哪些MoE采用类似分组路由",
+        "组内TopK怎样影响通信",
+        "专家负载不均怎样治理"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14.3 EP何时比TP通信少，4EP改2EP×2TP是否一定增大"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：EP什么时候比TP通信少；4EP改2EP乘2TP会怎样；负载不均如何影响耗时。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定同一MoE层、唯一token批次、精度和GPU数，区分总发送字节、每rank热点与关键路径。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "EP与TP通信为什么不同"
+        },
+        {
+          "type": "paragraph",
+          "text": "EP把不同专家放在不同rank，token按路由发送到所选专家，输出再回原token位置加权合并；典型有dispatch/combine两次all-to-all类通信。TP把一个专家/矩阵切到多rank，需要输入/输出相关的all-gather、reduce-scatter或all-reduce，具体集体通信由列/行切分、sequence parallel与dispatcher决定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "通信少不等于快：all-to-all可能尺寸不均、热点专家拖尾；TP规约通常更规则却可能更频繁。GPU计算、跨节点/节点内带宽、启动延迟和可重叠比例决定实际步时，不能仅凭集合通信名字排序。第14.2节给通用并行和ring规约公式。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "在明确计量口径下估算"
+        },
+        {
+          "type": "paragraph",
+          "text": "先统一计量口径：T是这一层整个EP组的唯一输入token数，H是激活宽度，b是每元素字节，k是每token选择的专家数，ρ是选中token-expert副本里需要跨所统计链路的比例。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假定给每个专家都发送一份完整激活，返回结果也同宽，EP双向总发送载荷近似2T H b k ρ。这里统计发送字节，不再把接收字节加一遍；路由元数据、padding、丢token、压缩和同设备多专家复用都尚未计入。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TP一次理想ring all-reduce对每rank参与的X字节张量，发送量约2(p−1)/p×X；全组总发送再乘p。若一层有q次collective应逐次按实际张量大小相加，不能拿EP全组字节与TP每rank字节直接比。训练反向、参数梯度同步和推理prefill/decode需分别列，不能固定说所有层都是两次或四次。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "EP更省的具体条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "稀疏topK较小、专家同节点集中而ρ小、dispatch可按目的设备复用，且TP需要反复同步大的中间激活时，EP可能更少；例如k随专家总数保持小常数时，不需要给所有专家发送。反之k大、热门专家跨慢链路、padding严重或all-to-all高度不均，EP优势可能消失。"
+        },
+        {
+          "type": "paragraph",
+          "text": "上式是未复用的估算：一个token去同设备多个专家时可只跨设备发一次再本地分派，实际应按不同目的设备数计算；不能据2k倍载荷断言分组路由无用。专家负载和通信目的节点负载要分别量，平均负载均匀仍可能出现最慢rank。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "4EP改成2EP×2TP先画四张卡的放置图"
+        },
+        {
+          "type": "paragraph",
+          "text": "通常这句话表示同样4卡：原来4个EP成员各存完整专家，变成2个专家组，每组专家由2个TP成员切分，不是把4个逻辑角色放到2卡。还要说明dense attention TP与expert TP是否相同，当前框架可以分别配置，不能只看到一个tp参数就推断所有MoE通信。"
+        },
+        {
+          "type": "paragraph",
+          "text": "改成2EP×2TP，会增加专家内部TP通信，但也会改变EP组大小、专家归属以及token副本/重排方式。先算总变化=新EP跨链路字节−旧EP字节+新增TP字节+重排字节；只有新增TP和重排超过EP节省，总量才上升。"
+        },
+        {
+          "type": "paragraph",
+          "text": "字节增加也不一定更慢：若减少了慢网EP通信，却在高速NVLink内增加TP，总字节可能增加而延迟下降。反过来，路由原本就很局部、专家又小时，新增TP同步可能拖慢。因此不能无条件说必升或必降。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎么用证据回答追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "固定模型/层、batch/序列、k和专家放置，列dispatch、expert内collective、combine、dense层和反向各阶段张量；用NCCL/框架trace量总字节、每rank最大值、跨机比例、带宽和实际重叠时间。比较同一有效token吞吐与显存容量，不能只比较能否放下模型。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验算示例只是条件算术：若旧EP=150MiB，新EP=80MiB，新增TP+重排=40MiB，则120MiB下降；若新增=100MiB则180MiB上升。这些是虚构预算数，用于反驳无条件结论，不是某模型实测。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14.4 除DeepSeekV3，谁采用类似专家分组加组内TopK，如何缓解通信不平衡"
+        },
+        {
+          "type": "paragraph",
+          "text": "分组路由减少可达专家或设备范围时可能降低通信，但还需用负载约束、容量与调度防热点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：哪些MoE采用类似分组路由；组内TopK怎样影响通信；专家负载不均怎样治理。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "限制通信目的设备数与均衡专家负载是不同目标，专家分组加组内TopK也不是单一统一算法。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "最直接可核验的先例是DeepSeek-V2"
+        },
+        {
+          "type": "paragraph",
+          "text": "DeepSeek-V2原报告2.2.2明确device-limited routing：先选含高亲和度专家的至多M个设备，再只在这些设备专家集合中取topK。它早于V3，是题目要求的直接同类例子；设备承载多个专家时，限制目的设备数量减少通信扇出，配套专家/设备/通信层面的平衡目标。"
+        },
+        {
+          "type": "paragraph",
+          "text": "V3原报告把边界扩展为node-limited routing，按节点上最高若干专家亲和分数之和选至多M个节点，再做受约束专家选择；其无辅助损失的动态bias负载调整和小的sequence-wise辅助项是另一机制。不能将“限定目的节点”直接等同“每个节点收到token数绝对相等”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "还有哪些实现，哪些只是相关而非同义"
+        },
+        {
+          "type": "paragraph",
+          "text": "Megatron Core公开提供group-limited routing的专家分组与组数选择配置，可以按设备或节点形成组，再限制token的目的组。它是可核验的框架实现/机制支持，不应冒称为与DeepSeek无关的新模型首创；模型本身须确认训练路由是否匹配，不能推理部署时随便换路由而保证精度不变。"
+        },
+        {
+          "type": "paragraph",
+          "text": "层次all-to-all、先跨机后机内转发、通信计算重叠和热点专家复制也能改善通信，但有的只改变物理传输/专家放置，并不先group topK再expert topK。Switch/GShard类容量限制、辅助平衡损失，或Expert Choice改变token与专家选择方向，与题中分组流程不等同；没有逐篇核对证据就不凑一串模型名。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么缓解又为什么仍可能不平衡"
+        },
+        {
+          "type": "paragraph",
+          "text": "分组路由提高局部性：按拓扑放置专家，让token只接触少数组，可以减少跨慢链路的目的端和重复载荷，组内复用还能进一步减少传输。"
+        },
+        {
+          "type": "paragraph",
+          "text": "但限制可达范围，不代表负载已经均衡。多数token仍可能集中选少数组，组内热门专家也会拖尾。要同时看每专家token数、每设备/节点收发字节、丢token率和最慢rank。"
+        },
+        {
+          "type": "paragraph",
+          "text": "限制组数收窄可选专家，可能影响质量或导致容量不足；需要训练中的路由约束/平衡和端到端评估。容量padding、动态batch、专家复制/重排及低延迟kernel是独立工程取舍。理论通信模型须通过对应V2、V3或框架实现的训练测量验证，不能把字节估算直接写成吞吐收益。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-zero-memory",
+      "order": 2,
+      "question": "DeepSpeed与ZeRO1、2、3分别分片什么，Qwen2-72B怎样估显存和通信代价",
+      "shortAnswer": "ZeRO-1分片优化器状态，ZeRO-2再分片梯度，ZeRO-3再分片参数，显存收益以额外收集通信和运行期缓冲为代价。",
+      "commonPhrasings": [
+        "DeepSpeed与ZeRO1、2、3分别分片什么，Qwen2-72B怎样估显存和通信代价",
+        "ZeRO123分别分片什么",
+        "72B全参训练怎样估显存",
+        "LoRA还能把全部参数乘16字节吗"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14.5 DeepSpeed与ZeRO1、2、3分别分片什么，Qwen2-72B怎样估显存和通信代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：ZeRO123分别分片什么；72B全参训练怎样估显存；LoRA还能把全部参数乘16字节吗。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "DeepSpeed是框架，ZeRO是状态分片机制；以Qwen2-72B作规模算例，卡数、精度、全参与LoRA分别确定。PyTorch DDP接口语义以2.8为例；ZeRO容量模型显式声明各状态字节数。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "从普通数据并行的重复状态出发"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通数据并行每个rank处理不同样本，通常各持模型权重、梯度、优化器状态；Adam还涉及一阶/二阶矩以及视精度策略而有的FP32主权重。ZeRO按数据并行组切分这些重复状态，同时维持所需参数/梯度协同，使单卡常驻状态下降，增加取用/同步调度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ZeRO三个Stage可以按“逐步少存一类重复状态”记："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "Stage1：分片优化器状态。每rank只更新自己负责参数区间的优化器份额，再让其他rank取得所需更新权重；参数和梯度仍主要复制。",
+            "Stage2：再分片规约后的梯度，各rank只保留自己更新需要的部分，可通过reduce-scatter等过程完成。",
+            "Stage3：进一步分片参数，前向/反向按模块收集所需参数，用完后按策略释放或重新分片。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "理想公式必须声明字节口径"
+        },
+        {
+          "type": "paragraph",
+          "text": "设P个可训练参数、数据并行度N，权重W字节/参数、梯度G、优化器相关O。不分片常驻状态约P(W+G+O)；ZeRO1约P(W+G)+PO/N；ZeRO2约PW+P(G+O)/N；ZeRO3约P(W+G+O)/N。公式是均匀分片的理想常驻量，不含激活、临时参数gather、通信桶、碎片、workspace或完整初始化瞬时峰值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在教学假设W=2、G=2、O=12（FP32主权重4+Adam两矩8）下，总状态为16P。把Qwen2-72B近似为P=72×10^9，全参ZeRO3仅这一项：N=8时是144GB十进制，N=64时是18GB。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这些数字既不代表实际用了多少卡，也不是训练峰值显存。LoRA冻结的大部分基础权重没有同样的梯度和优化器状态，必须把冻结P和可训练p分别计算，不能继续把全部72B都乘16。"
+        },
+        {
+          "type": "paragraph",
+          "text": "官方DeepSpeed内存估算页还给实现特定ZeRO3近似4×最大层参数量+18P/N，考虑FP32梯度等状态；它与上述16字节理想假设不冲突。要用真实模型共享参数去重计数、最大层、具体精度/优化器/offload配置并实际量峰值，GB与GiB也要注明，不能背一个倍数覆盖所有训练。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "省显存付出了哪些通信与计算代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "Stage1/2仍需同步梯度和更新权重；Stage3在前向/反向增加参数收集/重分片的时序，通信桶、预取与参数驻留策略决定通信和显存权衡。降低常驻不表示总通信必然减少，跨机网络慢时更多分片可能更慢；异步通信与反向重叠也受依赖、带宽和CPU调度限制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ZeRO并不替代TP/PP：它主要消除数据并行副本冗余，TP切算子、PP切层。层内计算仍可能需要完整模块参数和激活，超大单层需要额外策略；并行组拓扑应先明确，不能把世界所有GPU数量直接当每个ZeRO分片组的N。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Offload、重计算和checkpoint区别"
+        },
+        {
+          "type": "paragraph",
+          "text": "Offload、激活重计算和训练恢复checkpoint，解决的是不同问题。CPU/NVMe offload把状态移出GPU，用更大的可用容量换取PCIe、网络、磁盘和CPU更新开销；ZeRO3并不默认已经offload。"
+        },
+        {
+          "type": "paragraph",
+          "text": "activation checkpointing丢掉部分中间激活，在反向时重算，用额外计算换显存。它不是用于宕机后续训的训练checkpoint，不能把两个同名词混为一种能力。"
+        },
+        {
+          "type": "paragraph",
+          "text": "训练恢复保存权重分片、优化器/调度器状态、随机数、数据采样进度和全局step，并以完整manifest发布；只有rank0的一片不能恢复完整分片模型。导出完整权重需要gather/离线合并，会有额外内存与时间成本，不能在内存刚好卡边时直接全量聚合。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "框架选择与真实验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "DeepSpeed还可提供混合精度、优化器/算子和并行/offload能力；选择Stage要看谁占显存、最大层/激活、互联、每步耗时和全局batch语义，不是数字越大越先进。项目经验应明确实际卡数、并行配置、利用率和测量方法，不能把容量算例当作真实训练收益。"
+        },
+        {
+          "type": "paragraph",
+          "text": "伴随的zero_memory.py是CPU/NumPy算术模型，验证16/18字节估算、规约分片与重组、加权梯度反例；它不调用Torch/DeepSpeed，也不模拟GPU与网络集合通信。生产还要监控每rank峰值显存、通信占比、step时间、有效tokens/s、梯度数值与恢复一致性。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Python与NumPy算术模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "完整CPU/NumPy模型测试覆盖，验证代数与容量算术；它没有模拟真实DeepSpeed缓冲峰值或启动训练进程。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "043/fence-043.py",
+          "value": "\"\"\"CPU/NumPy arithmetic model, not PyTorch/DDP/DeepSpeed, GPU training or network collectives.\"\"\"\nfrom fractions import Fraction\nimport numpy as np\n\ndef persistent_bytes(params, ranks, stage, weight_bytes=2, grad_bytes=2, opt_bytes=12):\n    if any(type(x) is not int or x < 1 for x in (params, ranks, weight_bytes, grad_bytes, opt_bytes)) or type(stage) is not int or stage not in (0, 1, 2, 3):\n        raise ValueError(\"invalid model assumptions\")\n    p, n = params, ranks\n    if stage == 0:\n        return Fraction(p * (weight_bytes + grad_bytes + opt_bytes))\n    if stage == 1:\n        return Fraction(p * (weight_bytes + grad_bytes)) + Fraction(p * opt_bytes, n)\n    if stage == 2:\n        return Fraction(p * weight_bytes) + Fraction(p * (grad_bytes + opt_bytes), n)\n    return Fraction(p * (weight_bytes + grad_bytes + opt_bytes), n)\n\ndef main():\n    # Unequal local batch means must be weighted by counts to match a global sample mean.\n    x = np.arange(21, dtype=np.float64).reshape(7, 3) / 10\n    y = np.array([1, -1, 2, 0, 1, 3, -2], dtype=np.float64)\n    w = np.array([.3, -.2, .1], dtype=np.float64)\n    def grad(xx, yy):\n        return xx.T @ (xx @ w - yy) / len(xx)\n    whole = grad(x, y)\n    a, b = grad(x[:2], y[:2]), grad(x[2:], y[2:])\n    weighted = (2 * a + 5 * b) / 7\n    assert np.allclose(whole, weighted)\n    assert not np.allclose(whole, (a + b) / 2)\n    # Simulate reduce-scatter then all-gather over 4 arrays; no actual collective transport.\n    arrays = np.arange(32, dtype=np.float64).reshape(4, 8)\n    reduced = arrays.sum(axis=0)\n    shards = [sum(np.split(row, 4)[i] for row in arrays) for i in range(4)]\n    assert np.array_equal(np.concatenate(shards), reduced)\n    # Dense tensor parallel row/column partitions preserve linear algebra before nonlinearities.\n    matrix = np.arange(24, dtype=np.float64).reshape(3, 8)\n    assert np.allclose(np.concatenate([x @ p for p in np.split(matrix, 4, axis=1)], axis=1), x @ matrix)\n    assert np.allclose(sum(x[:, i:i+1] @ matrix[i:i+1] for i in range(3)), x @ matrix)\n    p = 72_000_000_000\n    assert persistent_bytes(p, 8, 3) == 144_000_000_000\n    assert persistent_bytes(p, 64, 3) == 18_000_000_000\n    for n in [1, 2, 8, 64]:\n        sizes = [persistent_bytes(p, n, s) for s in range(4)]\n        assert all(a >= b for a, b in zip(sizes, sizes[1:]))\n    assert persistent_bytes(p, 8, 3, grad_bytes=4) == 162_000_000_000\n    for invalid in [(1, 0, 1), (1, 1, 4), (1, 1, True)]:\n        try:\n            persistent_bytes(*invalid)\n            raise AssertionError(\"invalid assumptions accepted\")\n        except ValueError:\n            pass\n    # 80 layers,8 KV heads,128 head-dim,4096 tokens,2-byte values gives exactly1.25GiB.\n    kv = 2 * 80 * 8 * 128 * 4096 * 2\n    assert kv == 1_342_177_280\n    print(\"PASS CPU arithmetic: weighted7-sample gradient vs2/5 unequal shards; incorrect equal-rank mean counterexample; reduce-scatter/all-gather model; row/column tensor partitions; declared16/18-byte ZeRO-state estimates;1.25GiB illustrative KV. No Torch/DeepSpeed/GPU/network execution.\")\n\nif __name__ == \"__main__\":\n    main()\n\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-verl-boundaries",
+      "order": 3,
+      "question": "如何准确解释VERL的控制流、计算流、分布式后端及PPO/DPO支持边界",
+      "shortAnswer": "verl将训练协调与分布式计算执行分离，具体PPO或DPO能力要按版本及对应trainer或recipe确认，不能只凭项目名称泛化。",
+      "commonPhrasings": [
+        "如何准确解释VERL的控制流、计算流、分布式后端及PPO/DPO支持边界",
+        "VERL控制流计算流怎样解耦",
+        "用什么分布式后端",
+        "PPO和DPO支持范围怎样核对"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14.7 如何准确解释VERL的控制流、计算流、分布式后端及PPO/DPO支持边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：VERL控制流计算流怎样解耦；用什么分布式后端；PPO和DPO支持范围怎样核对。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "区分2026年2月的历史场景和后续版本，框架核心trainer、recipe与扩展项目的算法支持不能混同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "框架定位"
+        },
+        {
+          "type": "paragraph",
+          "text": "verl官方仓库说明该框架由ByteDance Seed团队发起、由verl社区维护，是HybridFlow工作的开源实现；不能把“字节开源”延伸为所有组件都由字节独立开发或替它做效果保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它用于大模型后训练中多个角色/引擎的编排与分布式执行，不是新的单一强化学习算法。业务微调仍需合规数据、可验证奖励/偏好、训练目标、评测和部署策略，框架不会替业务自动定义奖励或证明效果。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "控制流与计算流解耦是什么意思"
+        },
+        {
+          "type": "paragraph",
+          "text": "控制流管训练迭代的顺序：怎样串起rollout、评分/参考策略、优势估计，以及actor/critic更新。计算流管一个角色内部怎样多GPU执行前向、反向、优化器和collective。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HybridFlow用高层控制器/WorkerGroup接口编排角色，worker内部保留适合分布式引擎的执行方式，使算法流程不必与某个计算后端紧密绑死。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不是“控制流完全不传数据”：输入按数据并行批次分派，结果需要收集/传给下一角色，通信、序列化和控制器内存仍有成本。角色到资源池的映射可共置/分置；训练与生成对模型布局需求不同，权重同步/reshard会影响内存和吞吐，不能把切换当零开销。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "分布式与内存优化要报实际后端"
+        },
+        {
+          "type": "paragraph",
+          "text": "官方仓库列出FSDP/FSDP2、Megatron等训练路线以及vLLM/SGLang等rollout引擎，具备不同并行、offload、LoRA或packing等组合能力。具体兼容矩阵和配置依版本、模型及硬件，不等于任意DeepSpeed配置可以无改动塞进去，更不能把“兼容多种方案”说成把所有优化同时打开总能更快。"
+        },
+        {
+          "type": "paragraph",
+          "text": "典型瓶颈可能在生成长度/长尾、reward服务、训练计算、权重转换、跨节点通信或CPU数据准备。量测各阶段时间、有效tokens/s、显存峰值和等待，再调整角色资源配比、batch/并行、序列平衡和缓存，不引用论文某组加速数当原业务收益。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "PPO与DPO不应写成无版本条件的同一支持结论"
+        },
+        {
+          "type": "paragraph",
+          "text": "PPO在官方入门和代码结构中有明确训练流程，通常包含采样、旧策略概率、奖励/优势和更新；是否有critic取决于算法配置，GRPO等算法又有不同数据流。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DPO通常使用chosen/rejected偏好对及参考策略相关目标直接优化，不需要原封不动走标准PPO的在线rollout/critic链路。讨论框架支持时，先把两类算法实际需要的流程分清。"
+        },
+        {
+          "type": "paragraph",
+          "text": "2026年2月历史部署不能由后来新增功能反推。DPO trainer提案、SPIN中的DPO形式损失以及扩展项目能力，分别属于不同支持层次；只有对应版本的可运行trainer和配置，才能支持开箱即用的具体结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史版本与后续扩展应分别核对，概念可扩展不等于该部署已开箱可用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "恢复、正确性和测试边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "训练恢复首先防止混批和混策略。角色间数据带batch/step、策略版本和采样配置；异步rollout还需声明staleness边界，不能把任意陈旧样本当成同策略数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "checkpoint保存完整模型、优化器、随机数和数据进度，等分片manifest完整后再发布。worker失败时，要先核对更新是否已提交，不能无条件重试一次已经生效的更新。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验证一个真实配置还需最小数据集跑通、数值和loss对照、角色故障/断点恢复、内存与吞吐测量，之后才能给业务微调收益结论。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

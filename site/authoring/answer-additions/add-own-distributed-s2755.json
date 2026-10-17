@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2755",
+  "entryId": "bg-rabbitmq-4",
+  "expectedOriginalHash": "a627c1978c2e6ea6fcba197ac8724fdf37130ff7479162b3cb16d50b9c7df38c",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.2 RabbitMQ 消息积压怎样定位、止血和恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "先区分ready与unacked积压，再按消费速率、处理耗时和确认链路定位瓶颈，恢复前算清持续追平能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：RabbitMQ消息积压怎么处理；怎样区分消费者不取和取了不确认；扩消费者为何不一定有效。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "排查按RabbitMQ的队列和确认模型展开，先固定4.3等实际部署版本，并区分classic、quorum与stream。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先区分消息卡在哪个阶段"
+    },
+    {
+      "type": "paragraph",
+      "text": "从vhost、queue、exchange和binding核对目标，比较发布/路由进入速率、deliver/get速率、ack速率、messages_ready、messages_unacknowledged、消费者数与最老消息年龄。ready增长且消费者为0，多看进程、连接、订阅恢复、权限及channel异常；unacked持续上升，多看业务处理慢、忘记ack、死锁/线程池饱和或prefetch过大。两类堆积可以同时存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果生产发送也变慢，检查连接是否flow/blocked、节点内存与磁盘告警、磁盘服务时间、队列leader和副本健康、CPU与网络；不要仅凭消费者日志正常就认定broker无问题。若只有一个routing key或队列异常，追踪业务热点及路由，不要先扩整个集群。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费者瓶颈如何验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "排查消费慢，先把一条消息的时间拆开：排队、反序列化、业务 CPU、数据库锁和连接、外部接口、ack，各自用了多久，再结合线程栈与依赖指标定位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "manual ack 应在所承诺的业务效果可靠完成后执行。auto ack 可能让 Broker 计数下降，业务却丢了。publisher confirm 证明生产侧 Broker 的接受语义，consumer ack 证明消费确认，两者不能互相替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "prefetch 管的是“已交付但还没确认”的数量，不是越大越快。太小可能把时间浪费在网络往返上，太大又会把积压搬进客户端内存，并扩大失联后的重投量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调整时要一起看并发处理能力和单条大小；异步处理也要遵守客户端 channel 的线程与 ack 规则。delivery tag 不是全局业务 ID，更不能盲目用 multiple=true，把前面还没处理的交付一起确认。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "止血与有控制地追赶"
+    },
+    {
+      "type": "paragraph",
+      "text": "先限制非关键生产、保护数据库/下游并确保剩余磁盘/保留窗口；避免清空队列或自动ack伪装恢复。定位后扩真正瓶颈：增加合格消费者、优化慢查询、批处理或按业务键拆多队列。单队列本身有处理瓶颈，增加节点不等于已有热点队列自动无限扩容；严格顺序需求还限制并行度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "毒消息若每次nack requeue立即回来，会产生重投风暴。按可重试/永久错误分类，使用有次数和退避的重试路径、死信/隔离并保留原事件与失败原因。死信配置不等于永远不丢，转发安全性要按队列类型及配置核对；恢复重放仍以业务幂等键防重复效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "算得出恢复时间，才算恢复方案"
+    },
+    {
+      "type": "paragraph",
+      "text": "若积压B条、稳定生产λ条/秒、可持续消费μ条/秒且μ>λ，忽略波动时追平时间约B/(μ−λ)。例如B=60万、λ=2000、μ=3000，至少约600秒，另算重试和暂停；μ≤λ则没有追平点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验收消费者杀进程、依赖限速、ack前后崩溃、毒消息、连接恢复和热点队列，核对业务最终效果与重复率。监控恢复后的p95、ready/unacked、最老年龄、redelivery率和资源余量。ack timeout、队列优先级和复制行为随版本变化，不能把4.3文档中特定规则倒推为原系统必然行为。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

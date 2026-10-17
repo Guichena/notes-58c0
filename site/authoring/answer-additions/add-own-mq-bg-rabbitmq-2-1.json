@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-rabbitmq-2-1",
+  "entryId": "bg-rabbitmq-2",
+  "expectedOriginalHash": "e0aa19a11eb809f5de82405b2f7c6c7f0c36a88b7c62f0b5c8af22f9c6fc9a43",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q24 消费失败时 ACK NACK Reject 怎么选"
+    },
+    {
+      "type": "paragraph",
+      "text": "成功才 ACK，可恢复失败有界重试，永久失败进入可恢复隔离；立即 requeue 不能替代退避和错误分类。"
+    },
+    {
+      "type": "paragraph",
+      "text": "basicReject 处理一个交付；basicNack 可处理一个或一批。requeue=true 请求重新入队，可能很快再次送给同一消费者，形成热循环。requeue=false 在配置正确时进入 DLX；没有有效死信路径时可能丢弃，所以必须先设计隔离保全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接或 channel 关闭后未确认交付通常重新入队，但消费者已发出的数据库/远端请求可能仍完成。redelivered 是重投提示，不是可靠业务去重凭据；false 也不能证明业务事件从未以另一条消息发布过。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按失败原因决定下一步：瞬时网络、429 和短暂依赖故障可以退避；不兼容 schema、缺必填字段应隔离或修复；鉴权/权限配置错误应告警并暂停相应路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果业务已提交，只是 ACK 失败，选择接受重投并让 Inbox 识别重复。回滚已提交数据库并不能让两个系统获得共同提交点，也不该为追求消息不重复而这样做。"
+    },
+    {
+      "type": "paragraph",
+      "text": "停机时先停止新交付/取消 consumer，有限等待在途任务完成，再关闭连接；无法在预算内完成的工作留待重投。关闭连接不自动取消业务线程。生产代码还要考虑 callback executor、channel 线程使用约束和自动恢复语义，不在任意线程同时 publish/ACK 而缺少所有权管理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么 channel 不应该随便共享"
+    },
+    {
+      "type": "paragraph",
+      "text": "channel 上的发布序号、交付标签和协议帧有共同作用域，线程所有权不清楚会导致错配、重复 ACK 或帧交错。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个线程同时发布到同一个 channel，需要严格串行化；直接每线程一个长期 channel 通常更容易论证，但也不能为每条消息新建 channel。消费回调由客户端调度，多个 channel 可以并行；同一个 channel 的 delivery 回调有序，不代表线程池异步处理后的完成也有序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果线程 A 处理 tag 10 尚未提交，线程 B 完成 tag 11 后用 multiple=true ACK，tag 10 也会被确认，产生业务丢失风险。要么每个完成项单独 ACK，要么维护同一 generation 下已持久完成的连续前缀，严格不越过空洞。客户端自动恢复可能调整 tag 映射，但应用旧异步任务仍要比较自己的代次，不能把旧任务的 ACK 发到新 channel。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实验关闭自动恢复，每个对象固定一个 generation。网络故障后退出，由调用方显式创建新对象并从持久任务恢复；这样能清楚观察 UNKNOWN，而不是同时混入客户端自动恢复与应用重发。消费者回调只把交付放入容量为 prefetch 的本地队列，主线程处理和单条 ACK；没有跨线程 multiple。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "到底什么时候 ACK"
+    },
+    {
+      "type": "paragraph",
+      "text": "本次交付的业务结果已持久提交，或后续处理责任已经可靠持久化交接，才可以 ACK。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最常见路径是同一数据库事务完成 inbox 去重记录与本地业务效果，提交成功后单条 ACK。inbox 唯一键应包含消费者命名空间和稳定事件身份，还要验证不可变载荷。同事件并发到达由唯一约束裁决；业务失败则 inbox 一同回滚。不能把所有 SQL 异常都解释为重复，数据库不可达、语法错误和提交结果未知都不是“已经做过”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若发现已提交的 DONE，且其身份、载荷与结果完整，可以确认重复交付。若只有 PROCESSING，必须证明发送意图或任务数据完整、租约所有权可验证且可靠扫描器会接管，才可以结束当前重复交付；仅在内存有一个工作线程，或只写了孤立的“正在处理”标记，不足以 ACK。分析任务先持久写入唯一待执行任务，再 ACK，是把责任转给数据库 worker，而不是凭空提前完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring listener 的 AUTO 是容器根据执行结果管理确认，不等于 AMQP autoAck=true。后者在交付时就视为已接收，消费者在业务前宕机会丢效果，也没有手动确认所提供的在途窗口。手动模式更容易表达多种“可靠落点”，但需要自己保证每条路径不会漏 ACK 或误 ACK。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据库提交成功但 ACK 失败怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "ACK 失败不能回退已经提交的业务，恢复后重投应读取原事件结果而不是重新执行副作用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先 ACK 后提交，崩溃会丢业务；先提交后 ACK，崩溃会重投。调整顺序不能把两个系统变成一个事务，所以选择后者并使效果幂等。网络返回不明确时，本地 COMMIT 本身也可能 UNKNOWN：应以同一租户、订阅者和事件身份查询权威结果，未查明前不假装成功。数据库主从落后时，读从库看不到 inbox 不能证明主库没提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本书 Q60 给出完整 JdbcLocalEffect.applyDebit、effect_inbox、effect_account 与 effect_outbox SQL。只有 APPLIED 或已核对载荷的 REPLAYED 能表示本地效果已经提交；CommitUnknown 与其他未核实异常不能直接 ACK。这里的 EffectPort 是服务边界，MockEffects 只模拟当前进程内结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RabbitMQ 4.3 的两种计数"
+    },
+    {
+      "type": "paragraph",
+      "text": "4.3 的 quorum queue 区分“获取次数”与“投递失败次数”。不要看到一次重新交付就自行给 delivery-limit 加一；basic.nack 的重新入队不再按同样方式增加 delivery count，basic.reject 以及失去消费者等失败路径有各自语义。自定义重试发布还会产生新的 broker 消息，业务预算仍应由稳定 eventId 与持久 attempt/deadline 管理，不能只靠某一份消息的 header 计数。版本升级时同时检查 DLQ、延迟重投和限次策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q27 DLX 和 DLQ 怎样做到可靠"
+    },
+    {
+      "type": "paragraph",
+      "text": "DLX 是接收死信重新发布的 exchange，DLQ 是绑定后的队列；进入死信是责任转移，转移本身仍可能失败或重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "死信触发包括 reject/nack 且 requeue=false、消息 TTL 到期、队列长度超限导致丢弃，以及 quorum queue 超过 delivery-limit。整个队列过期删除不等于其中每条消息都被死信转移。配置缺失、exchange 无路由、目标 quorum 不可用都会影响结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "默认死信重新发布并不提供通用可靠确认链。需要可靠死信转交时，quorum queue 可配置 at-least-once dead-lettering、overflow=reject-publish、有效 DLX 并满足对应 feature 条件；源队列保留待转移消息直到目标确认。代价是更多资源和积压，目标队列也可能看到重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RabbitMQ 4.0 起 quorum queue 默认有 20 的 delivery limit，不能假定无限重投；应显式设定符合业务的策略和 DLQ。x-death 等头信息有助于判断死信原因和循环，但不是跨任意重新发布路径的唯一重试账本。普通“重新发布一条新消息”可能改变这些历史，仍应维护自己的 eventId、attempt 和总时限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "死信治理包括分类、告警、可检索元数据、脱敏原负载、修复、受控重驱、速率限制和结果审计。不要自动把所有 DLQ 永久循环回主队列；错误 schema 不修复就重放只会制造风暴。业务状态也要更新为失败/待修复，避免用户无限等待。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "重试消息发出后为什么不能立即 ACK 原消息"
+    },
+    {
+      "type": "paragraph",
+      "text": "新责任没有获得可靠确认之前，原交付必须保留；先 ACK 原消息再发重试，会留下两边都没有责任的空窗。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用要把原交付转到重试队列或死信队列，可以按确认点推演："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "先发送持久消息、启用 mandatory，等待同一次发布的 Confirm ACK，且没有 Return。",
+        "移交已获可靠确认，才 ACK 原交付。",
+        "若在这两个确认之间崩溃，两份消息可能并存，由业务幂等吸收重复。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "新发布为 UNKNOWN 时不 ACK 原交付，关闭或暂停后交由恢复协议处理。NACK、Return、容量拒绝也都不算完成移交；只打印“进入 DLQ”日志更不是持久隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实验的重试使用短暂 20/40ms 加最多 10ms 抖动，等待期间原消息仍未 ACK，然后同 eventId 发布下一 attempt，最多增加两次。这个 attempt 是教学传输跳数，不是数据库的 processingEpoch，也不表示全系统总共调用了三次：崩溃、响应丢失和分叉重投可产生多条副本。全局业务次数必须由持久状态裁决，不能信任消息头里的任意数字。长期等待应改用持久 dueAt 任务和 Outbox，而不是占住消费线程睡眠。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Broker DLX 的安全性如何判断"
+    },
+    {
+      "type": "paragraph",
+      "text": "DLX 本质是再次发布，必须核对源队列类型、死信策略和目标状态，不能只看配置了一个交换机名字。"
+    },
+    {
+      "type": "paragraph",
+      "text": "默认的 at-most-once 转移存在目标不可用时的风险。quorum 的 at-least-once dead lettering 从 3.10 起提供更强移交，启用需要源是 quorum、dead-letter-strategy=at-least-once、overflow=reject-publish、有效 DLX，并满足 stream_queue feature flag 条件；可选死信 routing key。目标持久队列和消息持久模式也要匹配恢复要求。drop-head 即使没有设置长度上限，也不能替代 reject-publish 的前提。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内部死信消费者在目标确认前保留源责任，因此 DLX 不存在、没有匹配队列、某个目标不确认或拒收时，会继续占用源资源并重试。必须限制源总字节/长度、告警目标故障与最老年龄，否则可靠性可能以写入阻塞和资源耗尽表现出来。反复转发会出现重复，目标仍需幂等。运行中改回 at-most-once 或改变 overflow，可能丢掉尚未完成移交的死信，不能当普通无风险调参。"
+    },
+    {
+      "type": "paragraph",
+      "text": "投递上限和业务重试计数也不同。4.0 起 quorum 默认 delivery-limit 为 20；本实验显式设 5，不依赖默认值。4.3 的 basic.nack 返回消息不增加 delivery-count，而 basic.reject、连接或会话失败等真正失败路径会增加；因此仅设置 delivery-limit 不能阻止无限 nack 热循环。acquired-count 和 delivery-count 也不能互换。不同版本必须核对该规则，不应把某个 x-delivery-count 当成完整业务执行次数。多个 unacked 一起随连接失败重排时，可能共同消耗 broker 侧投递预算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "DLQ 应保存什么 谁负责关闭问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "死信需要保留可恢复的原事件和处置责任，进入队列不是问题解决的终点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "至少保存稳定 eventId、业务实体与 schema、原 payload 或受控对象引用、原 exchange/queue/routing key、错误分类、首次与末次失败、次数、原消息摘要、重放尝试、负责团队和下一动作。敏感内容不要直接打印到普通日志，完整原载荷采用受控存储和明确保留期。解析不了信封时，也要保留原始字节及可信来源元数据；不能只截断出一句错误后 ACK。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用确认永久问题后，把隔离记录与任务状态同事务提交再 ACK，并不会自动生成 broker DLQ 消息。另一条路径是 broker 因拒收、TTL、投递上限等原因转移到 DLQ，再由隔离服务可靠落库。实验对应用错误采用显式确认后转移，原始字节不丢；若体积超过隔离封装预算，就保留未 ACK 并停止，而不是悄悄截断。它不自动消费、删除或重放 DLQ。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "安全重放怎样自动化"
+    },
+    {
+      "type": "paragraph",
+      "text": "自动重放应使用可审计的状态机和有界批次，业务事实确认收敛后才能关闭隔离记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可将处置状态设计为 QUARANTINED、READY_FOR_REPLAY、CLAIMED、RESOLVED/FAILED。replayRunId、版本 CAS、租约与恢复器防止多个修复器同时推进；领取成功并不等于重放成功。每批设条数、字节、速率、错误阈值和冷却，先小批验证，再逐步追赶；高影响的未知结果不能因为“已过一天”自动补扣或重复通知。"
+    },
+    {
+      "type": "paragraph",
+      "text": "未完成发布或同一事实的传输重放保留 eventId；业务确需修正载荷、重新触发或新轮次处理时，生成有因果关联的新事件，并保留原记录和稳定外部动作身份的检查。相同 eventId 不可偷偷换 payload。修复成功标记前崩溃会再次重放，幂等与结果查询必须再次生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对于有依赖的实体事件 n、n+1，n 失败后不能任意越过；快照类可按更高业务版本推进，增量类要补齐缺口或重建。已经过期的营销或低等级通知可以按业务规则终止并留审计，不能一律“修好就重发”。验收看业务终态、inbox、渠道结果与再死信率，而不是只看一次 broker ACK。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q37 毒消息和业务过期消息怎么兜底"
+    },
+    {
+      "type": "paragraph",
+      "text": "毒消息需要可恢复隔离，过期消息需要业务状态判断，二者都不能通过静默跳过结束责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持续解析失败、schema 不兼容属于典型毒消息。先把原位置、eventId、负载或安全引用、错误分类、首次失败时间和尝试历史可靠保存，才谈推进消费进度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 中若“发 DLT”和“提交原 offset”分开做：先提交，可能丢隔离记录；先发，可能重复。Kafka 内可用事务绑定 DLT 输出与输入位移，外部修复表则要按数据库事务和幂等另行设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务过期指执行价值或合法性变了，不等于数据无价值。验证码可在明确策略下标 EXPIRED；库存增减、付款事实和审计不可因晚到直接丢。关单事件要查当前订单，已付款不得关闭。快照事件可被新版本覆盖，增量事件需要补齐、补偿或重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消息保留已删除时，seek 无法找回；应从权威数据库、Outbox、CDC 备份或事件归档恢复。重驱需限流、记录操作者/批次、保留原身份，并确认下游幂等证据尚有效。若幂等记录已清理，历史重放前必须制定隔离副作用的策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "“一直失败”先分类型"
+    },
+    {
+      "type": "paragraph",
+      "text": "暂态网络、429 或可恢复 5xx，可在次数和总 deadline 内退避加抖动。不可解析 value、不兼容 schema、权限错误或配置错误，通常不是立即多试几千次就会好。保存原事件与位置、eventId、schemaVersion、错误类型、尝试次数、首次失败时间，日志避免泄露完整敏感内容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "永久或耗尽预算的任务可转交 DLT/修复表并告警，前提是保存已可靠完成、业务允许这种终态，且有重放权限与审计。先 commit 再发 DLT 会漏，先 DLT 再 commit 会重复；同 Kafka 可用事务，外部表要另行幂等。DLT 回主队列不能无限循环，应保留修复轮次、失败根因和新的有限预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证码、过时推荐可以按明确 deadline 失效；支付、库存变动、审计事实不能因晚到一概丢掉。过期关单任务要重新核对订单权威状态并条件更新，不能把已经支付的订单关闭。已取消任务可以记录无需再执行，但这与“已成功完成原动作”不同。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "1"
+}

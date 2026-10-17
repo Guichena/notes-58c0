@@ -1,0 +1,317 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s4238",
+  "entryId": "scenario-distributed-rate-limit",
+  "expectedOriginalHash": "aea3fa2255dd8614a009716d0b0d3fad96b38e05ebcdf594b9c064181344261a",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "6.6 分钟/小时双限流、模型QPM/TPM及多租户优先级怎样同时满足"
+    },
+    {
+      "type": "paragraph",
+      "text": "配额服务应在一次权威裁决中同时检查分钟小时与请求token额度，再用独立的公平队列安排获准任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：分钟小时双限流怎样实现；QPM与TPM如何一起扣减；多租户优先级如何防饥饿。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "多时间窗、多计量维度和租户优先级是三个独立约束，供应商窗口、计费及作用域按实际服务核对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分钟与小时必须一次判定全部额度"
+    },
+    {
+      "type": "paragraph",
+      "text": "分钟和小时额度，要全部够用才一起扣。固定窗口 key 可用 rl:{tenant:user}:minute:<分钟起点> 与 hour:<小时起点>，value 记窗口已受理数，窗口起点来自同一个权威时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先读两份计数，只有都容得下才一起增加，任一不足都不增加。不能先扣分钟、发现小时不足再补回，中途失败会造成部分扣账与并发误差。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Cluster多key脚本需要位于同slot，可用同一用户hash tag；如果还跨全局/租户多个slot，要选择单权威、配额租约或明确超发上界，不能假装一条Lua跨全部分片原子。key过期时间覆盖窗口结束和必要重试余量；固定自然分钟/小时不等于滚动60秒/3600秒，边界突发仍存在。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "QPM和TPM是不同资源预算"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次模型请求通常消耗1个请求额度和若干token额度，还可能受并发/日预算约束。预先计算输入token并为最大输出或保守输出估计预留额度，全部约束原子通过才准入；完成后按供应商规则用实际用量结算。供应商可能按估算最大输出、输入/输出分别计量或短窗口执行，不能直接假定“最终输出少就可返还全部差额”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求超时但远端可能已执行，保留reservationId和UNKNOWN状态，结果核对前不要无条件退还额度再重试。若供应商返回429/Retry-After等提示，调整本地发送速率并在总deadline内退避。查询次数额度与token额度的单位不同，value需要分别保存，不能把所有任务都扣一个相同token。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "优先级解决先服务谁，租户配额解决谁能用多少"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求先进有界的租户队列，在全局/模型预算允许时由调度器选择任务。租户间用加权公平/Deficit Round Robin等分配，租户内可按优先级和deadline排序；大token任务要按估计成本扣deficit，不能按请求数公平却让一个租户耗尽全部TPM。"
+    },
+    {
+      "type": "paragraph",
+      "text": "优先级越严格，越要讲清低优先级会不会饿死。可以设置保底份额、老化或最大等待；如果业务就是要求绝对优先级，也要承认它的饥饿代价。"
+    },
+    {
+      "type": "paragraph",
+      "text": "给关键任务保留部分全局额度，允许可回收借用时，要说明能否撤回未开始任务。远端已经在生成，不能随意抢占并退费。优先级也必须由可信策略决定，不能让调用方自称最高。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可运行的全部通过才扣减模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面Java用单个authority锁完成多个加权固定窗口的原子准入，直接测试分钟+小时和QPM+TPM“不部分扣账”。它不是优先级队列实现，也不是Redis集群；令牌桶完整实现复用第6.4节，队列调度是上述独立层。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "规则名包含作用域，规则参数改变应版本化，不能复用同key偷偷改窗口定义。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "010/AtomicQuotas.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Atomic all-or-none weighted fixed-window admission for one authority, not a cluster. */\npublic final class AtomicQuotas {\n    public record Rule(String name, long window, long limit) {\n        public Rule { if (name == null || name.isBlank() || window <= 0 || limit <= 0) throw new IllegalArgumentException(); }\n    }\n    public record Demand(Rule rule, long cost) {\n        public Demand { if (rule == null || cost <= 0) throw new IllegalArgumentException(); }\n    }\n    private record Bucket(long epoch, long used) {}\n    private final Map<String, Bucket> buckets = new HashMap<>();\n    private final Map<String, Rule> definitions = new HashMap<>();\n    private long lastTime = -1;\n    public synchronized boolean admit(long time, List<Demand> demands) {\n        if (time < 0 || time < lastTime || demands == null || demands.isEmpty()) throw new IllegalArgumentException();\n        lastTime = time; // reject time reversal even after a denied admission\n        Set<String> names = new HashSet<>();\n        Map<String, Bucket> proposed = new HashMap<>();\n        for (Demand d : demands) {\n            Rule r = d.rule();\n            if (!names.add(r.name())) throw new IllegalArgumentException(\"duplicate rule\");\n            Rule oldRule = definitions.get(r.name());\n            if (oldRule != null && !oldRule.equals(r)) throw new IllegalArgumentException(\"rule changed\");\n            long epoch = time / r.window(); Bucket old = buckets.get(r.name());\n            long used = old == null || old.epoch() != epoch ? 0 : old.used();\n            if (d.cost() > r.limit() - used) return false; // no quota debit on any rejection\n            proposed.put(r.name(), new Bucket(epoch, used + d.cost()));\n        }\n        buckets.putAll(proposed); demands.forEach(d -> definitions.put(d.rule().name(), d.rule()));\n        return true;\n    }\n    public synchronized long used(String name) { return buckets.getOrDefault(name, new Bucket(-1, 0)).used(); }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        AtomicQuotas q = new AtomicQuotas();\n        Rule minute = new Rule(\"user:minute\", 60, 2), hour = new Rule(\"user:hour\", 3600, 3);\n        List<Demand> one = List.of(new Demand(minute, 1), new Demand(hour, 1));\n        check(q.admit(0, one)); check(q.admit(1, one)); check(!q.admit(2, one));\n        check(q.admit(60, one)); check(!q.admit(61, one)); check(q.used(\"user:minute\") == 1);\n        check(q.admit(3600, one));\n        AtomicQuotas provider = new AtomicQuotas();\n        Rule rpm = new Rule(\"provider:qpm\", 60, 5), tpm = new Rule(\"provider:tpm\", 60, 100);\n        check(provider.admit(0, List.of(new Demand(rpm, 1), new Demand(tpm, 80))));\n        check(!provider.admit(1, List.of(new Demand(rpm, 1), new Demand(tpm, 30))));\n        check(provider.used(\"provider:qpm\") == 1 && provider.used(\"provider:tpm\") == 80);\n        try { provider.admit(0, List.of(new Demand(rpm, 1))); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) {}\n        AtomicQuotas parallel = new AtomicQuotas(); Rule g = new Rule(\"global\", 60, 7), t = new Rule(\"tenant\", 60, 7);\n        ExecutorService pool = Executors.newFixedThreadPool(12);\n        try {\n            List<Callable<Boolean>> work = new ArrayList<>();\n            for (int i = 0; i < 100; i++) work.add(() -> parallel.admit(0, List.of(new Demand(g, 1), new Demand(t, 1))));\n            int accepted = 0; for (Future<Boolean> f : pool.invokeAll(work)) if (f.get()) accepted++;\n            check(accepted == 7 && parallel.used(\"global\") == 7 && parallel.used(\"tenant\") == 7);\n        } finally { pool.shutdownNow(); }\n        System.out.println(\"PASS AtomicQuotas: minute+hour, no partial debit, weighted QPM+TPM, rollover, 100 racing admissions allow 7\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "成本与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "单次涉及k个约束时模型为O(k)时间/临时空间，状态与活跃规则桶数相关，生产需到期清理和容量上限。同一个全局额度严格串行会成为瓶颈；分配租约额度可扩展但需防重复领取、旧租约和回收竞态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试包括分钟超限、小时超限时分钟不被扣、跨小时重置、TPM不足时QPM不被扣、100并发在全局/租户各7额度下只放7。生产还需测试未知远端用量、429、长短任务公平、租户饿死、规则更新、全局服务故障和窗口边界。接入时应分别验证供应商真实计额口径和Redis故障切换后的状态边界。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "6.9 手写支持多租户的限流器需要哪些接口与不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "多租户限流需要在一次原子裁决中检查全局与租户额度，拒绝时不部分扣费，并控制租户状态增长。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：手写多租户限流器；全局和租户额度怎样一起检查；租户无限增长如何清理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 21示例选择固定窗口加全局与租户双预算，滑动窗口和令牌桶属于不同时间契约。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可信身份和明确契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "认证层从已验证用户/客户端绑定tenantId，限流器接受此内部身份，不能让任意HTTP头换租户逃额度。定义窗口W、全局limit、每租户limit、请求cost以及拒绝含义；速率限制不限制正在执行的并发，另有并发舱壁/有界队列和deadline。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一次准入必须全局和租户都通过才同时扣减，任一拒绝不能扣另一桶。每个tenant状态隔离，但全局预算共享；不同应用实例各用这个Java对象会把总额度扩大到实例数倍，所以代码仅证明一个权威进程，不是直接可部署的分布式全局限流器。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "有界状态与动态规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "预登记租户，未知ID拒绝且不创建桶，防攻击者无限生成key吃内存/获取初始额度。示例O(T)固定状态，无自动淘汰；生产注册/停用由控制面管理，不能LRU淘汰活跃桶使额度复活。每个操作O(1)预期hash查询，单authority synchronized保原子性但形成吞吐串行点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "动态改额度，不能顺便把已经用掉的量清零。changeLimit 只改已登记租户额度，保留当前窗口 used；降到已用量以下就拒绝后续，提高额度也不重置计数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "窗口长度在构造后固定。要改窗口或计量单位，应显式版本迁移，不能换个 key 就获得满额；策略更新要加版本，灰度期间说清各实例使用哪一版。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "时间和数值边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例以可信非负单调时间输入，发现回拨拒绝而不重复补额度，窗口id=floor(now/W)；生产通常由权威服务时钟决定，测试可注入逻辑时刻。拒绝跨窗口旧请求是保守选择，需考虑时钟前跳和重启持久性，不能接受客户端自报时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "比较cost<=limit−used后才加，避免used+cost溢出；零/负cost拒绝，Long最大值测试也不越界。固定窗口边界可能短时接近两倍突发，若需求是任意滚动窗口最多N，就使用滑动日志/桶化或令牌桶的不同突发约束，不能将本例改名即满足。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分布式化与服务失败"
+    },
+    {
+      "type": "paragraph",
+      "text": "严格全局+租户额度要在一个原子权威提交，例如同Redis槽脚本/专门配额服务；所有租户与全局同槽会有热点，跨slot不能一条Lua自动事务。可预分配配额租约扩展，但总授权、租约恢复、回收与超发边界需另证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "限流请求超时可能已扣额度，attempt计费和业务幂等的关系需明确，不能盲目“退还”。fail-open提高可用性但破坏保护上限，fail-closed保护下游但拒绝用户，按资源重要性决定并观测。公平调度/防饿死不是双桶自动保证，详见第6.6节。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试包括A耗尽不扣全局、全局耗尽不扣B、10000未知ID不增长状态、精确窗口切换、额度下调/上调保持usage、回拨、非法cost、最大整数及100竞争只准入7个。这里的Java模型验证单进程准入合同；Redis、MCP网关与跨节点部署还需单独验证原子范围、时钟和故障策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现包含独立边界测试，运行环境与保证范围按上述合同。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "011/TenantLimiter.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** One authoritative process; fixed windows, not a distributed limiter or authentication service. */\npublic final class TenantLimiter {\n    private static final class Bucket {\n        long limit, windowId = -1, used;\n        Bucket(long limit) { this.limit = positive(limit); }\n        void advance(long id) { if (id != windowId) { windowId = id; used = 0; } }\n    }\n    private final Map<String, Bucket> tenants = new HashMap<>();\n    private final Bucket global;\n    private final long window;\n    private long lastTime = -1, policyVersion;\n    public TenantLimiter(long window, long globalLimit, Map<String, Long> registered) {\n        this.window = positive(window); global = new Bucket(globalLimit);\n        Objects.requireNonNull(registered);\n        for (var e : registered.entrySet()) {\n            if (e.getKey() == null || e.getKey().isBlank()) throw new IllegalArgumentException(\"tenant\");\n            tenants.put(e.getKey(), new Bucket(e.getValue()));\n        }\n    }\n    private static long positive(long n) { if (n <= 0) throw new IllegalArgumentException(\"positive required\"); return n; }\n    // tenant must already have been resolved from an authenticated server-side identity.\n    public synchronized boolean allow(String tenant, long cost, long now) {\n        positive(cost);\n        if (now < 0 || now < lastTime) throw new IllegalArgumentException(\"time reversed\");\n        lastTime = now;\n        Bucket local = tenants.get(tenant);\n        if (local == null) return false; // unknown identity cannot allocate a fresh quota\n        long id = now / window;\n        global.advance(id); local.advance(id);\n        if (global.used > global.limit || local.used > local.limit ||\n            cost > global.limit - global.used || cost > local.limit - local.used) return false;\n        global.used += cost; local.used += cost;\n        return true;\n    }\n    // Administrative policy changes retain consumed quota, including after lowering the limit.\n    public synchronized long changeLimit(String tenant, long limit) {\n        positive(limit); Bucket b = tenants.get(tenant);\n        if (b == null) throw new IllegalArgumentException(\"unknown tenant\");\n        long next = Math.incrementExact(policyVersion); b.limit = limit; return policyVersion = next;\n    }\n    public synchronized long used(String tenant) { return tenants.get(tenant).used; }\n    public synchronized long globalUsed() { return global.used; }\n    public synchronized int tenantCount() { return tenants.size(); }\n    private static void check(boolean x) { if (!x) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        TenantLimiter q = new TenantLimiter(60, 5, Map.of(\"A\", 2L, \"B\", 4L));\n        check(q.allow(\"A\", 2, 0)); check(!q.allow(\"A\", 1, 0)); check(q.globalUsed() == 2);\n        check(q.allow(\"B\", 3, 0)); check(!q.allow(\"B\", 1, 0)); check(q.used(\"B\") == 3);\n        for (int i = 0; i < 10000; i++) check(!q.allow(\"fake\" + i, 1, 0));\n        check(q.tenantCount() == 2 && q.globalUsed() == 5);\n        check(q.allow(\"A\", 2, 60)); q.changeLimit(\"A\", 1); check(!q.allow(\"A\", 1, 60));\n        q.changeLimit(\"A\", 4); check(q.allow(\"A\", 2, 60)); check(q.used(\"A\") == 4);\n        try { q.allow(\"A\", 1, 59); throw new AssertionError(); } catch (IllegalArgumentException ok) {}\n        try { q.allow(\"A\", 0, 60); throw new AssertionError(); } catch (IllegalArgumentException ok) {}\n        TenantLimiter max = new TenantLimiter(1, Long.MAX_VALUE, Map.of(\"A\", Long.MAX_VALUE));\n        check(max.allow(\"A\", Long.MAX_VALUE, 0)); check(!max.allow(\"A\", 1, 0)); check(max.allow(\"A\", 1, 1));\n        TenantLimiter race = new TenantLimiter(60, 7, Map.of(\"A\", 100L));\n        ExecutorService pool = Executors.newFixedThreadPool(10);\n        try {\n            List<Callable<Boolean>> tasks = new ArrayList<>();\n            for (int i=0; i<100; i++) tasks.add(() -> race.allow(\"A\", 1, 0));\n            int wins = 0; for (Future<Boolean> f : pool.invokeAll(tasks)) if (f.get()) wins++;\n            check(wins == 7 && race.used(\"A\") == 7 && race.globalUsed() == 7);\n        } finally { pool.shutdownNow(); }\n        System.out.println(\"PASS TenantLimiter: tenant/global atomic quotas, 10000 unknown IDs allocate zero, rollover, policy change retains usage, reverse clock, invalid cost, overflow boundary, 100 races allow 7\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "6.13 双令牌桶究竟限制请求次数还是模型Token，RPM和TPM如何配合"
+    },
+    {
+      "type": "paragraph",
+      "text": "RPM与TPM需独立计量并原子联合准入，token预估与实际结算另建规则，不能把两只桶都当请求次数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：双令牌桶限制什么；RPM和TPM如何配合；预估token与实际用量不同怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "双桶可能是请求加模型token、全局加租户或快慢时间尺度，必须先说明计量单位和窗口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把桶的单位与作用域写清"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求桶一次调用扣1个request，容量Br允许短突发、每秒补rr；模型Token桶一次调用按估计输入/输出量扣t个模型token，容量Bt、每秒补rt。二者内部都可称“令牌”，但计数单位不同，不能一次长视频任务和一句问候都只扣1个模型token。若两个桶实际是global/tenant，其单位也可能都为request，必须读配置说明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RPM=requests per minute，QPM通常同义指每分钟查询数；TPM=tokens per minute。TPM不等于并发数，也不必等于账单token口径。供应商可按组织/模型、短子窗口、输入与输出分别限额；以Claude文档为例有RPM/ITPM/OTPM，缓存相关口径另有规则，不能推广成所有厂商同一算法。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "全部满足才扣，预算与速率分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "双桶准入的原则是，两份额度都够才一起扣。先补充两个桶，检查 requests>=1 且 tokens>=estimate，再在同一原子域扣减；先扣请求桶、发现 token 不够就退出，会白白消耗请求额度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要分清算法合同：令牌桶允许约 B+rΔ 的突发上界，不保证任意一分钟绝不超过 60r。要求精确滑窗，就要用对应算法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨实例严格共享要权威状态/同槽短脚本或有上界的配额租约；分散两个Redis槽没有天然原子事务。并发槽位、持久有界队列、日/月费用预算独立控制，扩实例不应把全局额度等比例扩大。429按供应商恢复提示和剩余deadline退避，不让各层自作三次重试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "估算与实际用量"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地可按输入token加最大输出保守预留，得到usage后按本地策略结算，但不得假设供应商也会按同规则返还限流额度。超时远端可能已生成，UNKNOWN保留费用/用量风险；取消响应不是远端未收费证明。第6.14节给跨轮任务预算与结算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DualTokenBucket用整数信用保存分数补充，request与token两个桶共享一个锁，每次O(1)；一token每interval时间单位，参数乘积检测溢出，时间回拨保守不重复补充。任意精度速率可用有界整数比例另扩展，本例不接受浮点供应商配额。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "实际测试两个方向都不部分扣账、按token加权、补充临界、小数信用、回拨、容量封顶、非法数量/溢出/Long边界，100并发需求每个10token，在7request和45token容量下只准入4个，剩3request与5token。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是单进程双桶核心，不是分布式Redis脚本、供应商API、队列、公平性或费用账本联调。硬费用预算不能只靠会自动补充的速率桶，还需独立的总预算账、预留和结算；速率受限不代表累计费用有上限。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下代码实现上述本地合同；它的状态与故障边界不能自动推广到外部系统。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "013/DualTokenBucket.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** One process, two token buckets, integer fractional credits; no provider billing ledger. */\npublic final class DualTokenBucket {\n    private static final class Bucket {\n        final long interval, maximum;\n        long credit, last;\n        Bucket(long capacity, long interval, long now) {\n            if (capacity <= 0 || interval <= 0 || now < 0) throw new IllegalArgumentException();\n            this.interval = interval;\n            maximum = Math.multiplyExact(capacity, interval);\n            credit = maximum; last = now;\n        }\n        void refill(long now) {\n            long effective = Math.max(now, last);\n            credit += Math.min(effective - last, maximum - credit);\n            last = effective;\n        }\n    }\n    private final Bucket requests, modelTokens;\n    public DualTokenBucket(long requestCapacity, long requestInterval,\n                           long tokenCapacity, long tokenInterval, long now) {\n        requests = new Bucket(requestCapacity, requestInterval, now);\n        modelTokens = new Bucket(tokenCapacity, tokenInterval, now);\n    }\n    public synchronized boolean admit(long now, long estimatedModelTokens) {\n        if (now < 0 || estimatedModelTokens <= 0) throw new IllegalArgumentException();\n        requests.refill(now); modelTokens.refill(now);\n        if (estimatedModelTokens > modelTokens.maximum / modelTokens.interval) return false;\n        long cost = estimatedModelTokens * modelTokens.interval;\n        if (requests.credit < requests.interval || modelTokens.credit < cost) return false;\n        requests.credit -= requests.interval;\n        modelTokens.credit -= cost;\n        return true;\n    }\n    public synchronized long[] wholeTokens() {\n        return new long[]{requests.credit / requests.interval, modelTokens.credit / modelTokens.interval};\n    }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    public static void main(String[] args) throws Exception {\n        DualTokenBucket q = new DualTokenBucket(2, 10, 10, 2, 0);\n        check(q.admit(0, 8)); check(!q.admit(0, 3));\n        check(Arrays.equals(q.wholeTokens(), new long[]{1, 2})); // no request debit on token rejection\n        check(q.admit(0, 2)); check(!q.admit(2, 1));\n        check(Arrays.equals(q.wholeTokens(), new long[]{0, 1})); // no model-token debit on request rejection\n        check(!q.admit(9, 1)); check(q.admit(10, 5));\n        check(!q.admit(5, 1)); // clock reversal cannot refill again\n        check(q.admit(1000, 10)); check(!q.admit(1000, 11));\n        try { q.admit(1000, 0); throw new AssertionError(); } catch (IllegalArgumentException ok) { }\n        try { new DualTokenBucket(2, Long.MAX_VALUE, 1, 1, 0); throw new AssertionError(); }\n        catch (ArithmeticException ok) { }\n        DualTokenBucket huge = new DualTokenBucket(1, Long.MAX_VALUE, 1, Long.MAX_VALUE, 0);\n        check(huge.admit(0, 1)); check(huge.admit(Long.MAX_VALUE, 1));\n        DualTokenBucket concurrent = new DualTokenBucket(7, 100, 45, 100, 0);\n        ExecutorService pool = Executors.newFixedThreadPool(12);\n        try {\n            List<Callable<Boolean>> work = new ArrayList<>();\n            for (int i = 0; i < 100; i++) work.add(() -> concurrent.admit(0, 10));\n            int wins = 0; for (Future<Boolean> f : pool.invokeAll(work)) if (f.get()) wins++;\n            check(wins == 4 && Arrays.equals(concurrent.wholeTokens(), new long[]{3, 5}));\n        } finally { pool.shutdownNow(); }\n        System.out.println(\"PASS DualTokenBucket: all-or-none in both directions, weighted costs, fractional/exact refill, clock reversal, cap, invalid/overflow/Long boundary, 100 races admit4\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

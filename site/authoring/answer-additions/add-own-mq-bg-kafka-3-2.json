@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-kafka-3-2",
+  "entryId": "bg-kafka-3",
+  "expectedOriginalHash": "909b03040d1cacd6669278d5218df6236f1bc74a2e76636f0ccab8d2e3bce56a",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q04 如何保证消息不丢"
+    },
+    {
+      "type": "paragraph",
+      "text": "从“承诺接收”开始，逐段保存可恢复证据，完成持久业务效果后再确认，并让保留窗口覆盖故障恢复时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：生产端、broker、消费者分别怎么防丢？客户端宕机怎么办？发消息前服务挂了怎么办？发送成功是否落盘？如何保证至少消费一次？"
+    },
+    {
+      "type": "paragraph",
+      "text": "沿生产、Broker、消费三段检查恢复依据："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "生产侧先持久保存待发意图，再观察实际发送结果。内存重试列表会随进程消失；数据库提交后直接 send，仍有提交后、调用前的崩溃窗口。",
+        "Broker 侧配置持久性、复制、正确确认和安全故障接替，并监控磁盘、复制状态与保留期。",
+        "消费侧按业务完成水位确认。若异常被捕获后按正常路径返回，框架可能误确认，后续就没有正常重投来补效果。"
+      ]
+    },
+    {
+      "type": "table",
+      "headers": [
+        "故障窗口",
+        "可能结果",
+        "恢复依据"
+      ],
+      "rows": [
+        [
+          "业务提交前崩溃",
+          "业务与事件都不存在",
+          "客户端可用同一幂等键重试"
+        ],
+        [
+          "业务提交后 send 前崩溃",
+          "订单存在、通知缺失",
+          "同事务 Outbox 被扫描重发"
+        ],
+        [
+          "broker 已接收、确认丢失",
+          "发送结果未知，重发可能重复",
+          "稳定 eventId、协议幂等与下游去重"
+        ],
+        [
+          "消费者先 ACK 再落库",
+          "后续崩溃可能漏效果",
+          "禁止提前确认；若已发生需对账修复"
+        ],
+        [
+          "业务提交后 ACK/offset 失败",
+          "消息重投",
+          "Inbox/业务唯一约束防重复效果"
+        ],
+        [
+          "积压超过保留窗口",
+          "日志可能已清理",
+          "容量预警与权威数据重建"
+        ],
+        [
+          "所有副本永久损坏",
+          "中间件复制保证失效",
+          "独立备份、跨故障域和灾难恢复"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "“至少一次”也有前提：消息被可靠接受、没有在达到终态前过期删除、消费者和依赖最终恢复、系统有重试能力。无限重试不能证明最终成功，永久错误必须进入可见的失败处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问 RocketMQ“发送成功是否已经落盘”，必须先报版本和配置。4.x 的 flushDiskType=ASYNC_FLUSH 不等待该条消息完成刷盘；SYNC_FLUSH 才要求对应刷盘确认路径。生产者同步调用 send 只是调用方式，与 broker 同步刷盘不是一个开关。4.x Java 的 SendResult 还需检查 SEND_OK、FLUSH_DISK_TIMEOUT、FLUSH_SLAVE_TIMEOUT、SLAVE_NOT_AVAILABLE 等状态，不能只看方法没有抛异常。刷盘超时不证明消息一定不存在，重发仍需稳定业务 ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步刷盘提高单节点掉电恢复能力，复制策略决定其他节点是否有副本，两者也不能互相替代。具体容灾结论还依赖部署模式、确认所需副本、故障域和故障切换策略。不要把 RabbitMQ 的 Publisher Confirm 或 Kafka 的 acks=all/min.insync.replicas 名称直接套在 RocketMQ 配置上；业务落库后未返回消费成功的重复窗口，则仍由 Inbox/唯一流水处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "send 返回通常只表示记录已交给客户端异步发送流程，可靠发布还要观察最终结果，并在进程崩溃后仍保留未完成的发布责任。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同步异常、异步完成和 UNKNOWN"
+    },
+    {
+      "type": "paragraph",
+      "text": "先分 send 调用时和返回后两个阶段。序列化失败、非法配置、缺少元数据或缓冲耗尽，可能直接让调用失败；取得 Future 后，后台发送仍可能因授权、记录大小、网络、复制不足或超时失败。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以，成功拿到 Future 只是进入下一阶段。回调和 Future 才是观察最终结果的入口，忽略它们就无法知道这条记录是否发送成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "成功结果中的 topic、partition、offset 是 broker 接收的定位信息，不代表消费者已经处理。失败要分不可重试、可重试和结果不确定：客户端等待超时，不证明 broker 没有追加；Future.get 的等待时间耗尽，也不一定取消后台请求。应用此时新建一次 send，可能把相同业务记录再发一份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要在 producer 的 I/O 回调里执行慢数据库事务、阻塞等待另一条 send，或调用阻塞的 flush；这会拖住本来负责完成其他发送的线程。回调应只记录有界结果、发出轻量通知，持久补偿由已持有发布责任的组件完成。仅在失败回调里“补写数据库”仍漏掉进程在回调前崩溃的窗口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Broker 的确认到底转移了什么责任？"
+    },
+    {
+      "type": "paragraph",
+      "text": "RabbitMQ 的 Publisher Confirm 与消费者 ACK 是两个方向的协议。Confirm 不知道消费者是否完成业务，消费 ACK 也不证明某次发布者回写成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在本手册 RabbitMQ 4.3.6 实验采用的 AMQP 0-9-1 语义下，不可路由的消息也能收到发布 ACK；mandatory 使不可路由消息通过 Return 返回。因此，发布成功判定要合并同一次发布的确认、路由结果与关联身份。无 Return 还必须建立在 mandatory、监听器和关联处理确实生效的前提上；即使成功路由到某个队列，也不证明它正是业务期待的全部订阅队列，拓扑仍须核验。详细客户端回调和共享拓扑见 RabbitMQ 发布章节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费者只能在本地效果提交或后续责任可靠转交后 ACK。只提交内存线程池再 ACK 会在进程退出时丢工作。采用持久发送任务时，ACK 原消息的前提是事件身份、不可变输入、任务状态和恢复扫描条件已经提交；后续发送由该任务系统负责，不能再依赖那条已删除的 Broker 投递。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个 eventId 被重复发布成两份消息，是两次独立投递。ACK 一份不会自动删除另一份。Kafka 则确认消费位置，必须推进已完成的安全前缀，不能因为后面的任务先完成就越过前面的失败记录。业务已提交、ACK 或 offset 提交失败时，接受重新投递并复用原身份；不要回滚已确认的业务结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "“同步刷盘、主从同步、手动ACK”分别是什么意思"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步发送是客户端调用形态；异步刷盘是broker落盘策略；异步复制是副本传播策略。三者相互独立。RocketMQ 4.9.8传统SendStatus包含SEND_OK、FLUSH_DISK_TIMEOUT、FLUSH_SLAVE_TIMEOUT、SLAVE_NOT_AVAILABLE，发送结果必须按实际状态解释，不能把返回对象都当成功。刷盘或副本等待超时可能表示消息已经存在但没达到等待条件，重试要沿用业务身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RabbitMQ术语Publisher Confirm/basicAck不能原封不动当RocketMQ API。传统并发消费返回消费状态决定成功或稍后重试；顺序消费有相应状态与队列阻塞语义；5.x不同consumer类型又有不同的接收、不可见期和ACK接口。无论接口长什么样，业务提交与消费确认之间的故障窗口都要分析。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障定位先分三段：生产者有没有建立持久发布责任、broker是否接受并满足该配置确认、消费者是否完成合法效果。积压看生产速率、队列水位、失败重试、存储与网络、消费者处理时延及下游限流。禁止为“恢复速度”随意跳offset、清队列或改新请求号绕过去重。恢复后要核对业务集合/版本与缺口，控制台绿色不等于任务完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q13 acks ISR minISR 和副本怎样配合"
+    },
+    {
+      "type": "paragraph",
+      "text": "acks 决定生产者等待什么确认，ISR 表示同步资格，min.insync.replicas 在 acks=all 路径限制最低同步副本数，三者必须一起解释。"
+    },
+    {
+      "type": "paragraph",
+      "text": "从生产者等待什么开始记：acks=0 不等 broker 确认；acks=1 等 leader 本地追加；acks=all/-1 等协议要求的同步副本复制完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看谁有资格参与同步：ISR 包含 leader，以及满足同步资格的 follower。Follower 持续 fetch，落后超过资格条件会被移出，追上后可再加入；有同步资格不要求每一瞬间的日志末端完全相等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RF=3、minISR=2、acks=all 时，三个配置副本不等于三个此刻都同步。剩两个 ISR 时可以满足写入门槛；只剩 leader 时应拒绝这类强确认写入。all 不是固定只等 minISR 个副本，也不是所有配置副本无论在线与否都必须响应。"
+    },
+    {
+      "type": "paragraph",
+      "text": "leader 在只有自己追加后宕机，acks=1 可能已经返回成功，而新 leader 没有该尾部。强确认、多副本和安全选主降低这个风险，但 Kafka 的复制确认不等于所有副本每条记录都完成 fsync。共同掉电、磁盘永久损坏、管理员删除和保留策略仍需独立分析。"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典安全选主从具有同步资格的候选中选择；unclean election 可能用落后副本恢复可用性并损失数据。Kafka 4.0 的 ELR 为显式启用的扩展，允许特定安全条件下记录额外候选，所以不能把“永远只从当前 ISR”当跨版本真理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问 ISR 与 Raft：ISR 是 Kafka 分区复制的动态集合，Raft 是包含任期、选主、日志匹配和提交规则的协议。KRaft 控制面使用 Raft 风格共识，但普通业务分区的 acks=all 不是简单的 RF/2+1 多数派投票。RabbitMQ quorum queue 的队列日志则采用 Raft 多数派模型。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三台 broker 的反例说明什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设 B1、B2、B3 三台机器，topic 有 P0、P1、P2。若所有分区的唯一副本都在 B1，读写和网络输出集中在 B1，B1 失效会使这些分区一起不可用。把 P0、P1、P2 的 leader 分到三台机器可分散压力，但 B1 上的 P0 丢失时，B2 的 P1 不能提供 P0 的记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要接替 P0，必须让其他故障域保存 P0 的副本，并满足安全选主条件。于是“分区解决并行”和“副本解决容错”是两条轴；分布到三台机器、复制因子为三、能容忍一台故障，是三个需要分别证明的命题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "acks=all 配合足够同步副本和安全选主，保护已确认日志在约定故障下可恢复；它不等于所有磁盘已 fsync，也不覆盖生产者内存、业务提前提交或全部副本共失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ISR 是动态资格集合，不是“从节点名单”"
+    },
+    {
+      "type": "paragraph",
+      "text": "ISR 包含 leader 和符合追赶要求的 follower。Follower 持续拉取日志，可能暂时比 leader 尾部落后；在副本追赶规则与 replica.lag.time.max.ms 等条件下仍可具有同步资格。长期落后会被移出，重新追上并满足规则后可加入。因此不能把 ISR 解释为任何瞬间 LEO 完全相同的集合，也不要把历史材料中的十秒当所有版本的固定阈值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LEO 表示某副本日志末尾的下一位置。High watermark 表示复制协议已经提交到的边界，普通消费者不能把 leader 尚未满足复制条件的任意尾部都当已提交数据读走。事务还引入 LSO：read_committed 只交付稳定事务边界之前的可见记录，并过滤已中止事务；较早开放事务可能挡住其后的可读进度。HW 是复制提交，LSO 是事务可见性边界，消费组 committed offset 是应用恢复位置，三个“提交”不能混为一谈。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三个 acks 值怎样比较？"
+    },
+    {
+      "type": "paragraph",
+      "text": "acks=0 不等待 broker 确认，应用拿不到可靠的 broker 写入结果；acks=1 等 leader 追加确认，尚未复制到安全接替者的尾部存在故障丢失窗口；acks=all，与 -1 等价，等待协议要求的 ISR 复制确认。它不是固定等待配置副本数 RF，也不是“只等 minISR 个副本，其余随便”。min.insync.replicas 是这类强确认写入所需的最低同步资格门槛。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以经典、未启用 ELR 的 RF=3、minISR=2、acks=all 为例："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "ISR 为 L、F1、F2 时，成功要满足当前同步集合的复制确认要求，不能把它说成多数派任意两票即可。",
+        "F2 落后被移出，ISR 为 L、F1，两份同步副本仍满足门槛，写入有机会继续成功。",
+        "ISR 只剩 L，不满足门槛，此类写入应失败，不能用“all 现在就是 leader”假装有两份数据。",
+        "写入过程中 ISR 变化，可能在追加前或追加后报同步副本不足。异常不是“日志绝对没有这条”的证明。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "只设 RF=3 而 minISR=1，会允许在只有一个同步副本的条件下形成很弱的确认边界；只设 minISR=2 但生产端使用 acks=1，也不能获得相同强确认承诺。成功后的容错前提仍包括副本跨故障域、存储正确、未发生危险管理操作及安全恢复策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Leader 同步中挂掉，按哪条时间线推演？"
+    },
+    {
+      "type": "paragraph",
+      "text": "对同一次 leader 故障，比较两条时间线："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "L 收到 m，还没复制，acks=1 已返回；随后 L 永久损坏。新 leader 没有 m，于是客户端曾收到成功，却恢复不了这条尾部。",
+        "m 已满足强确认条件，但响应在网络中丢失。客户端超时，新 leader 却可能完整保留 m；结果应记为 UNKNOWN，依靠幂等协议重试或稳定业务身份对账。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "两条时间线的客户端表象都可能是故障，关键区别是故障前消息越过了哪个确认点。超时不能直接判定未发送。"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制面判定故障后更新相关分区 leader 和元数据。客户端遇到旧路由/leader 错误会刷新元数据并受控重试。旧 leader 恢复时要对齐新 leader 的历史，leader epoch 帮助识别日志分叉，未提交尾部可能截断。不得把旧节点本地仍有文件当作它可以直接继续写入的授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典 clean election 使用安全同步候选；如果安全副本暂时都不可用，宁可等待也比选一个缺失已确认前缀的副本更安全。允许 unclean election 可恢复可用性，但可能放弃已确认记录，这是明确的数据安全取舍，不能作为“故障一键修好”的通用建议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ELR 与 Raft 的追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 4.0 中 ELR 默认未启用，feature eligible.leader.replicas.version=1 才启用。Strict min ISR 下，ISR 小于 minISR 时 HW 不能继续推进，使控制器能记录某些已不在当前 ISR、但仍具有安全已提交前缀的候选。选主依次检查 ISR、未 fenced 的 ELR，以及规则允许的最后已知 leader。更新 minISR 会影响已有 ELR 集合。因此“任何 Kafka 版本只从当前 ISR 选 leader”不准确，也不能把任意落后 follower 都叫 ELR。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ISR 是业务分区复制中的动态集合；Raft 是包含任期、投票、日志匹配、提交和状态机规则的完整协议。典型固定配置 Raft 使用多数派，少数派一侧不能继续安全提交；Kafka 经典 ISR/acks/minISR 不能直接代换成 RF/2+1。KRaft 元数据共识和业务分区复制处在不同路径，解释时要先说明正在比较哪一层。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么确认不等于磁盘刷盘？"
+    },
+    {
+      "type": "paragraph",
+      "text": "日志追加通常先利用 page cache，副本确认没有承诺每份物理介质都刚完成一次 fsync。Kafka 的常见可靠性设计依赖复制和故障隔离，而不是每条消息在所有盘上同步刷盘。所有副本同电源损坏、管理员删 topic、超过保留期，或者应用根本没留下待发送事实，都不是加一个 acks 参数能补救的。强可靠方案还要监控 under-replicated partitions、ISR 抖动、离线分区、磁盘空间及实际保留窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "校正说明（保留原文）：原答案中 acks=all 与“真正可靠落盘”应分开解释：Kafka 复制确认不逐条承诺所有副本 fsync；minISR、安全选主、故障域和保留窗口仍是必要条件。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "2"
+}

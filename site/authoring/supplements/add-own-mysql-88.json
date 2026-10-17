@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-88",
+  "entryId": "88",
+  "expectedOriginalHash": "3efbba9b75f79f55476605fbd312fabe363787181d422c6391c83b978d27c28f",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. “合并两个数组”有哪些不同问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "没有排序与容量条件时，至少有三种合理解释，不能只交一个双指针答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一种是保持输入顺序的拼接，不要求排序，也不默认去重。结果先是 a 的所有元素，再是 b 的所有元素，时间和新空间均为 O(m+n)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二种是两个已非降序数组，产生新的有序数组。两个指针比较当前元素，每次取较小者，剩余尾部直接复制；时间 O(m+n)，额外空间 O(m+n)。相等时先取 a，有利于把“a 在前”的稳定次序推广到带身份对象。这里是 int，重复值仍全部保留。输入无序应先拒绝，或显式选择排序副本并承认额外 O((m+n)log(m+n)) 的成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第三种是 a 的前 m 个元素有效且有序，a 的总长度恰为 m+n，b 长 n 且有序，要原地合并。应从后向前写最大值，避免覆盖尚未读取的 a 元素；时间 O(m+n)，额外工作空间 O(1)。a 后面的 0 只是容量占位，不代表有效值不能为 0；有效前缀由 m 指定。相等时从后面先放 b，最终仍让 a 的同值项排在 b 前。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面完整 Java 实现把三种契约分成三个方法，全部检查 null；原地方法还拒绝 a 与 b 是同一个数组、非法 m 和不足或多余容量，并在写入前完成排序校验。长度相加用 Math.addExact 检查 int 溢出，但合法长度也可能因内存不足而分配失败，不能因此承诺任意大数组都能处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 MergeArrays.java，用 JDK 21 运行 javac MergeArrays.java 与 java MergeArrays。main 覆盖空数组、负数、0、重复值、无序、别名、容量、非法长度和 500 组固定种子的有界随机对照。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/application/code/MergeArrays.java",
+      "value": "import java.util.Arrays;\nimport java.util.Objects;\n\n/** Three separate int-array contracts; no missing source conditions inferred. */\npublic final class MergeArrays {\n    private MergeArrays() { }\n\n    private static void sorted(int[] a, int length) {\n        for (int i = 1; i < length; i++) {\n            if (a[i - 1] > a[i]) {\n                throw new IllegalArgumentException(\"input must be nondecreasing\");\n            }\n        }\n    }\n\n    public static int[] concatenate(int[] a, int[] b) {\n        Objects.requireNonNull(a, \"a\");\n        Objects.requireNonNull(b, \"b\");\n        int length = Math.addExact(a.length, b.length);\n        int[] out = Arrays.copyOf(a, length);\n        System.arraycopy(b, 0, out, a.length, b.length);\n        return out;\n    }\n\n    public static int[] mergeSorted(int[] a, int[] b) {\n        Objects.requireNonNull(a, \"a\");\n        Objects.requireNonNull(b, \"b\");\n        sorted(a, a.length);\n        sorted(b, b.length);\n        int[] out = new int[Math.addExact(a.length, b.length)];\n        int i = 0, j = 0, k = 0;\n        while (i < a.length && j < b.length) {\n            out[k++] = a[i] <= b[j] ? a[i++] : b[j++];\n        }\n        while (i < a.length) { out[k++] = a[i++]; }\n        while (j < b.length) { out[k++] = b[j++]; }\n        return out;\n    }\n\n    public static void mergeInto(int[] a, int m, int[] b) {\n        Objects.requireNonNull(a, \"a\");\n        Objects.requireNonNull(b, \"b\");\n        if (a == b || m < 0 || m > a.length || a.length - m != b.length) {\n            throw new IllegalArgumentException(\"alias, logical length or capacity\");\n        }\n        sorted(a, m);\n        sorted(b, b.length);\n        int i = m - 1, j = b.length - 1, k = a.length - 1;\n        while (j >= 0) {\n            if (i >= 0 && a[i] > b[j]) { a[k--] = a[i--]; }\n            else { a[k--] = b[j--]; }\n        }\n    }\n    private static void equal(int[] expected,int[] actual) {\n        if(!Arrays.equals(expected,actual))throw new AssertionError(Arrays.toString(actual));\n    }\n    private static void bad(Runnable action) {\n        try{action.run();}catch(IllegalArgumentException|NullPointerException e){return;}\n        throw new AssertionError(\"invalid input accepted\");\n    }\n    public static void main(String[] args) {\n        equal(new int[]{3,1,2,1},concatenate(new int[]{3,1},new int[]{2,1}));\n        equal(new int[]{},mergeSorted(new int[]{},new int[]{}));\n        equal(new int[]{-1,0,0,2,2},mergeSorted(new int[]{-1,0,2},new int[]{0,2}));\n        int[] a={1,2,3,0,0,0};mergeInto(a,3,new int[]{2,5,6});equal(new int[]{1,2,2,3,5,6},a);\n        int[] emptyTarget={0,0};mergeInto(emptyTarget,0,new int[]{-2,4});equal(new int[]{-2,4},emptyTarget);\n        int[] unchanged={2,1,0};bad(()->mergeInto(unchanged,2,new int[]{3}));equal(new int[]{2,1,0},unchanged);\n        bad(()->mergeInto(a,3,a));bad(()->mergeInto(new int[3],0,new int[2]));\n        bad(()->mergeInto(new int[1],-1,new int[2]));bad(()->mergeSorted(new int[]{2,1},new int[0]));bad(()->concatenate(null,new int[0]));\n        java.util.Random random=new java.util.Random(170);\n        for(int trial=0;trial<500;trial++) {\n            int[] left=new int[random.nextInt(20)],right=new int[random.nextInt(20)];\n            for(int i=0;i<left.length;i++)left[i]=random.nextInt(11)-5;\n            for(int i=0;i<right.length;i++)right[i]=random.nextInt(11)-5;\n            Arrays.sort(left);Arrays.sort(right);int[] want=concatenate(left,right);Arrays.sort(want);\n            equal(want,mergeSorted(left,right));int[] dest=Arrays.copyOf(left,want.length);mergeInto(dest,left.length,right);equal(want,dest);\n        }\n        System.out.println(\"PASS MergeArrays: three contracts, invalid inputs, 500 bounded random cases\");\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "Python 的对应完整实现如下，保存为 merge_arrays.py。在 CPython 3.12.0 中可导入后调用 concatenate([3,1],[2])、merge_sorted([1,3],[2,3]) 或 merge_into([1,3,0,0],2,[2,3])；第三个会修改并返回第一个列表。它要求元素之间有一致的全序比较，混杂不可比较类型或 NaN 的排序含义需要另定契约；并不把 Java int 的范围限制照搬给 Python 整数。"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "label": "components/application/code/merge_arrays.py",
+      "value": "\"\"\"Three distinct contracts; the source did not identify which was asked.\"\"\"\n\ndef concatenate(a, b):\n    return list(a) + list(b)\n\ndef _sorted(a):\n    if any(a[i] > a[i + 1] for i in range(len(a) - 1)):\n        raise ValueError(\"input must be nondecreasing\")\n\ndef merge_sorted(a, b):\n    _sorted(a)\n    _sorted(b)\n    out, i, j = [], 0, 0\n    while i < len(a) and j < len(b):\n        if a[i] <= b[j]:\n            out.append(a[i]); i += 1\n        else:\n            out.append(b[j]); j += 1\n    out.extend(a[i:]); out.extend(b[j:])\n    return out\n\ndef merge_into(a, m, b):\n    \"\"\"a[:m] and b sorted; a length exactly m+len(b); no shared list.\"\"\"\n    if a is b or type(m) is not int or not 0 <= m <= len(a):\n        raise ValueError(\"invalid alias or logical length\")\n    if len(a) != m + len(b):\n        raise ValueError(\"insufficient/excess destination capacity\")\n    # Validate before mutation, without copying the input prefix.\n    if any(a[i] > a[i + 1] for i in range(m - 1)):\n        raise ValueError(\"input must be nondecreasing\")\n    _sorted(b)\n    i, j, k = m - 1, len(b) - 1, len(a) - 1\n    while j >= 0:\n        if i >= 0 and a[i] > b[j]:\n            a[k] = a[i]; i -= 1\n        else:\n            a[k] = b[j]; j -= 1\n        k -= 1\n    return a\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求去重，要再明确“有序去重还是保留首次出现顺序”，以及可否使用集合；如果要求取交集或相同下标相加，那已经是不同问题。二维数组、链表和外部大文件归并也有不同的容量与 I/O 约束。先澄清输入输出，再选算法，才是这道题最重要的工程判断。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

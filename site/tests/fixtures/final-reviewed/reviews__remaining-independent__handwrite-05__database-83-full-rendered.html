@@ -1,0 +1,34 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">给一条慢 SQL，如何通过 <code class="tok-inline">EXPLAIN</code> 判断问题？重点看哪些字段？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这题和慢 SQL 排查强相关。很多候选人只会说“看有没有走索引”，但面试官更希望听到访问类型、扫描行数、索引选择、排序、临时表、回表等。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li><code class="tok-inline">type</code>：访问类型，常见有 const、eq_ref、ref、range、index、ALL；不是脱离扫描量与成本的速度排名。</li><li><code class="tok-inline">possible_keys</code>：可能使用的索引。</li><li><code class="tok-inline">key</code>：实际使用的索引。</li><li><code class="tok-inline">rows</code>：估算扫描行数。</li><li><code class="tok-inline">filtered</code>：过滤比例。</li><li><code class="tok-inline">Extra</code>：Using index、Using where、Using filesort、Using temporary。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">示例：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">EXPLAIN
+SELECT id, title
+FROM article
+WHERE tenant_id = 1
+  AND status = 'PUBLISHED'
+ORDER BY created_at DESC
+LIMIT 20;</pre></div></section>
+<p class="md-p">重点解读：</p>
+<div class="md-list-wrap"><ul class="md-list md-depth-0"><li><code class="tok-inline">type=ALL</code>：可能全表扫描，大表危险。</li><li><code class="tok-inline">key=NULL</code>：没有使用索引。</li><li><code class="tok-inline">rows</code> 很大：扫描代价高。</li><li><code class="tok-inline">Using filesort</code>：排序没有利用索引，可能需要优化索引顺序。</li><li><code class="tok-inline">Using temporary</code>：分组/排序产生临时表，数据大时要关注。</li><li><code class="tok-inline">Using index</code>：覆盖索引，通常是好信号。</li></ul></div>
+<p class="md-p">针对上面查询可建：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE INDEX idx_tenant_status_created
+ON article(tenant_id, status, created_at DESC, id DESC);</pre></div></section><p class="md-p">rows/filtered 是估计；filesort 未必落盘，Using temporary 未必是磁盘临时表。MySQL 8.0.18+ EXPLAIN ANALYZE 会实际执行受支持的语句，先限制资源并在获准环境使用；本文只有推演，没有实际执行计划测量。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：<code class="tok-inline">Using filesort</code> 一定很差吗？</strong></p>
+<p class="md-p">问题分析：小结果集排序没问题。</p>
+<p class="md-p">知识点：排序成本、数据量。</p>
+<p class="md-p">答案：不一定。要结合 rows、返回行数和耗时。大表深分页出现 filesort 需要重点优化。</p>
+<p class="md-p"><strong>变体 2：<code class="tok-inline">Using index</code> 和 <code class="tok-inline">Using index condition</code> 区别？</strong></p>
+<p class="md-p">问题分析：名字相近但含义不同。</p>
+<p class="md-p">知识点：覆盖索引、索引下推 ICP。</p>
+<p class="md-p">答案：<code class="tok-inline">Using index</code> 通常表示覆盖索引；<code class="tok-inline">Using index condition</code> 表示使用索引下推，在存储引擎层先过滤部分条件，但可能仍需回表。</p>
+<p class="md-p"><strong>变体 3：为什么 EXPLAIN 估算不准？</strong></p>
+<p class="md-p">问题分析：优化器依赖统计信息。</p>
+<p class="md-p">知识点：统计信息、数据倾斜。</p>
+<p class="md-p">答案：数据分布倾斜、统计信息过期会导致估算偏差。可更新统计信息，MySQL 8 也可用直方图辅助。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

@@ -1,0 +1,254 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s7205",
+  "entryId": "own-mysql-ch32",
+  "expectedOriginalHash": "96acbae46d5f0c52c3841ee1db484303a6cff9edf6774f9f2c3407e746f4e343",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "9.11 冷热分离应在什么背景引入，解决什么问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷热分离在访问与成本差异稳定时有效，迁移必须保持统一身份、可恢复增量和明确读取路由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：什么时候引入冷热分离；冷数据如何检索；迁移期间更新怎样处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷热可用于文档、图片或业务事实，先明确数据对象、访问分布和延迟要求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "问题来自访问偏斜与不同保留需求"
+    },
+    {
+      "type": "paragraph",
+      "text": "当近期任务、活跃文档索引被频繁读写，而大量历史原文/图片很少访问却仍需保存，把所有数据常驻高价RAM/SSD会增加容量和维护成本；大历史表也可能拉大在线索引、备份和扫描压力。冷热分离把高频工作集与长期保留数据采用不同服务等级，目标是总成本和在线SLO，而非简单删除旧数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例子：运行中图片任务及最近结果在在线库/缓存中，已完成且长时间未访问的原图在对象归档层，在线保留最小定位元数据。是否按时间、访问频度、任务终态或监管保留区分由业务决定；访问少但随时需低延迟恢复的对象未必适合深归档。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "迁移要保留事实和版本"
+    },
+    {
+      "type": "paragraph",
+      "text": "热转冷的安全顺序是先复制、校验字节和版本并确认索引可定位，再切换权威位置或存储级别，最后回收旧副本。迁移与更新并发时，用 version 和增量水位，防旧快照覆盖新内容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大字节可以搬，业务 ID 不变，引用才稳定。删除 tombstone 和权限更新也要跟着迁移，否则冷恢复可能把已删内容复活。"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷转热按需取回/批量预热并做single-flight与限并发，设置升温/降温滞回，避免临界热度反复搬迁。正在执行/被引用对象不能因为最近没人读取就回收。索引和缓存可重建，唯一原始内容不得仅存在可淘汰层。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "收益和代价一起算"
+    },
+    {
+      "type": "paragraph",
+      "text": "估算热比例×高价单价、冷字节×低价单价，加迁移、取回、请求和跨区费用；压低RAM但频繁冷取回可能更贵。代价包括冷查询延迟、二次读取、迁移复杂度和运维对账，需明确用户访问冷历史时的响应契约。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证迁移中更新/删除、目标损坏、切换前后退出、权限收紧、短时间冷热震荡和灾备恢复。度量热命中率、冷回源p99、迁移失败、总账单与在线索引规模。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "9.16 数据库跨逻辑机房同步如何让业务少感知"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨机房同步以复制和路由实现业务少改代码，但分区时仍须在权威写入、新鲜度和可用性之间明确取舍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：数据库跨机房同步怎么做；怎样让业务少感知；跨地域能否零延迟零丢失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "逻辑机房可能是同地域可用区或跨地域，须固定RPO、RTO和读写语义。数据库复制语义以MySQL 8.4为基础，涉及etcd权威读写时以v3.6为例。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把透明范围与写权威说清"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一数据库复制可在接入层提供稳定地址、拓扑发现和故障路由，驱动/代理隐藏节点变化；CDC异步投影适合不同存储或服务，但不是透明替换主库事务。选择单写主库或按业务分区单写归属，首先保证同一数据没有两个未经协调的权威。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代理能隐藏地址变化，却隐藏不了提交结果未知。写已经提交、响应在切主时丢失，客户端换连接重试仍可能重复执行，因此业务需要稳定 requestId 和结果查询。"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接池重建、事务重试、会话变量、临时表和读己之写都要处理。透明代理不能无条件重放任意多语句事务，也不能随意重放非幂等外部调用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复制、读一致性和切换"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步复制降低正常写延迟，但新机房可能落后；需要读己之写时携带提交位置/版本并等待目标副本追上或回源权威。同步/多数确认提高故障下不丢确认写的能力，代价是跨区往返和分区时部分请求不可用，具体持久确认级别依产品配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障切换先证明候选含必要已确认日志，隔离旧主写入，再提升新主并发布路由；用共识租约/代际和数据库能力阻止双主。若选择可用性优先双写，必须按业务定义冲突：可合并计数与余额/库存不是同一问题，LWW会丢并发更新。DDL、序列、删除墓碑、权限与备份也需要同步规划。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "迁移与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "计划切换用全量快照+增量追平，在明确水位短暂止写/切写并核验后启新；不能先复制再随便找当前日志继续。故障演练测机房全断、网络单向断、旧主恢复、复制滞后和重复提交，报告RPO、RTO、错误率与恢复责任。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "9.21 冷热迁移期间持续写入，MySQL与冷库怎样联合读取且不重不漏"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷热联合读取要按实体身份和版本合并并保留删除屏障，迁移使用一致基线加增量追平后再切权威。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：迁移期间持续写怎样不重不漏；MySQL与冷库如何联合查询；分页会不会重复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷库、实体和一致性目标需明确，冷热迁移不等于只读副本复制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "访问场景与位置目录"
+    },
+    {
+      "type": "paragraph",
+      "text": "近期交易、运行中任务和高频更新通常读在线热库；历史检索、审计/报表可能读冷层；跨时间范围查询需要统一查询层。按业务ID定位时查受信位置目录，按时间范围定位时查分区manifest；同一记录迁移不能改变业务主键。冷层若需分钟级取回就返回异步任务/明确等待，不把超时解释成不存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个迁移单元保存source、target、epoch、状态、快照水位与已应用增量水位。COPYING/CATCHING_UP期间旧库仍为写权威，强新鲜点查优先旧库；目标追平并完成切换后新位置才权威。读取方固定一个manifest版本，切换时旧位置保留可读窗口或返回新epoch重试，防一次查询前后读两个互不相容的世界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "快照不能漏掉持续写入"
+    },
+    {
+      "type": "paragraph",
+      "text": "增量捕获必须从能衔接快照的位置开始，不能等复制完才打开 CDC。先取得一致快照和日志位置，复制存量时就保留该位置之后的增量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "增量包含插入、更新、删除墓碑和稳定事件或事务标识，目标按版本幂等应用，避免旧快照盖过新值。日志保留要长于复制及故障恢复窗口；一旦断档，重做一致基线，不能猜位置接着跑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "切换前排空该单元旧写、追到最终屏障、校验后交接epoch；或使用经过证明的在线路由协议。源库事务顺序/版本必须可比较，跨分片用一致快照协议或显式分片水位向量，不能把机器本地时间戳当全局事务顺序。冷存储不支持原位更新时可采用不可变基线+增量/删除文件和原子manifest发布。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "联合读先裁定版本，再过滤、排序与统计"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移重叠期同主键可能两边都在。以(tenant,id)合并，选择不晚于指定asOf水位的最高业务版本；同版本不同内容是冲突告警，不能任意偏向MySQL。删除墓碑胜过旧实体，否则冷库会复活已删数据。两个库分别SUM/COUNT后相加或简单UNION DISTINCT整行都不正确：新旧行不同值仍可能被算两次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷热联合读，顺序应是先定最新版本，再按可变字段过滤。若冷库旧行 status=ACTIVE 被选中，热库新行 INACTIVE 先被过滤掉，就会错误返回旧 ACTIVE。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应先拿到候选 ID 对应的最新版本或墓碑，再判断条件；或用不重叠权威分区证明过滤下推安全。分页固定 asOf 和 manifest，以唯一稳定排序键归并；两边各取 K 条后去重，可能不够 K 或漏后续，要继续拉取。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "两边没有共同快照时如何回答一致性"
+    },
+    {
+      "type": "paragraph",
+      "text": "MySQL一个RR事务不覆盖对象冷库。若要可重复报表，可等增量应用至约定水位，再读取保留该水位历史的快照/版本；只保存最新值时无法事后重建任意旧时刻。若只需最终一致，返回各分区asOf/新鲜度与可能滞后，不声称跨库强一致。点查读己之写可携最低提交版本等待或回源权威；持续超时不能用旧冷值伪装最新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移前后做主键/版本/墓碑、分段校验和及业务不变量核对；限制复制IO，监控日志保留余量、追平延迟、冷查询p99。回滚必须纳入切后新写，不是把目录改回旧副本；权限变化和删除也要覆盖缓存/冷恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实际Java合并验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "ColdMerge接收已经在同一水位可读的两份版本历史，按租户/ID/版本选择，先处理墓碑和冲突后过滤分页。代码包含水位、重复、删除、旧状态过滤反例、跨租户、游标、零页、冲突和100种输入排列测试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是全量内存参考算法，R条输入、U个ID约O(R log U+U)，保存输入版本冲突检查O(R)及赢家O(U)。它不自行建立MySQL/冷库快照，不实现CDC网络、生产大数据流式归并或任意排序分页；这些前提需在真实存储集成测试，不能把Java列表一致当两库已一致。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码：ColdMerge.java"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下代码实现共同水位下的内存合并参考算法，适用前提与能力边界见上文。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "023/ColdMerge.java",
+      "value": "import java.util.*;\nimport java.util.function.Predicate;\n\n/** Merge version histories from two already-consistent snapshots at a shared watermark. */\npublic final class ColdMerge {\n    public record Row(String tenant, String id, long version, boolean deleted, String value) {\n        public Row {\n            if (tenant == null || tenant.isBlank() || id == null || id.isBlank() || version < 0\n                    || (!deleted && value == null)) throw new IllegalArgumentException(\"row\");\n        }\n    }\n    public static List<Row> page(List<Row> hot, List<Row> cold, String tenant, long watermark,\n                                 String afterId, int limit, Predicate<Row> filter) {\n        Objects.requireNonNull(hot); Objects.requireNonNull(cold); Objects.requireNonNull(filter);\n        if (tenant == null || tenant.isBlank() || watermark < 0 || limit < 0)\n            throw new IllegalArgumentException(\"query\");\n        Map<String, Row> winners = new TreeMap<>();\n        Map<String, Map<Long,Row>> versions = new HashMap<>();\n        for (List<Row> source : List.of(hot, cold)) for (Row row : source) {\n            Objects.requireNonNull(row);\n            if (!row.tenant().equals(tenant) || row.version() > watermark) continue;\n            Row same = versions.computeIfAbsent(row.id(), ignored -> new HashMap<>()).putIfAbsent(row.version(), row);\n            Row old = winners.get(row.id());\n            if (same != null && !same.equals(row))\n                throw new IllegalStateException(\"same version, conflicting contents\");\n            if (old == null || row.version() > old.version()) winners.put(row.id(), row);\n        }\n        // Resolve newest version/tombstone BEFORE filtering, paging, or aggregating.\n        List<Row> result = new ArrayList<>();\n        for (Row row : winners.values()) {\n            if (result.size() == limit) break;\n            if (!row.deleted() && (afterId == null || row.id().compareTo(afterId) > 0) && filter.test(row))\n                result.add(row);\n        }\n        return List.copyOf(result);\n    }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    public static void main(String[] args) {\n        Row a1 = new Row(\"t\", \"a\", 1, false, \"active\");\n        Row a2 = new Row(\"t\", \"a\", 4, false, \"inactive\");\n        Row b1 = new Row(\"t\", \"b\", 2, false, \"active\");\n        Row b2 = new Row(\"t\", \"b\", 5, true, null);\n        Row c1 = new Row(\"t\", \"c\", 3, false, \"active\");\n        Row c2 = new Row(\"t\", \"c\", 9, false, \"future\");\n        List<Row> cold = List.of(a1, b1, c1);\n        List<Row> hot = List.of(a2, b2, c1, c2, new Row(\"other\", \"a\", 6, false, \"secret\"));\n        var active = page(hot, cold, \"t\", 6, null, 10, r -> r.value().equals(\"active\"));\n        check(active.equals(List.of(c1))); // no stale-filter match, delete resurrection or other tenant\n        check(page(hot, cold, \"t\", 3, null, 10, r -> true).equals(List.of(a1, b1, c1)));\n        check(page(hot, cold, \"t\", 6, null, 1, r -> true).equals(List.of(a2)));\n        check(page(hot, cold, \"t\", 6, \"a\", 1, r -> true).equals(List.of(c1)));\n        check(page(hot, cold, \"t\", 6, \"c\", 1, r -> true).isEmpty());\n        check(page(hot, cold, \"t\", 6, null, 0, r -> true).isEmpty());\n        try { page(List.of(new Row(\"t\", \"a\", 1, false, \"bad\")), cold, \"t\", 6, null, 10, r -> true);\n            throw new AssertionError(\"conflict must fail\"); } catch (IllegalStateException expected) { }\n        Random random = new Random(165);\n        for (int run = 0; run < 100; run++) {\n            List<Row> shuffledHot = new ArrayList<>(hot), shuffledCold = new ArrayList<>(cold);\n            Collections.shuffle(shuffledHot, random); Collections.shuffle(shuffledCold, random);\n            check(page(shuffledHot, shuffledCold, \"t\", 6, null, 10, r -> true).equals(List.of(a2,c1)));\n        }\n        System.out.println(\"PASS ColdMerge: watermark, duplicate, tombstone, latest-before-filter, tenant, pagination, zero limit, version conflict, 100 permutations\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mysql-s8517",
+  "targetOrigin": "authored"
+}

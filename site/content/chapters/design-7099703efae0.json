@@ -1,0 +1,522 @@
+{
+  "entries": [
+    {
+      "id": "scenario-seckill-system",
+      "number": "场景 16",
+      "title": "秒杀系统设计（含运行中增加库存）",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "静态页面与鉴权前置，入口分层限流，Redis/Lua 原子预扣库存并做一人一单去重，通过 MQ 削峰异步创建订单；数据库最终扣减和对账兜底。运行中加库存要维护库存版本/增量事件，避免覆盖并发扣减。",
+      "description": "设计高并发秒杀系统，并回答“秒杀进行中如何增加库存”。系统需要抗瞬时流量、避免超卖、保证一人一单、下单异步化，同时处理 Redis/DB 不一致和库存动态调整。",
+      "metrics": "峰值请求远高于下单量；不超卖；核心链路低延迟；可降级",
+      "components": "CDN / Gateway / Rate Limit / Redis Lua / MQ / Order Service / MySQL / Reconciler",
+      "requirements": [
+        "页面、商品详情尽量静态化并走 CDN，只有真正抢购请求进入核心链路。",
+        "网关按用户/IP/设备限流，并提前校验活动时间与资格。",
+        "Redis Lua 原子执行“用户是否已抢 + stock>0 + stock-- + 标记用户”。",
+        "成功预扣后只返回“排队中”，通过 MQ 异步创建订单，避免同步 DB 承受峰值。"
+      ],
+      "architecture": [
+        "活动开始前把可售库存、用户资格和活动版本预热到 Redis；页面与静态资源尽量走 CDN。",
+        "抢购请求执行一个短小 Lua/Redis Function：校验一人一单、stock>0、原子 stock--，并把 reservation/requestId 写入同一 Redis 数据结构。若采用 Redis Stream，可在同一脚本中 XADD 事件，从而避免“扣库存成功但应用进程还没发 MQ 就崩溃”的窗口。",
+        "Order Consumer 按 requestId 幂等创建订单并落 MySQL；失败进入重试/死信并由 Reconciler 根据 reservation 状态做补偿。若最终仍选 Kafka/RocketMQ，而不是 Redis Stream，就必须显式设计 Redis→MQ 之间的可靠投递与对账，不能假设跨系统原子。",
+        "库存动态增加不要 SET stock=newTotal 覆盖并发扣减，而是持久化 AddStock(delta, version) 变更流水，再用 INCRBY/Lua 原子增加 Redis 可售量；版本号用于幂等。",
+        "后台对账 Redis reservation、订单状态、库存流水与实际可售库存，修复孤儿预占、重复释放和消息丢失。"
+      ],
+      "dataFlow": [
+        "CDN/网关 → 资格与限流 → Redis Lua 预扣。",
+        "成功 → MQ → 订单服务 → MySQL。",
+        "超时未支付 → 关闭订单 → 释放库存事件。",
+        "运营加库存 → 库存变更流水 → 原子增加 Redis 可售量 → 对账。"
+      ],
+      "keyPoints": [
+        "Redis Lua/Function 只能保证 Redis 内部多条命令原子，不能把 Redis 与外部 MQ/数据库自动变成同一事务；跨系统必须靠可靠事件、幂等和对账。",
+        "一人一单、库存预扣、reservation 记录最好在同一原子步骤完成，否则并发和进程崩溃会留下难以恢复的中间状态。",
+        "增加库存用 delta 事件而不是绝对值覆盖，是为了避免和并发 stock-- 丢更新；库存变更本身也要有 version/requestId 去重。",
+        "秒杀最重要的是让绝大多数失败请求尽早、低成本地被拒绝，并把进入订单系统的流量控制在可承受范围。"
+      ],
+      "followups": [
+        "Redis 预扣成功但 MQ 发布失败怎么办？",
+        "Redis 和 DB 哪个库存是最终事实？如何做对账？",
+        "活动开始瞬间 key 变超级热，单 Redis key 扛不住怎么办？",
+        "用户付款超时释放库存后，如何避免同一库存被重复释放？"
+      ],
+      "code": "// Redis 中的原子预占：所有 key 在 Cluster 下要放同一 hash-tag\nreserve(userId, requestId):\n    if alreadyBought(userId): return DUPLICATE\n    if stock <= 0: return SOLD_OUT\n    stock -= 1\n    markReservation(requestId, userId, status=PENDING)\n    XADD orderStream requestId userId   // 可与上面同一 Redis 脚本原子执行\n    return QUEUED\n\nconsumer(event):\n    if db.idempotencyExists(event.requestId): ACK\n    tx { createOrder(event); markReservationConfirmed(event.requestId) }\n\n// 动态加库存用 delta + version，避免覆盖并发 stock--\nonAddStock(delta, version):\n    if dedup(version):\n        appendInventoryLedger(delta, version)\n        redis.incrBy(stockKey, delta)",
+      "capacityPlan": [
+        "把“抢购请求峰值”和“真正库存/订单 TPS”分开。网关与 Redis 扛前者，MQ/订单服务只需要消化被预占成功的有限流量。",
+        "热 key 若超过单 Redis shard 能力，可做资格令牌预分片/库存分段，但要接受更复杂的余量回收和精确性。"
+      ],
+      "consistency": [
+        "Redis reservation 是实时闸门，MySQL 订单/库存流水是持久事实；跨 Redis、MQ、DB 不存在免费原子事务，要靠 requestId 幂等、可靠日志和对账。",
+        "支付超时释放、消费失败补偿、运营加库存都必须是带唯一事件 ID 的状态迁移，防止重复增减。"
+      ],
+      "failureModes": [
+        "Redis 预占后应用崩溃：用同 Redis Stream 原子记录事件，或可靠扫描 PENDING reservation 补发；不能只依赖“随后发 MQ”。",
+        "Consumer 重复/宕机用 DB 幂等键和 reservation 状态恢复；对账修复孤儿预占。"
+      ],
+      "observability": [
+        "监控入口拒绝率、Lua P99、stock/reservation 差异、stream/MQ lag、下单成功率、补偿量和超卖/负库存告警。"
+      ],
+      "interviewAnswer": "秒杀要把绝大多数流量挡在便宜层：CDN/资格/限流后，用 Redis 原子做一人一单和库存预占，再通过可靠事件异步创建订单。我要特别说明 Redis 与 MQ/DB 不是一个事务，必须用 reservation、幂等和对账闭环。",
+      "tradeoffs": [
+        "Redis 预扣能把 DB 从峰值中隔离，但引入 Redis/订单事实对账；直接 DB 扣减语义简单却通常扛不住极端瞬时流量。",
+        "严格全局库存 key 易成热点；库存分片可扩展，但余量归并、动态加库存和精确售罄判断更复杂。"
+      ],
+      "security": [
+        "请求资格、签名/验证码/设备风控和用户级限流防脚本抢购；库存与订单管理接口必须 RBAC 和审计。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    },
+    {
+      "id": "scenario-red-packet",
+      "number": "场景 30",
+      "title": "抢红包设计（微信 / 支付宝）",
+      "idea": "预分配用二倍均值法或线段切割法，并发控制用 Redis Lua 原子扣减，公平性用随机算法。难点在高并发和资金安全。",
+      "description": "设计抢红包系统：支持群红包、拼手气红包、普通红包。要求高并发（10w QPS）、资金安全、公平性。",
+      "metrics": "QPS 10w+；资金安全；公平性",
+      "components": "Redis / Lua / MySQL / MQ / 风控",
+      "requirements": [
+        "预分配：发红包时预分配金额（另一种做法是领取时用二倍均值实时计算）",
+        "并发控制：Redis Lua 原子扣减",
+        "公平性：二倍均值法或线段切割法",
+        "资金安全：防止超发、防止重复领取"
+      ],
+      "capacityPlan": [
+        "抢红包峰值 QPS ≈ 同时抢的在线人数 / 抢完耗时（秒）；发红包 TPS、拆红包 TPS 分开估算",
+        "存储 = 红包数 × (金额 + 元数据)"
+      ],
+      "architecture": [
+        "预分配：发红包时用二倍均值法预分配金额到 Redis List",
+        "并发控制：Redis Lua 原子扣减，防止超发",
+        "公平性：二倍均值法（剩余金额 / 剩余人数 × 2 为上限的随机数）",
+        "资金安全：Redis 扣减 + DB 对账"
+      ],
+      "dataFlow": [
+        "发红包 → 预分配金额 → Redis List",
+        "抢红包 → Redis Lua 原子扣减 → 返回金额",
+        "抢红包 → MQ → 异步落 DB → 对账"
+      ],
+      "consistency": [
+        "资金安全：Redis 扣减 + DB 对账"
+      ],
+      "failureModes": [
+        "Redis 宕机 → 主从切换",
+        "MQ 宕机 → 副本切换"
+      ],
+      "keyPoints": [
+        "二倍均值法是拼手气红包常用的经典算法",
+        "Redis Lua 原子扣减可以防止超发",
+        "资金安全需要 Redis 扣减 + DB 对账",
+        "抢红包要防止重复领取",
+        "红包过期要退回余额"
+      ],
+      "observability": [
+        "监控 QPS、成功率、资金安全"
+      ],
+      "tradeoffs": [
+        "二倍均值法 vs 线段切割法：二倍均值法每次领取的期望相等，但越往后方差越大；线段切割法随机性更强，需处理切点重复"
+      ],
+      "security": [
+        "防止超发",
+        "防止重复领取",
+        "风控检测异常"
+      ],
+      "followups": [
+        "二倍均值法的原理？",
+        "如何防止超发？",
+        "如何防止重复领取？",
+        "红包过期怎么退回？",
+        "如何设计高并发抢红包？"
+      ],
+      "code": "// 抢红包核心代码（Redis Lua）\nString luaScript = \"local remaining = tonumber(redis.call('GET', KEYS[1])) if remaining <= 0 then return 0 end local amount = math.random(1, remaining * 2) amount = math.min(amount, remaining) redis.call('DECRBY', KEYS[1], amount) redis.call('SADD', KEYS[2], ARGV[1]) return amount\";\nLong amount = redis.eval(luaScript, Arrays.asList(\"redpacket:\" + packetId, \"redpacket:users:\" + packetId), userId);",
+      "interviewAnswer": "我会先明确抢红包的核心是预分配、并发控制、公平性。然后给出方案：发红包时用二倍均值法预分配金额到 Redis List，抢红包时用 Redis Lua 原子扣减，资金安全用 Redis 扣减 + DB 对账。最后讨论防止超发和重复领取。关键要能说出二倍均值法的公式和 Redis Lua 的原子性。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "抢红包",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    },
+    {
+      "id": "scenario-single-machine-counter",
+      "number": "场景 4",
+      "title": "单台物理机上的高并发计数器设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "本批场景题",
+      "scenario": true,
+      "idea": "避免所有线程竞争一个热点原子变量：单 JVM 用 LongAdder/分片计数，多进程则每进程局部计数后周期聚合；是否必须实时精确决定读路径与持久化策略。",
+      "description": "在单台物理机上实现高并发计数。面试重点不是只说 AtomicLong，而是识别“一个 cache line 上的 CAS 热点”，再根据是否要求实时精确、是否多进程、是否需要持久化选择分片计数、批量聚合或日志方案。",
+      "metrics": "高 update QPS；低锁竞争；明确精确性与持久化要求",
+      "components": "LongAdder / Striped Counter / Batch Aggregator / WAL(optional)",
+      "requirements": [
+        "先确认是单 JVM 多线程还是同机多进程；两者共享状态方式完全不同。",
+        "确认读取是否要求“这一纳秒的强一致精确值”，还是允许毫秒级聚合延迟。",
+        "确认宕机后计数是否允许丢失；若不允许，需要日志/持久化而不只是内存原子操作。"
+      ],
+      "architecture": [
+        "单 JVM：优先 LongAdder。它把热点计数拆到多个 Cell，不同线程更新不同槽位，读取时再求和，降低 AtomicLong 单点 CAS 竞争。",
+        "需要自定义时可按 threadId/hash 做 striped counter；每个槽位独立更新，查询时汇总。",
+        "同机多进程：每个进程本地计数，周期把 delta 汇总到一个 aggregator；或者用共享内存原子变量/本机 Redis，但要重新评估 IPC 成本。",
+        "需要可靠持久化：更新先追加 WAL/顺序日志，内存聚合异步 checkpoint；重启后日志回放。"
+      ],
+      "dataFlow": [
+        "请求线程只更新自己的 counter stripe，热路径不做全局锁。",
+        "查询线程把所有 stripe 求和；如果 QPS 更高，可以额外维护短周期快照。",
+        "持久化线程批量把增量或快照写盘，避免每次 +1 都 fsync。"
+      ],
+      "keyPoints": [
+        "AtomicLong 在低并发很简单，但高并发时所有核心竞争同一个 CAS cache line，吞吐可能明显下降。",
+        "LongAdder 的 sum() 在并发更新期间不是单个线性化点上的强一致快照，因此必须先问业务能否接受。",
+        "如果是按 key 的很多计数器，还需要解决热 key：可以“key -> 多 stripe”，而不是仅按 key 一个 AtomicLong。",
+        "单机性能优化最终仍受 CPU 核数、内存带宽和持久化 IO 限制，不能无限扩展。"
+      ],
+      "followups": [
+        "为什么 LongAdder 高并发下通常比 AtomicLong 快？代价是什么？",
+        "如果必须每次读取都得到线性一致的精确值，你还会选 LongAdder 吗？",
+        "如果进程崩溃后 1 条计数都不能丢，如何设计 WAL 和恢复？",
+        "如果计数维度有 1000 万个 key，怎样控制内存？"
+      ],
+      "code": "// 单 JVM 高并发：典型选择\nLongAdder counter = new LongAdder();\n\nonRequest():\n    counter.increment()      // 更新分散到多个 Cell\n\nquery():\n    return counter.sum()     // 查询时汇总 Cell\n\n// 需要持久化时：不要每次 +1 都同步刷盘\nperiodically:\n    snapshot = counter.sum()\n    appendOrCheckpoint(snapshot)",
+      "capacityPlan": [
+        "先确认更新 QPS、读取 QPS、线程数以及是否单 JVM；AtomicLong 与 LongAdder 的拐点取决于真实竞争度，应通过 JMH/压测选择。",
+        "若有千万级 key，要估算每 key 对象/Cell 开销，必要时分段、稀疏存储或周期聚合。"
+      ],
+      "consistency": [
+        "LongAdder 适合统计型计数，但 sum() 不是并发更新期间的原子快照；需要线性一致读时改用 AtomicLong/锁或分片后协调快照。",
+        "若崩溃不能丢计数，内存计数只做加速层，必须有 WAL/事件日志或外部 durable source。"
+      ],
+      "failureModes": [
+        "进程崩溃通过 WAL 回放/上游重放恢复；checkpoint 要带 offset，避免重复累计。",
+        "持久化线程落后时应有背压或降级，不能无限堆内存 delta。"
+      ],
+      "observability": [
+        "监控 update throughput、CAS 失败/竞争、读取延迟、WAL lag、checkpoint 耗时和计数恢复差异。"
+      ],
+      "interviewAnswer": "单 JVM统计型热点计数优先 LongAdder，把竞争拆到多个 Cell；但我会主动说明 sum() 不是原子快照。若业务要求强一致读或零丢失，就分别换 AtomicLong/锁与 WAL/事件日志，不能只靠内存原子类。",
+      "tradeoffs": [
+        "AtomicLong 语义直观且读值精确，但热点 CAS 竞争高；LongAdder 写吞吐更高，但 sum() 不是并发更新下的原子快照。",
+        "若要求宕机不丢数据，就必须增加 WAL/外部持久化；这会把“纯内存计数”问题变成 durability/吞吐取舍。"
+      ],
+      "security": [
+        "若计数代表计费/配额，写接口要鉴权并防重复；仅做进程内指标时安全面较小但仍需限制管理接口。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    },
+    {
+      "id": "scenario-distributed-rate-limit",
+      "number": "场景 18",
+      "title": "分布式限流系统设计",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "上传资料补充",
+      "scenario": true,
+      "idea": "网关/服务入口以“本地快速限流 + Redis/集中配额”为核心；需要精确窗口时可用 Redis Lua 原子执行滑动窗口或令牌桶，超高 QPS 更适合配额下发到实例本地以降低 Redis 热路径压力。",
+      "description": "微服务需要对登录、秒杀、开放 API 等接口做分布式限流。多个实例必须共享总体配额，同时要求限流判断低延迟、原子、可降级，并处理 Redis 故障与时钟问题。",
+      "metrics": "限流判断低延迟；总配额误差可控；高可用；可动态配置",
+      "components": "Gateway / Local Token Bucket / Redis Lua / Config Center / Circuit Breaker / Metrics",
+      "requirements": [
+        "限流维度可包括 API、用户、租户、IP、设备等，并支持多层规则组合。",
+        "需要严格全局上限时，Redis Lua 将读计数、判断、更新放在一个原子脚本中。",
+        "窗口算法要说明固定窗口、滑动窗口、漏桶、令牌桶的区别；突发流量通常用令牌桶更自然。",
+        "限流基础设施故障时必须定义 fail-open/fail-close，而不是默认一种策略适用于所有业务。"
+      ],
+      "architecture": [
+        "中低 QPS：用 Redis Lua（或 Redis 7+ Function）原子实现令牌桶/滑动窗口，多实例共享状态；脚本只做短小的读-判断-写，避免长时间阻塞 Redis。",
+        "高 QPS：中心服务周期把全局 quota 分配给各实例，本地令牌桶执行热路径；实例用完再申请，牺牲少量精度换取可扩展性。",
+        "配置中心推送规则版本，客户端本地缓存；规则更新支持灰度。",
+        "Redis 故障时切本地保守限流，核心写操作倾向 fail-close，普通读取可按风险 fail-open。"
+      ],
+      "dataFlow": [
+        "请求 → 本地静态/租户规则。",
+        "需要全局配额 → Lua 原子检查或消费本地租约 token。",
+        "超限快速返回 429/业务错误。",
+        "指标持续上报 allowed/rejected/latency，自动调参与告警。"
+      ],
+      "keyPoints": [
+        "用 Redis ZSET 保存每个请求时间戳可以实现精确滑动窗口，但 member 必须唯一（不能只用毫秒时间戳），而且内存开销与窗口内请求数成正比；高流量时通常更偏向令牌桶/配额租约。Lua/Redis Function 必须保持短小，因为脚本执行具有原子、阻塞语义。",
+        "时间最好使用 Redis TIME 或统一服务端时钟，避免不同实例时钟偏差影响窗口。",
+        "一个超级热点限流 key 可能压垮单 Redis 分片；配额租约/本地桶能把热路径从 Redis 移走。",
+        "限流不是只返回“拒绝”，还应配合排队、降级、熔断和客户端 Retry-After。"
+      ],
+      "followups": [
+        "Redis 挂了限流应该放行还是拒绝？",
+        "如何实现每租户 1000 QPS、单用户 20 QPS 两级规则？",
+        "令牌桶如何允许突发但限制长期平均速率？",
+        "全局配额分到本地后实例宕机，未用完 token 怎么办？"
+      ],
+      "code": "// 严格模式：Redis Lua 原子令牌桶\nallow(key, now):\n    state = load(tokens, lastRefill)\n    tokens = min(capacity, tokens + (now-lastRefill)*rate)\n    if tokens < 1: return REJECT\n    tokens -= 1\n    save(state)\n    return ALLOW\n\n// 超高 QPS：中心 quota -> 各实例本地 bucket\nif localBucket.tryTake(): allow\nelse requestMoreQuotaOrReject()",
+      "capacityPlan": [
+        "严格全局限流每个请求都访问 Redis 时，要估 Redis 单 key/shard QPS 与网络 RTT；超过能力就用配额租约把热路径下沉到实例本地。",
+        "限流配置本身也有基数：API×tenant×user 可能产生海量 key，需要 TTL 和层级合并。"
+      ],
+      "consistency": [
+        "严格模式用单个 Redis 原子脚本更新状态；配额租约模式牺牲少量全局精确度换吞吐，必须说明最大超发界限。",
+        "时间来源应统一；滑动窗口成员需要唯一 ID，令牌桶状态更新要把 refill 与 consume 放同一原子步骤。"
+      ],
+      "failureModes": [
+        "Redis 失败时按业务定义 fail-open/fail-close；本地保守桶作为降级，恢复后逐步重新获取全局配额。",
+        "配置中心不可用时继续使用 last-known-good 规则，规则带 version 防乱序覆盖。"
+      ],
+      "observability": [
+        "监控 allowed/rejected、各维度 key 数、Redis/Lua P99、租约剩余、超发估计、配置版本和 fail-open 次数。"
+      ],
+      "interviewAnswer": "低中 QPS 可以 Redis Lua/Function 做严格全局桶；超高 QPS 则让中心分配 quota，实例本地令牌桶热路径判定。我会说明两者在精确度、Redis 热点和故障策略上的取舍，并明确 fail-open/fail-close。",
+      "tradeoffs": [
+        "每请求访问 Redis 精确但热点和 RTT 成本高；本地 quota 租约吞吐高但会有可界定的超发。",
+        "滑动窗口精确但记录量大；令牌桶状态小且支持突发，是高 QPS 常用取舍。"
+      ],
+      "security": [
+        "限流 key 应来自可信身份解析，不直接相信客户端传 userId；限制 key 基数避免攻击者制造海量 key 消耗 Redis 内存。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    },
+    {
+      "id": "scenario-order-timeout-close",
+      "number": "场景 10",
+      "title": "订单未支付，超时自动关闭如何实现",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "订单创建时记录 expire_at，并注册延时触发；到期消费者只负责“尝试关闭”，真正状态变更必须用数据库条件更新/CAS校验当前仍未支付，保证与支付回调并发时幂等。",
+      "description": "订单创建后若在规定时间内未支付，需要自动关闭并释放库存/优惠券等资源；同时要处理延时消息丢失、重复投递、支付与关闭同时发生、系统宕机后的补偿。",
+      "metrics": "不漏关；不误关已支付订单；可重试；库存最终一致",
+      "components": "Order DB / Delay Queue or Timer / Payment Callback / Inventory / Reconciler",
+      "requirements": [
+        "订单表保存明确状态与 expire_at，数据库是事实来源。",
+        "到期事件可能重复、延迟甚至丢失，因此关闭动作必须幂等，并有周期扫描兜底。",
+        "支付成功与超时关闭可能并发，必须通过条件更新或状态机保证只能有一个状态跃迁成功。",
+        "释放库存/优惠券等跨服务副作用要使用事务消息、Outbox 或可补偿流程。"
+      ],
+      "architecture": [
+        "创建订单：事务内写 UNPAID + expire_at，同时写 Outbox；异步发布延时消息。",
+        "延时消息到期后执行 UPDATE orders SET status=CLOSED WHERE id=? AND status=UNPAID AND expire_at<=now。只有 affectedRows=1 才继续释放资源。",
+        "支付回调执行 UPDATE ... SET status=PAID WHERE status=UNPAID；谁先 CAS 成功谁获得状态所有权。",
+        "后台 Reconciler 扫描已经过期仍是 UNPAID 的订单，补偿延时队列漏消息。"
+      ],
+      "dataFlow": [
+        "创建订单 → DB + Outbox → Delay Topic。",
+        "支付回调与超时消费者竞争订单状态机。",
+        "成功关闭 → 发送 ReleaseInventory 事件。",
+        "对账任务扫描异常订单并补偿。"
+      ],
+      "keyPoints": [
+        "不要只依赖 Redis key 过期通知：它不是可靠任务队列，事件可能延迟/丢失且故障恢复语义复杂。",
+        "延时消息只负责“提醒检查”，不能认为收到消息就一定能关订单。",
+        "库存释放也必须幂等，否则超时事件重复消费会重复加库存。",
+        "超时时间较长、订单量很大时可使用时间轮、延迟队列、分桶扫描，而不是为每个订单创建 JVM Timer。"
+      ],
+      "followups": [
+        "用户在 14:59.999 支付，而 15:00 超时消息同时到达，怎么保证正确？",
+        "MQ 不支持任意长延时，如何实现 30 分钟/24 小时延时任务？",
+        "订单关闭成功但释放库存消息没发出去怎么办？",
+        "为什么还要对账扫描，延时 MQ 不是已经可靠了吗？"
+      ],
+      "code": "createOrder():\n    tx {\n        insert order(status=UNPAID, expireAt=now+15m)\n        insert outbox(ORDER_EXPIRE, orderId, deliverAt=expireAt)\n    }\n\nonExpire(orderId):\n    changed = db.casCloseIfUnpaidAndExpired(orderId)\n    if changed:\n        publish ReleaseInventory(orderId)\n\nonPaymentSuccess(orderId):\n    return db.casPaidIfUnpaid(orderId)",
+      "capacityPlan": [
+        "估算订单创建 TPS、超时比例和同时到期峰值；延时队列/时间轮需要按“到期事件 TPS”而不是订单总数扩容。",
+        "周期补偿扫描使用 expire_at+status 索引并分桶，避免扫全表。"
+      ],
+      "consistency": [
+        "数据库订单状态是事实源；支付与关闭都通过 status=UNPAID 条件更新争夺唯一状态迁移。",
+        "释放库存/优惠券采用幂等事件与 Outbox，重复超时消息不会重复释放。"
+      ],
+      "failureModes": [
+        "延时消息丢失由 Reconciler 扫描过期未支付订单兜底；消息重复由 CAS 和幂等键消化。",
+        "关闭成功但释放资源失败时进入重试/对账，而不是回滚订单状态。"
+      ],
+      "observability": [
+        "监控到期消息 lag、CAS 失败原因、过期未关闭数量、资源释放失败和补偿扫描修复量。"
+      ],
+      "interviewAnswer": "延时消息只当“提醒器”，数据库状态机才是最终判断。创建订单时写 expire_at+Outbox；到期后 CAS 从 UNPAID→CLOSED，支付回调也 CAS 到 PAID，谁先成功谁赢。消息丢失靠索引扫描补偿，副作用全部幂等。",
+      "tradeoffs": [
+        "延时消息实时性好、扫描压力低，但不是最终事实；补偿扫描更可靠但有 DB 成本。工程上通常组合使用。",
+        "严格同步释放库存能减少短暂不一致，却把订单、库存耦合成更长事务；事件驱动更可扩展但依赖幂等与对账。"
+      ],
+      "security": [
+        "超时关闭事件和支付回调都必须鉴权/验签；订单状态变更带 actor/requestId 审计，避免伪造释放库存。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    },
+    {
+      "id": "scenario-delay-queue",
+      "number": "场景 24",
+      "title": "延迟队列设计（订单超时、定时任务）",
+      "idea": "DB 轮询简单但性能差；Redis ZSet 性能好但重启丢数据；RabbitMQ TTL + DLX 成熟但精度差；RocketMQ 延迟级别固定；时间轮精度高但单机。生产首选 RocketMQ 或时间轮。",
+      "description": "设计延迟队列：支持任意延迟时间的消息投递（订单 30 分钟未支付自动关闭）。高精度、高吞吐、高可用。",
+      "metrics": "延迟精度秒级；QPS 10w+；消息不丢失",
+      "components": "RocketMQ / Redis ZSet / RabbitMQ / TimeWheel / DB",
+      "requirements": [
+        "高精度：延迟误差 < 1 秒",
+        "高吞吐 QPS 10w+",
+        "消息不丢失",
+        "支持任意延迟"
+      ],
+      "capacityPlan": [
+        "QPS = 延迟消息产生频率",
+        "存储 = 消息大小 × 延迟时间 × QPS"
+      ],
+      "architecture": [
+        "DB 轮询：QPS 上限 ~1k",
+        "Redis ZSet：score 为过期时间戳",
+        "RabbitMQ TTL + DLX：成熟但精度差",
+        "RocketMQ 延迟级别：18 个固定级别",
+        "时间轮：Netty HashedWheelTimer 精度高"
+      ],
+      "dataFlow": [
+        "Producer → 延迟队列 → 定时触发 → Consumer",
+        "Redis ZSet：ZADD → ZRANGEBYSCORE 扫描"
+      ],
+      "consistency": [
+        "消息不丢失：持久化 + 确认",
+        "延迟精度：取决于扫描频率"
+      ],
+      "failureModes": [
+        "Redis 重启丢数据 → RDB/AOF + 主从",
+        "扫描线程宕机 → 多实例 + 分布式锁"
+      ],
+      "keyPoints": [
+        "DB 轮询精度取决于间隔",
+        "Redis ZSet 需配合持久化",
+        "RabbitMQ TTL 是消息级别",
+        "RocketMQ 18 个级别固定",
+        "时间轮精度取决于槽位数"
+      ],
+      "observability": [
+        "监控 QPS、延迟精度、堆积量"
+      ],
+      "tradeoffs": [
+        "DB vs Redis：DB 简单但性能差",
+        "RabbitMQ vs RocketMQ：RabbitMQ 任意延迟但精度差"
+      ],
+      "security": [
+        "延迟消息加密传输"
+      ],
+      "followups": [
+        "DB 轮询 QPS 上限？",
+        "Redis ZSet 如何保证不丢数据？",
+        "RabbitMQ TTL 怎么实现？",
+        "RocketMQ 延迟级别怎么扩展？",
+        "时间轮原理？"
+      ],
+      "code": "// Redis ZSet 延迟队列核心代码\npublic void add(String taskId, long delayMillis) {\n    long score = System.currentTimeMillis() + delayMillis;\n    redis.zadd(DELAY_QUEUE, score, taskId);\n}\npublic List<String> poll() {\n    long now = System.currentTimeMillis();\n    Set<String> tasks = redis.zrangeByScore(DELAY_QUEUE, 0, now);\n    if (!tasks.isEmpty()) redis.zrem(DELAY_QUEUE, tasks.toArray());\n    return new ArrayList<>(tasks);\n}",
+      "interviewAnswer": "我会先明确延迟队列的核心是定时触发 + 高精度 + 高吞吐。然后给出方案：低并发用 DB 轮询，中并发用 Redis ZSet，高并发用 RocketMQ 或时间轮。最后讨论各种方案的延迟精度和可靠性。关键要能说出 Redis ZSet 的持久化问题和 RocketMQ 的延迟级别限制。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "延迟队列",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    },
+    {
+      "id": "scenario-qps-capacity-planning",
+      "number": "场景 9",
+      "title": "接口 QPS 评估：上线流量预估与服务容量压测",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "先从业务量反推“会来多少 QPS”，再通过分层压测测出“单实例能扛多少 QPS”，最后用峰值系数、冗余、故障容量和延迟 SLO 算实例数；QPS 不能只靠拍脑袋或单机 CPU 利用率估。",
+      "description": "面试中常连续追问两个问题：接口上线后预计会有多少 QPS？以及这个问答/业务接口本身能抗多少 QPS？前者是业务容量规划，后者是性能基准与瓶颈分析。",
+      "metrics": "峰值 QPS；P95/P99 延迟；错误率；CPU/GC/连接池；N+1 冗余",
+      "components": "Traffic Model / Load Generator / Metrics / Dependency Stub / Capacity Model / Autoscaling",
+      "requirements": [
+        "业务预估要从 DAU/请求次数/时间分布/峰值系数推导，而不是拿日均请求除 86400 就结束。",
+        "容量测试必须定义 SLO，例如 P99 < 200ms、错误率 < 0.1%，超过 SLO 的 QPS 不能算“扛得住”。",
+        "分别测服务自身 CPU 能力、真实依赖链路能力和数据库/缓存极限，定位最先饱和的资源。",
+        "上线容量要预留机器故障、流量预测误差、GC 抖动和突发流量余量。"
+      ],
+      "architecture": [
+        "需求侧：预计峰值 QPS = 活跃用户 × 人均调用次数 × 峰值集中系数 / 峰值时间窗，并叠加增长与活动系数。",
+        "供给侧：固定实例规格，逐阶增加并发，记录 throughput、P99、错误率、CPU、GC、连接池、下游 QPS；当 SLO 开始失守时取前一档作为安全容量。",
+        "实例数 = 预计峰值 QPS / 单实例安全 QPS，再除以目标最大利用率（如 60%~70%）并满足 N+1/N+2 故障冗余。",
+        "上线后用真实指标校准模型，配置 HPA/ASG，但不要把自动扩容当成容量规划的替代。"
+      ],
+      "dataFlow": [
+        "业务指标 → 流量模型 → 峰值 QPS。",
+        "压测流量 → 服务 → 下游依赖 → 指标平台。",
+        "找到第一个瓶颈 → 优化/扩容 → 重测。",
+        "预估峰值 + 安全容量 → 实例数、连接池、DB/Redis 容量与限流阈值。"
+      ],
+      "keyPoints": [
+        "平均 QPS 往往没有价值，系统是被峰值打挂的。",
+        "压测必须避免“客户端先成为瓶颈”；压测机、网络、连接复用和数据准备都要验证。",
+        "问答接口如果依赖大模型/外部 API，通常要同时看并发数、token/s、队列等待时间，而不只是 HTTP QPS。",
+        "容量值和软件版本、JVM 参数、实例规格、依赖配置绑定，版本变化后需要回归压测。"
+      ],
+      "followups": [
+        "日请求 1 亿如何估峰值 QPS？如果 20% 请求集中在 10 分钟呢？",
+        "接口是 IO 密集而不是 CPU 密集，线程池和连接池如何估？",
+        "单实例 1000 QPS，为什么 10 台不一定就是 10000 QPS？",
+        "如何做生产环境的灰度压测与影子流量？"
+      ],
+      "code": "estimatePeakQps():\n    peakRequests = DAU * callsPerUser * peakShare\n    return peakRequests / peakWindowSeconds * growthFactor\n\nbenchmarkOneInstance():\n    for qps in stepUp():\n        runLoad(qps, duration=5min)\n        if p99 > SLO || errorRate > threshold:\n            return previousQps\n\nrequiredInstances = ceil(peakQps / safeQpsPerInstance / targetUtilization)\nrequiredInstances += failureReserve",
+      "capacityPlan": [
+        "需求侧从峰值时间窗推 QPS；供给侧在固定实例规格下阶梯压测，只有满足 P99/错误率 SLO 的吞吐才算单实例安全容量。",
+        "实例数还要乘增长系数并留 N+1/N+2 与目标利用率余量；IO 型服务同时看并发数≈QPS×平均响应时间（Little 定律）。"
+      ],
+      "consistency": [
+        "容量规划本身不改变数据一致性，但压测必须使用与生产一致的读写比例、数据基数和缓存命中，否则结论会失真。"
+      ],
+      "failureModes": [
+        "必须验证单实例/单 AZ 故障后的剩余容量；自动扩容有启动延迟，所以突发流量仍需要预留 headroom 和限流。"
+      ],
+      "observability": [
+        "压测同时采集 throughput、P50/P99、error、CPU、GC、run queue、连接池、DB/Redis 指标和下游延迟，定位首个饱和点。"
+      ],
+      "interviewAnswer": "我会分“需求侧峰值 QPS”和“供给侧安全 QPS”两步：先按峰值窗口估流量，再用 SLO 约束做阶梯压测找到单实例安全容量，最后加目标利用率、增长和故障冗余计算实例数，并用线上数据持续校准。",
+      "tradeoffs": [
+        "高利用率节省机器但尾延迟和故障余量差；低利用率成本更高但更抗突发。",
+        "只做平均 QPS 估算简单但危险，容量应该按峰值窗口、P99 SLO 和 N-1 故障模型共同确定。"
+      ],
+      "security": [
+        "压测避免使用真实敏感数据；生产压测要有流量标记、隔离和一键停止，防止把真实用户/下游拖垮。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "高并发与交易"
+    }
+  ]
+}

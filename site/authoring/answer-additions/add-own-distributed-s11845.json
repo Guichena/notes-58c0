@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s11845",
+  "entryId": "ai-agent-8",
+  "expectedOriginalHash": "f94c1221a862fc6241a23d0b409829dfad1cd437aa96246c9cdd91558f41bc8e",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "13.11 Function Calling完整流程与Java Tool封装怎样处理非法参数失败和超时"
+    },
+    {
+      "type": "paragraph",
+      "text": "Function Calling由模型提出结构化调用，宿主验证参数权限后执行并返回结构化结果，超时须暴露是否可能有副作用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Function Calling完整过程是什么；Java Tool怎样封装；非法参数失败和超时怎样返回。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java示例从已解码参数开始，展示有界执行与超时合同，不包含真实模型或Spring AI联调。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "模型提出调用，应用决定是否执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "Function Calling是模型提出调用，应用真正执行。启动时注册唯一toolName/version、用途、输入JSON Schema、输出合同和本地回调，再按会话最小权限选择要暴露给模型的工具。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一轮调用按顺序进行：发送对话与工具定义→接收完整tool call ID/name/arguments并解析→查allowlist→校验schema和对象权限→执行→返回同callId的结构化结果→由控制器在预算内继续或终止。模型不会直接进入JVM调用方法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "适合Tool的是边界明确、输入输出可验证、可计量的查询/计算/业务动作，例如带范围的文档检索、订单查询、受约束草稿生成；不要暴露任意反射类名或无限制shell。复杂动作可以拆preview/validate与commit，写操作声明幂等/查询/补偿契约，审批绑定具体目标和参数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Schema只是第一道校验"
+    },
+    {
+      "type": "paragraph",
+      "text": "Schema要写清object、properties、required、类型、enum、数值/长度范围，以及additionalProperties限制。工具描述含糊、同义工具重复或schema过大，都会增加选择难度和token开销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JSON解析本身还要限制原始字节、嵌套深度、数组长度、重复键策略和数值溢出，禁止任意类型反序列化。生产可使用受维护的schema验证器；模型宣称strict，不能替代本地校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例只接受amount整数1..100且不允许额外键；上下文tenant/user/capabilities由认证后服务端创建，不让模型在JSON里选择租户。schema合法仍须检查对象归属、资源当前版本、业务状态和授权；真实身份认证/资源ACL未在例子实现，不能把一个Set当完整鉴权系统。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java封装与错误契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java封装先固定注册表，再让回调接收不可变可信Context和已验证的typed参数。资源上同时限制线程池、连接池、响应大小和总deadline。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例保持callId，返回OK、UNKNOWN_TOOL、FORBIDDEN、INVALID_ARGUMENT、OVERLOADED、TIMEOUT_UNKNOWN或EXECUTION_UNKNOWN，错误中不暴露原异常里的秘密。业务若能证明“失败且无效果”，可增加确定状态；任意抛异常不能自动等同于无效果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "timeout要覆盖校验、排队和等待的总预算。Future.cancel(true)只是在请求中断，工具可能忽略中断，也可能已经发出远端写；TIMEOUT_UNKNOWN要按稳定operationId查询，不能换业务键盲重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "响应已经结束，不代表worker已经退出。资源名额等任务体真正退出后再释放；不合作代码需要进程/容器隔离和监督，不能在JVM内安全强停任意线程。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "熔断降级和幂等必须是执行器规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "按tool/依赖维度记录足够样本的失败/慢调用，打开断路器后快速失败/排队，半开有限探针逐步恢复；非法参数/无权调用不应计成服务故障。隔离池避免慢工具占满所有能力，重试仅在错误类型、operationId幂等和总预算允许时退避，不能通过换工具绕开拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只读工具可以返回带来源/版本/时效的缓存或缺项结果；有副作用工具不伪造成功。持久operation账与目的端幂等处理重放，callId用于模型协议关联而非天然业务去重键；多条并行tool call按ID返回，结果中的外部文本仍是数据，不能提升权限。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与未实现范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "ToolWrapper测试必填/整数/范围/额外参数、未知工具、缺能力、不可变上下文、同callId响应、异常脱敏和4096字符结果上限；用闸门控制真实忽略中断的任务，等待超时后验证线程仍占执行槽，再确定性塞满有界队列测试OVERLOADED，最后放行并确实清理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例子从已经由受限JSON解析器生成的Map开始，整数解码只接受Integer/Long。它没有实现受限JSON解析器、通用JSON Schema引擎、真实认证/资源ACL、模型协议SDK、持久幂等账或断路器，这些都需要外围补齐。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输出也是先生成、再检查长度，无法阻止工具提前创建巨量对象；生产还需流式字节限额和隔离。代码能运行本地执行核心，不代表这些外围义务已经实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下代码实现上述本地合同；它的状态与故障边界不能自动推广到外部系统。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "042/ToolWrapper.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Java execution boundary AFTER bounded JSON parsing. No model SDK, JSON parser, real auth or durable ledger. */\npublic final class ToolWrapper implements AutoCloseable {\n    public record Context(String tenant, String user, Set<String> capabilities) {\n        public Context {\n            if (tenant == null || tenant.isBlank() || user == null || user.isBlank()) throw new IllegalArgumentException();\n            capabilities = Set.copyOf(capabilities);\n        }\n    }\n    public record Call(String callId, String name, Map<String, Object> arguments) { }\n    public record Reply(String callId, String status, String data) { }\n    @FunctionalInterface public interface Body { String run(Context context, int amount) throws Exception; }\n    public record Tool(String capability, Body body) { public Tool { Objects.requireNonNull(capability); Objects.requireNonNull(body); } }\n    private final Map<String, Tool> registry;\n    private final ThreadPoolExecutor executor;\n    public ToolWrapper(Map<String, Tool> registry, int workers, int queueCapacity) {\n        this.registry = Map.copyOf(registry);\n        if (workers <= 0 || queueCapacity <= 0) throw new IllegalArgumentException();\n        executor = new ThreadPoolExecutor(workers, workers, 0, TimeUnit.MILLISECONDS,\n                new ArrayBlockingQueue<>(queueCapacity), new ThreadPoolExecutor.AbortPolicy());\n    }\n    private static int validate(Map<String, Object> args) {\n        if (args == null || !args.keySet().equals(Set.of(\"amount\"))) throw new IllegalArgumentException();\n        Object v = args.get(\"amount\");\n        // Explicit decoding contract: bounded parser materializes integral JSON numbers as Integer or Long.\n        if (!(v instanceof Integer || v instanceof Long)) throw new IllegalArgumentException();\n        long n = ((Number) v).longValue(); if (n < 1 || n > 100) throw new IllegalArgumentException();\n        return (int) n;\n    }\n    public Reply invoke(Context context, Call call, long timeoutMillis) throws InterruptedException {\n        Objects.requireNonNull(context);\n        if (call == null || call.callId() == null || call.callId().isBlank() || call.callId().length() > 128 ||\n                call.name() == null || timeoutMillis < 1 || timeoutMillis > 60_000) throw new IllegalArgumentException();\n        long start = System.nanoTime(), budget = TimeUnit.MILLISECONDS.toNanos(timeoutMillis);\n        Tool tool = registry.get(call.name());\n        if (tool == null) return new Reply(call.callId(), \"UNKNOWN_TOOL\", \"\");\n        if (!context.capabilities().contains(tool.capability())) return new Reply(call.callId(), \"FORBIDDEN\", \"\");\n        final int amount;\n        try { amount = validate(call.arguments()); } catch (IllegalArgumentException e) { return new Reply(call.callId(), \"INVALID_ARGUMENT\", \"\"); }\n        FutureTask<String> task = new FutureTask<>(() -> {\n            String result = tool.body().run(context, amount);\n            if (result == null || result.length() > 4096) throw new IllegalArgumentException(\"invalid tool result\");\n            return result;\n        });\n        try { executor.execute(task); } catch (RejectedExecutionException e) { return new Reply(call.callId(), \"OVERLOADED\", \"\"); }\n        try {\n            long remaining = budget - (System.nanoTime() - start);\n            if (remaining <= 0) throw new TimeoutException();\n            return new Reply(call.callId(), \"OK\", task.get(remaining, TimeUnit.NANOSECONDS));\n        } catch (TimeoutException e) {\n            task.cancel(true); executor.remove(task);\n            return new Reply(call.callId(), \"TIMEOUT_UNKNOWN\", \"query operation status before retrying effects\");\n        } catch (ExecutionException e) {\n            // A thrown exception does not prove an arbitrary tool had no side effects; avoid secret-bearing stack text.\n            return new Reply(call.callId(), \"EXECUTION_UNKNOWN\", \"verify operation outcome\");\n        } catch (InterruptedException e) {\n            task.cancel(true); executor.remove(task); throw e;\n        }\n    }\n    public int active() { return executor.getActiveCount(); }\n    @Override public void close() {\n        executor.shutdownNow();\n        try {\n            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) throw new IllegalStateException(\"workers still running; external isolation required\");\n        } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }\n    }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    private static Call call(String name, Map<String, Object> args) { return new Call(\"call-1\", name, args); }\n    public static void main(String[] args) throws Exception {\n        Set<String> original = new HashSet<>(Set.of(\"read\")); Context c = new Context(\"tenant-a\", \"u\", original); original.clear();\n        Map<String, Tool> tools = Map.of(\n                \"double\", new Tool(\"read\", (ctx, n) -> ctx.tenant() + \":\" + (2 * n)),\n                \"fail\", new Tool(\"read\", (ctx, n) -> { throw new IllegalStateException(\"secret must not escape\"); }),\n                \"big\", new Tool(\"read\", (ctx, n) -> \"x\".repeat(4097)));\n        try (ToolWrapper w = new ToolWrapper(tools, 2, 2)) {\n            Reply ok = w.invoke(c, call(\"double\", Map.of(\"amount\", 3)), 1000);\n            check(ok.equals(new Reply(\"call-1\", \"OK\", \"tenant-a:6\")));\n            check(w.invoke(c, call(\"none\", Map.of()), 1000).status().equals(\"UNKNOWN_TOOL\"));\n            check(w.invoke(new Context(\"a\", \"u\", Set.of()), call(\"double\", Map.of(\"amount\", 1)), 1000).status().equals(\"FORBIDDEN\"));\n            for (Map<String, Object> bad : List.<Map<String, Object>>of(Map.of(), Map.of(\"amount\", -1), Map.of(\"amount\", 101), Map.of(\"amount\", 1.5), Map.of(\"amount\", \"2\"), Map.of(\"amount\", 2, \"tenant\", \"victim\")))\n                check(w.invoke(c, call(\"double\", bad), 1000).status().equals(\"INVALID_ARGUMENT\"));\n            check(w.invoke(c, call(\"double\", Map.of(\"amount\", 100L)), 1000).data().equals(\"tenant-a:200\"));\n            check(w.invoke(c, call(\"fail\", Map.of(\"amount\", 1)), 1000).equals(new Reply(\"call-1\", \"EXECUTION_UNKNOWN\", \"verify operation outcome\")));\n            check(w.invoke(c, call(\"big\", Map.of(\"amount\", 1)), 1000).status().equals(\"EXECUTION_UNKNOWN\"));\n        }\n        CountDownLatch entered = new CountDownLatch(1), release = new CountDownLatch(1);\n        Tool stubborn = new Tool(\"read\", (ctx, n) -> {\n            entered.countDown(); boolean interrupted = false;\n            for (;;) { try { release.await(); break; } catch (InterruptedException e) { interrupted = true; } }\n            if (interrupted) Thread.currentThread().interrupt(); return \"done\";\n        });\n        ToolWrapper w = new ToolWrapper(Map.of(\"slow\", stubborn), 1, 1);\n        ExecutorService caller = Executors.newSingleThreadExecutor();\n        try {\n            Future<Reply> result = caller.submit(() -> w.invoke(c, call(\"slow\", Map.of(\"amount\", 1)), 300));\n            check(entered.await(5, TimeUnit.SECONDS)); check(result.get(5, TimeUnit.SECONDS).status().equals(\"TIMEOUT_UNKNOWN\"));\n            check(w.active() == 1); // response finished, actual non-cooperative worker still occupies its slot\n            // Queue one inert job directly for a deterministic overload check; no reliance on sleeps or scheduling luck.\n            FutureTask<String> queued = new FutureTask<>(() -> \"queued\"); w.executor.execute(queued);\n            check(w.invoke(c, call(\"slow\", Map.of(\"amount\", 1)), 100).status().equals(\"OVERLOADED\"));\n            check(queued.cancel(true)); check(w.executor.remove(queued));\n        } finally { release.countDown(); caller.shutdownNow(); w.close(); }\n        System.out.println(\"PASS ToolWrapper: allowlist/trusted immutable context, exact callId, required/type/range/additional fields, auth deny, safe errors/result bound, timeout with noncooperative worker still active, deterministic bounded-queue overload, actual cleanup\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "4"
+}

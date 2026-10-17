@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mq-go-code",
+  "kind": "doc",
+  "module": "code",
+  "part": "消息队列与异步系统",
+  "category": "教学参考与完整代码",
+  "title": "Go 脚本控制面的原生状态机",
+  "tags": [
+    "消息队列",
+    "教学边界"
+  ],
+  "sections": [
+    {
+      "id": "s-3713",
+      "title": "完整文件：components/orchestration/go-script/go.mod",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "plaintext",
+          "label": "components/orchestration/go-script/go.mod",
+          "value": "module example.com/mqmanual/scriptcontrol\n\ngo 1.23.0\n"
+        }
+      ]
+    },
+    {
+      "id": "s-3721",
+      "title": "完整文件：components/orchestration/go-script/script_control.go",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "go",
+          "label": "components/orchestration/go-script/script_control.go",
+          "value": "// Package scriptcontrol models the control-plane state machine only.\n// No host exec, network listener, sandbox implementation or durable store is provided.\n// now is trusted authority time; never pass an untrusted client timestamp here.\npackage scriptcontrol\n\nimport (\n \"errors\"\n \"math\"\n \"regexp\"\n \"sync\"\n)\n\ntype Key struct { Tenant, Request string }\ntype Input struct { Key Key; ScriptSHA string; Deadline int64 }\ntype Job struct { Input Input; State, Owner, Output string; Epoch uint64; LeaseUntil int64 }\ntype Store struct { mu sync.Mutex; jobs map[Key]Job; capacity int }\nvar identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)\nvar digest = regexp.MustCompile(`^[a-f0-9]{64}$`)\nvar ErrConflict = errors.New(\"conflict\")\nvar ErrState = errors.New(\"invalid or stale state\")\n\nfunc New(capacity int) *Store {\n if capacity <= 0 { panic(\"positive capacity required\") }\n return &Store{jobs: make(map[Key]Job), capacity: capacity}\n}\n// Authentication and artifact ownership checks belong to the caller before Submit.\nfunc (s *Store) Submit(in Input, now int64) (Job, error) {\n if !identifier.MatchString(in.Key.Tenant) || !identifier.MatchString(in.Key.Request) || !digest.MatchString(in.ScriptSHA) || now < 0 || in.Deadline <= 0 {\n  return Job{}, ErrState\n }\n s.mu.Lock(); defer s.mu.Unlock()\n if old, ok := s.jobs[in.Key]; ok {\n  if old.Input != in { return Job{}, ErrConflict }; return old, nil\n }\n if in.Deadline <= now { return Job{}, ErrState }\n if len(s.jobs) >= s.capacity { return Job{}, errors.New(\"capacity\") }\n j := Job{Input: in, State:\"QUEUED\"}; s.jobs[in.Key] = j; return j, nil\n}\n// The production implementation must commit this CAS/lease in shared durable storage.\nfunc (s *Store) Claim(key Key, owner string, now, ttl int64) (Job, error) {\n if !identifier.MatchString(owner) || now < 0 || ttl <= 0 || ttl > math.MaxInt64-now { return Job{}, ErrState }\n s.mu.Lock(); defer s.mu.Unlock()\n j, ok := s.jobs[key]\n if !ok || j.State != \"QUEUED\" || now >= j.Input.Deadline || j.Epoch == math.MaxUint64 { return Job{}, ErrState }\n j.Epoch++; j.State=\"RUNNING\"; j.Owner=owner; j.LeaseUntil=now+ttl\n if j.LeaseUntil>j.Input.Deadline { j.LeaseUntil=j.Input.Deadline }\n s.jobs[key]=j; return j,nil\n}\nfunc (s *Store) Complete(key Key, owner string, epoch uint64, now int64, output string) (Job,error) {\n if now<0 || len(output)>4096 { return Job{},ErrState }\n s.mu.Lock(); defer s.mu.Unlock()\n j,ok:=s.jobs[key]\n if !ok || j.Owner!=owner || j.Epoch!=epoch { return Job{},ErrState }\n if j.State==\"SUCCEEDED\" { if j.Output!=output { return Job{},ErrConflict };return j,nil }\n if j.State!=\"RUNNING\" || now>=j.LeaseUntil {return Job{},ErrState}\n j.State=\"SUCCEEDED\";j.Output=output;s.jobs[key]=j;return j,nil\n}\n// Expiry never blindly reruns a script whose external effects may already have happened.\nfunc (s *Store) Expire(now int64) error {\n if now<0 {return ErrState};s.mu.Lock();defer s.mu.Unlock()\n for key,j:=range s.jobs {if j.State==\"RUNNING\" && now>=j.LeaseUntil {j.State=\"UNKNOWN\";s.jobs[key]=j}}\n return nil\n}\nfunc (s *Store) Cancel(key Key) (Job,error) {\n s.mu.Lock();defer s.mu.Unlock();j,ok:=s.jobs[key];if !ok{return Job{},ErrState}\n switch j.State {case \"QUEUED\":j.State=\"CANCELLED\";case \"RUNNING\",\"UNKNOWN\":j.State=\"CANCEL_REQUESTED\";case \"CANCELLED\",\"CANCEL_REQUESTED\":return j,nil;default:return Job{},ErrState}\n s.jobs[key]=j;return j,nil\n}\n// Trusted reconciler calls this only after authenticated sandbox status/receipt verification.\n// NOT_STARTED includes proof that the old sandbox cannot later execute. A timeout is not proof.\nfunc (s *Store) Reconcile(key Key, epoch uint64, decision, output string, now int64) (Job,error) {\n if now<0 || len(output)>4096 {return Job{},ErrState};s.mu.Lock();defer s.mu.Unlock()\n j,ok:=s.jobs[key];if !ok || j.Epoch!=epoch || (j.State!=\"UNKNOWN\" && j.State!=\"CANCEL_REQUESTED\") {return Job{},ErrState}\n switch decision {\n case \"NOT_STARTED\":\n  if j.State==\"CANCEL_REQUESTED\" {j.State=\"CANCELLED\"} else if now>=j.Input.Deadline {j.State=\"FAILED\"} else {j.State=\"QUEUED\"}\n case \"SUCCEEDED\":j.State=\"SUCCEEDED\";j.Output=output\n case \"FAILED\":j.State=\"FAILED\";j.Output=output\n default:return Job{},ErrState\n }\n s.jobs[key]=j;return j,nil\n}\nfunc (s *Store) Get(key Key) (Job,bool) {s.mu.Lock();defer s.mu.Unlock();j,ok:=s.jobs[key];return j,ok}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-3809",
+      "title": "完整文件：components/orchestration/go-script/script_control_test.go",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "go",
+          "label": "components/orchestration/go-script/script_control_test.go",
+          "value": "package scriptcontrol\nimport(\"strings\";\"sync\";\"sync/atomic\";\"testing\")\nfunc sample() Input{return Input{Key:Key{\"tenant\",\"request\"},ScriptSHA:strings.Repeat(\"a\",64),Deadline:100}}\nfunc TestControl(t *testing.T){\n s:=New(10);in:=sample();if _,e:=s.Submit(in,0);e!=nil{t.Fatal(e)}\n if _,e:=s.Submit(in,0);e!=nil{t.Fatal(e)}\n if _,e:=s.Submit(in,100);e!=nil{t.Fatal(\"existing request replay after deadline\",e)}\n changed:=in;changed.ScriptSHA=strings.Repeat(\"b\",64);if _,e:=s.Submit(changed,0);e!=ErrConflict{t.Fatal(\"missing conflict\")}\n var n atomic.Int32;var wg sync.WaitGroup\n for i:=0;i<30;i++{wg.Add(1);go func(){defer wg.Done();if _,e:=s.Claim(in.Key,\"worker\",0,10);e==nil{n.Add(1)}}()};wg.Wait()\n if n.Load()!=1{t.Fatal(\"one owner required\")};j,_:=s.Get(in.Key)\n if _,e:=s.Complete(in.Key,\"wrong\",j.Epoch,1,\"x\");e==nil{t.Fatal(\"wrong owner\")}\n if e:=s.Expire(10);e!=nil{t.Fatal(e)}\n if _,e:=s.Claim(in.Key,\"other\",10,10);e==nil{t.Fatal(\"unknown must not rerun\")}\n if _,e:=s.Complete(in.Key,\"worker\",j.Epoch,10,\"x\");e==nil{t.Fatal(\"expired result\")}\n if _,e:=s.Reconcile(in.Key,j.Epoch,\"NOT_STARTED\",\"\",10);e!=nil{t.Fatal(e)}\n next,e:=s.Claim(in.Key,\"new\",10,10);if e!=nil||next.Epoch!=j.Epoch+1{t.Fatal(\"new epoch\",e)}\n if _,e=s.Complete(in.Key,\"worker\",j.Epoch,11,\"x\");e==nil{t.Fatal(\"old owner\")}\n if _,e=s.Complete(in.Key,\"new\",next.Epoch,11,\"ok\");e!=nil{t.Fatal(e)}\n if _,e=s.Complete(in.Key,\"new\",next.Epoch,12,\"ok\");e!=nil{t.Fatal(\"receipt replay\",e)}\n if _,e=s.Complete(in.Key,\"new\",next.Epoch,12,\"different\");e!=ErrConflict{t.Fatal(\"receipt conflict\")}\n}\nfunc TestCancelAndBounds(t *testing.T){\n s:=New(1);in:=sample();s.Submit(in,0);j,_:=s.Claim(in.Key,\"worker\",0,10)\n x,e:=s.Cancel(in.Key);if e!=nil||x.State!=\"CANCEL_REQUESTED\"{t.Fatal(\"cancel request\")}\n if _,e=s.Complete(in.Key,\"worker\",j.Epoch,1,\"x\");e==nil{t.Fatal(\"requires reconciliation\")}\n x,e=s.Reconcile(in.Key,j.Epoch,\"SUCCEEDED\",\"committed\",2);if e!=nil||x.State!=\"SUCCEEDED\"{t.Fatal(\"cancel not undo\")}\n other:=in;other.Key.Request=\"other\";if _,e=s.Submit(other,0);e==nil{t.Fatal(\"capacity\")}\n s2:=New(1);s2.Submit(in,0);x,e=s2.Cancel(in.Key);if e!=nil||x.State!=\"CANCELLED\"{t.Fatal(\"queued cancel\")}\n if _,e=s2.Claim(in.Key,\"w\",100,10);e==nil{t.Fatal(\"deadline\")}\n if _,e=s2.Submit(in,-1);e==nil{t.Fatal(\"time\")}\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-static-review-3460",
+      "title": "静态复核补充：源行 3460",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "校正说明（源码保持原样）：Go 模型的前置范围位于关联的消息队列场景补充（源行 3460–3465）：单权威内存状态机，不执行宿主命令、网络或沙箱；采用 Go 1.23.0 口径，race-test 命令独立。Java/H2 的历史测试描述不能作为 Go 模型的验证证据。"
+        }
+      ]
+    },
+    {
+      "id": "s-static-review-3763",
+      "title": "静态复核补充：源行 3763",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "校正说明（源码保持原样）：Go Expire 只把 RUNNING 转 UNKNOWN；过期 QUEUED 会被 Claim 拒绝，但示例不提供其终态归档与容量回收。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "运行边界与未执行声明"
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "label": "Go 模型的语言版本、内存权威与非执行范围（源行 3460–3465）"
+    }
+  ]
+}

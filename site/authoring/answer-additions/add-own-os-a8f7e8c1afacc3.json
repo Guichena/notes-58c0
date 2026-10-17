@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-a8f7e8c1afacc3",
+  "entryId": "bg-线上排障-2",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "46849dc0757928d3463938afc40835cbd0d4d2241fb81d25699ce93c961241eb",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Linux netstat怎样看端口连接和队列 与ss的口径怎样核对"
+    },
+    {
+      "type": "paragraph",
+      "text": "ss或netstat展示的是特定协议、状态和时间点的套接字信息，监听队列与已连接队列要按不同语义解释。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "Linux netstat 命令"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "熟悉Linux吗，有哪些指令"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按问题组合参数"
+    },
+    {
+      "type": "paragraph",
+      "text": "netstat -lnt看TCP监听且用数字地址端口，-lntu加UDP；-ant看所有TCP socket而不做名字解析，-p尝试附带PID/程序名，-r看路由，-s看协议统计，-i看接口统计。-a是全部，-l是监听，-n避免DNS/服务名解析，不能把这些字母当一条固定咒语。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程信息受权限、/proc可见性和命名空间影响，缺PID不说明没有拥有者；容器里看到的是相应网络命名空间，不一定等于宿主全部连接。UDP通常没有TCP同样的ESTABLISHED/四次挥手状态，IPv4/IPv6及本地Unixsocket也需区分。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "地址 状态和队列字段"
+    },
+    {
+      "type": "paragraph",
+      "text": "Local Address表示本地绑定端点，Foreign Address为对端或监听占位，0.0.0.0与127.0.0.1的暴露范围不同，IPv6绑定还受v6only等配置影响。监听存在不证明业务健康，ESTABLISHED也不证明远端应用读完或事务已提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ESTABLISHED的Recv-Q/Send-Q通常涉及未被应用读取/尚未确认的字节或序列空间；LISTEN下必须按工具和内核接口解释连接积压，不套业务字节。Linux的INET_DIAG监听诊断字段可报告待accept连接积压及其上限，不能把它直接当尚未完成握手的SYN队列。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ss与排错决策"
+    },
+    {
+      "type": "paragraph",
+      "text": "net-tools/netstat较旧，Linux通常用ss -lntp、ss -tinm等获得更丰富TCP和socket内存信息；路由/接口另看ip route/ip addr。是否安装、字段和权限以目标机器为准；无需为了读一个监听端口先升级权限或调整sysctl。"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求超时，先定位卡在哪个阶段：DNS、connect、TLS、写入、连接池等待，还是读响应。再把四元组、队列趋势、重传与窗口，和应用线程、事件循环及下游日志对到一起。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 Send-Q 增长，可能是远端不读、链路丢包或拥塞，也可能是本地产生太快，单张截图不能唯一定位。端口开放和业务已经就绪，也要分开检查。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "命令只负责观测 不替代修复"
+    },
+    {
+      "type": "paragraph",
+      "text": "TIME_WAIT/CLOSE_WAIT、大量监听积压各有不同生命周期，先修应用关闭、accept/消费速度和有界背压，再评估参数。盲目放大发送缓冲可能只增加内存和尾延迟。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Netcat是什么 怎样用它缩小网络故障范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "Netcat即nc，是把标准输入输出与TCP、UDP或部分本地套接字连接起来的小工具，适合检查连接和简单协议字节，不能替代完整应用健康检查。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先确认版本与目标"
+    },
+    {
+      "type": "paragraph",
+      "text": "OpenBSD nc、传统netcat、Ncat和BusyBox nc的参数并不完全相同。先用nc -h核对本机实现，再只对自己有权测试的明确主机和端口操作；不要把故障排查变成无范围的端口扫描。下例采用OpenBSD风格，地址使用本机回环，连接期限为2秒。"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "example-022.sh",
+      "value": "nc -vz -w 2 127.0.0.1 8080\nprintf 'GET /health HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' |\n  nc -w 2 127.0.0.1 8080\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一条只尝试建立TCP连接。成功说明当时该网络路径与端口能接受连接，不能证明鉴权、数据库依赖或业务结果正确。连接拒绝通常意味着目标或中间设备主动拒绝；超时也可能是丢包、防火墙、路由或服务排队，单个错误不足以唯一定位。用ss查看本机监听与连接状态，确认服务绑定在127.0.0.1、某张网卡还是所有接口，再比对容器端口与网络命名空间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二条发送一个完整的最小HTTP/1.1请求，明确CRLF和头部结束空行；它是明文HTTP测试。HTTPS端点还需要TLS握手与证书/主机名校验，应换用合适的TLS客户端或curl。不要把nc连接成功等同于TLS验证通过，也不要把敏感凭据放进可被日志或shell历史记录的探测命令。"
+    },
+    {
+      "type": "paragraph",
+      "text": "UDP没有TCP式握手，nc -u的“成功”通常不能证明对端收到并处理了报文，应使用有应用响应的协议、服务日志或授权抓包核对。临时监听测试也要限定回环地址、端口和期限，完成后关闭；不使用执行shell的选项，不把临时监听暴露到公网。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "7"
+}

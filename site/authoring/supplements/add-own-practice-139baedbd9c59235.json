@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-139baedbd9c59235",
+  "entryId": "handwrite-48",
+  "expectedOriginalHash": "01e180b29e8a8fe228e4268679ebaff3a150be83e0a6515f3bbd7a96f5b47141",
+  "title": "跨册场景补充：不可拆分内存池怎样找最小可用块",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不可拆分内存池怎样找最小可用块"
+    },
+    {
+      "type": "paragraph",
+      "text": "按题设 best-fit 顺序模拟，以 TreeMap 的 ceilingEntry 找到最小可用块；查找、扣减和移除必须在同一临界区。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "题意、约束与例子"
+    },
+    {
+      "type": "paragraph",
+      "text": "给出多种“块大小:库存数量”，逐个处理申请。每次分配一个大小≥申请量的最小可用块，整块消耗，不拆分，不归还。最多 1024 种大小，每种总库存≤4096，申请数≤100000；实现采用正 long 表示大小和申请量，库存允许 0，但不放入可用索引。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例子资源 64:2,128:1,32:4，请求 50,36,64,128,127。依次分配 64、64、128，后两个失败，结果为 true,true,true,false,false。不能因为池里还有若干 32 就拼成一个大块，本题没有合并规则。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么是 TreeMap ceilingEntry"
+    },
+    {
+      "type": "paragraph",
+      "text": "TreeMap 按大小排序，ceilingEntry(r) 返回最小的 size≥r。索引只保留正库存大小；找到一个块就将库存减一，减为零则删除整个键。它直接表达题目指定的 best-fit 规则，不需要扫描全部 1024 类，也不需要给每个物理块都建一个对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不变量：每个键都对应正数剩余库存；库存从未为负；处理第 i 个请求前，索引精确等于前 i−1 次分配后的余量。因为当前查找选择了所有可行大小中的最小值，所以该步满足题意；逐步归纳得到整个顺序模拟正确。这里是在执行规定策略，不是已经证明任意未来工作负载的成功数、碎片率都全局最优。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "backend-scenarios 原语言代码 L2775–2833（完整围栏，未执行）",
+      "value": "import java.util.*;\n\n/** A stock simulator: blocks are indivisible and are never released in this problem. */\npublic final class MemoryAllocator {\n    private final TreeMap<Long, Integer> stock = new TreeMap<>();\n    public MemoryAllocator(String specification) {\n        Objects.requireNonNull(specification);\n        TreeMap<Long, Integer> parsed = new TreeMap<>();\n        if (!specification.trim().isEmpty()) {\n            for (String token : specification.split(\",\", -1)) {\n                String[] kv = token.trim().split(\":\", -1);\n                if (kv.length != 2) throw new IllegalArgumentException(\"expected size:count\");\n                long size = Long.parseLong(kv[0].trim());\n                int count = Integer.parseInt(kv[1].trim());\n                if (size <= 0 || count < 0 || count > 4096)\n                    throw new IllegalArgumentException(\"invalid size/count\");\n                int merged = parsed.getOrDefault(size, 0) + count;\n                if (merged > 4096) throw new IllegalArgumentException(\"stock per size > 4096\");\n                parsed.put(size, merged); // Merge duplicates instead of silently overwriting.\n                if (parsed.size() > 1024) throw new IllegalArgumentException(\"too many sizes\");\n            }\n        }\n        for (Map.Entry<Long, Integer> e : parsed.entrySet())\n            if (e.getValue() > 0) stock.put(e.getKey(), e.getValue());\n    }\n    public synchronized boolean allocate(long requested) {\n        if (requested <= 0) throw new IllegalArgumentException(\"request must be positive\");\n        Map.Entry<Long, Integer> best = stock.ceilingEntry(requested);\n        if (best == null) return false;\n        long size = best.getKey(); int count = best.getValue();\n        if (count == 1) stock.remove(size); else stock.put(size, count - 1);\n        return true;\n    }\n    public static String solve(String pool, String requestLine) {\n        MemoryAllocator allocator = new MemoryAllocator(pool);\n        Objects.requireNonNull(requestLine);\n        if (requestLine.trim().isEmpty()) return \"\";\n        String[] tokens = requestLine.split(\",\", -1);\n        if (tokens.length > 100000) throw new IllegalArgumentException(\"too many requests\");\n        long[] requests = new long[tokens.length];\n        for (int i = 0; i < tokens.length; i++) {\n            requests[i] = Long.parseLong(tokens[i].trim());\n            if (requests[i] <= 0) throw new IllegalArgumentException(\"invalid request\");\n        }\n        StringBuilder result = new StringBuilder();\n        for (long requested : requests) {\n            if (result.length() > 0) result.append(',');\n            result.append(allocator.allocate(requested));\n        }\n        return result.toString();\n    }\n    public static void main(String[] args) {\n        Scanner in = new Scanner(System.in);\n        if (!in.hasNextLine()) throw new IllegalArgumentException(\"missing pool line\");\n        String pool = in.nextLine();\n        if (!in.hasNextLine()) throw new IllegalArgumentException(\"missing requests line\");\n        System.out.println(solve(pool, in.nextLine()));\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "演算与输入处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "初始 {32:4,64:2,128:1}。申请 50，ceilingEntry=64，库存变 1；申请 36 再取 64，库存归零删除；申请 64 只能取 128，删除；申请 128、127 都找不到键，失败且状态不变。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复粒度必须明确策略。本实现把 64:1,64:1 合并为 64:2，并校验合计不超过 4096，避免 put 直接覆盖悄悄丢库存；128:0 不进入可用索引。所有申请先解析验证，防止输入到一半发现格式错时已经修改对象后又对外宣称整批成功。solve 创建私有池，所以外部看不到中间状态。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂度与并发边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "S 种大小、M 个请求，建表 O(S log S)，申请总计 O(M log S)。库存索引额外空间 O(S)，但本实现为验证输入而保存 tokens、requests 和输出，所以实际整批空间 O(S+M)，不能把整个程序写成 O(S)。若按流处理并逐条输出，可把除输出外工作内存降低，但必须重新定义坏输入的部分提交语义。不能根据 10^5×10 的数量级保证在任何机器 1 秒完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "allocate 用 synchronized 把查找、扣减、删除放进同一临界区。Collections.synchronizedNavigableMap 也能使用，但它只保证各个方法调用安全；这三个动作仍需在同一互斥对象下组成完整操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要分清安全与顺序：多个线程可能按不同于业务序号的顺序取得锁。若题目要求严格按请求列表处理，应保留 solve 的单线程调度，或另建顺序协调器。练习时交换两个并发申请取得锁的顺序，检查结果是否仍符合题设的先后要求。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "追问与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 允许拆分时，64 分配 50 后剩余 14 可以按规则返还索引；这是另一道题。要做真实地址合并，必须记录块起始地址和邻接关系，只有大小计数不够判断两个块是否相邻。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 不可拆分模型中，64 承接 50 的 14 个单位是已占用块内的浪费，不会形成能再分配的“14 大小小碎片”。一般讨论中一般 best-fit 碎片结论不能不加区分套用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 固定 2 的幂分级可用位运算找到目标等级，但如果该等级缺货，还需要寻找更高的非空等级；只有配合位图等数据结构才可能保持小常数/常数级查找，不能把一次 leadingZeros 当成完整分配器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 测试库存为 0、重复大小、刚好匹配、只剩更大块、请求超大、空池、单库存、非法或负数、超出数量上限；随机小例子可用“排序数组逐次扫描”作为参考实现。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "First Fit 和 Worst Fit 的比较"
+    },
+    {
+      "type": "paragraph",
+      "text": "First Fit 从所选索引顺序中取第一个能满足请求的块，查找成本受布局和索引影响；Best Fit 取最小可用块，倾向保留大块；Worst Fit 取最大块，剩余可能较大但也消耗大块储备。允许拆分时它们产生的外部碎片取决于工作负载，不能给普遍优劣排名。本题不可拆分，比较不能改变规定的 best-fit 策略。"
+    }
+  ]
+}

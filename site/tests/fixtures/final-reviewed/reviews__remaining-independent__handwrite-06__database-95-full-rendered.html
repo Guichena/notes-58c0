@@ -1,0 +1,121 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">结合你的 NoteWeave：设计大文件上传、秒传、断点续传和异步索引相关的 MySQL 表。要求支持文件去重、用户文件关系、索引任务状态和失败重试。</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">教学问题可从“分片上传、Redis Bitmap、MinIO、Kafka/Redis Stream、解析、切片、Embedding、索引写入、Wiki 编译”展开。数据库要记录长期事实，Redis 只适合记录临时上传态。</p>
+<p class="md-p">要区分几个实体：物理文件资产、用户文件引用、上传任务、索引任务、文件 chunk。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>文件内容去重：服务端验证 sha256 + size；唯一键不证明拥有该文件或内容权限。<code class="tok-inline"></code></li><li>用户文件：同一个物理文件可被多个用户引用。</li><li>上传任务：记录临时上传过程和最终结果。</li><li>索引任务：上传完成后异步处理，状态可重试。</li><li>chunk 表：保存文本切片、位置、引用和向量索引 ID。</li><li>状态机：避免只用一个布尔字段表达复杂过程。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">物理文件资产：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE file_asset (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    sha256 CHAR(64) NOT NULL,
+    size BIGINT NOT NULL,
+    mime_type VARCHAR(128),
+    object_key VARCHAR(512) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_sha_size (sha256, size)
+);</pre></div></section>
+<p class="md-p">用户文件：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE user_file (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    file_asset_id BIGINT NOT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    index_status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    KEY idx_user_created (user_id, created_at DESC, id DESC),
+    KEY idx_asset (file_asset_id)
+);</pre></div></section>
+<p class="md-p">上传任务：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE upload_session (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    upload_id VARCHAR(64) NOT NULL,
+    user_id BIGINT NOT NULL,
+    sha256 CHAR(64) NOT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    total_chunks INT NOT NULL,
+    chunk_size INT NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_upload_id (upload_id),
+    KEY idx_user_status (user_id, status)
+);</pre></div></section>
+<p class="md-p">异步索引任务：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE file_index_job (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_file_id BIGINT NOT NULL,
+    job_type VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    next_retry_at DATETIME,
+    error_msg VARCHAR(1024),
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    KEY idx_status_retry (status, next_retry_at),
+    KEY idx_user_file (user_file_id)
+);</pre></div></section>
+<p class="md-p">文本切片：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE document_chunk (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_file_id BIGINT NOT NULL,
+    chunk_no INT NOT NULL,
+    content TEXT NOT NULL,
+    page_no INT,
+    start_offset INT,
+    end_offset INT,
+    embedding_id VARCHAR(128),
+    created_at DATETIME NOT NULL,
+    UNIQUE KEY uk_file_chunk (user_file_id, chunk_no),
+    KEY idx_embedding (embedding_id)
+);</pre></div></section>
+<p class="md-p">这里 MySQL 存元数据和可追溯信息，向量本身可以存向量库或 ES dense_vector，MySQL 不负责高维向量近邻搜索。</p><p class="md-p">MySQL 8.4/InnoDB 教学DDL；主答案是实体草图，完整视频模型在补充采用不同同名 upload_session，不可混建。hash由服务端验证并明确租户去重范围；上传总字节/片号/分片摘要、过期和generation、索引job唯一(文件,输入版本,解析配置,类型)及租约由补充协议约束。原 document_chunk 无版本列，修改文档需新文件身份或补(文件,版本,chunk_no)唯一键，保留旧引用位置。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：为什么 Redis Bitmap 不直接落 MySQL？</strong></p>
+<p class="md-p">问题分析：分片上传状态更新频繁，MySQL 行更新压力大。</p>
+<p class="md-p">知识点：临时态与长期态分离。</p>
+<p class="md-p">答案：Redis Bitmap 记录临时分片完成情况，上传完成后 MySQL 只记录最终状态；异常超时需从对象存储分片清单或持久 upload_part 重建进度；仅 upload_session 的总片数不能恢复哪些片已存。</p>
+<p class="md-p"><strong>变体 2：秒传如何避免越权？</strong></p>
+<p class="md-p">问题分析：文件 hash 命中不代表当前用户有权限。</p>
+<p class="md-p">知识点：物理文件和用户引用分离。</p>
+<p class="md-p">答案：<code class="tok-inline">file_asset 仅在已授权复用或通过受限持有证明后可复用，再创建绑定当前用户的 user_file；知道 hash 本身不够，不能自动赋予文件权限。</code><code class="tok-inline"></code>用户只能访问自己的 <code class="tok-inline">user_file</code>，不能直接按 hash 读取资产。</p>
+<p class="md-p"><strong>变体 3：索引失败是否影响文件上传成功？</strong></p>
+<p class="md-p">问题分析：上传和索引是不同生命周期。</p>
+<p class="md-p">知识点：状态拆分、最终一致。</p>
+<p class="md-p">答案：上传成功后 <code class="tok-inline">file_asset.status=READY</code>，<code class="tok-inline">user_file.index_status</code> 可为 <code class="tok-inline">PENDING/INDEXING/FAILED/READY</code>。索引失败允许重试，不回滚文件上传。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-mysql-database-95">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">视频上传状态、任务检查点和视频资产分别怎样建表、存储及恢复？</h3><p class="md-p">上传进度、视频资产和解析检查点具有不同生命周期；先持久化产物，再发布可见状态，跨存储失败靠幂等和对账收敛。</p><p class="md-p">可能的问法：视频上传状态、任务检查点和视频资产分别怎样建表、存储及恢复？</p><h3 class="md-h md-h3">不同生命周期拆成明确实体</h3><p class="md-p">video_asset保存tenant/owner、资产ID、输入generation、对象key/校验摘要、字节数和UPLOADING/READY/FAILED/DELETED状态；视频原始字节和大解析产物放对象存储，库中只放受权限控制的定位与manifest。向量/全文库存chunk搜索投影，Redis可缓存热状态/进度，事实状态仍在权威事务库。</p><p class="md-p">upload_session记录上传ID、资产、预期总字节/part数、过期时间、状态与version；upload_part按(tenant,upload_id,part_no)唯一，记长度、校验和与对象存储返回的opaque ETag。不能假设分片ETag就是整文件MD5，也不能因为DB标记有两块就证明对象两块实际存在。</p><h3 class="md-h md-h3">完成上传必须是可恢复协议</h3><p class="md-p">上传完成不能只看进度条。先创建受限上传任务，每块到达时核对 owner、序号、大小和摘要，并幂等登记；同 part_no 携带不同摘要要报冲突，不能静默覆盖。请求完成时，在会话 state/version 保护下检查 1..part_count 是否齐全、总字节是否一致、manifest 是否正确，再调用存储 API 合并并核验最终对象。对象可靠留下后，才在数据库事务里把 asset 改为 READY、upload 改为 COMPLETE，并记录后续任务或 outbox。</p><p class="md-p">再推一个故障：对象合并已成功，数据库登记的应答却丢了。MySQL 与对象存储没有默认共同事务，此时应沿稳定 upload/asset 身份查询对象和摘要，再重试登记。数据库还没发布 READY，就不能把临时对象交给消费者。失败或过期会话的残片由后台回收，同时保留审计、核对引用计数，避免删掉仍被运行任务使用的输入。</p><h3 class="md-h md-h3">任务与步骤检查点不是上传进度同一张表</h3><p class="md-p">video_task按asset/input_generation/parser_version等运行契约去重，保存状态/version/可选租约owner/期限；video_step按task/step保存已完成产物key、摘要、完成时间和依赖版本。解析新版本应开新task，不用旧ASR/抽帧产物冒充新输入结果，输入generation要能定位不可变对象manifest，不能只指会被覆盖的current对象。</p><p class="md-p">先持久化并校验产物再登记步骤完成，重启回读任务和已完成步骤，只补缺项；外部模型/工具可能被重试，采用稳定operation ID与结果校验，不能声称从任意函数行号恢复。可按视频和处理目标分解独立运行身份；任务长期租约与旧worker隔离需额外fencing约束。</p><h3 class="md-h md-h3">数据库约束能证明什么</h3><p class="md-p">video_schema.sql给完整四类实体加步骤表、租户复合FK、part唯一、task版本组合唯一与READY必须有定位/摘要的CHECK；跨行片数/总字节、part_no上界、状态迁移与generation对应内容由事务服务验证，DDL本身没有实现这些协议。</p><h3 class="md-h md-h3">完整代码示例</h3><p class="md-p">保存为 video_schema.sql。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">components/data/code/video_schema.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE video_asset(
+ tenant_id BIGINT NOT NULL,asset_id VARCHAR(64) NOT NULL,owner_id BIGINT NOT NULL,
+ generation BIGINT NOT NULL CHECK(generation&gt;0),object_key VARCHAR(512),digest VARCHAR(64),
+ bytes BIGINT NOT NULL CHECK(bytes&gt;=0),state VARCHAR(12) NOT NULL,
+ PRIMARY KEY(tenant_id,asset_id),CHECK(state IN (&#39;UPLOADING&#39;,&#39;READY&#39;,&#39;FAILED&#39;,&#39;DELETED&#39;)),
+ CHECK(state&lt;&gt;&#39;READY&#39; OR (object_key IS NOT NULL AND digest IS NOT NULL)));
+CREATE TABLE upload_session(
+ tenant_id BIGINT NOT NULL,upload_id VARCHAR(64) NOT NULL,asset_id VARCHAR(64) NOT NULL,
+ part_count INT NOT NULL CHECK(part_count&gt;0),expected_bytes BIGINT NOT NULL CHECK(expected_bytes&gt;=0),
+ expires_at BIGINT NOT NULL,state VARCHAR(12) NOT NULL,version BIGINT NOT NULL CHECK(version&gt;=0),
+ PRIMARY KEY(tenant_id,upload_id),FOREIGN KEY(tenant_id,asset_id) REFERENCES video_asset(tenant_id,asset_id),
+ CHECK(state IN (&#39;OPEN&#39;,&#39;COMPLETING&#39;,&#39;COMPLETE&#39;,&#39;ABORTED&#39;)));
+CREATE TABLE upload_part(
+ tenant_id BIGINT NOT NULL,upload_id VARCHAR(64) NOT NULL,part_no INT NOT NULL CHECK(part_no&gt;0),
+ bytes BIGINT NOT NULL CHECK(bytes&gt;=0),digest VARCHAR(64) NOT NULL,object_etag VARCHAR(128) NOT NULL,
+ PRIMARY KEY(tenant_id,upload_id,part_no),
+ FOREIGN KEY(tenant_id,upload_id) REFERENCES upload_session(tenant_id,upload_id));
+-- part_no&lt;=parent.part_count and total expected bytes require application/SQL
+-- transactional validation; a cross-row aggregate is not guaranteed by CHECK.
+CREATE TABLE video_task(
+ tenant_id BIGINT NOT NULL,task_id VARCHAR(64) NOT NULL,asset_id VARCHAR(64) NOT NULL,
+ input_generation BIGINT NOT NULL,parser_version VARCHAR(64) NOT NULL,state VARCHAR(16) NOT NULL,
+ version BIGINT NOT NULL CHECK(version&gt;=0),PRIMARY KEY(tenant_id,task_id),
+ UNIQUE(tenant_id,asset_id,input_generation,parser_version),
+ FOREIGN KEY(tenant_id,asset_id) REFERENCES video_asset(tenant_id,asset_id));
+CREATE INDEX ix_task_state ON video_task(tenant_id,state,task_id);
+CREATE TABLE video_step(
+ tenant_id BIGINT NOT NULL,task_id VARCHAR(64) NOT NULL,step VARCHAR(64) NOT NULL,
+ output_key VARCHAR(512) NOT NULL,digest VARCHAR(64) NOT NULL,completed_at BIGINT NOT NULL,
+ PRIMARY KEY(tenant_id,task_id,step),
+ FOREIGN KEY(tenant_id,task_id) REFERENCES video_task(tenant_id,task_id));
+</pre></div></div><h3 class="md-h md-h3">边界追问</h3><p class="md-p">上传状态应检查重复分片、跨租户引用、没有对象定位却标 READY、重复处理任务，以及分片数量和大小汇总。关系约束不验证文件哈希是否真实匹配，也不替代实际合并与视频处理；发布前仍须检查产物字节与完整性。</p><h3 class="md-h md-h3">网盘类项目具体数据库表怎样设计，文件内容、用户文件和存储引用是什么关系？</h3><p class="md-p">网盘须分清用户命名空间中的文件、目录和底层不可变字节对象，业务引用与上传状态由事务管理，跨存储故障用可恢复协议处理。</p><p class="md-p">可能的问法：网盘类项目具体数据库表怎样设计，文件内容、用户文件和存储引用是什么关系？</p><h3 class="md-h md-h3">题意与假设</h3><p class="md-p">这是 C++、fastDFS、nginx 网盘背景的表设计问题；关系建模原理不依赖后端语言，下面不假定任何现成项目表名。</p><h3 class="md-h md-h3">先明确主体、文件实体与底层字节</h3><p class="md-p">可有user账户主体，user_file表示某用户命名空间内文件/目录，blob_object表示底层不可变字节对象，upload_session保存上传会话与临时状态。user_file至少有owner/tenant、id、parent_id、name、kind、blob_id、size/mtime、version、deleted状态；blob有object key、内容hash、实际长度、校验状态和生命周期。相同字节能被多个文件引用，同名不同目录并不冲突。</p><p class="md-p">目录parent指同owner范围的目录，自环/移入子树要在并发保护下检查，普通FK只保证父行存在，不证明它是目录或无环。同一目录同名唯一需定义大小写/Unicode规范、回收站与根目录表达，MySQL UNIQUE中NULL通常可重复，不能仅parent=NULL就认为根目录重名被阻止。可用固定root节点和明确规范化名称约束。</p><h3 class="md-h md-h3">引用/共享和查找路径</h3><p class="md-p">文件列表常按(owner,parent,deleted,排序字段,id)过滤排序，单个文件ID查回仍需授权。共享单独存share_id、文件/版本、授权受众或受控令牌摘要、有效期、撤销状态；原文object key和内容hash不是授权凭证，不能仅知道MD5就能越权秒传/下载。若未给出实际散列算法与上传挑战协议，就不能判断秒传验证是否完整。</p><p class="md-p">大字节放文件服务/对象存储，关系库维护业务引用与状态；需要用户→文件→底层对象的关系，而不是每个用户重复保存大文件正文。可去重节省空间，但引用计数有并发/崩溃问题；事务内变更文件引用和可靠回收事件，物理回收前再次核实无有效引用并留延迟窗口。</p><h3 class="md-h md-h3">上传提交和恢复不能靠跨服务原子幻觉</h3><p class="md-p">先保存受控临时对象并校验长度/hash，再在DB事务创建/更新用户文件引用和READY状态，必要事件同事务提交；DB失败留下的无主临时对象由过期清理回收。存储写与DB提交不是一个本地事务，重试按upload/request ID幂等，不能请求重试一次就多扣配额或多加引用。</p><p class="md-p">下载只暴露经过状态和权限校验的引用，删除先撤权/逻辑状态再异步回收；备份要能把DB和对象恢复到互相可解释的版本并对账。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul><p class="md-p">video_schema.sql及conversation_schema.sql等省略ENGINE/字符集的独立DDL，使用前须核实实际建表为InnoDB、文本采用utf8mb4，身份字符串的大小写/规范化与排序规则一致。表结构不自动设置会话或数据库默认值，也不验证存储对象与generation一致；这些属于明确的适配器输入和部署合同。</p></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

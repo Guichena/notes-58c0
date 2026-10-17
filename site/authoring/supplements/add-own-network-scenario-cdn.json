@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-network-scenario-cdn",
+  "entryId": "scenario-cdn",
+  "expectedOriginalHash": "6f602a97757a2d9885138bd8f46c5ac0a76e0f4972d8d93078f3a61402e810c7",
+  "title": "网络手册：协议机制、适用条件与设计边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A05 HTTP 缓存 CDN 与内容身份"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存的第一步是确认能否安全复用同一份表示，其次才是判断新鲜度；缓存命中不对应唯一状态码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：强缓存和协商缓存怎么走？If-Modified-Since 的值来自哪里？no-cache 与 no-store 有什么区别？CDN 和 Redis 各放什么？图片 URL 一直变但内容不变，怎样完全不重新请求图片？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用一条时间线讲清缓存"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以沿第一次读取和再次读取记 HTTP 缓存。首次 GET 返回 200、正文、ETag: \"v7\"、Last-Modified 和 Cache-Control。之后缓存先按方法、目标 URI，以及 Vary 指定的请求头等维度找到对应表示，再判断能不能存、是否仍新鲜。"
+    },
+    {
+      "type": "paragraph",
+      "text": "新鲜时可直接复用；陈旧后发条件请求，通常优先用 If-None-Match: \"v7\"，或者用上次的 Last-Modified 生成 If-Modified-Since。后者不是客户端当前时间，也不是缓存过期时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "表示没变则返回 304 与必要元数据，不返回本次正文；客户端用自己保存的正文。变了通常返回 200 新表示。如果本地根本没有可用正文，304 不会凭空造出内容，应重新获取。If-None-Match 与 If-Modified-Since 同时出现时前者优先。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ETag 是带引号的不透明值，可以是版本号或内容标识，不要求等于 MD5。W/\"v7\" 是弱标签，承诺语义等价；强标签服务于字节一致性要求。If-None-Match 使用弱比较，If-Match 用强比较保护并发写，条件失败通常 412。压缩和内容协商生成不同字节时，强 ETag 也必须正确区分。ETag 不决定多久新鲜。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "缓存指令不要混背"
+    },
+    {
+      "type": "paragraph",
+      "text": "max-age 是新鲜寿命，s-maxage 对共享缓存有相应优先级；Expires 给绝对时间。Date、Age 和经过时间一起参与年龄计算，经过一个代理不能重新开始全部 TTL。"
+    },
+    {
+      "type": "paragraph",
+      "text": "no-cache 通常允许存储，但复用前要成功验证；no-store 要求不存储；private 限制共享缓存；public 允许按规则共享。max-age=0 是立即陈旧，不是禁止保存。must-revalidate 约束陈旧后的复用，proxy-revalidate 主要面向共享缓存，no-transform 限制中间方改变表示。must-understand 按缓存理解的状态要求使用，通常和 no-store 配合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "请求侧 max-age、min-fresh、max-stale 表达可接受年龄；only-if-cached 希望只用缓存，无法满足可能得到 504。扩展 immutable 适合带版本的不可变资源，但不是永久有效；stale-while-revalidate 与 stale-if-error 只允许限定陈旧窗口。个人数据重新授权的要求不能被这些扩展绕开。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Set-Cookie 本身不是通用的“所有缓存一律不存”指令。登录、余额、私信和个性化 SSR 必须明确 private/no-store 与授权策略，不能仅靠文件后缀或 Cookie 是否存在决定共享。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "整条 Web 链上缓存的不是同一种东西"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP 缓存保存响应；内存和磁盘只是保存位置。Service Worker Cache API 由应用决定读取、写入、版本和过期，不自动兑现所有 HTTP TTL 规则。bfcache 保存页面往返所需的 DOM 与执行状态，localStorage/sessionStorage 保存字符串，IndexedDB 保存结构化数据，它们不自动成为响应缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DNS 缓存的是解析结果，连接池复用的是连接，TLS 恢复保存的是密码状态；CDN/反代缓存 HTTP 表示；应用本地缓存和 Redis 存业务数据；数据库 buffer pool 与 OS page cache 存页。浏览器没命中不代表数据库必被读，后面每一层仍可能命中。"
+    },
+    {
+      "type": "paragraph",
+      "text": "浏览器直接复用保存的 200 时，网络上可能没有新响应；CDN 命中也常向浏览器返回 200；304 只是验证分支，缓存重定向或 404 也保留其状态。要结合 Age、缓存日志、浏览器来源标记和请求 ID，不能只看一个状态码。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "CDN 与 Redis 的职责"
+    },
+    {
+      "type": "paragraph",
+      "text": "CDN 把可缓存表示放在合适的边缘节点，通过 DNS 等调度和连接优化减少路径与源站负载。地理最近不一定实际最快。未命中、陈旧需验证、明确不可缓存时仍会回源，回源风暴需要请求合并、容量和失效策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "公开不可变 JS/CSS/图片可用内容版本 URL 与长 TTL，可变 HTML 使用较短新鲜度或验证。缓存键要覆盖内容变体和权限，不能随意忽略 query、语言、编码与用户边界。更新源文件不会同时删除所有边缘副本，版本化通常比猜何时全网刷新更容易推理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 常放受控私有网络靠近业务服务，浏览器不应直连。它适合会话、限流和数据缓存，并非公共内容分发系统。高并发 token 校验可使用共享会话缓存或本地 JWT 验签，但撤权新鲜度、复制延迟和故障时拒绝策略仍要设计。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "URL 变化但图片不能重新请求"
+    },
+    {
+      "type": "paragraph",
+      "text": "要做到图片完全不再发请求，前提是本地已有字节，而且能可靠判断“这次仍是同一份内容”。可以用权限域、assetId、不可变 version 和尺寸/裁剪/格式 variant 组成稳定身份，URL 只负责未命中时去哪里下载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一身份换了一个签名 URL，仍使用已有 Blob/ObjectURL 或受控 CacheStorage 响应，不把新 URL 直接赋给 img。否则虽然内容相同，也可能重新触发图片请求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "304 仍有网络请求，不符合“完全不重新请求”；先下载再计算 hash 也省不掉这次下载。没有稳定元数据，仅凭陌生 URL 无法确定内容相同。ignoreSearch 会忽略整段查询，可能把签名、版本、尺寸和用户一起丢掉，不能当万能解法。相同摘要证明内容身份也不证明访问授权，账号切换和权限过期必须隔离或清理，ObjectURL 用完要释放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "教学代码 cache_identity.mjs 保留稳定身份键、有界 LRU、单条/总字节预算和拷贝隔离；浏览器存储配额、真实零请求与授权检查由外层负责。"
+    },
+    {
+      "type": "paragraph",
+      "text": "校正说明（原文保留）：原条目的 Redis get/set 只是局部缓存示意，不能等同 CDN；实际缓存键、HTTP 指令、授权变体与回源策略依本补充说明，不能把一致性哈希当作所有回源的必选方案。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "版本与本批未执行声明"
+    },
+    {
+      "entryId": "own-network-transport-code",
+      "label": "网络传输：完整 Java 与跨语言教学程序"
+    },
+    {
+      "entryId": "own-network-application-code",
+      "label": "网络应用：完整 Java、浏览器与安全教学程序"
+    }
+  ]
+}

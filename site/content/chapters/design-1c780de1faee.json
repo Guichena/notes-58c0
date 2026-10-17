@@ -1,0 +1,1963 @@
+{
+  "entries": [
+    {
+      "id": "pattern-scenario-highconcurrency",
+      "number": "高并发",
+      "title": "高并发场景设计：从分析问题到架构落地",
+      "kind": "pattern",
+      "kindLabel": "场景模板",
+      "group": "题型模板",
+      "category": "高并发场景",
+      "flat": false,
+      "subtitle": "覆盖 9 道题 · 强调分析链路与 Trade-off",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "澄清需求",
+            "questions": [
+              "用户量？DAU / 在线数 / 注册用户？",
+              "读写比？（99:1 还是 50:50）",
+              "延迟要求？P50/P95/P99 分别多少 ms？",
+              "一致性要求？（强一致 / 最终一致 / 会话一致）",
+              "可用性 SLA？（99.9% / 99.99%）"
+            ],
+            "example": "面试官说\"设计一个秒杀系统\"→ 先问：预期 QPS？库存量级？是否允许超卖？支付超时怎么处理？"
+          },
+          {
+            "stage": "识别核心矛盾",
+            "questions": [
+              "这是读多写少还是写多读少？",
+              "瓶颈最可能在 CPU / 内存 / 网络 / 磁盘 / 锁 / 下游？",
+              "数据可以分片吗？（按用户 / 按时间 / 按业务键）",
+              "有热点吗？（单个 key / 单个用户 / 单个商品）"
+            ],
+            "example": "秒杀：读多写少 + 单点热点（爆款商品）+ 瞬时爆发 + 强一致库存 → 这是最难的高并发形态。"
+          },
+          {
+            "stage": "划定边界",
+            "questions": [
+              "哪些功能是核心链路？（必须保证可用）",
+              "哪些可以降级？（评论、推荐、统计）",
+              "哪些可以异步？（通知、日志、上报）"
+            ],
+            "example": "秒杀的核心链路：下单 → 扣库存 → 支付。评论、推荐、积分可以全部降级或异步。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 容量估算（必须用数字说话）",
+        "formulas": [
+          {
+            "name": "平均 QPS",
+            "formula": "DAU × 人均操作数 / 86400",
+            "example": "1000 万 DAU × 10 次操作 / 86400 ≈ 1157 QPS"
+          },
+          {
+            "name": "峰值 QPS",
+            "formula": "平均 QPS × 峰值系数",
+            "example": "1157 × 5 = 5785 QPS（峰值系数一般 3-10）"
+          },
+          {
+            "name": "存储量",
+            "formula": "DAU × 人均数据量 × 保留天数",
+            "example": "1000 万 DAU × 1KB/天 × 365 天 ≈ 3.6 TB"
+          },
+          {
+            "name": "带宽",
+            "formula": "峰值 QPS × 单请求大小",
+            "example": "5785 QPS × 10KB ≈ 58 MB/s = 460 Mbps"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "MySQL 单机",
+            "write": "~1000 TPS（简单写入）",
+            "read": "~1 万 QPS（主键查询）",
+            "note": "复杂 join 可能掉到几百"
+          },
+          {
+            "resource": "Redis 单机",
+            "write": "~10 万 QPS",
+            "read": "~10 万 QPS",
+            "note": "单 key 有 CPU 瓶颈"
+          },
+          {
+            "resource": "Kafka 单机",
+            "write": "~10 万 msg/s",
+            "read": "~百万 msg/s（批量拉）",
+            "note": "顺序写磁盘很快"
+          },
+          {
+            "resource": "Nginx 单机",
+            "write": "N/A",
+            "read": "~10 万 QPS",
+            "note": "静态资源 / 反向代理"
+          },
+          {
+            "resource": "千兆网卡",
+            "write": "~120 MB/s",
+            "read": "~120 MB/s",
+            "note": "1KB 响应 ≈ 12 万 QPS"
+          }
+        ],
+        "pitfalls": [
+          "凭感觉拍数字 → 面试官会追问\"为什么是这个数\"",
+          "只看 QPS 不看单机性能 → 不知道需要几台机器",
+          "忘算存储和带宽 → 只关注 CPU"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 架构演进路径（从单机到分布式）",
+        "stages": [
+          {
+            "stage": "单机阶段（QPS < 1000）",
+            "architecture": "Nginx → 应用 → MySQL",
+            "pros": [
+              "简单",
+              "事务好做",
+              "运维成本低"
+            ],
+            "cons": [
+              "单点故障",
+              "QPS 上限 ~1000"
+            ],
+            "when": "MVP / 内部系统 / 低并发业务"
+          },
+          {
+            "stage": "读写分离（QPS < 5000）",
+            "architecture": "Nginx → 应用 → MySQL 主（写） + MySQL 从（读）",
+            "pros": [
+              "读 QPS 翻倍",
+              "主库压力减小"
+            ],
+            "cons": [
+              "主从延迟（ms 级）",
+              "写完立刻读可能读不到"
+            ],
+            "when": "读多写少；接受短暂不一致",
+            "tradeoff": "用\"读己之写\"一致性换吞吐"
+          },
+          {
+            "stage": "加缓存（QPS < 1 万）",
+            "architecture": "Nginx → 应用 → Redis（读） → MySQL",
+            "pros": [
+              "读 QPS 提升到 10 万级",
+              "DB 压力大幅减小"
+            ],
+            "cons": [
+              "缓存一致性问题",
+              "缓存穿透/击穿/雪崩"
+            ],
+            "when": "读多写少 + 容忍秒级不一致",
+            "tradeoff": "用缓存不一致换 DB 减压"
+          },
+          {
+            "stage": "加 MQ 削峰（QPS < 10 万）",
+            "architecture": "Nginx → 应用 → Kafka → 消费者 → MySQL",
+            "pros": [
+              "瞬时流量摊平",
+              "应用解耦"
+            ],
+            "cons": [
+              "消息延迟（秒级）",
+              "引入消息丢失/重复问题"
+            ],
+            "when": "瞬时爆发（秒杀 / 大促）",
+            "tradeoff": "用延迟换稳定"
+          },
+          {
+            "stage": "分库分表（QPS > 10 万 或 数据 > 亿级）",
+            "architecture": "Nginx → 应用 → Sharding Proxy → MySQL 集群",
+            "pros": [
+              "水平扩展",
+              "单机数据量下降"
+            ],
+            "cons": [
+              "跨分片查询难",
+              "分布式事务难",
+              "运维成本高"
+            ],
+            "when": "单机存不下 / 单机写瓶颈",
+            "tradeoff": "用复杂度换扩展性"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 核心 Trade-off 决策矩阵",
+        "decisions": [
+          {
+            "question": "缓存 vs 直连 DB？",
+            "chooseCache": "读多写少 + 容忍秒级不一致 + QPS > 1000",
+            "chooseDB": "强一致要求 + 写多读少 + QPS < 100",
+            "cost": "缓存引入一致性问题、穿透/击穿/雪崩风险"
+          },
+          {
+            "question": "同步调用 vs MQ 异步？",
+            "chooseCache": "需要立即知道结果 + 延迟敏感（如支付）",
+            "chooseDB": "可接受延迟 + 流量有峰值（如发通知、记日志）",
+            "cost": "MQ 引入消息丢失/重复/顺序问题"
+          },
+          {
+            "question": "强一致 vs 最终一致？",
+            "chooseCache": "涉及钱（支付、库存扣减）",
+            "chooseDB": "不涉及钱（点赞、浏览量、评论数）",
+            "cost": "强一致需要分布式事务（2PC/TCC），性能差"
+          },
+          {
+            "question": "单 key vs 分片 key？",
+            "chooseCache": "QPS < 1 万 + 一致性要求高",
+            "chooseDB": "QPS > 1 万 + 允许最终一致",
+            "cost": "分片 key 需要合并查询，逻辑复杂"
+          },
+          {
+            "question": "本地缓存 vs 分布式缓存？",
+            "chooseCache": "单机足够 + 极少更新 + 极低延迟",
+            "chooseDB": "多实例共享 + 频繁更新 + 一致性要求高",
+            "cost": "本地缓存多实例间不一致"
+          },
+          {
+            "question": "推 vs 拉（Timeline 设计）？",
+            "chooseCache": "读多写少、粉丝少（普通用户发帖推给粉丝）",
+            "chooseDB": "粉丝极多（大 V 发帖由粉丝读时拉取）",
+            "cost": "推模式写放大；拉模式读放大。大 V 用拉、普通用户用推（混合模式）"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键组件代码骨架",
+        "snippets": [
+          {
+            "name": "分布式限流（Redis + Lua 令牌桶）",
+            "code": "-- ratelimit.lua\nlocal key = KEYS[1]\nlocal capacity = tonumber(ARGV[1])  -- 桶容量\nlocal rate = tonumber(ARGV[2])      -- 每秒生成速率\nlocal now = tonumber(ARGV[3])\nlocal requested = tonumber(ARGV[4])\n\nlocal last_tokens = tonumber(redis.call('hget', key, 'tokens') or capacity)\nlocal last_time = tonumber(redis.call('hget', key, 'time') or now)\n\n-- 补充令牌\nlocal delta = math.max(0, now - last_time)\nlocal new_tokens = math.min(capacity, last_tokens + delta * rate / 1000)\n\nlocal allowed = new_tokens >= requested\nif allowed then\n  redis.call('hset', key, 'tokens', new_tokens - requested, 'time', now)\n  return 1\nelse\n  redis.call('hset', key, 'tokens', new_tokens, 'time', now)\n  return 0\nend",
+            "explanation": "为什么用 Lua：保证\"读-改-写\"原子性。为什么用令牌桶而不是计数器：支持突发流量，平滑限流。"
+          },
+          {
+            "name": "缓存双写（Cache-Aside + 延迟双删）",
+            "code": "// 读路径\npublic String read(String key) {\n    String value = redis.get(key);\n    if (value != null) return value;\n    value = db.query(key);\n    if (value != null) {\n        redis.setex(key, 300, value);  // 5 分钟过期\n    }\n    return value;\n}\n\n// 写路径（延迟双删）\npublic void write(String key, String value) {\n    redis.del(key);              // 先删缓存\n    db.update(key, value);       // 再写 DB\n    // 延迟 500ms 再删一次，防止读请求在 DB 写入前回填了脏数据\n    scheduler.schedule(() -> redis.del(key), 500, MILLISECONDS);\n}",
+            "explanation": "为什么先删缓存再写 DB：如果反过来，DB 写失败会留下脏缓存。为什么要延迟双删：防止\"删缓存→读请求回填旧值→写 DB\"的竞态。"
+          },
+          {
+            "name": "分布式计数器（拆 key 抗热点）",
+            "code": "public class ShardedCounter {\n    private static final int SHARDS = 100;\n\n    public void incr(String key) {\n        int shard = ThreadLocalRandom.current().nextInt(SHARDS);\n        redis.incr(key + \":\" + shard);\n    }\n\n    public long get(String key) {\n        long total = 0;\n        for (int i = 0; i < SHARDS; i++) {\n            String v = redis.get(key + \":\" + i);\n            if (v != null) total += Long.parseLong(v);\n        }\n        return total;\n    }\n}",
+            "explanation": "为什么拆 100 个 key：单 key INCR QPS 上限 ~10 万，拆 100 个 → 理论上千万 QPS。代价：读操作要聚合 100 个 key。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 故障模式与兜底预案",
+        "scenarios": [
+          {
+            "failure": "Redis 挂了",
+            "symptom": "所有请求打到 DB",
+            "mitigation": "多级缓存（本地 + Redis）+ 限流降级 + 熔断",
+            "detection": "Redis QPS 突然为 0 + DB QPS 飙升"
+          },
+          {
+            "failure": "DB 主库挂了",
+            "symptom": "写入失败",
+            "mitigation": "MHA / Orchestrator 自动切换 + 读请求走从库",
+            "detection": "写入错误率 100%"
+          },
+          {
+            "failure": "MQ 消息积压",
+            "symptom": "消费延迟增加",
+            "mitigation": "扩容消费者 + 降级非核心消息 + 死信队列",
+            "detection": "lag 持续增长"
+          },
+          {
+            "failure": "下游服务超时",
+            "symptom": "线程池打满",
+            "mitigation": "超时 + 熔断 + 降级 + 舱壁隔离",
+            "detection": "RT P99 飙升 + 线程池活跃数 100%"
+          },
+          {
+            "failure": "热点 key 被打爆",
+            "symptom": "Redis 单实例 CPU 100%",
+            "mitigation": "拆 key + 本地缓存 + 读扩散",
+            "detection": "Redis 单实例 CPU 报警"
+          },
+          {
+            "failure": "缓存雪崩",
+            "symptom": "大量 key 同时过期",
+            "mitigation": "过期时间加随机抖动 + 永不过期 + 互斥重建",
+            "detection": "缓存命中率突然下降"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标（RED + USE + 业务）",
+        "red": [
+          "Rate：QPS（入口 / 出口 / 下游调用）",
+          "Errors：错误率（4xx/5xx/超时）",
+          "Duration：延迟分布（P50/P95/P99）"
+        ],
+        "use": [
+          "Utilization：CPU / 内存 / 网卡 / 磁盘使用率",
+          "Saturation：线程池活跃数 / 连接池使用率 / 队列深度",
+          "Errors：OOM / FD 耗尽 / 磁盘满"
+        ],
+        "business": [
+          "业务成功率（如下单成功率）",
+          "库存超卖数量（应该是 0）",
+          "消息积压量",
+          "缓存命中率（目标 > 95%）"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "容量估算",
+          "ids": [
+            "scenario-qps-capacity-planning"
+          ],
+          "note": "先学会用数字说话"
+        },
+        {
+          "range": "计数器与排行榜",
+          "ids": [
+            "scenario-realtime-music-ranking",
+            "scenario-single-machine-counter"
+          ],
+          "note": "读多写少 + 热点问题的经典形态"
+        },
+        {
+          "range": "秒杀与库存",
+          "ids": [
+            "scenario-seckill-system"
+          ],
+          "note": "高并发的极端场景，所有技巧的集大成"
+        },
+        {
+          "range": "限流与削峰",
+          "ids": [
+            "scenario-distributed-rate-limit",
+            "handwrite-60",
+            "handwrite-65"
+          ],
+          "note": "保护系统的第一道防线"
+        },
+        {
+          "range": "缓存体系",
+          "ids": [
+            "scenario-redis-mysql-consistency",
+            "scenario-local-cache",
+            "scenario-redis-outage",
+            "handwrite-61"
+          ],
+          "note": "一致性、故障、降级的完整链路"
+        }
+      ],
+      "interviewPitch": "高并发设计我会按\"澄清需求 → 容量估算 → 识别瓶颈 → 逐层设防 → 故障预案\"五步走。先用数字量化规模（DAU/QPS/数据量），再找瓶颈（DB/缓存/网络/锁），然后对每层独立设计保护（限流/缓存/MQ/分片），最后说清每个组件的故障模式和降级方案。核心原则：不为高并发而高并发，每个组件都要回答\"解决什么问题\"。",
+      "pitfalls": [
+        "没做容量估算就堆组件 → 面试官会认为你在背八股",
+        "只会说\"加缓存\"、\"加 MQ\" → 追问\"为什么\"就卡住",
+        "不考虑故障场景 → 系统设计题的核心是\"出问题怎么办\"",
+        "忘说监控指标 → 没有度量就没有优化"
+      ],
+      "relatedIds": [
+        "scenario-realtime-music-ranking",
+        "scenario-single-machine-counter",
+        "scenario-qps-capacity-planning",
+        "scenario-seckill-system",
+        "scenario-distributed-rate-limit",
+        "scenario-redis-mysql-consistency",
+        "scenario-redis-outage",
+        "handwrite-60",
+        "handwrite-61"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "场景题型模板"
+    },
+    {
+      "id": "pattern-cache-consistency",
+      "number": "缓存一致性",
+      "title": "分布式缓存与一致性：从单点到多级的演进",
+      "kind": "pattern",
+      "kindLabel": "场景模板",
+      "group": "题型模板",
+      "category": "缓存与一致性",
+      "flat": false,
+      "subtitle": "覆盖 5 道题 · 缓存三兄弟 + 双写一致性 + 分布式锁",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别缓存诉求",
+            "questions": [
+              "为什么需要缓存？（DB 压力 / 延迟要求 / 吞吐量）",
+              "缓存什么数据？（热数据 / 全量 / 计算结果）",
+              "命中率目标是多少？（90% / 95% / 99%）"
+            ],
+            "example": "\"减少 DB 压力\"不够具体；要说\"DB 单机能扛 1000 TPS，预期峰值 5000 QPS，所以需要缓存命中 80%\"。"
+          },
+          {
+            "stage": "识别一致性等级",
+            "questions": [
+              "数据变了多久内必须可见？",
+              "允许读到旧值吗？允许读到将来的值吗？",
+              "缓存和 DB 谁是事实源？"
+            ],
+            "example": "商品价格改了必须立刻生效 → 强一致（DB 为主，缓存延迟双删）；点赞数可以延迟秒级 → 最终一致（先写缓存，异步刷 DB）。"
+          },
+          {
+            "stage": "识别故障边界",
+            "questions": [
+              "缓存挂了能不能服务？",
+              "热点 key 过期了怎么办？",
+              "DB 挂了缓存能撑多久？"
+            ],
+            "example": "缓存挂了的兜底：限流 + 本地缓存 + 返回默认值，不能让流量全部打到 DB。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 容量估算",
+        "formulas": [
+          {
+            "name": "缓存命中率",
+            "formula": "hit_rate = 1 - (DB_QPS / total_QPS)",
+            "example": "DB 100 QPS / 总 1000 QPS → 90% 命中率"
+          },
+          {
+            "name": "缓存容量",
+            "formula": "hot_data_size × replicas",
+            "example": "100 万商品 × 1KB × 3 副本 ≈ 3 GB"
+          },
+          {
+            "name": "过期时间",
+            "formula": "TTL ≈ 一致性容忍窗口",
+            "example": "允许 5 分钟不一致 → TTL=300s + 主动失效兜底"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "Redis 单实例",
+            "write": "~10 万 QPS",
+            "read": "~10 万 QPS",
+            "note": "单 key 热点打满单核 CPU"
+          },
+          {
+            "resource": "Caffeine 本地缓存",
+            "write": "~1000 万 QPS",
+            "read": "~1000 万 QPS",
+            "note": "不走网络，~ns 级延迟"
+          },
+          {
+            "resource": "Redis Cluster 16 节点",
+            "write": "~100 万 QPS",
+            "read": "~100 万 QPS",
+            "note": "水平扩展"
+          }
+        ],
+        "pitfalls": [
+          "不估算命中率 → 不知道缓存是否值得",
+          "不估算容量 → 不知道 Redis 需要几 G"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 缓存架构演进",
+        "stages": [
+          {
+            "stage": "无缓存",
+            "architecture": "应用 → DB",
+            "pros": [
+              "强一致",
+              "简单"
+            ],
+            "cons": [
+              "DB 压力大"
+            ],
+            "when": "QPS < 500",
+            "tradeoff": ""
+          },
+          {
+            "stage": "单级分布式缓存",
+            "architecture": "应用 → Redis → DB",
+            "pros": [
+              "读 QPS 提升 100 倍"
+            ],
+            "cons": [
+              "一致性问题",
+              "穿透/击穿/雪崩"
+            ],
+            "when": "QPS 1000-10 万",
+            "tradeoff": "用一致性换性能"
+          },
+          {
+            "stage": "多级缓存",
+            "architecture": "应用 → Caffeine → Redis → DB",
+            "pros": [
+              "抗热点读",
+              "Redis 挂了还能撑"
+            ],
+            "cons": [
+              "多级不一致",
+              "实现复杂"
+            ],
+            "when": "QPS > 10 万 + 有热点",
+            "tradeoff": "用复杂度换可用性"
+          },
+          {
+            "stage": "缓存即存储",
+            "architecture": "应用 → Redis（全量） → AOF/RDB 持久化",
+            "pros": [
+              "极致性能"
+            ],
+            "cons": [
+              "丢失风险",
+              "成本高"
+            ],
+            "when": "会话/临时数据",
+            "tradeoff": "用持久性换性能"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 缓存 Trade-off 决策",
+        "decisions": [
+          {
+            "question": "Cache-Aside vs Read-Through vs Write-Through？",
+            "chooseCache": "Cache-Aside：最常用，应用层控制灵活",
+            "chooseDB": "Write-Through：强一致场景，但写入延迟高",
+            "cost": "Cache-Aside 有一致性窗口；Write-Through 写路径变慢"
+          },
+          {
+            "question": "先删缓存 vs 先写 DB？",
+            "chooseCache": "先删缓存：写失败不会留脏缓存",
+            "chooseDB": "先写 DB：避免\"删了缓存但 DB 失败\"的回滚",
+            "cost": "两种都有问题，工程上常用\"延迟双删\"兜底"
+          },
+          {
+            "question": "TTL 长 vs TTL 短？",
+            "chooseCache": "长 TTL：命中率高，DB 压力小",
+            "chooseDB": "短 TTL：一致性好",
+            "cost": "长 TTL 需要主动失效机制；短 TTL 命中率下降"
+          },
+          {
+            "question": "永不过期 + 异步刷新 vs TTL？",
+            "chooseCache": "永不过期：避免雪崩，性能最好",
+            "chooseDB": "TTL：简单可靠",
+            "cost": "永不过期需要额外的刷新机制和数据版本管理"
+          },
+          {
+            "question": "本地缓存 vs 分布式缓存？",
+            "chooseCache": "本地：低延迟，无网络开销",
+            "chooseDB": "分布式：多实例共享，数据一致",
+            "cost": "本地缓存多实例不一致，更新难"
+          },
+          {
+            "question": "分布式锁用 Redis 还是 ZooKeeper？",
+            "chooseCache": "Redis：高性能，AP",
+            "chooseDB": "ZK：可靠性高，CP，但性能差",
+            "cost": "Redis 锁可能失效（主从切换）；ZK 性能差 10 倍"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "缓存三兄弟防护（穿透/击穿/雪崩）",
+            "code": "// 1. 缓存穿透：恶意请求不存在的 key\npublic String getWithPenetration(String key) {\n    String v = redis.get(key);\n    if (v != null) return v;\n    if (!bloomFilter.mightContain(key)) return null;  // 布隆过滤器拦截\n    v = db.query(key);\n    if (v == null) {\n        redis.setex(key, 60, \"NULL\");  // 缓存空值，短 TTL\n        return null;\n    }\n    redis.setex(key, 300, v);\n    return v;\n}\n\n// 2. 缓存击穿：热点 key 过期瞬间\npublic String getWithBreakdown(String key) {\n    String v = redis.get(key);\n    if (v != null) return v;\n    // singleflight：只让一个线程回源\n    return singleFlight.do(key, () -> {\n        String dv = db.query(key);\n        redis.setex(key, 300, dv);\n        return dv;\n    });\n}\n\n// 3. 缓存雪崩：大量 key 同时过期\npublic void set(String key, String value) {\n    int baseTtl = 300;\n    int jitter = ThreadLocalRandom.current().nextInt(60);\n    redis.setex(key, baseTtl + jitter, value);  // 加随机抖动\n}",
+            "explanation": "穿透用布隆过滤器 + 空值缓存；击穿用 singleflight（互斥重建）；雪崩用 TTL 加抖动。"
+          },
+          {
+            "name": "Redis 分布式锁（Redisson 风格）",
+            "code": "public boolean tryLock(String key, String requestId, int expireSeconds) {\n    // SET key requestId NX EX expireSeconds\n    String result = jedis.set(key, requestId, \"NX\", \"EX\", expireSeconds);\n    return \"OK\".equals(result);\n}\n\npublic boolean unlock(String key, String requestId) {\n    // Lua 保证\"判断+删除\"原子性\n    String script = \"if redis.call('get', KEYS[1]) == ARGV[1] then \" +\n                    \"return redis.call('del', KEYS[1]) else return 0 end\";\n    return jedis.eval(script, 1, key, requestId).equals(1L);\n}",
+            "explanation": "为什么要 requestId：防止误删别人的锁。为什么要 Lua：get + del 不是原子操作。为什么有 expire：防止持锁者宕机导致死锁。还要考虑：锁续期（watchdog）、可重入、红锁（多节点）。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 缓存故障场景",
+        "scenarios": [
+          {
+            "failure": "缓存穿透",
+            "symptom": "DB QPS 飙升但都是查询不存在的数据",
+            "mitigation": "布隆过滤器 + 空值缓存 + 接口层校验",
+            "detection": "DB QPS 异常 + 缓存命中率接近 0"
+          },
+          {
+            "failure": "缓存击穿",
+            "symptom": "单个热点 key 过期，瞬时 DB QPS 飙升",
+            "mitigation": "互斥锁 / singleflight / 永不过期",
+            "detection": "DB QPS 尖峰 + 特定 key 访问集中"
+          },
+          {
+            "failure": "缓存雪崩",
+            "symptom": "大量 key 同时过期",
+            "mitigation": "TTL 加随机抖动 + 多级缓存 + 熔断",
+            "detection": "缓存命中率突然下降 + DB QPS 飙升"
+          },
+          {
+            "failure": "Redis 主从切换",
+            "symptom": "锁丢失 / 数据丢失",
+            "mitigation": "RedLock / 半同步复制 / 降级",
+            "detection": "锁持有冲突率上升"
+          },
+          {
+            "failure": "缓存与 DB 不一致",
+            "symptom": "用户看到旧数据",
+            "mitigation": "延迟双删 + binlog 订阅 + 版本号",
+            "detection": "业务对账任务"
+          },
+          {
+            "failure": "大 key / 热 key",
+            "symptom": "Redis 单实例 CPU 100%",
+            "mitigation": "拆 key + 本地缓存 + 读写分离",
+            "detection": "slowlog + 单实例 CPU 报警"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "缓存命中率（目标 > 95%）",
+          "Redis RT（目标 P99 < 5ms）",
+          "缓存 QPS"
+        ],
+        "use": [
+          "Redis 内存使用率",
+          "Redis CPU 使用率（单核打满即热点）",
+          "Redis 连接数 / slowlog"
+        ],
+        "business": [
+          "缓存与 DB 不一致的告警数量",
+          "锁等待时间",
+          "锁失败率"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "缓存一致性",
+          "ids": [
+            "scenario-redis-mysql-consistency",
+            "handwrite-61"
+          ],
+          "note": "scenario 13 讲 Redis+MySQL 一致性；hw 16 讲热点缓存设计"
+        },
+        {
+          "range": "缓存故障",
+          "ids": [
+            "scenario-redis-outage"
+          ],
+          "note": "Redis 挂了的完整降级链路"
+        },
+        {
+          "range": "本地缓存",
+          "ids": [
+            "scenario-local-cache"
+          ],
+          "note": "如何设计一个本地缓存（LRU + 失效 + 并发）"
+        },
+        {
+          "range": "分布式锁",
+          "ids": [
+            "handwrite-62"
+          ],
+          "note": "Redis 分布式锁的完整实现 + 续期 + 红锁"
+        }
+      ],
+      "interviewPitch": "缓存设计我会按\"一致性等级 → 命中率目标 → 故障兜底\"三步走。先问业务允许多久的不一致（决定 TTL 和刷新策略），再算命中率目标（决定容量和淘汰策略），最后对每种故障（穿透/击穿/雪崩/Redis挂）准备兜底方案。一致性方案我会优先 Cache-Aside + 延迟双删，配合 binlog 订阅做最终一致。",
+      "pitfalls": [
+        "只说\"加缓存\"不说一致性方案 → 面试官追问\"数据变了怎么更新缓存\"就卡住",
+        "不知道穿透/击穿/雪崩的区别 → 这是缓存题的必考点",
+        "分布式锁只说 SETNX → 不知道续期、可重入、红锁",
+        "不考虑缓存挂了怎么办 → 高可用设计的核心"
+      ],
+      "relatedIds": [
+        "scenario-redis-mysql-consistency",
+        "scenario-local-cache",
+        "scenario-redis-outage",
+        "handwrite-61",
+        "handwrite-62"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "场景题型模板"
+    },
+    {
+      "id": "pattern-async-schedule",
+      "number": "异步调度",
+      "title": "异步任务与调度：延迟、重试、状态机设计",
+      "kind": "pattern",
+      "kindLabel": "场景模板",
+      "group": "题型模板",
+      "category": "异步与调度",
+      "flat": false,
+      "subtitle": "覆盖 6 道题 · 延迟队列 + 状态机 + 补偿",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别异步诉求",
+            "questions": [
+              "为什么要异步？（削峰 / 解耦 / 延迟执行 / 失败重试）",
+              "任务允许延迟多久？",
+              "允许丢失吗？"
+            ],
+            "example": "\"订单 30 分钟未支付关闭\"：延迟执行 + 不能丢失 + 允许秒级误差 → 用 MQ 延迟队列或 Redis ZSet。"
+          },
+          {
+            "stage": "识别状态机",
+            "questions": [
+              "任务有哪些状态？（PENDING/RUNNING/SUCCESS/FAILED）",
+              "状态如何流转？",
+              "中间态崩溃了怎么恢复？"
+            ],
+            "example": "Agent 任务有 5 个状态；崩溃恢复需要从最近 checkpoint 继续，不能从头开始。"
+          },
+          {
+            "stage": "识别可靠性等级",
+            "questions": [
+              "允许重复执行吗？（幂等）",
+              "允许丢吗？",
+              "需要严格顺序吗？"
+            ],
+            "example": "扣款任务：不允许重复（要幂等）+ 不允许丢（要持久化）+ 允许延迟（秒级）。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 容量估算",
+        "formulas": [
+          {
+            "name": "任务吞吐",
+            "formula": "tasks_per_sec × avg_task_duration / workers",
+            "example": "1000 任务/s × 100ms / 10 worker = 平均负载 100%"
+          },
+          {
+            "name": "延迟队列大小",
+            "formula": "QPS × 平均延迟时间",
+            "example": "100 QPS × 1800s = 18 万 pending 任务"
+          },
+          {
+            "name": "重试放大",
+            "formula": "原流量 × (1 + retry_rate × retry_count)",
+            "example": "100 QPS × 10% 重试 × 3 次 = 130 QPS 实际"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "Redis ZSet 延迟队列",
+            "write": "~10 万 ops/s",
+            "read": "~10 万 ops/s",
+            "note": "适合中小规模"
+          },
+          {
+            "resource": "RocketMQ 延迟消息",
+            "write": "~10 万 msg/s",
+            "read": "订阅消费",
+            "note": "18 个固定延迟级别"
+          },
+          {
+            "resource": "Kafka + 时间轮",
+            "write": "~百万 msg/s",
+            "read": "订阅消费",
+            "note": "任意延迟但实现复杂"
+          },
+          {
+            "resource": "DB 轮询",
+            "write": "依赖 DB",
+            "read": "~100 QPS",
+            "note": "简单但压力大"
+          }
+        ],
+        "pitfalls": [
+          "不估算延迟任务数量 → 不知道用什么存储",
+          "不算重试放大 → 容量规划不足"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 延迟任务方案演进",
+        "stages": [
+          {
+            "stage": "DB 轮询",
+            "architecture": "定时任务扫表 where next_time < now",
+            "pros": [
+              "简单可靠"
+            ],
+            "cons": [
+              "DB 压力大",
+              "延迟精度低"
+            ],
+            "when": "任务量 < 100/s",
+            "tradeoff": "用 DB 资源换简单"
+          },
+          {
+            "stage": "Redis ZSet",
+            "architecture": "ZADD 按执行时间排序，BZPOPMIN 拉取",
+            "pros": [
+              "高性能",
+              "精度秒级"
+            ],
+            "cons": [
+              "单机内存限制",
+              "需要持久化"
+            ],
+            "when": "任务量 100-10 万/s",
+            "tradeoff": "用可靠性换性能"
+          },
+          {
+            "stage": "MQ 延迟消息",
+            "architecture": "RocketMQ/RabbitMQ 延迟队列",
+            "pros": [
+              "高可靠",
+              "天然分布式"
+            ],
+            "cons": [
+              "延迟级别固定（RocketMQ）",
+              "无法取消"
+            ],
+            "when": "任务量 > 1 万/s",
+            "tradeoff": "用灵活性换可靠性"
+          },
+          {
+            "stage": "时间轮（HashedWheelTimer）",
+            "architecture": "Netty 时间轮 / Kafka Purgatory",
+            "pros": [
+              "O(1) 插入删除",
+              "支持任意延迟"
+            ],
+            "cons": [
+              "内存态，重启丢失"
+            ],
+            "when": "单机高性能场景",
+            "tradeoff": "用持久性换性能"
+          },
+          {
+            "stage": "DB + 状态机 + 补偿扫描",
+            "architecture": "任务表 + 状态字段 + 定时扫描中间态",
+            "pros": [
+              "强可靠",
+              "可恢复"
+            ],
+            "cons": [
+              "实现复杂"
+            ],
+            "when": "金融级可靠性",
+            "tradeoff": "用复杂度换可靠性"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 异步设计 Trade-off",
+        "decisions": [
+          {
+            "question": "推 vs 拉（任务分发）？",
+            "chooseCache": "推：worker 注册，调度器主动分配，延迟低",
+            "chooseDB": "拉：worker 轮询，简单可靠",
+            "cost": "推模式要处理 worker 失败；拉模式有轮询开销"
+          },
+          {
+            "question": "At-most-once vs At-least-once vs Exactly-once？",
+            "chooseCache": "At-least-once + 幂等：工程最实用",
+            "chooseDB": "Exactly-once：Kafka 事务 / 2PC，性能差",
+            "cost": "Exactly-once 实现复杂；At-least-once 要求消费端幂等"
+          },
+          {
+            "question": "内存队列 vs 持久化队列？",
+            "chooseCache": "内存：Disruptor / ArrayBlockingQueue，性能极致",
+            "chooseDB": "持久化：Kafka / RocketMQ，可靠但有 IO 开销",
+            "cost": "内存队列宕机丢失；持久化队列延迟高"
+          },
+          {
+            "question": "同步重试 vs 异步重试？",
+            "chooseCache": "同步重试：简单，快速失败",
+            "chooseDB": "异步重试：不阻塞主流程，可控制重试间隔",
+            "cost": "同步重试会放大下游故障；异步重试引入复杂度"
+          },
+          {
+            "question": "单机调度 vs 分布式调度？",
+            "chooseCache": "单机：ScheduledExecutor，简单",
+            "chooseDB": "分布式：XXL-Job / ElasticJob，支持故障转移",
+            "cost": "分布式调度引入协调成本（选主 / 任务分片）"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "Redis ZSet 延迟队列",
+            "code": "// 生产端：把任务按执行时间放入 ZSet\npublic void schedule(String taskId, long executeAt) {\n    redis.zadd(\"delay_queue\", executeAt, taskId);\n}\n\n// 消费端：循环拉取到期任务\npublic void consume() {\n    while (running) {\n        long now = System.currentTimeMillis();\n        Set<String> tasks = redis.zrangeByScore(\"delay_queue\", 0, now, 0, 1);\n        if (tasks.isEmpty()) {\n            Thread.sleep(100);\n            continue;\n        }\n        String taskId = tasks.iterator().next();\n        // ZREM 返回 1 表示抢到了（原子操作）\n        if (redis.zrem(\"delay_queue\", taskId) == 1) {\n            processTask(taskId);\n        }\n    }\n}",
+            "explanation": "为什么用 ZSet：按 score（执行时间）排序，范围查询 O(log N)。为什么用 ZREM 抢占：多实例部署时避免重复消费。"
+          },
+          {
+            "name": "状态机 + 补偿扫描（订单超时关闭）",
+            "code": "// 1. 订单表有状态字段\nenum OrderStatus { PENDING, PAID, CLOSED, CANCELLED }\n\n// 2. 关闭逻辑（CAS 更新，保证幂等）\npublic boolean closeOrder(String orderId) {\n    int rows = jdbc.update(\n        \"UPDATE orders SET status='CLOSED', version=version+1 \" +\n        \"WHERE order_id=? AND status='PENDING'\", orderId);\n    return rows > 0;  // 0 行说明已被并发修改\n}\n\n// 3. 补偿扫描（兜底）\n@Scheduled(fixedDelay = 60000)\npublic void compensate() {\n    List<Order> stuckOrders = jdbc.query(\n        \"SELECT * FROM orders WHERE status='PENDING' \" +\n        \"AND create_time < NOW() - INTERVAL 30 MINUTE LIMIT 100\");\n    stuckOrders.forEach(o -> closeOrder(o.getId()));\n}",
+            "explanation": "为什么要 CAS：并发支付和并发关闭可能同时发生。为什么要补偿：MQ 延迟消息可能丢失。LIMIT 100 防止一次扫太多。"
+          },
+          {
+            "name": "指数退避重试",
+            "code": "public <T> T retryWithBackoff(Supplier<T> task, int maxRetries) {\n    int attempt = 0;\n    while (true) {\n        try {\n            return task.get();\n        } catch (RetryableException e) {\n            attempt++;\n            if (attempt >= maxRetries) throw e;\n            // 指数退避 + 随机抖动（避免惊群）\n            long delayMs = (long) (1000 * Math.pow(2, attempt));\n            delayMs += ThreadLocalRandom.current().nextInt(1000);\n            Thread.sleep(delayMs);\n        }\n    }\n}",
+            "explanation": "为什么要指数退避：避免下游故障时被重试打挂。为什么要抖动：多客户端同时重试会叠加成尖峰。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 异步任务故障",
+        "scenarios": [
+          {
+            "failure": "任务丢失",
+            "symptom": "消息发出但消费者没收到",
+            "mitigation": "生产者 ACK + 持久化 + 消费者手动 ACK",
+            "detection": "对账任务比对生产/消费数量"
+          },
+          {
+            "failure": "任务重复",
+            "symptom": "同一个任务执行多次",
+            "mitigation": "消费端幂等（去重表 / 唯一键）",
+            "detection": "业务对账（如重复扣款告警）"
+          },
+          {
+            "failure": "任务乱序",
+            "symptom": "先到的任务后执行",
+            "mitigation": "单分区 + 单线程消费（牺牲并发）",
+            "detection": "业务状态错乱日志"
+          },
+          {
+            "failure": "任务积压",
+            "symptom": "消费速度赶不上生产",
+            "mitigation": "扩容消费者 + 降级非核心任务 + 死信队列",
+            "detection": "lag 持续增长"
+          },
+          {
+            "failure": "worker 崩溃",
+            "symptom": "任务执行中宕机",
+            "mitigation": "checkpoint + 状态机 + 补偿扫描",
+            "detection": "心跳超时 + 任务长时间 RUNNING"
+          },
+          {
+            "failure": "调度器单点",
+            "symptom": "调度器宕机所有任务停摆",
+            "mitigation": "选主（ZK / Raft）+ 主备切换",
+            "detection": "调度心跳丢失"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "任务生产/消费速率",
+          "任务失败率",
+          "任务执行耗时 P99"
+        ],
+        "use": [
+          "队列深度 / lag",
+          "worker 线程池使用率",
+          "调度器心跳"
+        ],
+        "business": [
+          "端到端延迟（任务创建到完成）",
+          "状态机异常状态的任务数",
+          "重试次数分布"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "延迟任务",
+          "ids": [
+            "scenario-order-timeout-close"
+          ],
+          "note": "订单超时关闭的完整方案演进"
+        },
+        {
+          "range": "任务调度",
+          "ids": [
+            "scenario-distributed-scheduler",
+            "handwrite-59"
+          ],
+          "note": "分布式调度平台 + 定时任务手写"
+        },
+        {
+          "range": "消息可靠性",
+          "ids": [
+            "handwrite-64"
+          ],
+          "note": "可靠异步消息链路（不丢不重）"
+        },
+        {
+          "range": "状态机恢复",
+          "ids": [
+            "handwrite-68",
+            "handwrite-69",
+            "database-94"
+          ],
+          "note": "Agent checkpoint / 流式恢复 / 补偿扫描"
+        }
+      ],
+      "interviewPitch": "异步设计我会先问四个问题：允许延迟吗、允许丢吗、允许重复吗、允许乱序吗。然后按\"延迟需求选方案（DB 轮询 / Redis / MQ / 时间轮）\"，按\"可靠性需求选持久化\"，按\"不重复需求做幂等\"，按\"崩溃恢复做状态机+补偿\"。核心原则：异步不是免费的，引入 MQ 就要处理消息三问题（丢失/重复/顺序）。",
+      "pitfalls": [
+        "默认 MQ 不会丢消息 → 实际上要看持久化配置和 ACK 模式",
+        "不做幂等 → 重试必然导致重复",
+        "不要补偿扫描 → MQ 消息丢失时无法兜底",
+        "重试不加退避 → 下游故障时被重试打挂"
+      ],
+      "relatedIds": [
+        "scenario-distributed-scheduler",
+        "scenario-order-timeout-close",
+        "handwrite-59",
+        "handwrite-64",
+        "handwrite-68",
+        "handwrite-69"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "场景题型模板"
+    },
+    {
+      "id": "pattern-bigdata-file",
+      "number": "大数据",
+      "title": "大数据与文件处理：外排、TopK、分片上传",
+      "kind": "pattern",
+      "kindLabel": "场景模板",
+      "group": "题型模板",
+      "category": "大数据处理",
+      "flat": false,
+      "subtitle": "覆盖 5 道题 · 内存受限 + 流式 + 分治",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "确认内存约束",
+            "questions": [
+              "数据总量？单机内存能放下吗？",
+              "需要全量加载还是可以流式处理？",
+              "磁盘可用空间有多少？"
+            ],
+            "example": "\"1 亿个数取 Top 100\"：1 亿 × 8B = 800MB，可能放不下 → 用堆或分治；\"100GB 文件排序\"：必须外排。"
+          },
+          {
+            "stage": "识别处理模式",
+            "questions": [
+              "是一次性任务还是持续流式？",
+              "结果要精确还是允许近似？",
+              "是否可以并行处理？"
+            ],
+            "example": "日志 TopK 可以按文件分片并行处理，最后归并；精确去重必须用外排或布隆过滤器。"
+          },
+          {
+            "stage": "识别 IO 瓶颈",
+            "questions": [
+              "是计算密集还是 IO 密集？",
+              "网络带宽够用吗？",
+              "顺序 IO 还是随机 IO？"
+            ],
+            "example": "大文件排序是 IO 密集 → 关键是减少磁盘寻道，用顺序读写 + 归并。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 容量估算",
+        "formulas": [
+          {
+            "name": "外排次数",
+            "formula": "log_k(N / M)",
+            "example": "N=100GB，M=1GB 内存，k=100 路归并 → log_100(100) ≈ 1 次归并"
+          },
+          {
+            "name": "TopK 内存",
+            "formula": "K × 元素大小",
+            "example": "K=100，long 类型 → 800B，完全放得下"
+          },
+          {
+            "name": "分片上传时间",
+            "formula": "total_size / parallel_bandwidth",
+            "example": "10GB / (10 并发 × 10MB/s) = 100 秒"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "单机内存",
+            "write": "N/A",
+            "read": "GB 级",
+            "note": "8-32 GB 常见"
+          },
+          {
+            "resource": "SSD 顺序读",
+            "write": "~500 MB/s",
+            "read": "~500 MB/s",
+            "note": "随机读只有 ~50 MB/s"
+          },
+          {
+            "resource": "HDD 顺序读",
+            "write": "~150 MB/s",
+            "read": "~150 MB/s",
+            "note": "随机读只有 ~1 MB/s"
+          },
+          {
+            "resource": "网卡",
+            "write": "~120 MB/s",
+            "read": "~120 MB/s",
+            "note": "千兆；万兆 1.2 GB/s"
+          }
+        ],
+        "pitfalls": [
+          "不考虑单机内存限制 → 设计方案 OOM",
+          "混淆顺序 IO 和随机 IO 性能差 10 倍"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 大数据处理演进",
+        "stages": [
+          {
+            "stage": "单机内存",
+            "architecture": "一次加载到内存处理",
+            "pros": [
+              "简单"
+            ],
+            "cons": [
+              "内存限制"
+            ],
+            "when": "数据 < 1GB",
+            "tradeoff": ""
+          },
+          {
+            "stage": "单机分片",
+            "architecture": "切分成小文件 → 逐个处理 → 归并",
+            "pros": [
+              "内存可控"
+            ],
+            "cons": [
+              "磁盘 IO 开销"
+            ],
+            "when": "数据 1GB-1TB",
+            "tradeoff": "用磁盘 IO 换内存"
+          },
+          {
+            "stage": "多机并行",
+            "architecture": "MapReduce / Spark",
+            "pros": [
+              "水平扩展"
+            ],
+            "cons": [
+              "网络传输",
+              "调度复杂"
+            ],
+            "when": "数据 > 1TB",
+            "tradeoff": "用网络换吞吐"
+          },
+          {
+            "stage": "流式处理",
+            "architecture": "Flink / Kafka Streams",
+            "pros": [
+              "低延迟",
+              "持续输出"
+            ],
+            "cons": [
+              "状态管理复杂",
+              "Exactly-once 难"
+            ],
+            "when": "实时场景",
+            "tradeoff": "用复杂度换延迟"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 大数据处理 Trade-off",
+        "decisions": [
+          {
+            "question": "精确 vs 近似？",
+            "chooseCache": "精确：TopK 用堆、排序",
+            "chooseDB": "近似：Count-Min Sketch、HyperLogLog、Bloom Filter",
+            "cost": "近似算法内存省 100-1000 倍，但有误差率"
+          },
+          {
+            "question": "外排 vs 数据库排序？",
+            "chooseCache": "外排：可控，内存占用小",
+            "chooseDB": "DB ORDER BY：简单，但大数据量慢",
+            "cost": "DB 排序可能 OOM；外排要写代码"
+          },
+          {
+            "question": "单大文件 vs 多小文件？",
+            "chooseCache": "单大文件：顺序 IO 快",
+            "chooseDB": "多小文件：并行处理方便",
+            "cost": "单文件无法并行；小文件管理开销大（HDFS 小文件问题）"
+          },
+          {
+            "question": "Push vs Pull（数据分发）？",
+            "chooseCache": "Push：发送方主动推，实时性好",
+            "chooseDB": "Pull：接收方拉，可控制速率",
+            "cost": "Push 可能打挂下游；Pull 引入延迟"
+          },
+          {
+            "question": "同步复制 vs 异步复制？",
+            "chooseCache": "同步：不丢数据（如 MySQL 半同步）",
+            "chooseDB": "异步：性能高（如 MySQL 异步复制）",
+            "cost": "同步延迟高；异步可能丢数据"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "TopK（最小堆）",
+            "code": "// 找 1 亿个数中最大的 100 个\npublic List<Long> topK(Iterator<Long> stream, int k) {\n    PriorityQueue<Long> heap = new PriorityQueue<>(k);\n    while (stream.hasNext()) {\n        long num = stream.next();\n        if (heap.size() < k) {\n            heap.offer(num);\n        } else if (num > heap.peek()) {\n            heap.poll();\n            heap.offer(num);\n        }\n    }\n    return new ArrayList<>(heap);\n}",
+            "explanation": "为什么用小顶堆：堆顶是第 K 大，比堆顶小的直接丢弃。时间 O(N log K)，空间 O(K)。1 亿 × log(100) ≈ 7 亿次操作，单机秒级。"
+          },
+          {
+            "name": "外部排序（归并）",
+            "code": "// 1. 分片：把 100GB 切成 100 个 1GB 小文件，分别加载到内存排序\npublic List<File> splitAndSort(File bigFile, long memoryLimit) {\n    List<File> sorted = new ArrayList<>();\n    try (BufferedReader reader = new BufferedReader(new FileReader(bigFile))) {\n        List<String> buffer = new ArrayList<>();\n        String line;\n        while ((line = reader.readLine()) != null) {\n            buffer.add(line);\n            if (buffer.size() * 100 > memoryLimit) {  // 假设每行 ~100B\n                sorted.add(writeSortToFile(buffer));\n                buffer.clear();\n            }\n        }\n        if (!buffer.isEmpty()) sorted.add(writeSortToFile(buffer));\n    }\n    return sorted;\n}\n\n// 2. 归并：k 路归并（用堆维护每个文件的当前行）\npublic void kWayMerge(List<File> sortedFiles, File output) {\n    PriorityQueue<LineIterator> heap = new PriorityQueue<>(\n        Comparator.comparing(LineIterator::current));\n    // 初始化堆，k 个文件各放一个迭代器\n    for (File f : sortedFiles) heap.offer(new LineIterator(f));\n    // 不断取堆顶写入输出，迭代器前进\n    try (BufferedWriter writer = new BufferedWriter(new FileWriter(output))) {\n        while (!heap.isEmpty()) {\n            LineIterator it = heap.poll();\n            writer.write(it.current() + \"\\n\");\n            if (it.hasNext()) { it.next(); heap.offer(it); }\n        }\n    }\n}",
+            "explanation": "为什么 k 路归并：一次归并 k 个文件比两两归并快 log k 倍。为什么用堆：O(log k) 找到 k 个文件当前行的最小值。"
+          },
+          {
+            "name": "分片上传 + 断点续传",
+            "code": "// 1. 客户端：计算 MD5，询问服务端是否已存在（秒传）\npublic String upload(File file) {\n    String md5 = md5(file);\n    if (server.checkExists(md5)) return server.getFileId(md5);  // 秒传\n\n    // 2. 分片（每片 5MB）\n    long chunkSize = 5 * 1024 * 1024;\n    int totalChunks = (int) Math.ceil(file.length() / (double) chunkSize);\n    String uploadId = server.initUpload(file.getName(), md5, totalChunks);\n\n    // 3. 并行上传（断点续传：已成功的分片跳过）\n    Set<Integer> uploaded = server.getUploadedChunks(uploadId);\n    ExecutorService pool = Executors.newFixedThreadPool(10);\n    for (int i = 0; i < totalChunks; i++) {\n        if (uploaded.contains(i)) continue;\n        int chunkIdx = i;\n        pool.submit(() -> {\n            byte[] chunk = readChunk(file, chunkIdx, chunkSize);\n            server.uploadChunk(uploadId, chunkIdx, md5(chunk), chunk);\n        });\n    }\n    pool.shutdown();\n    pool.awaitTermination(1, TimeUnit.HOURS);\n\n    // 4. 合并分片\n    return server.completeUpload(uploadId);\n}",
+            "explanation": "为什么要 MD5：秒传 + 断点续传。为什么要并行：充分利用带宽。为什么要 chunk MD5：单分片损坏只需重传该片。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 故障模式",
+        "scenarios": [
+          {
+            "failure": "单机 OOM",
+            "symptom": "加载大文件时 OutOfMemoryError",
+            "mitigation": "流式处理 + 分片 + 外排",
+            "detection": "JVM 内存监控"
+          },
+          {
+            "failure": "磁盘满",
+            "symptom": "外排中间文件写不下",
+            "mitigation": "压缩中间文件 + 及时清理 + 监控磁盘",
+            "detection": "磁盘使用率告警"
+          },
+          {
+            "failure": "网络中断（分片上传）",
+            "symptom": "某几个分片上传失败",
+            "mitigation": "分片重试 + 断点续传 + 幂等上传",
+            "detection": "分片失败率监控"
+          },
+          {
+            "failure": "数据倾斜",
+            "symptom": "某个 reducer / worker 特别慢",
+            "mitigation": "重新分区 + 加盐打散热点 key",
+            "detection": "单个任务耗时远大于平均"
+          },
+          {
+            "failure": "TopK 内存溢出",
+            "symptom": "K 太大堆放不下",
+            "mitigation": "分治 + 多路归并",
+            "detection": "JVM 内存监控"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "文件处理速率（行/s）",
+          "处理失败率",
+          "端到端延迟"
+        ],
+        "use": [
+          "JVM 内存",
+          "磁盘使用率",
+          "网络带宽",
+          "线程池"
+        ],
+        "business": [
+          "TopK 结果的正确性（抽样验证）",
+          "上传成功率",
+          "秒传命中率"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "TopK",
+          "ids": [
+            "scenario-massive-topk",
+            "handwrite-46"
+          ],
+          "note": "scenario 11 海量数据 TopK；hw 1 海量文件 TopK"
+        },
+        {
+          "range": "大文件排序",
+          "ids": [
+            "scenario-external-sort"
+          ],
+          "note": "外部排序的完整流程"
+        },
+        {
+          "range": "文件上传",
+          "ids": [
+            "scenario-lan-distribute-500gb",
+            "handwrite-66"
+          ],
+          "note": "scenario 3 局域网 500GB 分发；hw 21 分片上传断点续传"
+        }
+      ],
+      "interviewPitch": "大数据题我会先问\"内存能不能放下\"。放不下就走分治路线：分片 → 单机处理 → 归并。TopK 用堆（O(N log K) 时间，O(K) 空间）；排序用外排（分片排序 + k 路归并）；上传用分片 + MD5 + 断点续传。核心原则：IO 是瓶颈，一切围绕减少磁盘/网络 IO 设计。",
+      "pitfalls": [
+        "TopK 直接全排序 → O(N log N) 而不是 O(N log K)",
+        "外排归并一路一路做 → 应该 k 路归并",
+        "分片上传不做幂等 → 重试导致重复分片",
+        "不考虑数据倾斜 → 某个 worker 拖死整个任务"
+      ],
+      "relatedIds": [
+        "scenario-lan-distribute-500gb",
+        "scenario-massive-topk",
+        "scenario-external-sort",
+        "handwrite-46",
+        "handwrite-66"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "场景题型模板"
+    },
+    {
+      "id": "pattern-distributed-foundation",
+      "number": "分布式基础",
+      "title": "分布式系统基础：ID 生成、SSO、RPC、时钟",
+      "kind": "pattern",
+      "kindLabel": "场景模板",
+      "group": "题型模板",
+      "category": "分布式基础",
+      "flat": false,
+      "subtitle": "覆盖 3 道题 · 分布式原语",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别分布式原语",
+            "questions": [
+              "这是分布式 ID / 锁 / 事务 / 时钟 / 选主 中的哪一类？",
+              "跨节点协调的共识成本是什么？",
+              "能容忍单点故障吗？"
+            ],
+            "example": "分布式 ID：要求全局唯一 + 趋势递增 + 高性能。三者矛盾 → Snowflake 是工程上的平衡。"
+          },
+          {
+            "stage": "识别一致性要求",
+            "questions": [
+              "允许重复吗？允许乱序吗？",
+              "时钟回拨怎么办？",
+              "跨机房延迟多少？"
+            ],
+            "example": "Snowflake 的 41 位时间戳最多撑 69 年；时钟回拨会导致 ID 重复 → 需要机器位 + 序号位容错。"
+          },
+          {
+            "stage": "识别可用性等级",
+            "questions": [
+              "服务挂了影响范围多大？",
+              "可以降级吗？降级方案是什么？"
+            ],
+            "example": "RPC 框架：提供者挂了 → 消费者要有超时 + 熔断 + 降级，不能一直等。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 容量估算",
+        "formulas": [
+          {
+            "name": "Snowflake QPS",
+            "formula": "4096 / ms × 1000 ms/s",
+            "example": "单实例 409 万 ID/s，够用 10 年"
+          },
+          {
+            "name": "UUID 存储成本",
+            "formula": "36 字符 vs 8 字节 long",
+            "example": "1 亿条记录，UUID 比 long 多占 2.8 GB"
+          },
+          {
+            "name": "RPC 调用延迟",
+            "formula": "网络 RTT + 序列化 + 业务耗时",
+            "example": "同机房 RTT 0.1ms + 序列化 1ms + 业务 10ms ≈ 11ms"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "Snowflake",
+            "write": "~400 万 ID/s",
+            "read": "N/A",
+            "note": "单实例"
+          },
+          {
+            "resource": "UUID.randomUUID",
+            "write": "~100 万 ID/s",
+            "read": "N/A",
+            "note": "无状态，无限"
+          },
+          {
+            "resource": "DB 号段",
+            "write": "~1 万 ID/s",
+            "read": "N/A",
+            "note": "一次取 1000 个号段"
+          },
+          {
+            "resource": "gRPC 同机房",
+            "write": "N/A",
+            "read": "~10 万 QPS",
+            "note": "HTTP/2 多路复用"
+          }
+        ],
+        "pitfalls": [
+          "不考虑 ID 冲突概率",
+          "不估算 RPC 延迟对 SLA 的影响"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 分布式 ID 演进",
+        "stages": [
+          {
+            "stage": "UUID",
+            "architecture": "本地生成，无依赖",
+            "pros": [
+              "简单",
+              "无限扩展"
+            ],
+            "cons": [
+              "无序",
+              "占空间大",
+              "B+ 树索引性能差"
+            ],
+            "when": "日志 ID / 临时 ID",
+            "tradeoff": "用索引性能换简单"
+          },
+          {
+            "stage": "DB 自增",
+            "architecture": "AUTO_INCREMENT 主键",
+            "pros": [
+              "有序",
+              "简单"
+            ],
+            "cons": [
+              "单点",
+              "暴露业务量"
+            ],
+            "when": "单机业务",
+            "tradeoff": "用单点风险换简单"
+          },
+          {
+            "stage": "DB 号段",
+            "architecture": "一次取 1000 个 ID 缓存",
+            "pros": [
+              "减少 DB 压力"
+            ],
+            "cons": [
+              "重启浪费号段",
+              "ID 不连续"
+            ],
+            "when": "中等并发",
+            "tradeoff": "用号段浪费换性能"
+          },
+          {
+            "stage": "Snowflake",
+            "architecture": "时间戳 + 机器位 + 序列号",
+            "pros": [
+              "高性能",
+              "趋势递增",
+              "去中心化"
+            ],
+            "cons": [
+              "依赖时钟",
+              "机器位分配"
+            ],
+            "when": "高并发分布式",
+            "tradeoff": "用时钟依赖换性能"
+          },
+          {
+            "stage": "Leaf / TinyID",
+            "architecture": "Snowflake + 号段混合 + ZK 分配机器位",
+            "pros": [
+              "高可用",
+              "灵活"
+            ],
+            "cons": [
+              "引入 ZK 依赖"
+            ],
+            "when": "大型分布式系统",
+            "tradeoff": "用组件依赖换可用性"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 分布式 Trade-off",
+        "decisions": [
+          {
+            "question": "UUID vs 自增 ID vs Snowflake？",
+            "chooseCache": "Snowflake：高性能 + 趋势递增 + 分布式",
+            "chooseDB": "UUID：无依赖最简单；自增 ID：单机最简单",
+            "cost": "Snowflake 依赖时钟；UUID 索引性能差；自增 ID 单点"
+          },
+          {
+            "question": "TCP vs HTTP（RPC 协议）？",
+            "chooseCache": "TCP：性能高，定制协议",
+            "chooseDB": "HTTP/2：生态好，跨语言",
+            "cost": "TCP 要自己处理粘包/拆包；HTTP/2 头部开销大"
+          },
+          {
+            "question": "JSON vs Protobuf（序列化）？",
+            "chooseCache": "Protobuf：体积小 3-10 倍，性能好",
+            "chooseDB": "JSON：可读性好，调试方便",
+            "cost": "Protobuf 需要 schema 管理；JSON 序列化慢"
+          },
+          {
+            "question": "Cookie vs Token（SSO）？",
+            "chooseCache": "Token（JWT）：无状态，跨域方便",
+            "chooseDB": "Cookie + Session：可主动失效",
+            "cost": "JWT 无法吊销（只能等过期）；Session 需要共享存储"
+          },
+          {
+            "question": "中心化认证 vs 去中心化认证？",
+            "chooseCache": "中心化（CAS / OAuth2 服务端）：可统一吊销",
+            "chooseDB": "去中心化（JWT 验证签名）：性能高",
+            "cost": "中心化是单点；去中心化无法主动失效"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "Snowflake ID 生成器",
+            "code": "public class SnowflakeIdGenerator {\n    private static final long EPOCH = 1609459200000L;  // 2021-01-01\n    private static final long WORKER_ID_BITS = 10L;     // 支持 1024 个节点\n    private static final long SEQUENCE_BITS = 12L;      // 每毫秒 4096 个 ID\n\n    private final long workerId;\n    private long sequence = 0L;\n    private long lastTimestamp = -1L;\n\n    public synchronized long nextId() {\n        long timestamp = System.currentTimeMillis();\n\n        // 时钟回拨检测\n        if (timestamp < lastTimestamp) {\n            throw new RuntimeException(\"时钟回拨，拒绝生成 ID\");\n        }\n\n        if (timestamp == lastTimestamp) {\n            // 同一毫秒内递增序列号\n            sequence = (sequence + 1) & ((1 << SEQUENCE_BITS) - 1);\n            if (sequence == 0) {\n                // 序列号用完，等到下一毫秒\n                while (timestamp <= lastTimestamp) {\n                    timestamp = System.currentTimeMillis();\n                }\n            }\n        } else {\n            sequence = 0L;\n        }\n\n        lastTimestamp = timestamp;\n        return ((timestamp - EPOCH) << (WORKER_ID_BITS + SEQUENCE_BITS))\n             | (workerId << SEQUENCE_BITS)\n             | sequence;\n    }\n}",
+            "explanation": "64 位拆分：1 位符号 + 41 位时间戳（69 年）+ 10 位机器位（1024 节点）+ 12 位序列号（4096/ms）。为什么 synchronized：保证单机内并发安全。为什么检测时钟回拨：防止生成重复 ID。"
+          },
+          {
+            "name": "JWT 签发与验证",
+            "code": "// 签发\npublic String issue(String userId) {\n    long now = System.currentTimeMillis();\n    return Jwts.builder()\n        .setSubject(userId)\n        .setIssuedAt(new Date(now))\n        .setExpiration(new Date(now + 7200_000))  // 2 小时\n        .claim(\"role\", \"user\")\n        .signWith(SignatureAlgorithm.HS256, SECRET)\n        .compact();\n}\n\n// 验证\npublic String verify(String token) {\n    try {\n        Claims claims = Jwts.parser()\n            .setSigningKey(SECRET)\n            .parseClaimsJws(token)\n            .getBody();\n        return claims.getSubject();\n    } catch (ExpiredJwtException e) {\n        throw new RuntimeException(\"Token 已过期\");\n    } catch (SignatureException e) {\n        throw new RuntimeException(\"签名无效\");\n    }\n}\n\n// 吊销（黑名单）\npublic void revoke(String token) {\n    redis.setex(\"jwt:blacklist:\" + md5(token), 7200, \"1\");\n}",
+            "explanation": "JWT 优点：无状态，服务端不用存 session。缺点：无法主动吊销（只能加黑名单或等过期）。 refresh token 模式：短过期 access token + 长过期 refresh token。"
+          },
+          {
+            "name": "简易 RPC 客户端（带超时和重试）",
+            "code": "public class RpcClient {\n    private final LoadBalancer lb = new RoundRobinLoadBalancer();\n    private final CircuitBreaker breaker = new CircuitBreaker();\n\n    public <T> T call(String service, String method, Object[] args, Class<T> returnType) {\n        if (!breaker.allowRequest()) {\n            throw new CircuitBreakerOpenException(\"服务已熔断\");\n        }\n\n        List<Endpoint> endpoints = lb.choose(service);\n        Exception lastException = null;\n\n        for (int i = 0; i < 3; i++) {  // 最多重试 3 次\n            Endpoint ep = endpoints.get(i % endpoints.size());\n            try {\n                return doCall(ep, method, args, returnType, 1000);  // 1s 超时\n            } catch (TimeoutException e) {\n                lastException = e;\n                breaker.recordFailure();\n            } catch (Exception e) {\n                lastException = e;\n                break;  // 非超时异常不重试\n            }\n        }\n        throw new RpcException(\"调用失败\", lastException);\n    }\n}",
+            "explanation": "RPC 核心四件事：寻址（LB）+ 序列化 + 网络传输 + 故障处理。超时必须有，否则线程会无限等待。重试只对超时异常，业务异常不重试。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 分布式故障",
+        "scenarios": [
+          {
+            "failure": "时钟回拨",
+            "symptom": "Snowflake 生成重复 ID",
+            "mitigation": "拒绝生成 + 等待时钟追上 + 用逻辑时钟",
+            "detection": "ID 冲突告警"
+          },
+          {
+            "failure": "机器位冲突",
+            "symptom": "两个实例用了同一个 workerId",
+            "mitigation": "ZK 分配 + 启动时校验 + 持久化",
+            "detection": "启动时注册失败"
+          },
+          {
+            "failure": "Session 共享失败",
+            "symptom": "用户在 A 机器登录，B 机器不认",
+            "mitigation": "Redis 集中存储 Session / JWT 无状态",
+            "detection": "登录态丢失率"
+          },
+          {
+            "failure": "RPC 提供者全部挂了",
+            "symptom": "所有调用超时",
+            "mitigation": "熔断 + 降级 + 兜底数据",
+            "detection": "错误率 100% + 熔断器打开"
+          },
+          {
+            "failure": "脑裂（网络分区）",
+            "symptom": "双主同时写入",
+            "mitigation": "Raft 多数派 + fencing token",
+            "detection": "数据不一致告警"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "RPC 调用 QPS / 错误率 / P99 延迟",
+          "ID 生成速率",
+          "Token 签发/验证速率"
+        ],
+        "use": [
+          "RPC 线程池使用率",
+          "连接池使用率",
+          "时钟偏移量"
+        ],
+        "business": [
+          "ID 冲突数（应为 0）",
+          "登录态异常数",
+          "熔断器打开次数"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "分布式 ID",
+          "ids": [
+            "handwrite-63"
+          ],
+          "note": "Snowflake / Leaf / UUID 的对比"
+        },
+        {
+          "range": "SSO 单点登录",
+          "ids": [
+            "scenario-cross-site-sso"
+          ],
+          "note": "Cookie + Ticket / JWT / OAuth2 三种方案"
+        },
+        {
+          "range": "RPC 框架",
+          "ids": [
+            "scenario-rpc-framework"
+          ],
+          "note": "从 socket 到手写 RPC 框架的完整演进"
+        }
+      ],
+      "interviewPitch": "分布式基础题我会先明确\"要解决什么问题\"：ID 生成要解决\"全局唯一+高性能\"；SSO 要解决\"一次登录处处通行\"；RPC 要解决\"跨进程调用像本地一样\"。然后按\"一致性 / 可用性 / 性能\"三个维度做取舍。核心原则：分布式没有银弹，每个方案都是对 CAP 的不同取舍。",
+      "pitfalls": [
+        "ID 生成只说 UUID → 不知道 Snowflake 和 Leaf 的优势",
+        "JWT 只说无状态 → 不知道无法吊销的问题",
+        "RPC 只会用 → 不知道超时 / 重试 / 熔断 / LB 的细节",
+        "不考虑时钟回拨 → Snowflake 的坑"
+      ],
+      "relatedIds": [
+        "scenario-cross-site-sso",
+        "scenario-rpc-framework",
+        "handwrite-63"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "场景题型模板"
+    },
+    {
+      "id": "pattern-ai-rag",
+      "number": "AI-RAG",
+      "title": "AI/RAG 系统设计：检索、会话、Agent、生产级优化",
+      "kind": "pattern",
+      "kindLabel": "场景模板",
+      "group": "题型模板",
+      "category": "AI 场景",
+      "flat": false,
+      "subtitle": "覆盖 7 道题 · RAG + 会话 + Agent",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别 AI 系统边界",
+            "questions": [
+              "LLM 调用的延迟预算是多少？（首 token / 完整响应）",
+              "上下文窗口限制？（不同模型从数千到百万级 token 不等，以官方规格为准）",
+              "需要多轮对话吗？需要记忆吗？",
+              "允许幻觉吗？如何兜底？"
+            ],
+            "example": "RAG 问答：检索 3 个 chunk 注入 prompt，上下文 8K；如果检索不相关要返回\"我不知道\"，不能编造。"
+          },
+          {
+            "stage": "识别检索链路",
+            "questions": [
+              "向量检索还是关键词检索还是混合？",
+              "chunk 怎么切分？（固定大小 / 语义 / 句子）",
+              "召回率高还是精确率高？",
+              "如何做重排序（rerank）？"
+            ],
+            "example": "技术文档问答：向量检索召回 20 个 → BM25 关键词召回 20 个 → 合并去重 → rerank 取 top 5 注入 prompt。"
+          },
+          {
+            "stage": "识别会话复杂度",
+            "questions": [
+              "多会话并发数？",
+              "会话要持久化吗？保留多久？",
+              "支持中断恢复吗？",
+              "支持多模态吗？"
+            ],
+            "example": "Agent 任务：用户可能中途取消，再回来要能从上次中断处继续 → 需要 checkpoint 机制。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 容量估算",
+        "formulas": [
+          {
+            "name": "Token 成本",
+            "formula": "tokens_per_request × QPS × price_per_1k_tokens",
+            "example": "2K token × 100 QPS × $0.001/1K = $0.2/s = $17K/天"
+          },
+          {
+            "name": "向量存储",
+            "formula": "doc_count × chunk_per_doc × dim × 4B",
+            "example": "100 万文档 × 10 chunk × 1536 维 × 4B = 60 GB"
+          },
+          {
+            "name": "并发会话上下文文本内存（不含推理侧 KV Cache）",
+            "formula": "concurrent_sessions × context_size",
+            "example": "1000 并发 × 32K token × 4B = 128 MB"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "LLM 首 token 延迟（TTFT）",
+            "write": "N/A",
+            "read": "百毫秒～数秒",
+            "note": "随模型规模、输入长度和负载变化大，以实测为准"
+          },
+          {
+            "resource": "LLM 输出速度（TPOT）",
+            "write": "N/A",
+            "read": "数十～数百 token/s",
+            "note": "因模型与部署方式而异，以实测为准"
+          },
+          {
+            "resource": "向量检索（HNSW）",
+            "write": "~1 万 QPS",
+            "read": "~1 万 QPS",
+            "note": "百万级向量，召回率 95%+"
+          },
+          {
+            "resource": "Embedding 模型",
+            "write": "~1000 doc/s",
+            "read": "N/A",
+            "note": "BGE 等开源模型 / 商用 Embedding API"
+          }
+        ],
+        "pitfalls": [
+          "不算 Token 成本 → 账单爆炸",
+          "不估算向量存储 → 不知道用什么 DB"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ RAG 架构演进",
+        "stages": [
+          {
+            "stage": "纯 Prompt",
+            "architecture": "用户 → LLM",
+            "pros": [
+              "简单"
+            ],
+            "cons": [
+              "知识有限",
+              "幻觉"
+            ],
+            "when": "通用问答",
+            "tradeoff": ""
+          },
+          {
+            "stage": "向量检索",
+            "architecture": "用户 → Embedding → 向量 DB → TopK → Prompt → LLM",
+            "pros": [
+              "引入私有知识"
+            ],
+            "cons": [
+              "语义模糊时召回差"
+            ],
+            "when": "知识库问答",
+            "tradeoff": "用语义模糊换私有知识"
+          },
+          {
+            "stage": "混合检索",
+            "architecture": "向量 + BM25 → 合并 → Rerank → LLM",
+            "pros": [
+              "召回率高"
+            ],
+            "cons": [
+              "链路长",
+              "延迟高"
+            ],
+            "when": "精确匹配 + 语义理解都需要",
+            "tradeoff": "用延迟换召回率"
+          },
+          {
+            "stage": "多轮 + 记忆",
+            "architecture": "会话管理 + 历史摘要 + 混合检索 + LLM",
+            "pros": [
+              "支持多轮"
+            ],
+            "cons": [
+              "上下文窗口压力",
+              "状态管理复杂"
+            ],
+            "when": "客服 / Copilot",
+            "tradeoff": "用复杂度换体验"
+          },
+          {
+            "stage": "Agent + 工具调用",
+            "architecture": "Planner + Tools + 检索 + LLM",
+            "pros": [
+              "能执行动作"
+            ],
+            "cons": [
+              "可靠性差",
+              "成本高"
+            ],
+            "when": "自动化任务",
+            "tradeoff": "用可靠性换能力"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ AI 设计 Trade-off",
+        "decisions": [
+          {
+            "question": "向量检索 vs 关键词检索 vs 混合？",
+            "chooseCache": "混合：召回率最高",
+            "chooseDB": "单向量：简单但语义模糊时召回差",
+            "cost": "混合检索链路长，rerank 增加延迟"
+          },
+          {
+            "question": "大 chunk vs 小 chunk？",
+            "chooseCache": "大 chunk（512 token）：上下文完整",
+            "chooseDB": "小 chunk（128 token）：精确匹配",
+            "cost": "大 chunk 可能稀释相关性；小 chunk 可能丢上下文"
+          },
+          {
+            "question": "流式响应 vs 完整响应？",
+            "chooseCache": "流式：用户体验好（首 token 快）",
+            "chooseDB": "完整：可以做完整校验再返回",
+            "cost": "流式难以做后处理（如敏感词过滤）"
+          },
+          {
+            "question": "短上下文 + 检索 vs 长上下文直接塞？",
+            "chooseCache": "长上下文：简单，直接塞入全部材料",
+            "chooseDB": "检索：成本低，但可能漏信息",
+            "cost": "长上下文 token 成本高（10 倍）；检索需要额外基础设施"
+          },
+          {
+            "question": "同步调用 LLM vs 异步队列？",
+            "chooseCache": "异步：削峰 + 可重试",
+            "chooseDB": "同步：延迟低",
+            "cost": "异步引入状态管理复杂度"
+          },
+          {
+            "question": "多轮对话完整历史 vs 摘要压缩？",
+            "chooseCache": "完整历史：信息无损",
+            "chooseDB": "摘要：节省 token",
+            "cost": "完整历史会爆上下文；摘要可能丢失关键信息"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "混合检索（向量 + BM25 + Rerank）",
+            "code": "public List<Chunk> hybridRetrieve(String query, int topK) {\n    // 1. 向量检索（召回 2*topK）\n    float[] queryVec = embedding.embed(query);\n    List<Chunk> vecResults = vectorDb.search(queryVec, topK * 2);\n\n    // 2. BM25 关键词检索（召回 2*topK）\n    List<Chunk> bm25Results = es.search(query, topK * 2);\n\n    // 3. 合并去重（用 RRF 融合）\n    Map<String, Double> scores = new HashMap<>();\n    int rank = 1;\n    for (Chunk c : vecResults) {\n        scores.merge(c.id, 1.0 / (60 + rank++), Double::sum);\n    }\n    rank = 1;\n    for (Chunk c : bm25Results) {\n        scores.merge(c.id, 1.0 / (60 + rank++), Double::sum);\n    }\n\n    // 4. 取 topK 后 Rerank\n    List<Chunk> candidates = scores.entrySet().stream()\n        .sorted(Map.Entry.<String, Double>comparingByValue().reversed())\n        .limit(topK * 2)\n        .map(e -> chunkStore.get(e.getKey()))\n        .collect(toList());\n    return reranker.rerank(query, candidates).subList(0, topK);\n}",
+            "explanation": "为什么要混合：向量检索对\"相似意思\"强但对\"精确关键词\"弱；BM25 反过来。为什么用 RRF（Reciprocal Rank Fusion）：简单有效的排名融合算法。为什么要 rerank：召回率高 ≠ 精确率高，最后一关用 cross-encoder 精排。"
+          },
+          {
+            "name": "多会话状态管理（含中断恢复）",
+            "code": "public class ConversationManager {\n    // 会话状态机\n    enum State { IDLE, THINKING, STREAMING, INTERRUPTED, COMPLETED }\n\n    public String chat(String sessionId, String userMsg) {\n        Conversation conv = store.load(sessionId);\n\n        // 如果是中断恢复，从上次 checkpoint 继续\n        if (conv.state == State.INTERRUPTED) {\n            return resumeFromCheckpoint(conv);\n        }\n\n        // 摘要压缩（如果历史太长）\n        if (conv.historyTokens > 8000) {\n            conv.summary = llm.summarize(conv.history);\n            conv.history = conv.history.subList(-5, 0);  // 只保留最近 5 轮\n        }\n\n        conv.history.add(new Message(\"user\", userMsg));\n        conv.state = State.THINKING;\n        store.save(conv);  // checkpoint\n\n        // 流式生成\n        StringBuilder response = new StringBuilder();\n        conv.state = State.STREAMING;\n        llm.streamChat(conv.history, (token) -> {\n            response.append(token);\n            conv.partialResponse = response.toString();\n            store.saveCheckpoint(conv);  // 每 N 个 token 保存一次\n        });\n\n        conv.state = State.COMPLETED;\n        conv.history.add(new Message(\"assistant\", response.toString()));\n        store.save(conv);\n        return response.toString();\n    }\n}",
+            "explanation": "为什么要 checkpoint：用户可能中途取消，下次要能从上次继续。为什么要摘要压缩：多轮对话会爆上下文。为什么流式中要保存：用户可能随时中断。"
+          },
+          {
+            "name": "Agent Checkpoint/Resume",
+            "code": "public class AgentTask {\n    private String taskId;\n    private int currentStep;\n    private List<StepResult> completedSteps;\n    private Map<String, Object> context;  // 中间状态\n\n    public void run() {\n        // 从 checkpoint 恢复\n        Checkpoint cp = checkpointStore.load(taskId);\n        if (cp != null) {\n            this.currentStep = cp.step;\n            this.completedSteps = cp.completedSteps;\n            this.context = cp.context;\n        }\n\n        Plan plan = planner.plan(goal);\n        for (int i = currentStep; i < plan.steps.size(); i++) {\n            Step step = plan.steps.get(i);\n\n            // 执行步骤\n            StepResult result = executor.execute(step, context);\n            completedSteps.add(result);\n            context.put(step.outputKey, result.output);\n\n            // 每步保存 checkpoint\n            checkpointStore.save(new Checkpoint(taskId, i + 1, completedSteps, context));\n        }\n    }\n}",
+            "explanation": "为什么每步都保存：Agent 任务可能跑几十分钟，崩溃不能从头再来。为什么要 context：步骤之间有依赖关系，中间结果要传递。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 AI 系统故障",
+        "scenarios": [
+          {
+            "failure": "LLM 超时 / 限流",
+            "symptom": "调用失败率上升",
+            "mitigation": "多模型备份 + 超时重试 + 降级到更小模型",
+            "detection": "LLM 调用错误率监控"
+          },
+          {
+            "failure": "检索不相关",
+            "symptom": "LLM 回答跑题 / 编造",
+            "mitigation": "rerank 阈值过滤 + 不相关时返回\"不知道\"",
+            "detection": "用户反馈\"答案不对\"率"
+          },
+          {
+            "failure": "上下文爆窗口",
+            "symptom": "多轮对话失败",
+            "mitigation": "摘要压缩 + 滑动窗口",
+            "detection": "token 数监控"
+          },
+          {
+            "failure": "向量 DB 挂了",
+            "symptom": "检索失败",
+            "mitigation": "降级到纯 LLM（无 RAG） + 缓存热门查询",
+            "detection": "向量 DB 健康检查"
+          },
+          {
+            "failure": "成本爆炸",
+            "symptom": "Token 账单飙升",
+            "mitigation": "限流 + 缓存 + 用小模型替代",
+            "detection": "每日成本告警"
+          },
+          {
+            "failure": "流式中断",
+            "symptom": "用户看到一半内容没了",
+            "mitigation": "checkpoint + 断点续传 + 重新生成",
+            "detection": "流式完成率监控"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "LLM 调用 QPS / 错误率 / P99 延迟（首 token + 完整）",
+          "检索 QPS / 召回率",
+          "会话并发数"
+        ],
+        "use": [
+          "Token 消耗速率",
+          "向量 DB 内存 / QPS",
+          "Embedding 模型吞吐"
+        ],
+        "business": [
+          "答案满意度（用户点赞率）",
+          "幻觉率（抽样检测）",
+          "平均每会话 token 成本",
+          "Agent 任务成功率"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "RAG 检索",
+          "ids": [
+            "handwrite-67",
+            "database-97"
+          ],
+          "note": "hw 22 混合检索链路；db 26 RAG 表设计"
+        },
+        {
+          "range": "会话管理",
+          "ids": [
+            "handwrite-68",
+            "database-96"
+          ],
+          "note": "hw 23 流式生成中断恢复；db 25 会话消息表"
+        },
+        {
+          "range": "Agent 任务",
+          "ids": [
+            "handwrite-69"
+          ],
+          "note": "checkpoint / resume 完整实现"
+        },
+        {
+          "range": "生产级优化",
+          "ids": [
+            "handwrite-70",
+            "database-98"
+          ],
+          "note": "hw 25 + db 27 AI 工作台生产级方案"
+        }
+      ],
+      "interviewPitch": "AI 系统设计我会先明确\"核心挑战\"：RAG 的核心是\"检索质量\"（混合检索 + rerank）；会话的核心是\"状态管理\"（checkpoint + 摘要压缩）；Agent 的核心是\"可靠性\"（状态机 + 补偿）。然后按\"成本 / 延迟 / 质量\"三个维度做取舍：长上下文贵但简单，检索便宜但可能漏信息。核心原则：LLM 是\"不确定\"组件，所有设计都要围绕\"如何兜底\"展开。",
+      "pitfalls": [
+        "只做向量检索 → 精确关键词召回差",
+        "不做 rerank → 召回率高但精确率低",
+        "不考虑幻觉 → 业务事故",
+        "不算 token 成本 → 账单爆炸",
+        "不做 checkpoint → 用户中断后丢失所有进度"
+      ],
+      "relatedIds": [
+        "handwrite-67",
+        "handwrite-68",
+        "handwrite-69",
+        "handwrite-70",
+        "database-96",
+        "database-97",
+        "database-98"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "场景题型模板"
+    }
+  ]
+}

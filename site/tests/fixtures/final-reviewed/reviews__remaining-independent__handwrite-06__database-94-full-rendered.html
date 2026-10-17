@@ -1,0 +1,312 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">生产事件平台中有任务状态机：<code class="tok-inline">INIT -&gt; PUBLISHED -&gt; CONSUMING -&gt; SUCCESS/FAILED/DEAD</code>。服务宕机可能导致任务停在中间态。如何用 SQL 扫描并补偿？</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这题以中间态扫描补偿为教学场景。核心是状态机必须可恢复，所有中间态都要有超时时间和重试次数。补偿任务不能和正常消费者互相打架，需要抢占式更新。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>状态机设计。</li><li>超时扫描。</li><li>乐观锁/条件更新抢占任务。</li><li>重试次数和下次重试时间。</li><li>幂等处理。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">任务表：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">CREATE TABLE notify_task (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    task_id VARCHAR(64) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    next_retry_at DATETIME(6) NOT NULL,
+    locked_until DATETIME(6),
+    owner_token VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin,
+    generation BIGINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_task_id (task_id),
+    KEY idx_status_retry (status, next_retry_at),
+    KEY idx_locked_until (locked_until)
+);</pre></div></section>
+<p class="md-p">扫描候选：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- MySQL 8.4, bounded candidate scan; not ownership.
+SELECT id, generation
+FROM notify_task
+WHERE (status IN (&#x27;INIT&#x27;,&#x27;PUBLISHED&#x27;,&#x27;CONSUMING&#x27;,&#x27;RETRY&#x27;)
+       AND next_retry_at &lt;= UTC_TIMESTAMP(6)
+       AND (locked_until IS NULL OR locked_until &lt;= UTC_TIMESTAMP(6)))
+   OR (status=&#x27;RETRYING&#x27; AND locked_until &lt;= UTC_TIMESTAMP(6))
+ORDER BY next_retry_at,id
+LIMIT 100;</pre></div></section>
+<p class="md-p">抢占任务：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- Bind new unique owner token, id and candidate generation. Short transaction.
+UPDATE notify_task
+SET status=&#x27;RETRYING&#x27;, owner_token=?, generation=generation+1,
+    locked_until=UTC_TIMESTAMP(6)+INTERVAL 5 MINUTE,
+    updated_at=UTC_TIMESTAMP(6)
+WHERE id=? AND generation=? AND generation&lt;9223372036854775807
+  AND ((status IN (&#x27;INIT&#x27;,&#x27;PUBLISHED&#x27;,&#x27;CONSUMING&#x27;,&#x27;RETRY&#x27;)
+        AND next_retry_at&lt;=UTC_TIMESTAMP(6)
+        AND (locked_until IS NULL OR locked_until&lt;=UTC_TIMESTAMP(6)))
+       OR (status=&#x27;RETRYING&#x27; AND locked_until&lt;=UTC_TIMESTAMP(6)));</pre></div></section>
+<p class="md-p">只有影响行数为 1 的实例才执行补偿。处理成功改为 <code class="tok-inline">SUCCESS</code>，失败则增加 <code class="tok-inline">retry_count</code> 并计算下一次重试时间；超过阈值进入 <code class="tok-inline">DEAD</code>。</p><p class="md-p">所有消费者与补偿器都必须遵守相同领取协议；扫描不代表所有权。领取后读取新 generation 并提交，事务外做有界副作用；完成/续租/失败必须匹配 id、owner_token、generation、RETRYING 和尚有效租约。过期 RETRYING 也在扫描范围内。时间使用统一 UTC，NOW/UTC_TIMESTAMP 的语句起始时间并不证明锁等待后执行瞬间仍未过期；严格期限应锁后重读权威时间。旧 worker 的外部副作用仍需目标端 fencing 或稳定业务幂等。</p><section class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">lease transitions · MySQL single-table assignment order</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- Success; bind id, token and owned generation. Must affect exactly one row.
+UPDATE notify_task SET status=&#x27;SUCCESS&#x27;,owner_token=NULL,locked_until=NULL,
+ updated_at=UTC_TIMESTAMP(6)
+WHERE id=? AND owner_token=? AND generation=? AND status=&#x27;RETRYING&#x27;
+ AND locked_until&gt;UTC_TIMESTAMP(6);
+-- Retryable known failure; bind next retry UTC timestamp then id/token/generation.
+-- retry_count increments BEFORE deriving status; avoids dependence on old/new value ambiguity.
+UPDATE notify_task SET retry_count=retry_count+1,
+ status=IF(retry_count&gt;=10,&#x27;DEAD&#x27;,&#x27;RETRY&#x27;),next_retry_at=?,
+ owner_token=NULL,locked_until=NULL,updated_at=UTC_TIMESTAMP(6)
+WHERE id=? AND owner_token=? AND generation=? AND status=&#x27;RETRYING&#x27;
+ AND locked_until&gt;UTC_TIMESTAMP(6) AND retry_count&lt;2147483647;
+-- Heartbeat; same ownership and old lease must still be valid.
+UPDATE notify_task SET locked_until=UTC_TIMESTAMP(6)+INTERVAL 5 MINUTE
+WHERE id=? AND owner_token=? AND generation=? AND status=&#x27;RETRYING&#x27;
+ AND locked_until&gt;UTC_TIMESTAMP(6);</pre></div></section></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：补偿任务多实例会重复执行吗？</strong></p>
+<p class="md-p">问题分析：多个实例可能扫描到同一批任务。</p>
+<p class="md-p">知识点：条件更新、锁租约。</p>
+<p class="md-p">答案：扫描只是找候选，真正执行前必须用 <code class="tok-inline">UPDATE ... WHERE status=...</code> 抢占。影响行数为 0 说明被其他实例抢走。</p>
+<p class="md-p"><strong>变体 2：任务执行超过 locked_until 怎么办？</strong></p>
+<p class="md-p">问题分析：锁租约过期可能被其他实例抢走。</p>
+<p class="md-p">知识点：心跳续租、幂等。</p>
+<p class="md-p">答案：长任务要定期续租；同时业务处理必须幂等，因为超时重入无法完全避免。</p>
+<p class="md-p"><strong>变体 3：哪些状态应该补偿，哪些不该？</strong></p>
+<p class="md-p">问题分析：不是所有失败都值得重试。</p>
+<p class="md-p">知识点：错误分类。</p>
+<p class="md-p">答案：网络超时或下游 5xx 可能已经产生效果，先按稳定操作号查询；只有已知未生效或具备幂等合同才重试；参数非法、权限失败这类永久错误直接 <code class="tok-inline">FAILED/DEAD</code>，避免无意义重试。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <div class="md sec"><h2 class="md-h md-h2" id="add-own-distributed-s5422">分布式手册：完整机制、条件与故障推演</h2><h2 class="md-h md-h2">7.5 Spring Task怎样扫描订单一致性，数据变多会怎样</h2><p class="md-p">Spring Task只能触发扫描，可靠性来自持久到期索引、分页领取、条件状态转移和对账，而不是某个固定扫描频率。</p><p class="md-p">常见问法：Spring Task如何检查订单一致性；数据多了怎样扫描；取消后库存与资格怎样恢复。</p><h3 class="md-h md-h3">适用条件</h3><p class="md-p">订单扫描涵盖Redis预扣、发布失败、支付超时和库存资格恢复，扫描周期应由数据量与业务窗口确定。</p><h3 class="md-h md-h3">Spring只提供触发和执行管理</h3><p class="md-p">Spring 的触发方式不同，不能把 fixedRate 背成必定重叠，或永不重叠。在 Bean 上用 @EnableScheduling/@Scheduled 或 TaskScheduler 注册任务后，fixedDelay 是上一次同步调用结束，再等一个间隔；fixedRate 按计划频率调度，执行慢时会滞后。</p><p class="md-p">是否并发重叠，还取决于 scheduler 和有没有另行异步提交。cron 则按表达式和时区计算时刻。</p><p class="md-p">显式配置调度线程与业务执行资源，扫描入口短小，把执行交给有界池时必须有背压/运行标记，不能每个tick无限submit。记录异常与连续失败；周期任务异常语义由实际调度器/ErrorHandler决定，不能吞掉后默默停止。每个应用实例默认都可注册同一任务，多实例唯一归属/幂等另做。</p><h3 class="md-h md-h3">扫描权威到期索引，不扫全表所有历史订单</h3><p class="md-p">订单保存status、expireAt、version及请求/预留ID，以(status,expireAt,id)索引按未支付且到期范围读取；分片时加shard维度。keyset分页根据(expireAt,id)续读，短事务小批量，不能OFFSET越来越深或一事务锁几百万行。领取可用条件状态/租约，消息和扫描共用同一关单业务事务。</p><p class="md-p">分页游标前面，也可能后来插入到期任务。扫描过程中新出现的较早到期记录，可能落到已扫游标之前，因此需要固定扫描快照或高水位，并配重叠回看，或定期重扫到期未完成范围。</p><p class="md-p">幂等允许重复查，不允许只记“扫到最大 ID”就永远跳过迟到或改期数据。所有任务挂掉后，应从持久 due 补查；内存游标丢失最多增加重复，不该丢责任。</p><h3 class="md-h md-h3">间隔由发现延迟和容量预算推出</h3><p class="md-p">轮询间隔Δ只是正常无积压下发现延迟的一部分，还加扫描耗时、排队、调度抖动和业务执行时间。若每秒到期λ单、净处理μ单，长期λ≥μ会积压，不管把Δ设多小也无法追上；过小反而增加空查询与锁/连接压力。</p><p class="md-p">规模变大可按到期桶/业务shard分配扫描器、批量取ID并限制下游并发，或延迟MQ负责及时触发、数据库扫描作较低频查漏。MQ投递需订单+outbox可靠衔接；Redis ZSet可作加速索引，不能是唯一易丢的恢复依据。具体延迟要求和成本决定是否适合Spring Task，名字本身不限制或保证规模。</p><h3 class="md-h md-h3">订单超时处理与恢复资格</h3><p class="md-p">执行时再次核对权威时间、WAIT_PAY状态与预留HELD，只有合法状态转换成功才释放库存并写outbox。</p><p class="md-p">关单后还要分清，恢复库存不等于恢复购买资格。一人一单或再次购买的规则由活动定义；若允许再次买，就在权威事务解除对应旧订单资格，再用带 orderId 和版本的事件更新 Redis。</p><p class="md-p">不能无条件 DEL user-product 键，否则可能删掉新订单资格。DB 已成功、缓存更新失败，要保留可靠修复或失效事件；用户再次下单，仍由权威约束裁决。</p><h3 class="md-h md-h3">验证</h3><p class="md-p">测试扫描重入/多实例、长任务、异常、数据插入游标之前、消息全失联、付款取消交错、旧补偿晚到、恢复后追赶及权威状态已变。观测最老到期未处理年龄、每批耗时、扫描/有效处理比、锁等待和outbox积压。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-distributed-guide">学习路线、版本与验证范围</a></li></ul><h2 class="md-h md-h2" id="add-own-mysql-database-94">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">状态机规定合法边 CAS 保护迁移前提</h3><p class="md-p">持久任务可定义 NEW→RUNNING→SUCCEEDED/FAILED。终态重试究竟新建 attempt 还是回到 NEW，必须事先约定。条件 UPDATE 包含 tenant、id、expected state、expected version；只有一行改变才能取得迁移权。数据库 CAS 要经过网络、索引、锁与日志，不是 CPU 中低成本自旋，不能无限 while 查库。</p><p class="md-p">TaskCas 把一次 operation_id 的输入和结果持久化，成功时同事务写 task_outbox。冲突/缺失也记录该操作的稳定失败结果，因此依据新状态重试应使用新的 attempt/operation_id，并与上层业务身份关联。一个旧失败号不能悄悄改参数再变成功。outbox 失败会回滚状态和收据，没有外部副作用在事务内执行。tenant 必须来自服务端授权上下文，示例只验证边界值，不实现登录/鉴权系统。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">components/transactions/code/locking/TaskCas.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.sql.*;
+import java.util.Set;
+
+/** Durable NEW -&gt; RUNNING -&gt; SUCCEEDED/FAILED; no dispatcher or external side effect. */
+public final class TaskCas {
+    private static final Set&lt;String&gt; EDGES=Set.of(&quot;NEW:RUNNING&quot;,&quot;RUNNING:SUCCEEDED&quot;,&quot;RUNNING:FAILED&quot;);
+    private final Db.Source source;
+    public TaskCas(Db.Source source){this.source=java.util.Objects.requireNonNull(source);}
+    public static void validate(String state,long version,String target) {
+        if(!EDGES.contains(state+&quot;:&quot;+target) || version&lt;0 || version==Long.MAX_VALUE)
+            throw new IllegalArgumentException(&quot;illegal edge or version&quot;);
+    }
+    private static String receipt(Connection c,long tenant,long id,String op,String state,long version,String target)
+            throws SQLException {
+        try(PreparedStatement p=Db.prepare(c,
+                &quot;SELECT task_id,expected_state,expected_version,target,result FROM task_receipt WHERE tenant=? AND operation_id=?&quot;)) {
+            p.setLong(1,tenant);p.setString(2,op);
+            try(ResultSet r=p.executeQuery()) {
+                if(!r.next())return null;
+                if(r.getLong(1)!=id || !state.equals(r.getString(2)) || r.getLong(3)!=version || !target.equals(r.getString(4)))
+                    throw new IllegalArgumentException(&quot;operation ID reused&quot;);
+                return r.getString(5);
+            }
+        }
+    }
+    public String transition(long tenant,long id,String op,String state,long version,String target,boolean failOutbox)
+            throws SQLException {
+        Db.key(op);validate(state,version,target);
+        if(tenant&lt;=0 || id&lt;=0)throw new IllegalArgumentException(&quot;tenant/task&quot;);
+        return Db.transaction(source,c-&gt;{
+            String old=receipt(c,tenant,id,op,state,version,target);if(old!=null)return old;
+            try(PreparedStatement p=Db.prepare(c,&quot;INSERT INTO task_receipt VALUES(?,?,?,?,?,?,?)&quot;)) {
+                p.setLong(1,tenant);p.setString(2,op);p.setLong(3,id);p.setString(4,state);
+                p.setLong(5,version);p.setString(6,target);p.setString(7,&quot;PENDING&quot;);
+                try{p.executeUpdate();}catch(SQLException e){
+                    if(!Db.duplicate(e))throw e;
+                    if (!Db.rollback(c, e)) throw e;String replay=receipt(c,tenant,id,op,state,version,target);
+                    if(replay==null)throw e;return replay;
+                }
+            }
+            int changed;
+            try(PreparedStatement p=Db.prepare(c,
+                    &quot;UPDATE task SET state=?,version=version+1 WHERE tenant=? AND id=? AND state=? AND version=?&quot;)) {
+                p.setString(1,target);p.setLong(2,tenant);p.setLong(3,id);p.setString(4,state);p.setLong(5,version);
+                changed=p.executeUpdate();if(changed&gt;1)throw new SQLException(&quot;task not unique&quot;);
+            }
+            String result=changed==1?&quot;APPLIED&quot;:&quot;CONFLICT_OR_MISSING&quot;;
+            if(changed==1){
+                if(failOutbox)throw new SQLException(&quot;injected outbox failure&quot;);
+                try(PreparedStatement p=Db.prepare(c,&quot;INSERT INTO task_outbox VALUES(?,?,?,?,?)&quot;)){
+                    p.setLong(1,tenant);p.setString(2,op);p.setLong(3,id);p.setString(4,target);p.setLong(5,version+1);p.executeUpdate();
+                }
+            }
+            try(PreparedStatement p=Db.prepare(c,&quot;UPDATE task_receipt SET result=? WHERE tenant=? AND operation_id=?&quot;)) {
+                p.setString(1,result);p.setLong(2,tenant);p.setString(3,op);
+                if(p.executeUpdate()!=1)throw new SQLException(&quot;receipt missing&quot;);
+            }
+            return result;
+        });
+    }
+}
+</pre></div></div><p class="md-p">任务 Token、租约和版本不能混同。租约到期允许其他 worker 接管，不能阻止旧 worker 从暂停中恢复后继续发请求。generation/epoch 必须在最终写入或副作用接受端参与校验；仅在领取时 CAS 成功不意味着永远拥有执行权。远端不支持 fencing 或稳定幂等号时，必须明确残留重复风险。调度器、投递器、渠道协议属于完整应用和消息章节，本例没有隐藏的 dispatcher。</p><h3 class="md-h md-h3">任务与工单中的并发边界</h3><p class="md-p">以已保存的 NoteWeave 历史代码快照为例，MySQL 中的 task/outbox 表由 JDBC 访问、Flyway 迁移；投递者通过 claim、token 和租约领取任务，发布后推进完成状态。发布成功而完成记录失败时，后续仍可能重投，因此消费方需要幂等。代码中的并发协议可以用于机制推演，历史部署版本、规模与性能收益仍须分别确认。</p><p class="md-p">制造业维修工单中，审批版本 CAS 保护并发迁移，CMMS 建单通过稳定请求号查询结果并防重，两个机制分别作用于本地状态和外部效果。MySQL 5.7/RR、具体表结构、4h/72h、三次重试和部署拓扑在这里仅是独立教学设定。制造业的 RabbitMQ/pgvector 与 NoteWeave 的 Kafka/MySQL 属于不同项目链路。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul><h3 class="md-h md-h3" id="review-taskcas-dependencies">TaskCas 完整依赖与独立实验表</h3><p class="md-p">以下恢复原手册完整 Db.java 与 locking-schema.sql；保存到与 TaskCas.java 相同默认包。DDL 只供新建独立实验库，包含手册同组其他实验表，不自动连接或执行。Db 的 nanoTime 预算改为差值比较，保留至多3次完整事务重试、未知提交与提交后清理失败的区别。localSource 仅显式调用时读取测试连接环境，本文未调用。JDK21可编译接口，真实JDBC需另外授权并验证Connector/J 8.4。</p><section class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">Db.java · recovered full dependency, monotonic budget correction</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.sql.*;
+import java.util.Properties;
+import java.util.concurrent.ThreadLocalRandom;
+
+/** JDBC helpers for dedicated connections to an explicitly authorized local scratch database. */
+public final class Db {
+    private Db() {}
+    @FunctionalInterface public interface Source { Connection open() throws SQLException; }
+    @FunctionalInterface public interface Work&lt;T&gt; { T run(Connection c) throws SQLException; }
+    public static final class UnknownCommit extends SQLException {
+        private static final long serialVersionUID = 1L;
+        public UnknownCommit(SQLException cause) {
+            super(&quot;COMMIT outcome unknown; reconcile the SAME request ID on the authority&quot;, cause);
+        }
+    }
+    public static final class CommittedCleanup extends SQLException {
+        private static final long serialVersionUID = 1L;
+        public CommittedCleanup(SQLException cause) {
+            super(&quot;Transaction COMMITTED; connection cleanup failed; do not reapply the operation&quot;, cause);
+        }
+    }
+    public static void suppress(Throwable primary, Throwable cleanup) {
+        if (primary != cleanup) primary.addSuppressed(cleanup);
+    }
+    public static void key(String key) {
+        if (key == null || !key.matches(&quot;[A-Za-z0-9_.:-]{1,100}&quot;))
+            throw new IllegalArgumentException(&quot;request ID must be 1..100 ASCII key characters&quot;);
+    }
+    public static boolean duplicate(SQLException e) {
+        return e.getErrorCode() == 1062 &amp;&amp; &quot;23000&quot;.equals(e.getSQLState());
+    }
+    public static boolean retryable(SQLException e) {
+        return e.getErrorCode() == 1213 || e.getErrorCode() == 1205;
+    }
+    public static PreparedStatement prepare(Connection c, String sql) throws SQLException {
+        PreparedStatement p = c.prepareStatement(sql);
+        try { p.setQueryTimeout(3); return p; }
+        catch (SQLException e) { try { p.close(); } catch (SQLException x) { suppress(e, x); } throw e; }
+    }
+    public static boolean rollback(Connection c, Throwable cause) {
+        try { c.rollback(); return true; }
+        catch (SQLException e) { suppress(cause, e); return false; }
+    }
+    /** At most 3 fresh transactions; 8-second admission budget, not a hard cancellation deadline. */
+    public static &lt;T&gt; T transaction(Source source, Work&lt;T&gt; work) throws SQLException {
+        long started = System.nanoTime();
+        SQLException last = null;
+        for (int attempt = 0; attempt &lt; 3; attempt++) {
+            if (System.nanoTime() - started &gt;= 8_000_000_000L) break;
+            Connection c = source.open();
+            Throwable primary = null;
+            SQLException retry = null;
+            boolean committed = false;
+            try {
+                c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
+                c.setAutoCommit(false);
+                boolean committing = false;
+                try {
+                    T result = work.run(c); // Every attempt re-reads and revalidates.
+                    committing = true;
+                    c.commit();
+                    committed = true;
+                    return result;
+                } catch (SQLException e) {
+                    boolean rolledBack = rollback(c, e);
+                    if (committing) throw new UnknownCommit(e);
+                    if (!rolledBack || !retryable(e)) throw e;
+                    retry = e;
+                } catch (RuntimeException | Error e) {
+                    rollback(c, e); throw e;
+                }
+            } catch (SQLException | RuntimeException | Error e) {
+                primary = e;
+                throw e;
+            } finally {
+                try { c.close(); }
+                catch (SQLException closeFailure) {
+                    if (primary != null) {
+                        suppress(primary, closeFailure);
+                    } else if (retry != null) {
+                        suppress(retry, closeFailure);
+                        throw retry; // Cleanup failure stops retries without replacing their cause.
+                    } else if (committed) {
+                        throw new CommittedCleanup(closeFailure);
+                    } else {
+                        throw closeFailure;
+                    }
+                }
+            }
+            last = retry;
+            if (attempt &lt; 2) {
+                long remaining = 8_000_000_000L - (System.nanoTime() - started);
+                if (remaining &lt;= 0) break;
+                long delay = Math.min(remaining / 1_000_000L,
+                        ThreadLocalRandom.current().nextLong(10L, 30L &lt;&lt; attempt));
+                try { Thread.sleep(delay); }
+                catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new SQLException(&quot;retry interrupted&quot;, e);
+                }
+            }
+        }
+        throw last != null ? last : new SQLException(&quot;retry admission budget exhausted&quot;);
+    }
+    public static Source localSource() {
+        String url = System.getenv(&quot;MYSQL_LAB_URL&quot;);
+        if (!&quot;YES&quot;.equals(System.getenv(&quot;MYSQL_LAB_ALLOW&quot;)) || url == null ||
+            !url.matches(&quot;jdbc:mysql://127\\.0\\.0\\.1:[0-9]{1,5}/mysql_tx_lab&quot;))
+            throw new IllegalArgumentException(&quot;authorize local mysql_tx_lab with MYSQL_LAB_ALLOW=YES&quot;);
+        String user = System.getenv(&quot;MYSQL_LAB_USER&quot;), password = System.getenv(&quot;MYSQL_LAB_PASSWORD&quot;);
+        if (user == null || password == null) throw new IllegalArgumentException(&quot;local lab credentials required&quot;);
+        Properties p = new Properties();
+        p.setProperty(&quot;user&quot;, user); p.setProperty(&quot;password&quot;, password);
+        p.setProperty(&quot;useAffectedRows&quot;, &quot;false&quot;); // Matched rows; repeated bucket receipt may make a no-op UPDATE.
+        p.setProperty(&quot;connectTimeout&quot;, &quot;3000&quot;); p.setProperty(&quot;socketTimeout&quot;, &quot;5000&quot;);
+        return () -&gt; DriverManager.getConnection(url, p);
+    }
+}
+</pre></div></section><section class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">locking-schema.sql · recovered complete source fence</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- Run ONLY in a new, disposable local schema named mysql_tx_lab.
+-- This script creates tables; it does not drop existing tables or reset real data.
+-- MySQL 8.4.0, InnoDB. Request IDs are case-sensitive ASCII; no spaces accepted by Java.
+CREATE TABLE accounts (
+ id BIGINT PRIMARY KEY, cents BIGINT NOT NULL CHECK(cents&gt;=0),
+ currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ active BOOLEAN NOT NULL
+) ENGINE=InnoDB;
+CREATE TABLE transfers (
+ request_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ from_id BIGINT NOT NULL, to_id BIGINT NOT NULL, cents BIGINT NOT NULL CHECK(cents&gt;0),
+ currency CHAR(3) CHARACTER SET ascii COLLATE ascii_bin NOT NULL
+) ENGINE=InnoDB;
+-- No foreign keys in transfers: request claim precedes account locks in this bounded design.
+-- Every application write must enforce accounts exist; concurrent deletion is out of scope.
+INSERT INTO accounts VALUES(1,100000,&#x27;CNY&#x27;,TRUE),(2,100000,&#x27;CNY&#x27;,TRUE);
+CREATE TABLE inventory (
+ tenant_id BIGINT NOT NULL, sku_id BIGINT NOT NULL,
+ stock BIGINT NOT NULL CHECK(stock&gt;=0), version BIGINT NOT NULL CHECK(version&gt;=0),
+ PRIMARY KEY(tenant_id,sku_id)
+) ENGINE=InnoDB;
+INSERT INTO inventory VALUES(1,1,17,0);
+CREATE TABLE doc (
+ tenant BIGINT NOT NULL,id BIGINT NOT NULL,version BIGINT NOT NULL CHECK(version&gt;=0),
+ body VARCHAR(4000) NOT NULL,PRIMARY KEY(tenant,id)
+) ENGINE=InnoDB;
+CREATE TABLE doc_receipt (
+ tenant BIGINT NOT NULL,request_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ doc_id BIGINT NOT NULL,expected BIGINT NOT NULL,body VARCHAR(4000) NOT NULL,
+ result_version BIGINT NOT NULL,PRIMARY KEY(tenant,request_id)
+) ENGINE=InnoDB;
+INSERT INTO doc VALUES(1,42,7,&#x27;旧&#x27;),(2,42,7,&#x27;other tenant&#x27;);
+CREATE TABLE bucket (
+ id INT PRIMARY KEY,available BIGINT NOT NULL CHECK(available&gt;=0),
+ held BIGINT NOT NULL CHECK(held&gt;=0)
+) ENGINE=InnoDB;
+CREATE TABLE reservation (
+ request_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+ bucket_id INT NOT NULL,qty BIGINT NOT NULL CHECK(qty&gt;0),
+ FOREIGN KEY(bucket_id) REFERENCES bucket(id)
+) ENGINE=InnoDB;
+INSERT INTO bucket VALUES(1,12,0),(2,12,0);
+CREATE TABLE task (
+ tenant BIGINT NOT NULL,id BIGINT NOT NULL,state VARCHAR(16) NOT NULL,
+ version BIGINT NOT NULL CHECK(version&gt;=0),PRIMARY KEY(tenant,id)
+) ENGINE=InnoDB;
+CREATE TABLE task_receipt (
+ tenant BIGINT NOT NULL,operation_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ task_id BIGINT NOT NULL,expected_state VARCHAR(16) NOT NULL,expected_version BIGINT NOT NULL,
+ target VARCHAR(16) NOT NULL,result VARCHAR(32) NOT NULL,PRIMARY KEY(tenant,operation_id)
+) ENGINE=InnoDB;
+CREATE TABLE task_outbox (
+ tenant BIGINT NOT NULL,operation_id VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+ task_id BIGINT NOT NULL,state VARCHAR(16) NOT NULL,version BIGINT NOT NULL,
+ PRIMARY KEY(tenant,operation_id),FOREIGN KEY(tenant,task_id) REFERENCES task(tenant,id)
+) ENGINE=InnoDB;
+INSERT INTO task VALUES(1,1,&#x27;NEW&#x27;,0);
+CREATE TABLE lock_probe(id BIGINT PRIMARY KEY,n INT NOT NULL) ENGINE=InnoDB;
+INSERT INTO lock_probe VALUES(1,0),(2,0);
+</pre></div></section></div><nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

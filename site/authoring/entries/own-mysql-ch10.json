@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch10",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 索引结构、聚簇与覆盖",
+  "title": "索引结构、聚簇与覆盖",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s386",
+      "order": 386,
+      "question": "主键、唯一键、NULL 与前缀唯一分别约束什么？",
+      "shortAnswer": "主键唯一且非空，可空 UNIQUE 允许多个 NULL；联合唯一约束完整键组合，排序规则与前缀长度决定实际比较语义。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "主键、唯一键和 NULL"
+        },
+        {
+          "type": "paragraph",
+          "text": "一张表有一个 PRIMARY KEY，它可包含多列且不允许 NULL；可以有多个 UNIQUE 索引。MySQL 8.4 UNIQUE 对允许 NULL 的列通常允许多个 NULL，这不是 SQL 等值意义上的同一个值。唯一约束负责身份不变量，是否聚簇由引擎的主键选择规则决定，不能说每个 UNIQUE 都是聚簇。"
+        },
+        {
+          "type": "paragraph",
+          "text": "前缀索引只保存字符串前一部分，可能降低空间，但不能总是覆盖完整列，唯一前缀约束也比完整值唯一更强或不同。字符集和排序规则决定比较与唯一性，例如大小写是否等价；业务昵称、手机号、外部标识需要先固定比较契约。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "MySQL唯一索引能插入多个NULL吗？联合唯一索引、主键和空字符串有何区别？"
+        },
+        {
+          "type": "paragraph",
+          "text": "MySQL 的可空 UNIQUE 列允许多个 NULL，主键不允许 NULL；联合唯一约束保护的是完整的非空键组合。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：MySQL唯一索引能插入多个NULL吗？联合唯一索引、主键和空字符串有何区别？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下假设 MySQL 8.4、InnoDB，email 允许 NULL；其他数据库的唯一空值规则可能不同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "直接答案与原理"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以插入多个 NULL。以 MySQL 8.4 的可空 UNIQUE(email) 为例，NULL 表示未知，不按普通相等值互相冲突；它因此不保证“最多一条未知邮箱”。PRIMARY KEY 则不能为 NULL。空字符串 '' 是一个实际值，同一 collation 下重复空字符串会发生唯一冲突，不能拿它替代 NULL。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再加一列 tenant_id，UNIQUE(tenant_id,email) 比较的是完整组合，不是给两列分别加 UNIQUE。email 为 NULL 时，同租户仍可有多条 NULL；两个完全非 NULL 的组合相等才被这个唯一约束拒绝，也不是必须每列都不同才允许插入。至于字母大小写、重音是否相等，要看 collation，电子邮件等业务字段还需明确自己的规范化规则。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可执行边界示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "components/data/code/unique_null.sql依次插入(1,NULL)、(1,NULL)、(2,'a')和(1,'a')，前两条和跨租户组合合法；再次插(1,'a')应失败。用INSERT IGNORE只为观察警告会改变错误语义，生产不能把忽略所有错误当去重方案；文件将预期失败语句注释，便于依次观察成功与失败的约束边界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果业务要求“每租户最多一个NULL”，需重新定义约束：可使用规范化生成列并有不会与合法值碰撞的映射，或专门状态/守卫记录。简单COALESCE(email,'NULL')可能与真实字符串冲突，不能未经域限制直接推荐。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "测试与并发"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试多NULL、同非NULL、不同租户、空字符串、大小写、更新NULL→重复值，以及并发两次写同唯一键。唯一性最终由数据库约束保证，先SELECT不存在后INSERT仍有竞争窗口。应用要按错误码区分重复请求与真正数据冲突。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 unique_null.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/unique_null.sql",
+          "value": "-- MySQL 8 InnoDB in a fresh test schema. Default collation governs text equality.\nCREATE TABLE unique_probe (\n id BIGINT PRIMARY KEY,\n tenant_id INT NOT NULL,\n email VARCHAR(100),\n UNIQUE (tenant_id,email)\n);\nINSERT INTO unique_probe VALUES\n (1,1,NULL),(2,1,NULL),(3,2,'a'),(4,1,'a'),(5,1,'');\nSELECT tenant_id,email,COUNT(*) AS cnt FROM unique_probe\n GROUP BY tenant_id,email ORDER BY tenant_id,email;\n-- These individual statements should fail with duplicate-key errors:\n-- INSERT INTO unique_probe VALUES (6,1,'a');\n-- INSERT INTO unique_probe VALUES (7,1,'');\n-- This is valid; NULL differs from the existing non-NULL and NULL entries:\nINSERT INTO unique_probe VALUES (8,1,NULL);\nSELECT COUNT(*) AS null_count FROM unique_probe\n WHERE tenant_id=1 AND email IS NULL;\n-- Expected null_count: 3.\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-79",
+          "label": "删除重复数据，只保留一条"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

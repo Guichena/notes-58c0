@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-spring-persistence",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Spring 与 Java 服务端",
+  "category": "JDBC 与 MyBatis 的执行契约",
+  "title": "JDBC 与 MyBatis 的执行契约",
+  "tags": [
+    "Spring",
+    "Java17教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-spring-jdbc-protocol",
+      "order": 20,
+      "question": "JDBC 和数据库到底如何交互？",
+      "shortAnswer": "JDBC 是 Java 程序访问数据库的 API，驱动把这些调用翻译成数据库协议。比如常见 MySQL Connector/J 通过 TCP 与服务器通信，所以 JDBC 和 TCP 分属不同层，不能并排当两种传输协议。",
+      "commonPhrasings": [
+        "JDBC 属于哪一层？",
+        "连接串怎么配置？",
+        "用户名密码什么时候传？",
+        "数据库连接池为什么有价值？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "20 JDBC 和数据库到底如何交互"
+        },
+        {
+          "type": "paragraph",
+          "text": "JDBC 是 Java 程序访问数据库的 API，驱动把这些调用翻译成数据库协议。比如常见 MySQL Connector/J 通过 TCP 与服务器通信，所以 JDBC 和 TCP 分属不同层，不能并排当两种传输协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "从获取连接开始看：应用经 DataSource 获取 Connection，驱动解析地址和选项，建立传输连接；随后与服务器握手、协商能力，根据配置完成可选 TLS 和认证；连接可用后，才发送命令并读取列元数据和结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用户名密码参与的是认证流程，具体交互次数取决于驱动、认证插件、TLS 和认证方式，不能背成固定两次。内网也不是省略 TLS、安全验证和凭据保护的理由。"
+        },
+        {
+          "type": "paragraph",
+          "text": "PreparedStatement 提供参数绑定，驱动可能使用服务端预处理或客户端实现，具体行为取决于配置。参数绑定解决值与 SQL 结构混合的风险，但不能参数化一个任意表名、列名或排序方向。结果集读取、事务提交、连接关闭都可能失败，try-with-resources 帮助按相反顺序关闭 JDBC 资源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "连接池复用昂贵的建联和认证过程，并限制同时占用数据库资源的连接数。借出的 Connection 常是包装对象，close 通常归还池，而不是立刻关闭底层 TCP。归还时需恢复自动提交、隔离等状态，异常连接应丢弃；应用不能在 close 后继续保存引用使用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：网络超时一定等于 SQL 未执行吗？不一定，结果可能未知。JDBC 与 MySQL 日志、锁和持久化属于不同层次，Spring 只是组织调用，不负责替数据库写 redo 或 undo。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-mapper-mapping",
+      "order": 21,
+      "question": "MyBatis 如何关联 Mapper SQL 与结果？",
+      "shortAnswer": "MyBatis 先把 Mapper 方法找到对应的 SQL 定义，再执行 JDBC，最后按映射规则把结果变成 Java 对象。Mapper 代理是入口，MappedStatement 保存定义；XML 只是提供定义的一种方式。",
+      "commonPhrasings": [
+        "Mapper 接口与 XML 怎么关联？",
+        "数据库字段如何映射 JavaBean？",
+        "自己实现一个映射器用什么技术？",
+        "只读 XML 然后反射 new 是否足够？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "21 MyBatis 如何关联 Mapper SQL 与结果"
+        },
+        {
+          "type": "paragraph",
+          "text": "MyBatis 先把 Mapper 方法找到对应的 SQL 定义，再执行 JDBC，最后按映射规则把结果变成 Java 对象。Mapper 代理是入口，MappedStatement 保存定义；XML 只是提供定义的一种方式。"
+        },
+        {
+          "type": "paragraph",
+          "text": "XML 的 namespace 通常对应 Mapper 接口全名，语句 id 对应方法名，合成完整 statement id。注解也可以定义 SQL，因此 XML 不是必需。方法参数经 @Param 或参数名规则组织，MappedStatement 保存 SQL 来源、参数和结果映射等元数据。方法重载共享同名 statement 时容易歧义，避免把 Java 重载直接当多个独立 SQL 标识。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一次 Mapper 查询会经过 SqlSession 和 Executor，再由 StatementHandler 等完成 JDBC 执行。拿到 ResultSet 后，ResultSetHandler 按规则组织结果，TypeHandler 转换 JDBC 与 Java 类型，ObjectFactory 创建对象，最后通过构造器或属性赋值完成映射。"
+        },
+        {
+          "type": "paragraph",
+          "text": "XML 解析主要是在准备这些元数据。若面试只回答“读 XML，再反射 new”，就还没解释 SQL 怎样执行、类型怎样转换，以及嵌套结果怎样合并。"
+        },
+        {
+          "type": "paragraph",
+          "text": "简单对象可用 resultType 和自动映射，user_name 到 userName 可用别名、mapUnderscoreToCamelCase 或显式 resultMap。SQL NULL 应考虑包装类型，不能把 NULL 与 primitive 的 0 混淆。join 同名列要起别名，一对多使用 association/collection 等结果定义并明确主键识别；每行反射 new 一个父对象不能自然去重合并。嵌套 select 还可能造成 N+1 查询。"
+        },
+        {
+          "type": "paragraph",
+          "text": "自行实现时先定契约：按列标签映射而非猜列序；显式映射到属性；使用 setter 或构造器；类型转换独立；未知列、缺 setter、NULL 给 primitive 都应有明确策略。本书 MappingLab 限定公开无参构造器、公开 setter、包装类型，以及驱动支持的 getObject(index,type)。每行 O(列数+属性数)，生产可缓存映射计划，但缓存 Class/Method 要考虑热部署类加载器被长期引用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：反射为什么可行？JVM 保留已加载类型信息，反射 API 根据这些信息寻找和调用成员；这并不保证绕过模块边界，也不代表转换任意类型都安全。只说“读 XML”回答不了构造器、嵌套对象、NULL 和类型处理器这些后续问题。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "59 MyBatis 映射与反射映射"
+        },
+        {
+          "type": "paragraph",
+          "text": "MyBatis 注解映射和独立反射 mapper 都能把列转换成属性，但各自支持范围必须明确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "七个场景检查命名映射与 NULL、同会话缓存复用、clearCache 后重建、查询不存在、独立映射、未知列与缺失 setter。例子没有 XML，直接证明 XML 不是映射能力的唯一来源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "源文件：code/framework/src/main/java/handbook/MappingLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "package handbook;\nimport java.beans.*;\nimport java.lang.reflect.*;\nimport java.sql.*;\nimport java.util.*;\nimport org.h2.jdbcx.JdbcDataSource;\nimport org.apache.ibatis.annotations.*;\nimport org.apache.ibatis.mapping.Environment;\nimport org.apache.ibatis.session.*;\nimport org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;\n\npublic class MappingLab {\n    public static class User {\n        private Long id;private String userName;private Integer age;\n        public User(){}\n        public Long getId(){return id;}public void setId(Long x){id=x;}\n        public String getUserName(){return userName;}public void setUserName(String x){userName=x;}\n        public Integer getAge(){return age;}public void setAge(Integer x){age=x;}\n    }\n    public interface Mapper {\n        @Select(\"select id,user_name,age from users where id=#{id}\")\n        @Results(@Result(column=\"user_name\",property=\"userName\"))\n        User find(@Param(\"id\")long id);\n    }\n    public static <T>T map(ResultSet rs,Class<T> type,Map<String,String> columns)throws Exception{\n        Map<String,Method> setters=new HashMap<>();\n        for(var p:Introspector.getBeanInfo(type).getPropertyDescriptors())if(p.getWriteMethod()!=null)setters.put(p.getName(),p.getWriteMethod());\n        T bean=type.getConstructor().newInstance();var metadata=rs.getMetaData();\n        for(int n=1;n<=metadata.getColumnCount();n++){\n            String label=metadata.getColumnLabel(n).toLowerCase(Locale.ROOT),property=columns.get(label);\n            if(property==null)throw new IllegalArgumentException(\"unmapped column: \"+label);\n            Method setter=setters.get(property);if(setter==null)throw new IllegalArgumentException(\"missing setter: \"+property);\n            Class<?> target=setter.getParameterTypes()[0];if(target.isPrimitive())throw new IllegalArgumentException(\"boxed types required\");\n            try{setter.invoke(bean,rs.getObject(n,target));}catch(InvocationTargetException e){throw new IllegalStateException(\"setter failed\",e.getCause());}\n        }\n        return bean;\n    }\n    static void check(User u){if(u==null||!Long.valueOf(7).equals(u.getId())||!\"Ada\".equals(u.getUserName())||u.getAge()!=null)throw new AssertionError();}\n    public static void main(String[] args)throws Exception{\n        var d=new JdbcDataSource();d.setURL(\"jdbc:h2:mem:mapping_lab;DB_CLOSE_DELAY=-1\");\n        try(var c=d.getConnection();var s=c.createStatement()){s.execute(\"create table users(id bigint primary key,user_name varchar(40),age integer)\");s.execute(\"insert into users values(7,'Ada',null)\");}\n        var cfg=new Configuration(new Environment(\"lab\",new JdbcTransactionFactory(),d));cfg.addMapper(Mapper.class);\n        var factory=new SqlSessionFactoryBuilder().build(cfg);\n        try(var session=factory.openSession()){\n            var mapper=session.getMapper(Mapper.class);User first=mapper.find(7);check(first);\n            if(first!=mapper.find(7))throw new AssertionError(\"SESSION cache should reuse object\");\n            session.clearCache();if(first==mapper.find(7))throw new AssertionError(\"cache clear\");\n            if(mapper.find(8)!=null)throw new AssertionError();\n        }\n        try(var c=d.getConnection();var s=c.createStatement();var rs=s.executeQuery(\"select id,user_name,age from users\")){\n            rs.next();check(map(rs,User.class,Map.of(\"id\",\"id\",\"user_name\",\"userName\",\"age\",\"age\")));\n            try{map(rs,User.class,Map.of());throw new AssertionError();}catch(IllegalArgumentException expected){}\n            try{map(rs,User.class,Map.of(\"id\",\"absent\",\"user_name\",\"userName\",\"age\",\"age\"));throw new AssertionError();}catch(IllegalArgumentException expected){}\n        }\n        System.out.println(\"PASS 7 MyBatis/reflection mapping and local-cache scenarios\");\n    }\n}\n",
+          "label": "code/framework/src/main/java/handbook/MappingLab.java"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-mybatis-cache",
+      "order": 22,
+      "question": "一级缓存 二级缓存与 Spring 事务边界？",
+      "shortAnswer": "MyBatis 一级缓存跟着 SqlSession 走，先弄清会话活多久，才能判断两次查询会不会复用结果。二级缓存通常按 Mapper namespace 配置，跨会话共享也不等于数据库全局强一致。",
+      "commonPhrasings": [
+        "两次查询为何返回同一个对象？",
+        "Spring 注入的 Mapper 线程安全吗？",
+        "不同请求会共享一级缓存吗？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "22 一级缓存 二级缓存与 Spring 事务边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "MyBatis 一级缓存跟着 SqlSession 走，先弄清会话活多久，才能判断两次查询会不会复用结果。二级缓存通常按 Mapper namespace 配置，跨会话共享也不等于数据库全局强一致。"
+        },
+        {
+          "type": "paragraph",
+          "text": "默认 SESSION 本地缓存可在同一 SqlSession 中复用查询结果，key 不只 SQL 字符串，还涉及 statement、参数、分页及环境等。更新、提交、回滚、清理或关闭等行为会影响本地缓存；STATEMENT 可将复用范围收窄到单次语句执行。返回的是可变对象时，业务修改它可能影响同会话后续读取，因此不要把缓存结果随意当临时工作区。"
+        },
+        {
+          "type": "paragraph",
+          "text": "二级缓存需要显式启用对应 namespace 的缓存，跨 SqlSession 复用通常在事务提交边界完成。默认读写缓存可序列化复制，需要对象满足相应要求；readOnly 配置可能共享同一实例，必须按不可变对象约束使用。多 Mapper 操作同一表、外部程序直接改库或跨 namespace 查询，都可能造成失效不完整，应明确缓存依赖，而不是只记“更新 SQL 自动清所有缓存”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "MyBatis-Spring 中注入的 Mapper 通常经 SqlSessionTemplate 使用实际 SqlSession。SqlSessionTemplate 是线程安全入口，它会按 Spring 事务选择和管理会话；同一事务可复用同一会话，非事务调用则有不同的会话范围。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，“两个请求都调用同一个 Mapper 代理”不能推出它们共享同一个一级缓存。普通 DefaultSqlSession 仍不能跨线程共享，Connection 和返回的可变对象也不会因为入口是代理就自动线程安全。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：在 Spring 管理的会话上手动 commit/rollback/close 呢？应该交给 Spring 管理，相应调用可能被禁止。事务管理器的 DataSource 必须与 SqlSessionFactory 对应，否则 SQL 可能不在预期事务。NoteWeave 当前实际使用 JdbcTemplate，不要为了讲这题把其项目经验改写成 MyBatis。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-sql-binding",
+      "order": 23,
+      "question": "SQL 参数 注入防护与 MyBatis 拦截器？",
+      "shortAnswer": "#{ } 把输入当参数值绑定，${ } 把输入直接放进 SQL 文本。前者分开了数据与语句结构，后者可能改变结构；拦截器能观察或改写执行过程，但日志、权限改写和参数替换各自仍要保证安全与正确。",
+      "commonPhrasings": [
+        "# 与 $ 或 ? 有何区别？",
+        "如何防 SQL 注入？",
+        "MyBatis 如何拦截提取 SQL？",
+        "权限切面能否拼接任意过滤串？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "23 SQL 参数 注入防护与 MyBatis 拦截器"
+        },
+        {
+          "type": "paragraph",
+          "text": "#{ } 把输入当参数值绑定，${ } 把输入直接放进 SQL 文本。前者分开了数据与语句结构，后者可能改变结构；拦截器能观察或改写执行过程，但日志、权限改写和参数替换各自仍要保证安全与正确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "#{id} 通常转换成预处理占位符并由 TypeHandler 绑定值。? 是 JDBC 预处理语句的参数占位符，讨论 #{} 与 ? 时，应先分清 MyBatis 模板绑定与 JDBC 参数占位两个阶段。${sort} 会把内容加入 SQL 结构，恶意内容可以改变语义。动态排序应将外部枚举映射到固定 SQL 片段，而非直接传任意字符串。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要拦截 MyBatis，先选真实执行阶段。插件可以拦 Executor、StatementHandler、ParameterHandler、ResultSetHandler 等约定接口的方法，常用 @Intercepts/@Signature 声明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如记录 SQL，应在合适阶段取得 MappedStatement、BoundSql、参数映射和实际参数。不要为了拼一条“完整 SQL”就把所有问号做字符串替换：引号、日期、二进制、NULL 和自定义 TypeHandler 都可能让替换后的文本失真。"
+        },
+        {
+          "type": "paragraph",
+          "text": "计时拦截器要在 finally 记录耗时并保留原始异常，不在失败路径再执行一次 SQL。参数里可能有口令、token 或个人信息，日志应脱敏、限长，采样或仅记录 statement id 与耗时。采集日志本身也不能形成阻塞热点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若做数据权限改写，必须覆盖 count、子查询、join、分页和别名，最好采用经过验证的结构化 SQL 解析或显式查询接口。对更新和删除同样要限制范围；只有查询切面而忘记更新路径，会造成越权。全局改写器越透明，越需要契约测试证明没有漏入口或错误改变 SQL。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：为什么不只靠前端隐藏按钮？前端不构成授权边界。为什么不把带参数 SQL 发到日志后重放？日志不一定保存准确类型与事务上下文，还可能泄露数据或重复副作用。可观测性数据应服务诊断，不自动成为可执行命令。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

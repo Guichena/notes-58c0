@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-3-4",
+  "entryId": "bg-mysql-3",
+  "expectedOriginalHash": "063cd7330b97edd60e3fe39cf23fe5b505a8e5f56e1428e3ea2de7967058b0a3",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "覆盖和回表以查询为单位"
+    },
+    {
+      "type": "paragraph",
+      "text": "看 idx_students 的同一个 age 索引就能理解“覆盖”。id 是主键，age 是二级索引列，name 不在这个索引中。查询 SELECT id,age FROM idx_students WHERE age=1 时，二级条目里的 age 和主键信息已经满足所需列；再多取 name，通常就得拿 id 去聚簇索引找完整行，这一步叫回表。age=1 若命中两行，可以说有两次逻辑行定位，不能据此断言读取了两个物理页或进行了两次磁盘 I/O。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以 SELECT * 的问题是多要了列：它可能破坏覆盖，增加回表和网络传输，却不会让所有索引失效。唯一主键点查即使取整行，仍适合主键定位。反过来，EXPLAIN 中 key 有值也不等于快；type=index 可能扫描了整棵很大的索引。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最后分清两个很像的提示。“Using index”表示计划可以从索引满足所需列；“Using index condition”表示先在索引条目上过滤，再决定是否读完整行，也就是 ICP。即使计划可覆盖，InnoDB 的 MVCC 可见性检查仍可能需要访问聚簇记录，不能把覆盖背成“任何时候都绝不碰表”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "小实验怎样看才有意义"
+    },
+    {
+      "type": "paragraph",
+      "text": "下方仅三行数据，age=1 的结果是 id=1、2；查询没写 ORDER BY 就不能依赖返回顺序。先看默认 EXPLAIN，再用 FORCE INDEX 展示目标索引路径。小表默认走全表扫描可以是合理成本选择，强制后的 Using index 不能被写成优化器在真实规模必选的证据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "当面试官只说“分析一条 SQL 的回表、I/O 与锁行数”却没给 SQL，应先补齐投影、谓词、索引、隔离级别和快照/锁定读属性。拿到五行结果只能说明输出数量，不能倒推出扫描或锁范围。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "覆盖与完整行读取的完整实验"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 index_organization.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/index_organization.sql",
+      "value": "-- MySQL 8.4.0，在空实验 schema 中执行；同名表存在时请换 schema。\nCREATE TABLE idx_students (\n  id BIGINT PRIMARY KEY,\n  age INT NOT NULL,\n  name VARCHAR(40) NOT NULL,\n  KEY ix_age (age)\n) ENGINE=InnoDB;\nINSERT INTO idx_students VALUES (1,1,'Ada'),(2,1,'Lin'),(3,2,'Mo');\n-- 小表可能自然选择全表扫描；FORCE仅用于观察指定路径。\nEXPLAIN SELECT id,age,name FROM idx_students FORCE INDEX(ix_age) WHERE age=1;\nSELECT id,age,name FROM idx_students WHERE age=1;\nEXPLAIN SELECT id,age FROM idx_students FORCE INDEX(ix_age) WHERE age=1;\nSELECT id,age FROM idx_students WHERE age=1;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "商家、订单二级索引的六行实验"
+    },
+    {
+      "type": "paragraph",
+      "text": "下图按 (merchant_id,order_id,id) 展开二级索引，id 是主键信息。查询 merchant_id=3 AND order_id=2 时，内部节点先导航到对应叶页，再定位 (3,2,2)；沿叶链到 (4,3,3) 后，商家/订单前缀已经变化，可以结束这一等值范围。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-mysql/merchant-navigation.png",
+      "alt": "商家、订单联合索引的六行教学布局；节点和叶链不代表真实物理页格式。"
+    },
+    {
+      "type": "paragraph",
+      "text": "图中每叶两条记录、父分隔键取右子树最小键，是解释导航的教学布局，不是 InnoDB 二进制页转储。叶页逻辑相邻不保证磁盘物理相邻。章末表只有 id、merchant_id、order_id 三列，所以此处 SELECT * 所需列可由二级索引覆盖；若表后来增加不在索引里的列，取这些列通常需要按 id 访问聚簇记录，可见性检查也可能触发聚簇访问。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 merchant_index.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/merchant_index.sql",
+      "value": "CREATE TABLE test_table_union_index(\n id BIGINT PRIMARY KEY,merchant_id INT NOT NULL,order_id INT NOT NULL,\n KEY ix_merchant_order(merchant_id,order_id)\n) ENGINE=InnoDB;\nINSERT INTO test_table_union_index VALUES(1,3,1),(2,3,2),(3,4,3),(4,4,4),(5,5,1),(6,5,2);\nSELECT * FROM test_table_union_index WHERE merchant_id=3 AND order_id=2;\n-- Expected id=2. All selected columns are present in the secondary index leaf.\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "4"
+}

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-juc-0922",
+  "entryId": "handwrite-59",
+  "expectedOriginalHash": "0f00400ba36ec2c46f6dd9b75c4d4105b67cb1922c9d51c56dabe1ccc922281a",
+  "title": "调度、周期失败与持久恢复",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原调度器是最小教学骨架；以下补充到期触发、执行隔离和失败协议，不将原例视为具备关闭与持久恢复能力的生产调度器。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三秒后执行和周期任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "延迟任务应由调度器保存到期状态，届时再触发执行，避免占用普通 worker 睡三秒。ScheduledExecutorService 的延迟是最早可执行时机，不是精确实时保证；调度线程繁忙、GC 或系统调度都可能延后。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不用 MQ 自己组织延迟执行，可以沿“保存、等到期、交付执行”来设计。先按到期时间维护最小堆，调度线程只对堆顶剩余时间作可唤醒等待；到期后取走该项，再交给受限执行器。若等待期间插入了一个更早的新堆顶，必须唤醒调度线程重算，否则旧的长等待会挡住已经该执行的任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DelayQueue 的 take 也只交出已经到期的堆顶，并采用 leader 等待策略，避免所有等待者重复同一个计时。但延迟队列本身没有容量上限，还要另设积压预算。取消项怎样清理、进程崩溃后怎样从持久状态恢复，是另外要补齐的协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring Boot 应用可用 @EnableScheduling 配合 @Scheduled 的 fixedRate、fixedDelay 或 cron，也可直接注册 TaskScheduler 或使用 ScheduledExecutorService；需要持久作业和集群协调时再选择相应调度框架。Spring cron 是包含秒的六字段表达式，时区应显式确认。多实例上的本地定时器通常各自触发，并不天然只执行一次；同一方法多个调度声明或异步委派也可能重叠，仍需幂等及必要的互斥或租约。"
+    },
+    {
+      "type": "paragraph",
+      "text": "fixedRate 按计划节奏推进，落后时可能接续补赶；fixedDelay 以一次执行完成到下一次开始的间隔为依据。同一个周期任务不会因 fixedRate 自己同时执行多个副本，但多个任务或异步委派另有并发。JDK 周期任务若异常逃出本次执行，后续执行会被抑制，必须观察结果或在边界按业务处理异常。Spring 重复任务的默认错误处理通常记录并抑制错误以允许后续调度，自定义 ErrorHandler 可以改变这一行为，两者不能混为一谈。"
+    },
+    {
+      "type": "paragraph",
+      "text": "定时扫描黑名单解封这类工作，进程内定时器只是触发器。线程或进程宕机后需要持久任务状态、可重入扫描、条件更新及幂等完成，不能用“加一个后台线程”保证业务必达。扫描 Redis 后更新 MySQL 是跨系统动作，JVM 锁不会把它变成跨系统事务。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-juc-reference",
+      "label": "运行支持与教学范围"
+    }
+  ]
+}

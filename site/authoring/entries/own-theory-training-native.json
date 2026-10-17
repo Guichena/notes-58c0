@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-training-native",
+  "kind": "doc",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "实现参考与验证边界",
+  "title": "完整 Qwen2：单设备 SFT 与数值验算",
+  "tags": [
+    "完整教学代码",
+    "未执行源代码"
+  ],
+  "sections": [
+    {
+      "id": "s-training-621",
+      "title": "12 原生 Qwen2 SFT 完整示例",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 原生 PyTorch/Transformers 写 Qwen2 SFT，怎样保证 assistant mask、shift 和尾批梯度正确？Qwen2.5-3B/LLaMA-Factory 要交代哪些配置？"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面代码读取本地 Qwen2 模型目录和 JSON 对话数据。它包含模板边界验证、assistant-only mask、右侧 padding、shift 对齐、按有效 token 归一的梯度累积、尾窗口更新与保存。模板不能证明前缀稳定就报错，避免悄悄监督错误角色。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读实现时，可沿一条带工具返回的对话查三处：模板切出的边界、完成对齐后的有效标签、累积窗口分母。再把尾窗口变短，预测它为什么仍应按实际监督计数更新；先写预期，不把代码能启动当作训练正确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "加载接口以 Transformers 4.51.3 为例，显式指定 torch_dtype=torch.float32，并将模型浮点参数转为 FP32 后检查 dtype，避免继承 checkpoint 精度或依赖库默认值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "代码采用 FP32 单设备训练；使用时先对真实 checkpoint 检验模板前缀、角色边界、目标 token 数与梯度，再补验证集、混合精度、分布式及断点恢复。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Qwen2.5-3B 用 LLaMA-Factory 时也要明确完整模型 ID、数据格式、template、stage=sft、finetuning_type、target modules、有效 batch、学习率、长度与验证设置，不能只说“点界面开始训练”。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "training/native_qwen2_sft.py",
+          "value": "\"\"\"Single-device Qwen2 SFT using a local model directory and dialogue data.\"\"\"\nimport argparse\nimport json\nimport torch\nfrom torch.nn import functional as F\nfrom transformers import AutoTokenizer, AutoModelForCausalLM\n\n\ndef encode_dialogue(tokenizer, messages, max_length):\n    if max_length < 2:\n        raise ValueError(\"max_length must be >= 2\")\n    def render(items, generation=False):\n        return list(tokenizer.apply_chat_template(items, tokenize=True,\n                    add_generation_prompt=generation))\n    full = render(messages)\n    labels = [-100] * len(full)\n    for i, message in enumerate(messages):\n        if message['role'] != 'assistant':\n            continue\n        if i == 0:\n            raise ValueError(\"assistant needs prior context\")\n        prefix = render(messages[:i], generation=True)\n        upto = render(messages[:i+1])\n        # Template-dependent boundaries must be checked, never guessed by text search.\n        if full[:len(upto)] != upto or upto[:len(prefix)] != prefix:\n            raise ValueError(\"template is not prefix stable; use verified token spans\")\n        labels[len(prefix):len(upto)] = full[len(prefix):len(upto)]\n    full, labels = full[:max_length], labels[:max_length]\n    if not any(t != -100 for t in labels[1:]):\n        raise ValueError(\"no next-token assistant targets after truncation\")\n    return {'input_ids': full, 'labels': labels}\n\n\ndef collate(rows, pad_id):\n    n=max(len(r['input_ids']) for r in rows)\n    ids=[];labels=[];mask=[]\n    for row in rows:\n        k=len(row['input_ids']);pad=n-k\n        ids.append(row['input_ids']+[pad_id]*pad)\n        labels.append(row['labels']+[-100]*pad)\n        mask.append([1]*k+[0]*pad)\n    return {k:torch.tensor(v,dtype=torch.long) for k,v in\n            [('input_ids',ids),('labels',labels),('attention_mask',mask)]}\n\n\ndef shifted_loss_sum(logits, labels):\n    # Position t predicts target token t+1. Do NOT shift again inside a model loss.\n    pred=logits[:,:-1,:].contiguous().float()\n    target=labels[:,1:].contiguous()\n    count=(target != -100).sum()\n    loss=F.cross_entropy(pred.reshape(-1,pred.size(-1)),target.reshape(-1),\n                         ignore_index=-100,reduction='sum')\n    return loss,count\n\n\ndef train(model, batches, accumulation=1, lr=1e-5):\n    if accumulation < 1:\n        raise ValueError(\"accumulation must be positive\")\n    optimizer=torch.optim.AdamW(model.parameters(),lr=lr)\n    device=next(model.parameters()).device\n    model.train(); model.config.use_cache=False\n    # Equal weighting of every valid assistant token within an accumulation window.\n    for start in range(0,len(batches),accumulation):\n        window=batches[start:start+accumulation]\n        denominator=sum(int((b['labels'][:,1:] != -100).sum()) for b in window)\n        if denominator == 0:\n            raise ValueError(\"empty supervision window\")\n        optimizer.zero_grad(set_to_none=True)\n        reported=0.\n        for batch in window:\n            batch={k:v.to(device) for k,v in batch.items()}\n            logits=model(input_ids=batch['input_ids'],\n                         attention_mask=batch['attention_mask']).logits\n            loss,_=shifted_loss_sum(logits,batch['labels'])\n            (loss/denominator).backward()\n            reported+=float(loss.detach())\n        norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.)\n        if not torch.isfinite(norm):\n            raise FloatingPointError(\"nonfinite gradient; update aborted\")\n        optimizer.step()\n        print({'window':start//accumulation,'assistant_tokens':denominator,\n               'loss':reported/denominator})\n\n\ndef main():\n    p=argparse.ArgumentParser()\n    p.add_argument('--model-dir',required=True)\n    p.add_argument('--data',required=True,help='JSON array: each row has messages')\n    p.add_argument('--output-dir',required=True)\n    p.add_argument('--max-length',type=int,default=512)\n    p.add_argument('--batch-size',type=int,default=1)\n    p.add_argument('--accumulation',type=int,default=2)\n    args=p.parse_args()\n    if args.batch_size < 1:\n        raise ValueError('batch size must be positive')\n    tokenizer=AutoTokenizer.from_pretrained(args.model_dir,local_files_only=True,\n                                           trust_remote_code=False)\n    if tokenizer.pad_token_id is None:\n        if tokenizer.eos_token_id is None:\n            raise ValueError('explicit pad token required')\n        tokenizer.pad_token=tokenizer.eos_token\n    model=AutoModelForCausalLM.from_pretrained(args.model_dir,local_files_only=True,\n                                             trust_remote_code=False,\n                                             torch_dtype=torch.float32)\n    if model.config.model_type != 'qwen2':\n        raise ValueError('this exercise expects an actual Qwen2 checkpoint')\n    device='cuda' if torch.cuda.is_available() else 'cpu'\n    model.to(device=device, dtype=torch.float32)\n    if any(p.is_floating_point() and p.dtype != torch.float32 for p in model.parameters()):\n        raise TypeError(\"FP32 parameter contract violated\")\n    with open(args.data,encoding='utf-8') as f:\n        raw=json.load(f)\n    if not raw:\n        raise ValueError('empty dataset')\n    rows=[encode_dialogue(tokenizer,r['messages'],args.max_length) for r in raw]\n    batches=[collate(rows[i:i+args.batch_size],tokenizer.pad_token_id)\n             for i in range(0,len(rows),args.batch_size)]\n    train(model,batches,args.accumulation)\n    model.save_pretrained(args.output_dir)\n    tokenizer.save_pretrained(args.output_dir)\n\nif __name__ == '__main__': main()\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问：MS-Swift 在训练链路中负责什么？ ModelScope 的 ms-swift 将模型/模板适配、数据预处理、训练方法、分布式后端及推理评测导出组织成统一工作流，支持全参和 LoRA 等参数高效适配，也提供偏好学习与 RL 路线。它与可视化编排业务流程的 Dify 关注点不同；有 Web UI 不代表它只是点击式应用平台。"
+        },
+        {
+          "type": "paragraph",
+          "text": "说明一次训练配置时，按模型 ID 与 revision、tokenizer/chat template、数据 schema/切分、loss mask、训练方法和可训练模块、精度、batch/累积、并行/显存策略、评测及导出逐项讲。"
+        },
+        {
+          "type": "paragraph",
+          "text": "框架替你接好训练组件，却不能替你证明数据正确、模板监督区间正确或线上有效。"
+        },
+        {
+          "type": "paragraph",
+          "text": "具体版本的模型、方法与后端支持组合须核对；保存配置和依赖版本，先用小样本验证 loss、梯度、保存/重新加载一致，再扩大训练。不要把某个框架示例的卡数与吞吐说成自己的实验。"
+        }
+      ]
+    },
+    {
+      "id": "s-training-1185",
+      "title": "14 显存与梯度归约的可执行验算",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "可能的问法： 两个 rank 分别 2 和 5 个样本，梯度该怎么聚合？手算 ZeRO 状态和 KV 字节如何验证？"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面用 NumPy 检验不等样本数的梯度加权、状态分片算术、线性层切分与 KV 字节。真实 collective 还需验证各 rank 的调用顺序、通信完成、故障退出和通信计算重叠。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先手算不等分片的加权结果，再对照代码中“等权平均不相等”的反例。线性层切分则先判断局部结果该求和还是拼接。这里验证的是算术关系；真实设备上通信是否完成、故障能否一致退出，仍是另外需要证据的实验。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "training/sharding_arithmetic.py",
+          "value": "\"\"\"Arithmetic reference for weighted gradients, sharding and tensor partitions.\"\"\"\nfrom fractions import Fraction\nimport numpy as np\n\n\ndef persistent_bytes(params, ranks, stage, weight_bytes=2, grad_bytes=2, opt_bytes=12):\n    if any(type(x) is not int or x < 1 for x in (params, ranks, weight_bytes, grad_bytes, opt_bytes)) or type(stage) is not int or stage not in (0, 1, 2, 3):\n        raise ValueError(\"invalid model assumptions\")\n    p, n = params, ranks\n    if stage == 0:\n        return Fraction(p * (weight_bytes + grad_bytes + opt_bytes))\n    if stage == 1:\n        return Fraction(p * (weight_bytes + grad_bytes)) + Fraction(p * opt_bytes, n)\n    if stage == 2:\n        return Fraction(p * weight_bytes) + Fraction(p * (grad_bytes + opt_bytes), n)\n    return Fraction(p * (weight_bytes + grad_bytes + opt_bytes), n)\n\n\ndef main():\n    # Unequal local batch means must be weighted by counts to match a global sample mean.\n    x = np.arange(21, dtype=np.float64).reshape(7, 3) / 10\n    y = np.array([1, -1, 2, 0, 1, 3, -2], dtype=np.float64)\n    w = np.array([.3, -.2, .1], dtype=np.float64)\n    def grad(xx, yy):\n        return xx.T @ (xx @ w - yy) / len(xx)\n    whole = grad(x, y)\n    a, b = grad(x[:2], y[:2]), grad(x[2:], y[2:])\n    weighted = (2 * a + 5 * b) / 7\n    assert np.allclose(whole, weighted)\n    assert not np.allclose(whole, (a + b) / 2)\n    # Simulate reduce-scatter then all-gather over 4 arrays; no actual collective transport.\n    arrays = np.arange(32, dtype=np.float64).reshape(4, 8)\n    reduced = arrays.sum(axis=0)\n    shards = [sum(np.split(row, 4)[i] for row in arrays) for i in range(4)]\n    assert np.array_equal(np.concatenate(shards), reduced)\n    # Dense tensor parallel row/column partitions preserve linear algebra before nonlinearities.\n    matrix = np.arange(24, dtype=np.float64).reshape(3, 8)\n    assert np.allclose(np.concatenate([x @ p for p in np.split(matrix, 4, axis=1)], axis=1), x @ matrix)\n    assert np.allclose(sum(x[:, i:i+1] @ matrix[i:i+1] for i in range(3)), x @ matrix)\n    p = 72_000_000_000\n    assert persistent_bytes(p, 8, 3) == 144_000_000_000\n    assert persistent_bytes(p, 64, 3) == 18_000_000_000\n    for n in [1, 2, 8, 64]:\n        sizes = [persistent_bytes(p, n, s) for s in range(4)]\n        assert all(a >= b for a, b in zip(sizes, sizes[1:]))\n    assert persistent_bytes(p, 8, 3, grad_bytes=4) == 162_000_000_000\n    for invalid in [(1, 0, 1), (1, 1, 4), (1, 1, True)]:\n        try:\n            persistent_bytes(*invalid)\n            raise AssertionError(\"invalid assumptions accepted\")\n        except ValueError:\n            pass\n    # 80 layers,8 KV heads,128 head-dim,4096 tokens,2-byte values gives exactly1.25GiB.\n    kv = 2 * 80 * 8 * 128 * 4096 * 2\n    assert kv == 1_342_177_280\n    print(\"PASS CPU arithmetic: weighted7-sample gradient vs2/5 unequal shards; incorrect equal-rank mean counterexample; reduce-scatter/all-gather model; row/column tensor partitions; declared16/18-byte ZeRO-state estimates;1.25GiB illustrative KV.\")\n\n\nif __name__ == \"__main__\":\n    main()\n"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-6b993c4f985f4a",
+  "entryId": "own-juc-synchronizers",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "ca291e8a8b10a28249416b435cb011e53f338aea7d23853a521029d7009bea2f",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "两个线程怎样用信号量交接数据 为什么一个许可还不够"
+    },
+    {
+      "type": "paragraph",
+      "text": "单槽生产消费交接需要区分空槽与已有数据两个状态，一个许可不能同时表达写入权和读取权。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "12.两个线程要实现信号量通信，具体怎么实现？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "许可与payload是两种东西"
+    },
+    {
+      "type": "paragraph",
+      "text": "单槽交接必须同时保证“写完才能读”和“读完才能覆盖”，所以一个 full 许可还不够。信号量只保存许可，不保存消息；如果生产者连续覆盖 slot，即使累计了两个许可，旧值也找不回来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设 empty 初值 1、full 初值 0：生产者 P(empty) → 写 slot → V(full)；消费者 P(full) → 读 slot → V(empty)。两个方向的许可，分别负责写入权和读取权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本例N由双方预先知道，消费者恰好读N次。若长度未知，应另设包含结束状态的消息协议；不能把某个合法整数随便当毒丸。双向请求响应可用各自槽位及确认信号，但仍要明确谁负责关闭与失败。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "顺序与可见性证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "正常路径中，一个可用empty许可或一个待消费full许可对应槽状态；线程取得许可到发布下一许可之间暂时占有槽，不能只看两个availablePermits的瞬时和证明正确。生产者取得empty后才能写，消费者取得full后才能读，读完才重新开放empty，所以无覆盖且FIFO。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这份单槽代码的可见性由 Semaphore 交接建立，不必再靠 slot 的 volatile。Java 规定 release 前的动作，先行发生于另一线程成功 acquire 后的动作：full 发布刚写好的槽，empty 发布读取结束，允许下一次覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程结束后的 join，也让调用者看到最终结果。如果两个信号量都初始为 1、先 release 再写，或者失败时无条件补一个“完成”许可，都会破坏这份协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "失败与中断不能留下另一端永久等待"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现用两个平台线程，捕获工作者失败后记录首个原因并中断对端；调用者join被中断时也中断两端、等待拥有的工作者结束再传播。没有在失败finally里伪造一个full许可。它不承诺重试中已执行sink的副作用会回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回调必须有限完成或合作响应中断，不能强杀任意卡在原生代码的线程；线程创建/启动失败不在这个教学子集保证内。生产用成熟有界BlockingQueue通常更直接，MPMC关闭后排空的C++/Java完整实现见生产者消费者怎样从单生产单消费升级到MPMC (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn9qrybMlh4Fhz8s8m9ozgef)。每项槽操作O(1)，额外存储O(1)，阻塞时间依对端进度，不保证固定延迟。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试应覆盖N=0、1、2、17、1000的有限有序传输，分别注入生产和消费异常，再中断等待中的调用者，确认对端退出且所有handoff线程最终被回收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "有限路径测试不能证明压力下公平性；进程共享信号量、线程启动失败和不合作回调需要独立的实现与验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "SemaphoreHandoff.java 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "SemaphoreHandoff.java",
+      "value": "import java.util.Objects;\nimport java.util.concurrent.Semaphore;\nimport java.util.concurrent.CountDownLatch;\nimport java.util.concurrent.atomic.AtomicReference;\nimport java.util.function.IntConsumer;\nimport java.util.function.IntUnaryOperator;\n\n/** One producer, one consumer, one slot. Callbacks must finish or cooperate. */\npublic final class SemaphoreHandoff {\n    private SemaphoreHandoff() {}\n    public static void transfer(int count, IntUnaryOperator source, IntConsumer sink)\n            throws InterruptedException {\n        if (count < 0 || count > 100_000) throw new IllegalArgumentException(\"count 0..100000\");\n        Objects.requireNonNull(source);\n        Objects.requireNonNull(sink);\n        Semaphore empty = new Semaphore(1), full = new Semaphore(0);\n        CountDownLatch started = new CountDownLatch(1);\n        int[] slot = new int[1]; // Publication is via semaphores, not volatile.\n        AtomicReference<Throwable> failure = new AtomicReference<>();\n        Thread[] workers = new Thread[2];\n        Runnable produce = () -> {\n            try {\n                started.await();\n                for (int i = 0; i < count; i++) {\n                    empty.acquire();\n                    slot[0] = source.applyAsInt(i);\n                    full.release();\n                }\n            } catch (Throwable e) {\n                failure.compareAndSet(null, e);\n                workers[1].interrupt();\n            }\n        };\n        Runnable consume = () -> {\n            try {\n                started.await();\n                for (int i = 0; i < count; i++) {\n                    full.acquire();\n                    sink.accept(slot[0]);\n                    empty.release();\n                }\n            } catch (Throwable e) {\n                failure.compareAndSet(null, e);\n                workers[0].interrupt();\n            }\n        };\n        workers[0] = new Thread(produce, \"handoff-producer\");\n        workers[1] = new Thread(consume, \"handoff-consumer\");\n        // Thread creation/start failure is outside this small teaching protocol.\n        workers[0].start();\n        workers[1].start();\n        // Both peers are alive before a callback can fail and interrupt its peer.\n        started.countDown();\n        try {\n            workers[0].join();\n            workers[1].join();\n        } catch (InterruptedException interrupted) {\n            for (Thread t : workers) t.interrupt();\n            // Reap owned workers before propagating caller cancellation.\n            boolean again = false;\n            for (Thread t : workers) {\n                while (t.isAlive()) {\n                    try { t.join(); }\n                    catch (InterruptedException ignored) { again = true; }\n                }\n            }\n            if (again) Thread.currentThread().interrupt();\n            throw interrupted;\n        }\n        Throwable e = failure.get();\n        if (e != null) throw new IllegalStateException(\"handoff failed\", e);\n    }\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q10 启动门闩 停止标志 屏障与条件通知"
+    },
+    {
+      "type": "paragraph",
+      "text": "CountDownLatch用于一次性倒数：countDown将计数减到零后，等待者及后来的await都能通过，计数不能reset。CyclicBarrier用于固定参与者的多轮会合，最后到达者可执行屏障动作；一个等待者因中断、超时等提前退出，会破坏这一轮，其他等待者须处理BrokenBarrierException。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Phaser适合动态参与者和多阶段任务，Semaphore表示许可数量；不要把一个布尔信号当成可累计的工作消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：一次/多轮→固定/动态参与者→取消与跨进程"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：停止标志不自动唤醒BlockingQueue.take"
+    },
+    {
+      "type": "paragraph",
+      "text": "停止标志能让线程看到“该停了”，却不会自动把它从阻塞等待里叫醒。AtomicBoolean 或 volatile 不会唤醒 BlockingQueue.take；可选限时 poll、为每个消费者发送停止消息，或中断能够响应中断的等待。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CountDownLatch 也只在同一 JVM 内共享，不是跨进程 Event。跨进程的启动与就绪通知，要通过 IPC 握手或健康检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用Condition等待复杂谓词时，持锁检查并用while循环await，通知方更新状态后signal/signalAll。通知不等于状态本身，虚假唤醒以及多个消费者竞争都要求重新检查条件。同步原语的选择要回答：一次还是多轮、多少参与者、是否计数、是否需要跨进程、超时后谁清理。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-synchronizer-choice",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,195 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-int256",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "怎样手写int256的存储和加减乘",
+  "questions": [
+    {
+      "id": "q-own-algo-int256",
+      "question": "怎样手写int256的存储和加减乘",
+      "shortAnswer": "int256可以拆成多个低位在前的小整数，用进位做加法、借位做减法、逐位乘积累加做乘法；先说清有符号解释和溢出规则，再写代码。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "怎样手写int256的存储和加减乘"
+        },
+        {
+          "type": "paragraph",
+          "text": "int256可以拆成多个低位在前的小整数，用进位做加法、借位做减法、逐位乘积累加做乘法；先说清有符号解释和溢出规则，再写代码。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可能怎样问"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "现场实现int256数据结构，底层怎样存储，怎样完成大数加、减、乘？",
+            "为什么不用一个long，或者直接调用BigInteger？",
+            "最高位进位怎么办，负数怎样表示，最小负数取绝对值会发生什么？",
+            "乘法的中间乘积会不会先溢出，怎样验证代码？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先确定数值范围和接口合同"
+        },
+        {
+          "type": "paragraph",
+          "text": "256位只能保留256个二进制位，不是无限精度。若按无符号数解释，范围是0到2的256次方减1；若按二进制补码解释，范围是负的2的255次方到2的255次方减1。同一组位可以有两种解释，排序和溢出判断不能混用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确认有符号还是无符号、溢出时回绕还是报错，以及输入输出形式。下面选固定256位补码，提供两套方法：Wrapped系列保留低256位，相当于模2的256次方运算；Exact系列检查有符号范围，越界抛出ArithmeticException。"
+        },
+        {
+          "type": "paragraph",
+          "text": "十六进制接口传递的是位模式，不负责十进制文本解析。短字符串f表示15，不是负1；64个f才表示全1位模式。输入文本相似，不代表它们补齐后的位模式相同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果业务只要求大整数运算且允许标准库，优先考虑BigInteger；如果题目要手写底层存储和运算，生产实现不调用它，测试可以把它当独立参照。这里不扩展除法、浮点数或密码学常数时间承诺。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么选16个16位块"
+        },
+        {
+          "type": "paragraph",
+          "text": "使用int[16]，每个元素只存0到65535，低位块放在索引0。数值按“第i块乘2的16i次方”求和。数组元素虽然用int存，但有效信息只有16位，因此值的逻辑宽度是256位；数组的元素存储本身是64字节，还没计算Java对象头、引用、对齐等开销，不能说整个对象只占32字节。"
+        },
+        {
+          "type": "paragraph",
+          "text": "也能选4个64位块或8个32位块，块数更少；代价是要正确处理无符号进位和超过单个long范围的乘积。16位块更容易在面试里把中间值上界证明清楚。内部数组不暴露，每次运算生成新值，避免调用方修改底层块导致不变量失效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "加法从低位逐块传进位"
+        },
+        {
+          "type": "paragraph",
+          "text": "第i块计算a[i]+b[i]+carry，保存低16位，高位作为下一个carry。两个块最大都是65535，进位最大为1，所以和最大131071，普通int足够。循环结束后的进位在Wrapped接口中丢弃。"
+        },
+        {
+          "type": "paragraph",
+          "text": "有符号Exact加法不是只看最终carry：两个同号数相加而结果变号，才是该固定宽度下的有符号溢出。例如最大正数加1变成最小负数；负1加1产生最高位进位，但结果0并不构成有符号溢出。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "减法逐块借位"
+        },
+        {
+          "type": "paragraph",
+          "text": "计算a[i]-b[i]-borrow，若结果为负，下一块借1；当前块保留低16位。临时结果范围是负65536到65535，不会使int越界。0减1会逐块借位，得到全1位模式，也就是有符号的负1。"
+        },
+        {
+          "type": "paragraph",
+          "text": "补码取负可以用0减当前值。最小负数的正值超出有符号范围，因此negateWrapped返回相同位模式，而negateExact必须报错。Exact减法的溢出条件是两操作数异号，并且结果符号与被减数不同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "乘法先做完整512位结果"
+        },
+        {
+          "type": "paragraph",
+          "text": "把乘法看成以65536为底的竖式。第i块乘第j块，贡献到第i+j块。每次立即归一化当前块，只把高位进到后一个位置，不把所有乘积先堆到一个long中。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单次中间和由“已有结果块、一个块乘积、carry”组成。三者都受限时最大不超过2的32次方减1，可以安全放入long。表达式必须先把一个乘数转为long，再相乘；写成先用int乘完再转换为long，溢出已经发生，转换救不回来。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实现保留32个块的完整无符号乘积。Wrapped只返回低16块，适用于正负补码位模式，因为补码的加减乘在模2的256次方意义下是一致的。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Exact乘法先分离符号，再求无符号幅值的512位乘积。先看高16块：只要非零，就超出256位。高位没有溢出，还要检查有符号范围：正结果最多为2的255次方减1，负结果的幅值则可以恰好等于2的255次方。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这也解释了为什么最小负数乘1合法，乘负1却溢出。最小负数回绕取负后，位模式虽然没变，仍可把它当作无符号幅值2的255次方参与运算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度和工程取舍"
+        },
+        {
+          "type": "paragraph",
+          "text": "若有L个块，加减和比较都是O(L)，朴素乘法是O(L平方)，额外乘法结果空间O(L)。本实现固定L为16，所以规模不随输入增长，但解释算法时仍给出参数化复杂度，便于回答扩展到任意宽度的追问。"
+        },
+        {
+          "type": "paragraph",
+          "text": "较大宽度可以考虑Karatsuba等乘法，但256位手写题通常先把朴素算法写对。真实业务还要评估分配量、序列化、端序、错误处理和标准库方案，不能仅凭块数推导生产性能。本实现含数据相关分支，不能直接用于有常数时间要求的秘密值运算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "测试怎样覆盖真正容易错的地方"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "用0、1、负1、最大正数、最小负数检查符号和边界；覆盖最小负数乘0、乘1、乘负1。",
+            "用每个二进制位附近的值触发跨块进位与借位，特别是全1加1、0减1。",
+            "检查正乘正、正乘负、负乘负，以及很小的合法乘积和高位非零的溢出乘积。",
+            "对照BigInteger算出数学结果，再分别检查模2的256次方的低位结果和有符号范围；不能用另一份相同进位算法作为唯一参照。",
+            "校验非法十六进制、超过64位、空字符串、null；确认输入对象未被运算修改，equals和hashCode一致。",
+            "随机测试固定种子以便重放；边界用例和随机用例互补，有限测试不替代进位、借位和上界证明。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整实现"
+        },
+        {
+          "type": "paragraph",
+          "text": "实现与测试都是独立的完整Java文件。测试中的BigInteger只用于参照，不参与Int256内部计算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Int256.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.Arrays;\nimport java.util.Objects;\n\n/** Immutable 256-bit two's-complement value. Wrapped operations are modulo 2^256. */\npublic final class Int256 implements Comparable<Int256> {\n    private static final int N = 16;\n    private static final int MASK = 0xffff;\n    // Little-endian limbs, each in [0, 65535]. No array escapes this class.\n    private final int[] limb;\n    public static final Int256 ZERO = fromLong(0);\n    public static final Int256 ONE = fromLong(1);\n    public static final Int256 MIN_VALUE = fromHex(\"8\" + \"0\".repeat(63));\n    public static final Int256 MAX_VALUE = fromHex(\"7\" + \"f\".repeat(63));\n\n    private Int256(int[] owned) { this.limb = owned; }\n\n    public static Int256 fromLong(long value) {\n        int[] out = new int[N];\n        for (int i = 0; i < 4; i++) out[i] = (int) (value >>> (16 * i)) & MASK;\n        if (value < 0) Arrays.fill(out, 4, N, MASK);\n        return new Int256(out);\n    }\n\n    /** Parse an unsigned bit pattern: 1..64 hexadecimal digits, optional 0x prefix. */\n    public static Int256 fromHex(String input) {\n        Objects.requireNonNull(input, \"input\");\n        String s = input.startsWith(\"0x\") || input.startsWith(\"0X\") ? input.substring(2) : input;\n        if (s.isEmpty() || s.length() > 64) throw new IllegalArgumentException(\"1..64 hex digits required\");\n        int[] out = new int[N];\n        for (int p = 0; p < s.length(); p++) {\n            char c = s.charAt(s.length() - 1 - p);\n            int d;\n            if (c >= '0' && c <= '9') d = c - '0';\n            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;\n            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;\n            else throw new IllegalArgumentException(\"ASCII hexadecimal digits required\");\n            out[p / 4] |= d << (4 * (p % 4));\n        }\n        return new Int256(out);\n    }\n\n    /** Fixed-width lowercase representation of the bits, not a signed decimal string. */\n    public String toHex() {\n        char[] out = new char[64];\n        String digits = \"0123456789abcdef\";\n        for (int p = 0; p < 64; p++) out[63 - p] = digits.charAt((limb[p / 4] >>> (4 * (p % 4))) & 15);\n        return new String(out);\n    }\n    public boolean isNegative() { return (limb[N - 1] & 0x8000) != 0; }\n    public boolean isZero() {\n        for (int x : limb) if (x != 0) return false;\n        return true;\n    }\n\n    public Int256 addWrapped(Int256 other) {\n        Objects.requireNonNull(other, \"other\");\n        int[] out = new int[N];\n        int carry = 0;\n        for (int i = 0; i < N; i++) {\n            int sum = limb[i] + other.limb[i] + carry;\n            out[i] = sum & MASK;\n            carry = sum >>> 16;\n        }\n        return new Int256(out);\n    }\n    public Int256 subtractWrapped(Int256 other) {\n        Objects.requireNonNull(other, \"other\");\n        int[] out = new int[N];\n        int borrow = 0;\n        for (int i = 0; i < N; i++) {\n            int diff = limb[i] - other.limb[i] - borrow;\n            out[i] = diff & MASK;\n            borrow = diff < 0 ? 1 : 0;\n        }\n        return new Int256(out);\n    }\n    public Int256 negateWrapped() { return ZERO.subtractWrapped(this); }\n\n    // Exact product of two unsigned 256-bit magnitudes, represented by 32 limbs.\n    private static int[] fullProduct(int[] a, int[] b) {\n        int[] out = new int[2 * N];\n        for (int i = 0; i < N; i++) {\n            long carry = 0;\n            for (int j = 0; j < N; j++) {\n                int k = i + j;\n                long sum = out[k] + (long) a[i] * b[j] + carry;\n                out[k] = (int) sum & MASK;\n                carry = sum >>> 16;\n            }\n            // Earlier rows cannot have reached i + N; no previous value is lost.\n            out[i + N] = (int) carry;\n        }\n        return out;\n    }\n    public Int256 multiplyWrapped(Int256 other) {\n        Objects.requireNonNull(other, \"other\");\n        return new Int256(Arrays.copyOf(fullProduct(limb, other.limb), N));\n    }\n\n    public Int256 addExact(Int256 other) {\n        Int256 out = addWrapped(other);\n        if (isNegative() == other.isNegative() && out.isNegative() != isNegative())\n            throw new ArithmeticException(\"signed int256 addition overflow\");\n        return out;\n    }\n    public Int256 subtractExact(Int256 other) {\n        Int256 out = subtractWrapped(other);\n        if (isNegative() != other.isNegative() && out.isNegative() != isNegative())\n            throw new ArithmeticException(\"signed int256 subtraction overflow\");\n        return out;\n    }\n    public Int256 negateExact() {\n        if (equals(MIN_VALUE)) throw new ArithmeticException(\"signed int256 negation overflow\");\n        return negateWrapped();\n    }\n    public Int256 multiplyExact(Int256 other) {\n        Objects.requireNonNull(other, \"other\");\n        boolean negative = isNegative() != other.isNegative();\n        // MIN_VALUE's wrapped negation has bits 2^255, a valid UNSIGNED magnitude.\n        int[] a = isNegative() ? negateWrapped().limb : limb;\n        int[] b = other.isNegative() ? other.negateWrapped().limb : other.limb;\n        int[] wide = fullProduct(a, b);\n        for (int i = N; i < 2 * N; i++)\n            if (wide[i] != 0) throw new ArithmeticException(\"signed int256 multiplication overflow\");\n        if (!negative && (wide[N - 1] & 0x8000) != 0)\n            throw new ArithmeticException(\"signed int256 multiplication overflow\");\n        if (negative && (wide[N - 1] & 0x8000) != 0) {\n            boolean exactlyMinMagnitude = wide[N - 1] == 0x8000;\n            for (int i = 0; i < N - 1; i++) exactlyMinMagnitude &= wide[i] == 0;\n            if (!exactlyMinMagnitude) throw new ArithmeticException(\"signed int256 multiplication overflow\");\n        }\n        Int256 magnitude = new Int256(Arrays.copyOf(wide, N));\n        return negative ? magnitude.negateWrapped() : magnitude;\n    }\n\n    public int compareUnsigned(Int256 other) {\n        Objects.requireNonNull(other, \"other\");\n        for (int i = N - 1; i >= 0; i--) {\n            int c = Integer.compare(limb[i], other.limb[i]);\n            if (c != 0) return c;\n        }\n        return 0;\n    }\n    @Override public int compareTo(Int256 other) {\n        Objects.requireNonNull(other, \"other\");\n        if (isNegative() != other.isNegative()) return isNegative() ? -1 : 1;\n        return compareUnsigned(other);\n    }\n    @Override public boolean equals(Object other) {\n        return other instanceof Int256 && Arrays.equals(limb, ((Int256) other).limb);\n    }\n    @Override public int hashCode() { return Arrays.hashCode(limb); }\n    @Override public String toString() { return \"0x\" + toHex(); }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Int256Test.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Random;\nimport java.util.function.Supplier;\n\npublic final class Int256Test {\n    private static final BigInteger MOD = BigInteger.ONE.shiftLeft(256);\n    private static final BigInteger MASK = MOD.subtract(BigInteger.ONE);\n    private static final BigInteger MIN = BigInteger.ONE.shiftLeft(255).negate();\n    private static final BigInteger MAX = BigInteger.ONE.shiftLeft(255).subtract(BigInteger.ONE);\n    private static long checks;\n    private static void check(boolean ok, String message) {\n        checks++;\n        if (!ok) throw new AssertionError(message);\n    }\n    private static BigInteger unsigned(Int256 value) { return new BigInteger(value.toHex(), 16); }\n    private static BigInteger signed(Int256 value) {\n        BigInteger bits = unsigned(value);\n        return bits.testBit(255) ? bits.subtract(MOD) : bits;\n    }\n    private static Int256 bits(BigInteger value) { return Int256.fromHex(value.and(MASK).toString(16)); }\n    private static void wraps(Int256 result, BigInteger expected, String what) {\n        check(unsigned(result).equals(expected.and(MASK)), what);\n    }\n    private static void exact(Supplier<Int256> operation, BigInteger expected, String what) {\n        boolean representable = expected.compareTo(MIN) >= 0 && expected.compareTo(MAX) <= 0;\n        try {\n            Int256 result = operation.get();\n            check(representable, what + \" failed to reject overflow\");\n            check(signed(result).equals(expected), what + \" wrong value\");\n        } catch (ArithmeticException ex) {\n            check(!representable, what + \" rejected representable value\");\n        }\n    }\n    private static void pair(BigInteger ua, BigInteger ub) {\n        Int256 a = bits(ua), b = bits(ub);\n        BigInteger sa = ua.and(MASK).testBit(255) ? ua.and(MASK).subtract(MOD) : ua.and(MASK);\n        BigInteger sb = ub.and(MASK).testBit(255) ? ub.and(MASK).subtract(MOD) : ub.and(MASK);\n        String beforeA = a.toHex(), beforeB = b.toHex();\n        wraps(a.addWrapped(b), sa.add(sb), \"addWrapped\");\n        wraps(a.subtractWrapped(b), sa.subtract(sb), \"subtractWrapped\");\n        wraps(a.multiplyWrapped(b), sa.multiply(sb), \"multiplyWrapped\");\n        exact(() -> a.addExact(b), sa.add(sb), \"addExact\");\n        exact(() -> a.subtractExact(b), sa.subtract(sb), \"subtractExact\");\n        exact(() -> a.multiplyExact(b), sa.multiply(sb), \"multiplyExact\");\n        exact(a::negateExact, sa.negate(), \"negateExact\");\n        wraps(a.negateWrapped(), sa.negate(), \"negateWrapped\");\n        check(Integer.signum(a.compareTo(b)) == Integer.signum(sa.compareTo(sb)), \"signed comparison\");\n        check(Integer.signum(a.compareUnsigned(b)) == Integer.signum(ua.and(MASK).compareTo(ub.and(MASK))), \"unsigned comparison\");\n        check(a.toHex().equals(beforeA) && b.toHex().equals(beforeB), \"immutable operands\");\n        check(a.equals(bits(ua)) && a.hashCode() == bits(ua).hashCode(), \"equality/hash\");\n    }\n    private static void rejects(Runnable f, Class<? extends Throwable> kind) {\n        try { f.run(); }\n        catch (Throwable ex) { check(kind.isInstance(ex), \"wrong exception \" + ex); return; }\n        throw new AssertionError(\"expected \" + kind.getSimpleName());\n    }\n    public static void main(String[] args) {\n        for (long v : new long[] {0, 1, -1, Long.MIN_VALUE, Long.MAX_VALUE, 65535, 65536, -65536})\n            check(signed(Int256.fromLong(v)).equals(BigInteger.valueOf(v)), \"long sign extension\");\n        for (int a = -128; a <= 127; a++)\n            for (int b = -128; b <= 127; b++) pair(BigInteger.valueOf(a), BigInteger.valueOf(b));\n        List<BigInteger> boundary = new ArrayList<>();\n        boundary.add(BigInteger.ZERO); boundary.add(BigInteger.ONE); boundary.add(BigInteger.ONE.negate());\n        boundary.add(MIN); boundary.add(MIN.add(BigInteger.ONE)); boundary.add(MAX); boundary.add(MAX.subtract(BigInteger.ONE));\n        for (int bit = 0; bit < 256; bit++) {\n            BigInteger p = BigInteger.ONE.shiftLeft(bit);\n            boundary.add(p); boundary.add(p.subtract(BigInteger.ONE));\n        }\n        for (BigInteger a : boundary)\n            for (BigInteger b : new BigInteger[] {BigInteger.ZERO, BigInteger.ONE, BigInteger.ONE.negate(),\n                    BigInteger.TWO, BigInteger.TWO.negate(), MIN, MAX}) pair(a, b);\n        Random random = new Random(454256);\n        for (int i = 0; i < 12000; i++) {\n            BigInteger a = new BigInteger(256, random), b = new BigInteger(256, random);\n            pair(a, b);\n            if (i < 2000) {\n                BigInteger c = new BigInteger(126, random), d = new BigInteger(127, random);\n                if (random.nextBoolean()) c = c.negate();\n                if (random.nextBoolean()) d = d.negate();\n                pair(c, d);\n            }\n        }\n        check(Int256.MIN_VALUE.negateWrapped().equals(Int256.MIN_VALUE), \"minimum modular negation\");\n        check(Int256.MAX_VALUE.addWrapped(Int256.ONE).equals(Int256.MIN_VALUE), \"positive boundary wrap\");\n        check(Int256.ZERO.subtractWrapped(Int256.ONE).equals(Int256.fromLong(-1)), \"full borrow chain\");\n        check(Int256.fromLong(-1).addWrapped(Int256.ONE).isZero(), \"full carry chain\");\n        check(Int256.fromHex(\"0XfF\").equals(Int256.fromLong(255)), \"hex case and prefix\");\n        check(Int256.fromHex(\"f\").equals(Int256.fromLong(15)), \"hex is unsigned bits, not sign extended\");\n        check(!Int256.ZERO.equals(null) && !Int256.ZERO.equals(\"0\"), \"equals type checks\");\n        for (String s : new String[] {\"\", \"0x\", \"-1\", \"+1\", \" f\", \"f \", \"g\", \"Ｆ\", \"1\".repeat(65)})\n            rejects(() -> Int256.fromHex(s), IllegalArgumentException.class);\n        rejects(() -> Int256.fromHex(null), NullPointerException.class);\n        rejects(() -> Int256.ONE.addWrapped(null), NullPointerException.class);\n        rejects(() -> Int256.ONE.subtractExact(null), NullPointerException.class);\n        rejects(() -> Int256.ONE.multiplyExact(null), NullPointerException.class);\n        rejects(() -> Int256.ONE.compareTo(null), NullPointerException.class);\n        System.out.println(\"Int256Test passed \" + checks + \" checks; seed=454256\");\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        }
+      ]
+    }
+  ]
+}

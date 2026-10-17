@@ -1,0 +1,2 @@
+Additive verification only; original approved leaves and frozen artifacts are unchanged.
+Independently traced all2684 original spans in order through the composed exact replacements. Actual compiled renderer VM checks passed6 entries including13 QA cards, preserved body/lead/supplement and actual question-anchor semantics. Non-rendering helpers are stubbed; no browser layout or full regression claim. Local href targets checked against catalog. This adds evidence, not replacement content.

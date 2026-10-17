@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-memory-ai-context-3-4",
+  "entryId": "ai-上下文工程-3",
+  "questionId": "4",
+  "expectedOriginalHash": "ca33000a34df6aeb9e65665a9fa9c1b78b36045d185335f571d6ab1bc811a3b5",
+  "title": "Memory：具体机制与边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "15 存储选型与可重建投影"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定真源与访问方式，再按容量和治理要求选存储。 Redis、关系库、Markdown、向量索引和图各有职责；短期并非必用 Redis，长期也并非必用向量库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能问法：用户偏好标签为什么不用 MySQL？Markdown 相比 RAG 有什么取舍？长期记忆 JSONL 记录什么？数月甚至一年历史怎么管理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "关系数据库适合稳定身份、版本、状态、时间区间、审核、唯一约束和事务。短小明确的语言/格式偏好，按用户和键查表通常比向量检索更直接；只有问题措辞多样、经验正文复杂或需要语义泛化时，才值得加 embedding。真源可保留正文和 provenance，向量/全文索引只存可重建投影，避免把某次相似度结果当成权威版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试若追问“会话表、消息表和长中短期记忆是不是同一张表”，应给出逻辑模型，而不是只报 MySQL 或 Redis。一个可落地的最小设计是："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "conversation 保存 tenant_id、conversation_id、owner/project、状态、head_seq、revision 和创建/更新时间；会话标识不是用户身份，也不等于业务任务 ID。",
+        "message_event 保存租户/会话、单调 seq、event_id、role、工具调用 ID、业务操作 ID、正文或受控产物引用/hash、事件状态与时间。主键或唯一键包含 (tenant_id, conversation_id, seq)，事件去重键包含 (tenant_id, conversation_id, event_id)；工具结果引用同作用域内的调用，重放状态与外部动作是否提交分开记录。",
+        "task_checkpoint 以租户、任务 ID 和 revision 定位，保存目标版本、消费到的事件水位、保护约束、已验收进度、未决动作、产物版本与剩余预算；关联会话单独保存，允许一个任务跨会话继续。",
+        "conversation_summary 保存会话/话题 ID、摘要 revision、covered_through_seq、来源版本、生成策略版本、保护字段和摘要正文。它是可重建派生物，不能覆盖消息真源；读取时将摘要覆盖区间与之后的完整消息单元衔接起来。",
+        "memory_head 保存 tenant/owner/project 等作用域、逻辑记忆 ID、当前 revision、状态及有效期；memory_revision 保存各版主张、来源、变更原因与审核记录。短期工作集按本轮编译产生，中期任务档案和长期事实可以同库不同表，也可以分开部署，生命周期不同不要求机械地建三套数据库。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "关系与外键同样携带租户/作用域，不能按裸 ID join。追加消息、推进会话 head、写出可靠事件可在同一事务中完成，并用期望 revision 或序号约束控制并发；长期候选审核与索引更新通过版本化事件衔接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读取会话按 (tenant_id, conversation_id, seq) 游标分页并固定 cutoff；读取长期记忆先过滤作用域、状态和有效期，再查当前 head 与 ACL。索引围绕这些路径设计，不给所有正文随意建索引。Redis 只承载热点副本，恢复仍从真源和水位重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 适合热会话片段、编译包、限流与短生命周期状态缓存。List 可保存近期消息，Hash 存结构化状态，ZSet 可按时间索引；注意 key 粒度、单条大小与热 key。TTL 控制生命周期，不等于某个时刻必定完成物理清理；持久化与复制也有恢复点边界。重要任务 checkpoint 和长期准入状态不能只放一个无持久保证的进程 Map 或会随淘汰消失的缓存。Redis 故障后回源数据库重建，回源也要限流，不能把缓存雪崩变成数据库雪崩。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Markdown 适合小规模、需人工审阅的文件记忆，便于版本控制和 diff。JSONL 则逐条保存事件 ID、逻辑记忆 ID、版本、类型、主体、时间、来源、操作类型与 payload；读当前画像仍需构建 head 投影，不能把追加日志直接当成当前有效状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件方案要处理并发 append、半行、损坏、文件锁和压缩归档，也可以加全文或向量索引。因此选型应分别比较文件/数据库真源与全量/按需读取，而非把“Markdown 对比 RAG”当成互斥选择。"
+    },
+    {
+      "type": "paragraph",
+      "text": "向量索引提供近似语义候选，倒排索引擅长错误码、型号、专有名词与精确术语，图结构擅长实体关系和多跳依赖。例如“数据权限”与 RBAC 可用词表与语义检索；“维 C”和“水果”是属性/包含关系，不应只靠同义相似。图扩展可以增加相关实体，但必须限制跳数、边类型、作用域和 token，不自动判断真实性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一年历史不应堆成一个越来越大的 Prompt。按会话或时间分区保存原始事件，维护项目档案和当前有效事实，小型偏好常驻，复杂经验按需检索；冷热分层和归档降低成本。删除策略区分原文、摘要、版本和评测副本。规模阈值通过容量、查询 P95、审核量和维护成本确定，不编造“超过一万条就必须用图数据库”一类分界。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-memory-guide",
+      "label": "接口、运行条件与验收边界"
+    }
+  ]
+}

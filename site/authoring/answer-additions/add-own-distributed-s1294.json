@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s1294",
+  "entryId": "bg-redis-5",
+  "expectedOriginalHash": "b98bbab3a3bbf6649853f394e41abaf5a2bd2bdecb3553d75987b120f48f1d20",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "3.4 短链布隆过滤器误判、接近满和删除怎样处理，幂等为何能用唯一索引"
+    },
+    {
+      "type": "paragraph",
+      "text": "布隆过滤器可能误报存在且普通位图不能安全删除，扩容重建需版本切换；业务幂等仍由唯一收据与原子效果保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Bloom误判怎么办；快满了怎样扩容；为什么幂等能用唯一索引。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom只作存在性预筛，短链权威映射、幂等唯一约束与数据库范式是不同问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "位图为什么有误报，没有误报不是默认保证"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典Bloom用m位、k个hash为每个已插入key置位，查询某位为0可判未插入，全部为1只代表可能存在。不同key共享位产生假阳性；在正确同步、完整构建且不错误删除的前提下已插入key不会判阴性，但漏更新/读到旧快照会破坏这个业务前提。"
+    },
+    {
+      "type": "paragraph",
+      "text": "近似误报概率p≈(1−exp(−kn/m))^k，给目标容量n和p可取m≈−n ln(p)/(ln2)^2、k≈(m/n)ln2；独立均匀hash和近似假设需说明。容量超过规划时位逐渐饱和，p升高到过滤价值很小，并不是达到某个插入数自动精确报满。监控实际负查询回源与误报率，预留增长或选可扩展多层过滤器。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不能直接清位，必须删除怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 Bloom 删除时不能直接清位，因为 A 与 B 可能用了同一位。删 A 顺手清掉它，就可能把仍存在的 B 判成不存在，制造假阴性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "允许滞后时，可以保留旧位，只付出更多误报，再由精确库确认已删除。定期从权威存量重建新版本，补增量并通过版本屏障原子切换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "必须在线删除可用Counting Bloom计数或适用的Cuckoo filter等结构，但须核对溢出、重复insert/delete和实现语义。计数减法前必须有权威的真实存在/插入次数依据，不能仅因一个假阳性查询结果就删除；小计数饱和后再减可能引入假阴性。Cuckoo删除同样不能随意删除未真实插入的key。强正确成员判断直接用精确集合/索引，不让概率结构决定永久拒绝合法用户。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "短链场景应放在正确位置"
+    },
+    {
+      "type": "paragraph",
+      "text": "查短码是否存在时Bloom阴性可快速404，但新短链返回可用前必须保证在线过滤视图已包含它，或新码走增量精确覆盖；阳性查缓存/数据库确认。反向黑名单场景阴性通常放行，也需及时包含新增风险规则。容量、更新与误判会影响不同安全目标，不能机械通用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建(code,namespace)唯一、管理(ownerId,createdAt,code)及到期(status,expiresAt,id)是按访问路径推导的候选索引；具体索引组合仍应结合实际查询与写入成本验证。301永久缓存可能绕过后续统计/撤销，302/307及缓存策略取舍见第3.2节，不能说302自动绝不缓存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "MySQL唯一索引完全可以做幂等的一环"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一索引负责谁赢，事务负责“记录已处理”和业务效果一起生效。同库可以用 UNIQUE(tenant,eventId或operationId)，把 inbox 或请求记录、实际效果与返回结果放到一个事务；冲突时返回原结果或认定已处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同键不同 payload 要拒绝，不能先查没有记录再无保护写。是否第三范式，与能否用唯一索引裁决幂等竞争是两回事。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单unique不能覆盖外部HTTP、另一个库或重复消息引发的全部副作用，且唯一业务实体不必然等于一次用户意图。再次购买有新operationId，MQ重投同eventId，详见第4.7节/Outbox与Inbox。测试Bloom高负载/重建漏增量/误删、随机码攻击、数据库并发同key和提交后重投。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "2"
+}

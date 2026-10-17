@@ -1,0 +1,960 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-6-0",
+  "entryId": "ai-agent-6",
+  "questionId": "0",
+  "expectedOriginalHash": "e5a4dd82306e7b6443bb4d92c78eadc8abe2cdd04d44fc1cdfdba8582a19242e",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "22 框架 产品和自研 Loop 应怎样选型"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 我先按需求比较状态、持久化、人工中断、工具适配、部署、可观测与维护成本，再选择框架。LangChain 偏应用组件与抽象，LangGraph 强调状态图和持久运行；编码助手产品又包含仓库、终端、权限和交互。它们不是“旧图已过时、新循环一定更强”的关系，自研几十行 while 也不等于完整运行时。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 生态要分别看具体项目。LangChain4j 的 AI Services 用 Java 接口/代理连接模型调用、消息格式化、输出解析，并可组合 chat memory、Tools 与 RAG；LangGraph4j 用 StateGraph、节点、普通/条件边和状态更新描述执行图，编译后运行，可配置 CheckpointSaver，并提供与 LangChain4j / Spring AI 的集成。它们是有独立 API 和版本的 Java 项目，不是把 Python import 名字换成 Java 就能运行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选型时做同一最小链路：调用模型→工具结果回填→等待输入→恢复，测试内存隔离、并发 reducer、序列化、取消和异常流。依赖/BOM、所需 JDK、模型 SDK 和 saver 版本一起锁定，再决定是否引入；不要在未运行过的项目里编造“踩过哪些坑”。这里说明官方文档读取时的职责边界，不把滚动文档 API 当作所有旧版本合同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "AgentScope、OpenManus 与 OpenAI Agents SDK 的边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "截至 2026 年 10 月，AgentScope 的核心接口围绕消息、Agent、模型/Formatter、Toolkit、Memory 与状态管理组织：Agent 的 reply 产生回复，observe 接收消息，ReAct Agent 再把模型决策与工具执行分开。多 Agent 的消息编排与面向不同模型的消息格式转换不是同一个问题。比较它与 LangChain/LangGraph，要看自己需要的是现成 Agent 组件、模型/工具集成，还是显式状态图、子图和恢复控制，并用相同故障集验证；不能由“多 Agent 框架”推断已具备本书全部租约、审批和外部效果协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "OpenManus 应作为具体开源实现按源码快照解释。以提交 3309bf4 的 Agent 文件为例，Manus 继承 ToolCallAgent，后者继承 ReActAgent 并实现 think/act：think 请求模型提出工具调用，act 遍历调用并把结果按 tool_call_id 写回消息。基础类 BaseAgent 管理步数、状态、消息与 step 循环，达到上限或结束状态时退出。这说明一种项目自身定义的工具循环，不能仅凭项目名或贡献者背景断言其底层一定是 LangChain 或 MetaGPT。分析框架时应画出实际入口、循环、工具分发与退出路径，再单独验证持久恢复、沙箱、审批和幂等，不把演示能运行当作生产保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "OpenAI Agents SDK 的 Python 实现采用 MIT 开源许可，不能把“SDK 不开源”作为选型前提。它提供 Agent、工具、handoff、guardrail、运行循环与 tracing 等应用抽象；SDK 代码开放、模型权重开放和数据是否外传是三个不同问题。仍需核对实际模型端点、工具网络目的地、追踪导出和数据策略；使用开源 SDK 不自动满足必须本地处理的约束。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Deep Agents 的白板回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "把它理解为面向长任务的 Agent harness 组合：模型和工具循环外，提供计划、文件系统/外置上下文、子 Agent 隔离等能力，建立在 LangGraph 生态上。画成“主目标与任务状态→计划/局部循环→文件和工具→子任务→结果整合”。实际 API、存储后端和中断能力以固定版本为准。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Swarm 一词有通用多 Agent 协作含义，也曾被产品或实验项目用作名称。面试官未指仓库版本时先问清对象，再讲 handoff、角色权限、共享账本、收敛和成本；不能把某个演示库的接口当成所有 swarm 的定义。DSH、TAE、MetaHarness 等未给统一规范或仓库的词，同样先还原题目中的职责，不扩写不存在的标准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "DeepSeek Harness 的插件内核和可回滚究竟指什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确认仓库与版本，再比较它的实际接口。若指 DeepSeek-AI 发布的 DeepSeek Harness，可以用开发者预览版 dsh-v0.1.5-rc.2、提交 fb2c4b9 这个具体快照说明：它基于 Cordis 组织插件，模型适配、工具、会话和 Agent Loop 都可由配置组合。值得讨论的是能力如何替换、依赖如何启停、卸载后如何清理，而不是仅背“一切皆插件”。这个快照是解释接口的例子，不代表面试双方实际使用的版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“Cordis 仅 2700 行”仍需要明确提交、统计目录，以及是否包含 loader、测试、生成代码和空行，不能把未核实的行数当成整个 Harness 的规模。这个预览版把 Cordis 作为 vendored 源码引入，记录的上游核心版本为 4.0.0-rc.7，并保留本地修改说明。小内核表达的是职责集中，不能推出整个产品依赖少、性能更快，或天然具有完整安全隔离。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "一切皆插件怎样落实到生命周期"
+    },
+    {
+      "type": "paragraph",
+      "text": "该版本的插件通过 Context 查找服务，使用 inject 声明依赖，以服务接口和事件协作。依赖满足后才启用插件；服务撤走时，相应依赖者不能继续假装服务可用。插件挂载时注册工具、监听器或其他能力，同时把对应的释放动作交给运行时；卸载或重载时撤销这些注册。仅把函数放进一个 Map，既没有依赖变化响应，也没有清理合同，尚不足以得到这种动态组合能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工程上还要补齐启动失败、部分注册成功、重复卸载和清理失败的处理。比如插件先注册监听器，再打开连接，后一步失败时应撤销已注册部分；替换服务前让依赖者停止接收新工作，在途工作按取消或排空合同结束，再释放旧资源。异步回调必须检查实例代次，防止旧插件卸载后又把结果写进新实例。以上是集成时要验证的故障合同，不能仅凭“支持插件”就断言每种插件已经正确实现。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "主循环可替换不等于运行中的任务任意换脑"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个快照把 dsh-agent 的 Agent 接口、运行中实例注册和事件，与 dsh-agent-loop 的默认驱动区分开。前者提供创建、恢复、输入、取消和等待等交互面；默认驱动推进模型请求、工具执行与会话记录。换模型适配器是更换推理提供方，换 Loop 则会改变下一步怎样选择、工具怎样调度以及何时结束，修改范围明显更大。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若要用规划执行循环替换默认工具循环，应继续满足输入与取消、工具权限检查、持久事件、结果配对和终态等合同。先在隔离任务中比较，再让新 Run 绑定新的插件组合；旧 Run 继续原版本，或只在无未决副作用、状态可迁移的安全点切换。该快照也区分支持实时配置变化的 Web profile 与启动时一次装配的部分 profile，所以“可通过配置替换”不能翻译成任何运行都支持无感热替换。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Trajectory 能看见什么，不能证明什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "该版本包含 Trajectory 界面插件，把会话事件投影为按 turn、step 组织的记录与时间视图，可查看模型、工具、嵌套调用、压缩、用量及输入输出等信息。它提供排障观察面，不是另一份能任意改写任务事实的账本。分析时应区分已经持久化的会话事件、进程内生命周期事件和前端临时流式展示；看到一个执行中的条目，不等于它已经成功提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如“工具似乎调用了两次”，先按同一任务中的 tool call、attempt 和已提交结果定位，区分真正重试、重复展示和不同步骤的合法调用。若没有原始输入版本或缺少一段历史，只能标明证据不足。轨迹能帮助构造回归样本与重放条件，但不能证明业务结果一定正确，更不能通过再次执行真实写工具来重放生产轨迹。敏感参数仍需权限控制、脱敏与保留期限。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Revertible Effects 不是任意外部动作都能撤回"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的关键是效果发生时提供对应的逆操作，并由运行时跟踪。典型例子是注册事件监听器后能注销它，增加工具注册后能移除它；ctx.effect() 一类机制帮助把这些清理动作纳入组件生命周期。逆操作是否真的恢复了约定状态，仍是组件实现者必须满足的条件；绕开受控 Context 的任意全局写入，不会因为发生在插件里就自动可逆。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务工具至少分三类处理。第一类是真正可逆的受控变更，例如只属于当前实例的临时注册，卸载时可恢复其约定状态。第二类是可补偿的外部动作，例如创建预订后再请求取消：补偿是新的业务操作，可能失败、有费用或超过期限，不能冒充从未发生。第三类是不可撤销或效果不明的动作，例如已经送达的邮件、数据外传，或提交后回包丢失的远端操作；删除本地轨迹或回到旧 checkpoint 都不会抹掉真实效果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此工具合同要写清目标和版本、授权、稳定 operationId、幂等能力、结果查询方式、补偿前提与补偿自身的幂等键。遇到未知提交先对账；无法确认或无法补偿时保留状态并转入必要的人工处理。插件卸载只能按约定停止后续执行和清理所拥有资源，不得顺带删除业务事实、静默重复动作或宣称世界已经回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问怎样回答： 如果被问“和自己的 MetaHarness 比，哪个更能收敛”，先确认 MetaHarness 在该项目中指策略搜索、评测外循环，还是执行宿主。插件架构有利于替换实验部件，收敛性仍取决于目标、停止条件、反馈质量、预算和回归门禁；需要同任务、同权限和同预算的比较，不能由内核行数或插件数量推出答案。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Gemini CLI 的设计重点如何具体回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "截至 2026 年 10 月，Gemini CLI 的 core 架构中，@google/gemini-cli-core 承担 API 编排、Prompt 组装、工具执行和 Agent 管理，另有 policy、confirmation-bus、scheduler、MCP、Skill、fallback 和 telemetry 等模块，核心层不依赖 UI。值得讨论的是“模型提出动作”如何经过调度、策略和必要的用户确认到达工具，再把结果送回下一轮，而不是只看终端界面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "优化建议应当是待验证假设：沿 trace 测工具发现、上下文准备、模型与工具等待；去掉重复读取、限制输出、独立只读调用有界并行，检查取消和恢复行为，再对比成功率、尾延迟与每成功任务成本。不能凭目录说明声称发现了源码性能缺陷，或保证该产品所有版本已实现本书的持久账本；实际集成仍需固定所用 release/commit 和接口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Agent 为什么逐步走向自主工具循环？它的工程代价是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "自主 Agent 并不是到 2026 年才出现，也不是早期只有 LangChain、LangGraph；真正值得讨论的是，哪些能力和工程条件让它更适合承担较长、较开放的任务。ReAct 论文在 2022 年已经讨论推理与行动交替，AutoGen 在 2023 年探索多 Agent 会话协作，Claude Code 在 2025 年 2 月就进入研究预览。因此，不能把技术演进简单划成“早年只有工作流，后来才有 Agent”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "从工程角度，我会把演进条件分成三层。第一层是模型能否更稳定地理解任务、选择工具、修正错误；第二层是工具协议、检索、执行环境、上下文管理和可观测性是否成熟；第三层是成本、时延和风险是否符合具体业务要求。这些是分析产品为什么更容易落地的维度，不能仅凭某一年产品更多，就断言某个因素已经被证明是唯一原因。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型能力增强，并不会自动替代运行时。真正接入业务还需要权限边界、输入校验、工具超时、预算、状态持久化、失败恢复和验收标准。一个能连续操作终端的产品，也不能仅按“框架”两个字，与编排库做一对一替换：它们覆盖的产品层级和默认能力并不相同。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "除了答案不确定，还有哪些成本？"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一是执行成本与尾延迟。一次任务可能多轮调用模型、检索和工具，失败后还会重试，平均耗时很短也可能有少量任务跑很久。因此要限制轮数、token、费用和总截止时间，工具重试还要有独立预算。增加 Agent 数量并不保证收益，反而可能增加重复检索、相互等待和上下文传递。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二是副作用与恢复。读取文件重试相对容易，创建工单、发送通知或修改数据则可能重复生效。要区分只读、可幂等写入和高风险动作，用稳定业务键、执行账本和必要的人工确认保护副作用。保存了对话 checkpoint，不代表外部系统已经回滚；恢复时要核对工具是否真正完成，不能把未知结果当失败后直接重做。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第三是状态与安全。历史内容越来越长会挤占上下文、掩盖关键证据，压缩又可能丢失限制条件；网页和工具结果还可能包含恶意指令。需要区分可信指令与外部数据，保留重要约束和证据，按任务授予最小权限，不能让模型看到一段文字就自行扩大授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "第四是评测和维护。开放路径不能只检查最终文本“看起来不错”，还要验证证据、工具参数、动作顺序、资源消耗与失败恢复。模型、提示词、工具 schema 和依赖更新后都可能改变轨迹，需要版本化回放、分层回归和真实任务抽样。线上发现问题，还应能定位到哪一步的输入、决策或工具结果，而不是只留一句最终回复。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "工作流和自主循环应该怎样选？"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定流程、严格合规、资金或生产写入、明确时延要求的任务，优先让确定性代码控制关键步骤。开放式调查、探索代码和需要根据新证据调整路线的任务，可以在边界明确的沙箱中给模型更多选择空间。实际系统常用混合方式：外层控制权限、预算、状态和验收，内层允许自主选择检索或分析路径；图中的节点也可以运行 Agent 循环，两者不是互斥阵营。"
+    },
+    {
+      "type": "paragraph",
+      "text": "结合项目时，可以把 DeepResearch 的计划调整、证据补充和验证流程，与告警链路中的规则、投递账本和审批约束放在一起讲：不同任务需要的自由度不同。不要因为暂时想不清流程，就让模型直接接管不可逆动作。先定义成功标准、允许的工具和失败退出条件，再决定在哪些局部放开自主性。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "动态数据库配置怎样安全生效"
+    },
+    {
+      "type": "paragraph",
+      "text": "把“用户输入数据库参数，Agent 自动建立连接”拆成配置提议与受控启用。配置 schema 明确驱动类型、允许的地址/端口/库、租户、凭据引用、连接上限与超时；拒绝任意驱动下载、任意 JDBC 扩展参数和未授权网络目的地。凭据由可信服务解析，模型只见必要引用。启用前先校验格式、权限和连通性，以最小权限验证目标身份与必要 schema，测试也需有超时和资源上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "通过后创建不可变配置 generation 和新连接池，只给新 Run 使用；旧 Run 固定原 generation，池在无在途使用后关闭。配置失败返回具体可修复字段，不偷偷改连接目标。保留最近有效版本可支持回退，但只有其授权、凭据和目标仍有效时才允许继续使用；已撤销的权限不能因回退复活。所谓自动模式需明示哪些字段可推导、哪些变更需要确认、哪些错误可恢复，不能把未知产品开关当成完整安全策略。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Spring AI Alibaba、AutoGen 和 CrewAI 要分别说"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring AI Alibaba 不是上游 Spring AI 的另一个名称。以官方 tag v1.1.2.0 为界：该发行版采用 Spring AI 1.1.2 与 Alibaba Extensions 1.1.2.1，在其 Agent/Graph 层提供 ReactAgent 的 Skills、路由/监督/交接模式、并行子 Agent 及条件分支汇聚等能力。面试先说明使用哪个模块和版本，再沿 model→消息→工具回调→Agent/Graph 状态推进解释；不能把上游 ChatClient/Advisor 的答案当作 Alibaba Agent Framework 的全部实现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AutoGen Core 的官方应用栈以异步消息、Agent 行为契约和运行时组织协作，适合从消息处理与角色交互解释；这不等于所有名为 AutoGen 的旧版 API 都相同。 CrewAI v1.15.27 文档把 Crew 描述为 Agent 与 Task 按 process 协作，可选顺序或分层；Flow 另提供事件、状态和分支编排，不能概括成“只有角色，没有工作流”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 业务团队比较这些框架时，落到现有服务接入、状态恢复、权限、可观测性、依赖版本和语言运维成本，再用同一任务测质量与成本；框架名称不能证明一定更快或已经生产可用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "文心一言和国产 AI 产品怎样比较 百度生态怎样讲清楚"
+    },
+    {
+      "type": "paragraph",
+      "text": "评价国产 AI 产品要先分清基础模型、聊天或办公应用、开发平台三个层次，再按固定版本比较任务质量、交互体验、工具与数据接入、部署成本和安全边界；不能用一次聊天印象或厂商榜单代表整套产品的性能。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能问法：怎样评价文心一言的技术性能、功能体验和应用场景？用过哪些国产大模型与工具，各有什么特点？对百度 AI 技术和产品生态了解多少？"
+    },
+    {
+      "type": "paragraph",
+      "text": "“了解过”和“实际使用过”应分开回答。只有亲自做过的任务、使用入口、版本、失败案例和可核对结果，才能作为个人经历；下面用公开能力说明比较方法。产品信息截至 2026 年 10 月，具名模型采用注明日期的版本样本，不代表各家的最新版本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "文心的模型能力和应用体验分别评价"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目使用“文心一言”这个名称时，应确认指当时的产品入口还是底层文心模型。截至 2026 年 10 月，公开应用入口为百度文心助手；应用名、网页入口、模型名和 API 接入点不能互相替代。官方对 ERNIE 5.0 的 2026 年 2 月 6 日技术介绍强调：把文本、图像、视频和音频纳入统一自回归框架，采用 MoE，并统一处理多模态理解与生成。这说明它的技术路线，不证明每个客户端或 API 都开放了报告中的全部能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "技术性能应按任务拆开看：中文指令遵循和复杂约束，事实与时效问题，代码和数学的可验证正确性，图表或文档的跨模态理解，工具选择与参数正确率，以及长输入、并发时的尾延迟。公开技术报告和评测可以帮助选择测试对象，但不同 Prompt、搜索开关、推理预算和版本的分数不能直接拼成排名，也不能由参数量推出服务更快。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用体验则看用户能否把任务完成：多轮对话能否保持对象和限制，输入资料能否正确解析，搜索结果是否给出可追溯依据，生成内容是否方便修改与继续使用，失败后能否恢复而不重复操作。桌面与移动端的多轮助手是产品形态；底层模型回答正确，不代表上传、检索、权限、工具或界面链路都正确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "百度的具体优势在于可组合的入口和基础设施：搜索承接信息发现，文库与网盘承接内容和文件，文心提供模型能力，千帆面向企业接入与应用开发。若企业已有相应数据和云服务，这是一条可评估的集成路径；是否实际减少开发成本，需要按目标系统验证，不能概括为所有中文场景都优于其他产品。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可改进方向可以具体到产品合同：让搜索结论与来源逐项对齐，清晰显示资料版本与不确定性；长任务展示真实进度并保留可恢复结果；写操作前确认范围，超时后查询原动作；让用户方便纠正上下文、重新选择资料或切换任务模式。这些是值得验证的改进建议，不代表已经观察到当前版本都存在相应缺陷。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用场景可以落到办公材料总结与改写、基于内部知识的客服或员工问答、结合文本和图表的报告分析。对精确数值、实时事实和业务操作，分别接计算器、受控检索与业务 API，模型负责理解和组织；敏感内容、权限和高影响动作不因换成某家模型就自动解决。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "具名比较要选同一层次和明确版本"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 通义或千问体系可以用 2025 年 4 月 29 日发布的 Qwen3 作模型例子。该版本包含不同规模的 Dense 和 MoE 权重，支持思考与非思考模式，并提供 Qwen Chat 体验入口。它适合讨论模型规格选择、推理预算和自部署方案；权重可获得不等于零运维成本，也不能把 Qwen3 文本模型泛称为所有 Qwen 多模态产品。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- DeepSeek 可以用 2025 年 1 月 20 日发布的 DeepSeek-R1 作推理模型例子：公开权重和技术报告，同时提供聊天和 API 入口。数学、代码等有明确验收器的任务可以纳入选型对照，但必须把正确率、推理输出长度、等待时间和服务稳定性一起测。聊天产品的联网功能与基础 API 的模型能力要分别核对，不能因为网页能搜索就假设任意 API 调用自带搜索。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Kimi 可以用 2025 年 7 月 11 日的 Kimi K2 作例子。它强调 MoE 模型的代码和工具使用能力，发布了 Base 与 Instruct，并提供应用、API 和自部署路径；首发 K2 的公开说明不支持视觉，后续型号不能套用这一限制。适合比较工具链任务，但工具调用能力仍需配合执行宿主、权限、预算和结果验证，模型不会因为支持 tool calling 就自行拥有真实业务权限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 豆包要区分面向个人的助手与火山方舟上的模型服务。官方助手说明包含语音输入、语音回答和定制智能体；可用 2025 年 1 月 22 日发布的 Doubao-1.5-pro，以及 1 月 20 日发布的实时语音模型作为明确例子。语音交互、日常创作和应用接入可作为比较维度；App 操作体验、实时语音接口和具体文本 API 接入点不是同一个测试对象，不能把一个模型的指标归到整个豆包产品。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些例子展示的差别是开放权重和托管服务的取舍、推理预算控制、工具任务支持、多模态与交互入口，并非每家独占某种能力。选择内部知识助手时，统一资料、权限和检索流程比较模型；选择日常办公 App 时，比较从输入到可用产物的完整体验；选择云平台时，比较接入、配额、数据处理、运维和总成本。三个实验的结论不能互换。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "百度生态从底座到具体业务分层说明"
+    },
+    {
+      "type": "paragraph",
+      "text": "百度 AI 生态可以按四层说明：算力与云基础设施提供训练和推理资源；飞桨 PaddlePaddle 提供深度学习开发与训练推理生态；文心 ERNIE 是模型体系，千帆把模型服务、数据和 Agent 开发能力交给企业使用；百度搜索、文心助手、文库、网盘等是用户和业务入口。千帆也接入第三方模型，因此“用了百度云平台”不等于“所有回答都来自文心”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文库和网盘在 2025 年 8 月联合推出 GenFlow，体现从文件与内容能力走向多智能体生产力任务的组合。Apollo 和小度等业务也属于百度 AI 应用布局，但自动驾驶系统、语音设备与聊天助手的任务、时延及安全要求不同，不能把它们简单描述成同一款大模型换了界面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果面试官追问“你会怎样把这些能力用于企业客服”，可以给出条件链路：业务后端确认身份与租户，受控知识库检索制度和产品资料，通过千帆所选模型生成可追溯回答，需要查询订单时调用只读业务工具；无法确认的问题转人工，修改订单走单独授权与幂等协议。评估的是答对并解决问题的比例、错误承诺、转人工原因、时延与成本，而不是把生态里每个产品都接一遍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续被问“文心性能不好，有客观证据吗”，应要求固定模型和入口版本、输入数据、搜索与工具设置、预算、采样参数和评分标准，对同一任务做盲评与可执行验证，报告失败类别和不确定性。没有这样的记录，就只能给出公开事实与待验证假设，不能补造个人使用感受、生产指标或领先幅度。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 中的 Skill 和普通 Tool 有什么区别？10.Multi-Agent 系统中，如果主 Agent 选择了错误的子 Agent，应该怎么办？11.如何提高 Multi-Agent 调度和路由的准确性？12.大模型本身可能会出现判断错误、Agent 选错、工具选错等问题，工程上应该如何兜底？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你平时了解或使用过哪些开源 Agent 框架/工具（如龙虾 OpenClaw、Hermes Agent 等）？它们与普通 Agent 相比有什么独特设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的 skills 功能原理是什么？怎么设计和实现 skills 体系？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么不能用一个 Agent + 多个 Skill 来替代 Multi-Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Multi agent 和 single agent 的区别是什么，以及它选型的适用场景。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent Skill 如何设计，才能在组合时避免前置条件冲突？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 团队知识库和 Skill 是怎么维护的，有量化标准吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 最近有关注业内agent相关的知识或者新闻吗，挑一个说说。（回答了claude code的设计和anthropic的agent相关工程实践，又聊了一下skills）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目里用的是 Multi-Agent 吗？整体工作流是什么样的？为什么这么选型？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 中的 Skill 机制了解多少？Skill 渐进式加载是如何实现的？为什么需要这种设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你在京东实习期间主要负责哪些工作？是否涉及 Agent Skill？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个产品相比其他 Agent 产品有哪些优势和缺点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 通用 Agent 与自建 Agent 应该如何选型？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何看待基于 Claude code、Codex 一类通用 Agent 增加 Skill 和编排层，再用于生产场景的方案？ ["
+    },
+    {
+      "type": "paragraph",
+      "text": "- （3）已有固定 Workflow 的情况下，为什么改为 Skill？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Skill 与 Workflow 对比：为什么要把原来的 Workflow 改成 Skill？Workflow 有哪些优点和缺点？Skill 有哪些优点和缺点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 工程落地经历：你的经历主要集中在 Skill 开发，是否具备 Agent 工程落地经验？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Workflow 与 Skill：为什么要把原来的 Workflow 改成 Skill？Workflow 的优点和缺点是什么？Skill 的优点和缺点是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- AI Agent 方面有实践过吗？大模型选型怎么做的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 可以讲一下你这个agent项目，背景需求是什么样的？为什么会想到这么一个项目？具体是怎么做的？技术实现技术选型是哪些？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 选型对比：什么时候用 Skill，什么时候用 Workflow？实际业务场景里，Workflow 在哪些严谨场景下是绝对不可替代的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 有哪些组件，以及它能实现的功能，这个框架的优点在哪里？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 请给我介绍一下 DeepAgents 的设计的框架，也可以在白板上面画一下他的大概架构图，作为一个系统设计。那最近的 Agent Swarm 有了解么，是什么呢？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你在做 Agent 项目选型框架的时候有什么考虑？除了 LangChain 你还了解或者调研过别的框架吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有接触什么前沿的agent，说了openclaw，但是底层逻辑还没看"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 以前问\"你们怎么调工具的\"，现在问 Harness 和 Orchestrator 有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何理解 Spec Coding 和 Harness？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中 LangGraph 有什么作用？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 用过 OpenClaw 吗？了解 OpenClaw 和其他 Agent 的区别吗？它的架构是怎样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Sub-Agent 与主 Harness 架构：Sub-Agent（子代理）的具体使用场景有哪些？它和主 Agent 的 Harness（宿主/执行脚手架）机制是什么关系？在 DSH（动态子代理环境）里的 Sub-Agent 是如何运作的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent Loop 原理与落地：什么是 Agent Loop（代理自主循环）？如何在 LangGraph 中显式设计并实现一个鲁棒的 Agent Loop？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 对 Prompt Engineering、Context Engineering 和 Harness Engineering 这几者之间的区别是怎么理解的？在工程类任务中，什么 Context 对于模型来说是比较重要的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍项目复杂模块。为什么两个 Agent 选择了不同框架？为什么选择阿里的 Spring AI 框架而不是 LangChain？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 最近比较火的 Harness Engineering 和 Context Engineering 了解吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目用的什么架构？LangGraph 还是自研？master+sub Agent 还是 workflow？选型原因是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent Harness 最重要需要解决的问题是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain 和 LangGraph 有什么区别和关联？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 使用 LangChain 构建 Agent 时主要有哪些模块？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 第一个项目使用 LangGraph 做的，讲一下 LangChain 和 LangGraph 分别是什么？区别是什么？分别在什么需求下使用？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有试过用 LangChain 和 LangGraph 做 AI Agent 的开发？有什么感受？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain 主要的 chain 怎么理解？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目与 Agent 相关，问了 MCP 能到哪一层、如何实现；以及 openclaw 了解过吗。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 除了 Coze，了解过其他 Agent 相关框架吗？比如 LangChain、LangGraph。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目技术选型，为什么选LangGraph，不选LangChain？二者区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是否了解 AI Coding 相关概念：Harness、Loop Engineer？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 Harness 框架下，如何降低人工介入成本？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 反问：harness engineering贵部门怎么搭建的？流水线还是多agent协作？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 继续提问：langgraph 是什么样的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 怎么在 langgraph 里实现 Agent loop？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 harness。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 8 月中的时候 DeepSeek 发了一个 DeepSeek harness，那个你有看过吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain / LangGraph 你有没有看过源码？为什么自研 Agent 编排引擎而不是直接套开源框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你 agent 项目框架的时候有什么考虑？除了 LangChain 你还了解或者调研过别的框架吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 整个 Harness 系统怎样实现？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 用 LangChain/Agent 框架时，一般要配哪些东西？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有接触什么前沿的 Agent（说了 OpenClaw，但是底层逻辑还没看）。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目是个人项目还是公司项目？为什么不用 LangGraph 等开源框架，要自研？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 我看你简历上写了 RAG，然后 LangChain、LangGraph。那如果要搭一个基础的 RAG 链路的情况下，你觉得会包含哪些流程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 什么情况下适合用 LangChain，什么情况下适合用 LangGraph？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你刚才在说的这种 LangGraph 持久化的逻辑，它具体是怎么实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain 和 LangGraph 的区别？为什么有了 LangChain 还要推出 LangGraph？各自解决什么核心问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何实现具有确定性回放能力的 Agent Harness？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你对网上目前主流的那些开源的 Harness Agent 有了解过吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 大概半个月前吧，当时 DeepSeek 刚刚发布了一个开源的 DeepSeek Harness。你了解吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你觉得 DeepSeek Harness 与其他的 Harness Agent 相比，它的特色究竟在哪里呢？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- OpenClaw 使用的体验？跟你自己做的 Agent 有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 与底层结构：在使用 LangGraph 或开发 Agent 时，有没有用到过栈或队列？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 图结构支持循环吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解 Harness 架构吗？是做什么的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有学习过LangChain、LangGraph这类框架？核心概念有哪些？上下文怎么设置？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain 的 Chain 和 LangGraph 的 StateGraph 本质差异是什么？什么场景不适合上 LangGraph？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent Harness 包含哪些关键能力？为什么企业级 Agent 需要 Harness？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 根据你的理解，Harness 主要指什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- -[]为什么用harness来做agent"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有了解Deepseek Harness的实现吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么要结合 LangGraph 和子 Agent 这种模式去做这件事？（为什么不用单一大 Agent 或纯脚本？）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 LangGraph 的基础上，有没有做过上层的路由决策？比如由 AI 判断该走哪个节点、跳到哪个节点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有自己的harness策略？ 有没有落地一些东西？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 自己有搭建过openclaw或Hermes agent吗？ 无手撕"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 最近火热的 OpenClaw 了解过吗？你觉得它是什么形态？它怎么能做到通用的 Agent？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 行业洞察：OpenClaw 爆火的原因是什么？为什么之前业界也有那么多 Agent 框架但没有引起类似的反响？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain 框架、LangGraph 框架，还有原生手写 Agent，三者区别和优劣势？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 评测 Harness 架构难点：像这种通用 Harness 应用，其核心工程能力需要攻克哪些技术难点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 核心原理：讲一下 LangGraph 里核心的概念（State、Node、Edge 等），简单介绍你对于 LangGraph 的理解与选型原因。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Harness 架构防幻觉：在 Harness 测试与执行工程体系中，如何系统性降低大模型的幻觉与输出漂移？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain / LangGraph：介绍一下它们和二者的关系。你觉得 LangGraph 真正的强大之处在哪？有哪些关键机制？你知道 LangChain 和 LangGraph 框架在 Java 端的适配版本吗，有调研过吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 怎么理解 Harness？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 以 Codex 为例，是怎么实现 Harness 这个概念的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么不用 LangGraph 来实现这一套 Agent orchestration？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 能介绍一下上下文工程（Context Engineering）和 Harness 工程的区别吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下你怎么理解Harness？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 的核心关键点是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 选择 LangGraph 框架是否完全取决于业务场景？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain与LangGraph核心区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 使用什么Agent开发框架，自研框架和开源框架差异？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- -[]agent用langgraph来做的，为啥不考虑用一些开源的agent来改造呢？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 和 LangChain 的区别？Workflow 和 Agent 如何选型？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 LangGraph 框架实现 Agent 的时候，如果想实现节点级的修正反馈该怎么做？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 实现 Agent 时，如何做到精准的意图识别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 每一个节点在选择大模型的时候如何考虑？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 系统使用什么模型？是否自行部署？模型推理和 Agent 执行流程是否由你们自行实现和编排？为什么没有使用 LangChain？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- harness这里面作用是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目为什么没有使用 LangChain？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么选择 eino 而不是 langchain，两者有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 继续问项目 LangGraph是个什么？子图会把输出结果传给下一个子图是LangGraph完成的吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你这个工具调用和 MCP、LangChain 的 Tools/Skills 有什么比较大的区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你用什么AI工具，为什么。如何确保可靠性。（好的harness，达成目标的标准，hooks，subagent，好的code review）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你使用 LangChain 做过哪些具体工作？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在你刚才提到的 LangChain、检索、意图分析等相关技术中，你最熟悉、最擅长的是哪一个方向？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么用agentscope 为什么不选用更主流的langchain langgraph"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 框架与范式本质区别：Codex / Claude Code 这类新一代 Agent 框架，跟 LangChain / LangGraph 的核心区别是什么？尝试用一两个词精准概括。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 技术演进代价：除了结果的不确定性，自主 Agent 还有什么工程代价？为什么 2023-2024 年只有 LangChain/LangGraph，到 2026 年才爆发新一代框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有没有使用 LangGraph 之类的框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- DeepSeek harness 有了解吗？有啥不一样"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你怎么理解 LangChain、LangGraph 以及手写或其他 Agent 框架之间的区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangChain 和 LangGraph 在设计理念和应用场景上有什么核心区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你在使用langchain4j和langgraph4j有遇到什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- langgraph和langchain的区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么不用 LangChain，结合项目谈谈？（追问抽象层级、可调试性、灵活性、中文支持等 trade-off）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- LangGraph 这种架构有什么缺点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中用了LangGraph实现多工具调用链路，相比纯Prompt 有什么优势？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目：用 LangGraph 实现多轮对话 Agent，相比手写 prompt 流程有哪些工程和效果优势？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们用的 Agent 框架是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 我的那个cr agent里有metaharness，让我介绍一下我的metaharness，然后问deepseek harness和我的这个meraharness都是干嘛的，哪个更能够收敛，我也回答出来了"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 了解哪些 Agent 开发框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你提到的 Coze 有两版，一个是拖拽式编排，新版直接使用 Agent，你用的是哪一种？怎么设计节点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 框架由什么组成？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 还接触过其他 Agent 开发框架吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有用智能体框架吗，还是纯代码控制？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 4聊从2022年开始整个agent与大模型的进程，所有的框架设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你的项目的 Agent 框架、流程、你觉得哪个功能点是比较有亮点的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果不使用框架，原生实现 Agent 你写过吗？使用框架的优劣势？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 开发框架是用什么？是哪个语言？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent的用了什么框架"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你们这种做 Agent 的框架，和 AutoGen、CrewAI 这些有没有特别大的差异？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个agent的框架是什么？是你自己做的，还是采用的现有的主流的框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍一下你对 Agent Harness 的理解。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下常见的agent框架有哪些"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你觉得未来agent框架应该是什么样的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是否了解 open claw 讲讲她的架构以及上下文工程如何做的"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent项目数据库配置"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. schema的合法校验"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. auto模式实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 用户数据库配置错误兜底方式"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 数据库动态变更不重启服务可以应用Agent吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这个项目你认为的技术亮点在哪——skill热插拔"
+    },
+    {
+      "type": "paragraph",
+      "text": "7.描述skill热插拨的流程\n8.为什么用进程池+RPC+注册中心实现热插拔\n9.面试官提出oss实现热插拔（具体咋实现忘了），问我这样可不可以（就回了也可以）\n10.session里的临时文件存主服务还是skill进程服务，要不要删，删什么时候删"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Q9.Spring AI 框架你是怎么用的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Q19.Spring AI 的 Function Calling 你知道吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 开源源码深度剖析：从源码阅读层面，在 OpenClaw、Codex、Claude Code 等开源或标杆项目中，你觉得哪些架构抽象或工程设计做得特别惊艳？"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 前沿项目视野：你最近关注到的、觉得最有启发或最有趣的新 Agent 开源项目是什么？解决了什么核心痛点？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 讲一下 Claude Code 架构"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 有学习最近Claude code源码里面的设计理念吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- OpenManus 是用的什么框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么用 OpenManus 这个框架？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Gemini CLI 设计你觉得最重要的部分？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Gemini CLI 你觉得可以优化的点？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

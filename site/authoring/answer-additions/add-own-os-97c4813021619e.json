@@ -1,0 +1,302 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-97c4813021619e",
+  "entryId": "own-juc-correctness",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "6ca383231cb0d6450e0113e81bd89a6808435ddab32b179243ebc0d27174d934",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "进程线程有哪些状态 用户态线程和内核线程如何区分"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程或线程只有具备运行条件后才会进入就绪队列；被唤醒不等于立即运行，Java线程状态也不是Linux状态的直译。"
+    },
+    {
+      "type": "paragraph",
+      "text": "抽象五状态、Linux task状态与Java Thread.State是不同层级，分别解释，不能混成一张固定状态表。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "运行 就绪 阻塞的转换条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "教材常用新建、就绪、运行、阻塞、终止五状态。就绪具备除CPU以外的运行条件，调度后运行；时间片耗尽或更高优先级任务抢占使运行转就绪；请求未满足的IO、锁/条件、子进程退出或定时等待使运行转阻塞；事件完成使阻塞转就绪，再等CPU，不是直接保证转运行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不是任何read、加锁、系统调用都阻塞：缓存命中、无竞争锁或非阻塞接口可立即返回。普通sleep不释放已持业务锁；等待条件必须原子释放关联锁并在返回时重取，以免阻止条件生产者推进。阻塞描述调度可运行性，内核态描述特权，内核中也可运行或可睡眠。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Linux观测到的状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux调度单位是task，线程也有独立TID和状态。ps/proc常见R包含正在执行或可运行，S是可中断睡眠，D是不可中断等待，Z是已退出待回收，T是信号停止，t是跟踪停止，I常见空闲内核线程；具体字符随内核演进。D常与IO有关但不能断言所有D都等磁盘。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程里不同线程可能一个R一个S，单看主线程或瞬间ps快照不能代表全部活动。僵尸不再执行用户代码，父进程wait/waitpid回收；kill僵尸本身不能使它再执行清理。孤儿是父已退出子仍存活的亲属关系，未必是这张表里独立执行状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java状态不是OS调度状态直译"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java定义NEW、RUNNABLE、BLOCKED、WAITING、TIMED_WAITING、TERMINATED。RUNNABLE可能正在CPU运行，也可能等待OS资源；BLOCKED特指进入synchronized监视器的等待，不能把所有ReentrantLock等待都标BLOCKED。无期限wait/join/park常见WAITING，sleep/限时等待常见TIMED_WAITING；具体栈比只看枚举更有诊断价值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java线程只可start一次；调用run是普通方法调用。通知wait者后它仍要竞争监视器，可能先进入BLOCKED再继续。中断、虚假唤醒、取消和终止路径都要求检查业务谓词，不以观察到某一瞬间状态作为生产同步协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用户态线程 内核调度线程 与内核工作线程"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户级线程/协程的逐项调度由运行时完成，M:1时一个阻塞底层线程可能挡住该组任务且难跨核；1:1让OS分别调度每个线程；M:N把许多用户执行单元映射到多个OS线程，运行时需要处理阻塞和唤醒。OS通常看到承载线程，不把每个goroutine当独立task调度，但可经运行时诊断看到协程信息，不能说系统完全不可能观测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“内核线程”还可能专指Linux kthread，即只执行内核工作的任务；这不同于“由内核调度、会执行应用用户代码的平台线程”。用户态和内核态是同一线程执行时可变化的模式，不是先创建用户线程、系统调用时再生一个内核线程。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "进程线程生命周期 CPU占用与线程数量上限怎样回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程上限由进程资源、线程栈、PID与cgroup限制等共同决定，线程越多不会自动带来更高吞吐。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "什么情况下线程死掉，进程里面的其他线程全部死掉"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "已经有进程了，为什么还要设计出线程这个东西"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "对于进程管理这一块，你有什么可以说的？如果一个进程占用了过多时间，怎么办？",
+        "一个进程是不是可以创建无限数量的线程",
+        "线程的数量会受到什么限制",
+        "线程在内存中会占用什么资源"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么已有进程仍设计线程"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一服务往往需要重叠IO等待、保持响应和利用多个CPU核；同地址空间线程共享代码/堆/FD等资源，数据交接无需总是跨进程复制，且可比完全独立进程减少某些创建切换成本。线程有自己的执行现场、栈/TLS与调度状态，共享也带来数据竞争和故障传播，进程隔离仍有价值，完整比较见进程 线程 协程在内存 调度和切换开销上的完整比较 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnK2gYiQWvfDGkrARrufZqYf)和C++互斥锁 读写锁 自旋锁与线程私有状态怎么选 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnGYdiaKKMDk8OcZOjo0iVvc)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程函数正常返回或pthread_exit通常只终止该线程；其他线程可继续，直到所有线程结束。main返回通常触发整个进程退出，调用exit或相应线程组终止路径也结束同进程线程，不能把它和任意工作线程return等同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "什么错误可能让所有线程一起结束"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++异常逃出std::thread入口可调用std::terminate，默认处理通常终止程序；导致默认致命处置的SIGSEGV/SIGABRT等可结束整个进程。共享地址空间内存破坏可能先破坏其他线程稍后才崩溃，不能保证线程错误隔离。Linux exit_group明确终止整个线程组，普通退出接口与原始系统调用层的边界需分清。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java未捕获普通异常常只结束相应线程，而JVM致命错误或System.exit等有不同范围；Go未恢复panic通常最终结束程序。不能把某种语言的异常规则当OS统一政策。需要可靠隔离不可信/不可合作任务时选择进程或沙箱并设计结果/资源回收协议，不依赖“捕获所有崩溃”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一个进程不能无限创建线程"
+    },
+    {
+      "type": "paragraph",
+      "text": "平台线程不是只占一个线程号，还要占执行和管理资源：用户栈先保留地址空间，触碰后有驻留页，另有 TLS、运行时对象、内核 task/内核栈和调度资源。栈保留不等于立即全部驻留，但虚拟空间、物理内存/提交约束、内核资源和 cgroup 内存预算都可能限制规模。"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建还受用户 RLIMIT_NPROC、系统 threads-max/pid_max、cgroup pids.max 等约束。Linux 的计数常涉及线程，不只是传统意义的进程数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程位数、默认栈配置、既有映射和运行时额外资源改变上限，因此不能固定回答“最多几千”。Java平台线程还有Java对象/本地栈等成本，虚拟线程减少某些OS线程占用但仍有任务对象、栈块、下游连接与堆预算；Go G也不是零成本。减少栈大小会降低递归余量，盲目提高限制只会把失败延后到更严重位置。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "CPU时间过多先测 再治理"
+    },
+    {
+      "type": "paragraph",
+      "text": "若CPU持续高，用top/ps分进程线程观察，结合采样栈/性能工具区分真实计算、忙等、GC和锁竞争；若墙钟很长但CPU不高，查IO、锁、网络、排队或cgroup节流。确认业务正确性、同等负载和核数/配额，再优化算法/分配/锁或限制任务并发。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用适当调度优先级权重影响竞争份额，或经运维授权配置cgroup CPU带宽/资源预算；权重不是绝对CPU上限，CPU限额也不等于请求deadline。业务合作取消加总期限，必要时在隔离进程里终止；不要一上来kill -9或修改实时调度/系统限制。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Java主线程和工作线程有什么不同 main返回后会怎样"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java主线程只是入口执行线程，main返回后只要仍有普通非守护线程存活，JVM通常不会正常退出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "明确是Java后端语境，不能套用C/C++中main返回触发进程退出的规则。主/子是应用组织称呼，不是Java自动建立进程式父子所有权关系。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "主线程和子线程有什么区别？子线程通常用来做什么？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "主线程是启动入口所在执行流"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java应用常由名为main的非daemon平台线程调用main方法；new Thread创建的工作线程有自己的栈和执行位置，与主线程共享同一JVM堆。工作线程可处理网络等待、后台计算、任务消费和异步响应，让入口或UI线程不被长工作占住；CPU并行仍取决于可用核和配额。"
+    },
+    {
+      "type": "paragraph",
+      "text": "run 和 start 的区别，先看有没有启动独立执行。直接调用 run，只是当前线程的一次普通方法调用；start 才启动新线程，之后谁先执行没有固定顺序，而且同一个 Thread 不能重复 start。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 也没有“父线程返回，子线程自动停止”的通用规则。需要任务层级和统一收尾时，应通过执行器、作用域或显式所有者来组织。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "JVM退出条件看所有非daemon线程"
+    },
+    {
+      "type": "paragraph",
+      "text": "main正常返回只结束该线程；仍有已启动的非daemon线程时，JVM通常继续运行。所有已启动非daemon线程终止后，JVM开始关闭流程，daemon线程不能独自维持JVM生命；Java21虚拟线程总是daemon。不能因为工作线程是后台工作就自动认为它已设置daemon。"
+    },
+    {
+      "type": "paragraph",
+      "text": "System.exit、JVM致命故障、外部进程终止是另外的路径。未捕获普通线程异常通常结束该线程并进入异常处理器，不保证主线程自动得知；通过Future或显式错误通道观察失败。daemon也不是可靠释放资源的方案，JVM结束时不要依赖其finally完成重要写入。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "交接结果和收尾要建立同步"
+    },
+    {
+      "type": "paragraph",
+      "text": "Thread.start前的动作按JMM先行发生于新线程动作，成功join后可观察被等待线程完成前的动作；共享运行中状态仍需volatile、锁或并发队列等协议。只sleep一会儿不能替代join或条件同步。等待者被中断要按接口处理并保留/传播中断，不用危险的强制stop结束任意代码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常规业务由所有者停止接收新任务、发送合作取消、等待已接收任务并限时回收；线程池的预算/关闭细节见后文Java实验Q21。主线程join工作线程而工作线程又join主线程会形成等待环，因此不能把双向join都当安全收尾。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "MainWorker让非daemon工作线程join入口线程，入口打印MAIN_RETURNS后正常返回，工作线程随后打印WORKER_AFTER_MAIN。"
+    },
+    {
+      "type": "paragraph",
+      "text": "与原生进程main退出的不同正是本题的语言约束，进程线程生命周期 CPU占用与线程数量上限怎样回答 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn3besrH6uBj7GDgX87fnN2d)的其他语言生命周期需按对应分支阅读。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "MainWorker.java 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "MainWorker.java",
+      "value": "/** The main method's return does not terminate a started non-daemon worker. */\npublic final class MainWorker {\n    private MainWorker() {}\n    public static void main(String[] args) {\n        Thread main = Thread.currentThread();\n        Thread worker = new Thread(() -> {\n            try {\n                main.join(); // No sleep-based guess about whether main has exited.\n                System.out.println(\"WORKER_AFTER_MAIN\");\n            } catch (InterruptedException e) {\n                Thread.currentThread().interrupt();\n                throw new IllegalStateException(e);\n            }\n        }, \"owned-worker\");\n        worker.setDaemon(false);\n        worker.start();\n        System.out.println(\"MAIN_RETURNS\");\n        // Normally the owner joins workers. This deliberate fixture instead\n        // shows the VM lifetime rule; joining here would create a wait cycle.\n    }\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q3 Runnable Callable 方法引用与start的区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "任务描述“做什么”，线程或执行器决定“谁来做”。Runnable.run 不返回业务值，Callable.call 可以返回值并声明受检异常；lambda、方法引用、接口实现对象都可以表示任务。只有确需定制线程对象时，才考虑继承 Thread。"
+    },
+    {
+      "type": "paragraph",
+      "text": "new Thread(job) 只是创建对象，start 才请求启动新线程；直接调用 run，仍是当前线程上的普通调用，同一个 Thread 实例也不能再次 start。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：任务与执行器分离→提交时求值→捕获对象安全"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：直接run在当前线程执行；有效final不保证对象内部不可变"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交任务时，先分清“提交一个动作”和“现在就求值”。executor.submit(() -> service.calculate(input)) 留下稍后调用的动作；executor.submit(service.calculate(input)) 会先调用 calculate，而且通常不符合需要的重载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "lambda 捕获的局部变量必须 final 或有效 final，但对象内部仍可能变化。共享 Service 里的缓存、集合、连接，不会因写成方法引用就线程安全；非线程安全连接也不能随意跨任务共用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "由组件所有者决定线程池生命周期：初始化时建池、统一提交、停机时关闭。避免每个请求创建一个新池，也不要在类静态初始化里执行跨组件阻塞等待。参数快照和线程安全依赖应在提交前准备好；提交前动作与任务执行之间有相应的内存可见性保证，但提交后继续修改同一对象仍要建立同步协议。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-thread-lifecycle",
+  "targetOrigin": "authored"
+}

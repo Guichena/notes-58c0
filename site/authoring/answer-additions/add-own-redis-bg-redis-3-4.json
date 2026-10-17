@@ -1,0 +1,280 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-3-4",
+  "entryId": "bg-redis-3",
+  "expectedOriginalHash": "0a02a2678e4b48ec56cec280688451ced6664a5ad504df0a34fbe47ea94e0815",
+  "title": "八类淘汰策略与精确 LFU 教学实现",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "精确 LFU 缓存的手写实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "精确 LFU 可以用 key 哈希表、按频率分桶的 LRU 链和最低频率指针，实现期望 O(1) 的 get/put，并在同频时淘汰最久未使用的 key。"
+    },
+    {
+      "type": "paragraph",
+      "text": "答题时先约定接口和计数规则，再讲结构、不变量与淘汰过程，最后比较 Redis 的近似 LFU。下面的 Java 21 代码是单 JVM 的定容量练习：按条目计容量，无 TTL、无衰减、无持久化，禁止 null。它不等同于 Redis 的淘汰实现。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "常见问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Redis 有哪些内存淘汰策略？大量已过期 key 会全部找出来删除吗？",
+        "LRU 与 LFU 有什么区别，分别适合什么访问模式？",
+        "LFU 需要什么数据结构，提供哪些接口，怎样做到同频按 LRU？",
+        "为什么最低频率能直接加一？增加 remove 或 TTL 后还成立吗？",
+        "更新已有 key 算不算一次访问？零容量、溢出和并发怎么处理？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "先把淘汰策略和访问模式讲完整"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.2 的常见八种策略是 noeviction；allkeys-lru、allkeys-lfu、allkeys-random；volatile-lru、volatile-lfu、volatile-random、volatile-ttl。allkeys 从所有 key 中选择，volatile 只从带 TTL 的 key 中选择；volatile-ttl 偏向剩余期限更短的候选，也采用近似选择。noeviction 不主动为了腾空间而淘汰业务 key。内存仍超限且无法找到可淘汰候选时，受 OOM 检查约束的命令可能被拒绝，不意味着所有读取和所有命令都停止。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这与到期清理不同：过期由访问检查和有预算的主动循环处理，大量过期 key 不会为了满足一句“已经到期”就全库无界扫描。键的失效可见性和释放线程还要分别考虑，lazyfree 会影响物理释放成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LRU 看最近一次使用，适合近期行为对下一次访问更有预测力的场景；一次遍历大量冷数据可能把原有热点挤掉。LFU 看频率，更容易保留长期稳定热点；不衰减时，曾经很热但现在很冷的条目会占位置。没有脱离负载的必胜算法，应对真实访问轨迹比较命中率、维护成本和尾延迟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.2.0 的 LFU 使用小位宽概率计数、时间衰减和采样候选，访问并不总让计数精确加一。对象的 24 位 lru 字段在 LFU 模式下用于 16 位分钟时间和 8 位计数；实际衰减逻辑按经过的衰减周期扣计数并截到零，不是精确的终身总次数。手写题中的精确 LFU 则每次命中加一，同频再比较最近访问。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三个结构和接口约定"
+    },
+    {
+      "type": "paragraph",
+      "text": "entries 保存 key → Entry(value, frequency)，让查找直接定位条目。buckets 保存 frequency → LinkedHashSet(key)，每个集合按插入顺序保存同频 key，头部最旧、尾部最新。minFrequency 保存当前最低的非空频率。"
+    },
+    {
+      "type": "paragraph",
+      "text": "get 命中后把 key 从旧频率桶删除，频率加一，再插到新桶尾部；未命中返回 null，不改变任何计数。put 更新已有 key 时也算一次访问，先完成提频再改值；新 key 的频率从 1 开始。满容量插入前，删除 minFrequency 桶头的 key。不同业务也可以约定更新不算访问，但必须相应调整实现和测试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LinkedHashSet 不是靠访问顺序自动提频：代码显式从旧集合移除，再插入新集合。同频其他 key 的相对顺序保持不变。容量为 0 时不保存条目，负容量直接拒绝；禁止 null key/value，避免把合法空值和 get 未命中混在一起。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "用一条访问序列检查同频 LRU"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量为 2，依次 put(A)、put(B) 后，频率 1 的桶顺序是 A、B。get(A) 后，A 到频率 2，B 留在频率 1。此时 put(C) 应淘汰 B。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果接下来 get(C)，A、C 都在频率 2，但 A 比 C 更早到达这个频率，桶顺序为 A、C。再 put(D) 时应淘汰 A。这一步能检查实现是否只做了“最低频”，却忘记同频下的最近使用顺序。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "最低频率为什么可以更新为 old 加一"
+    },
+    {
+      "type": "paragraph",
+      "text": "touch 时，只有 key 从 old 桶移到 old+1 桶。若 old 恰好是最低频率，而且旧桶被搬空，那么刚移动的 key 必然让 old+1 非空，也不存在更低的存活频率，所以新最低值就是 old+1。满容量淘汰后马上插入新条目，其频率是 1，直接把最低值设为 1 即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个证明依赖 get/put 的变化方式。如果新增任意 remove，最低桶被删空后，下一个非空桶可能是 8，而不是原来的 3 加一；TTL 批量过期也一样。要继续保证高效，可以维护有序频率桶链并让条目指向所属桶，删除空桶时得到相邻桶，或者采用有序索引并接受相应成本，不能直接复用 minFrequency++。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要一直守住四个不变量：每个存活 key 只在一个对应频率的桶里；桶内顺序与最近访问顺序一致；条目数不超过容量；非空时 minFrequency 等于最低非空频率。这样从最低桶头淘汰，才等价于按“频率，再按最近访问时间”取最小。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "复杂度 并发与长期运行边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "在哈希分布良好的前提下，get/put 的哈希查找、桶移动和淘汰都是期望 O(1)，空间为 O(capacity)。这不是恶意 hash 下的最坏 O(1) 保证。snapshot 和检查不变量是 O(capacity) 的诊断接口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "synchronized 把单实例操作串行化并建立可见性；它不会把缓存变成跨 JVM 共享，也不承诺无锁或公平调度。key 的 equals/hashCode 必须在存储期间稳定；value 若是可变对象，返回的还是该对象引用，快照不提供深拷贝隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "frequency 用 long。到 Long.MAX_VALUE 后，在修改桶、频率或 value 之前抛异常，避免计数回绕破坏顺序。因此这个练习有明确的极限拒绝语义，没有自动衰减或无限计数能力。若加衰减，多个频率桶会合并，同频 LRU 如何维护也得重新设计。生产缓存还需字节容量、回收策略和命中指标，不能用条目数量代替真实内存预算。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "完整 Java 21 实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.HashMap;\nimport java.util.LinkedHashSet;\nimport java.util.Map;\nimport java.util.Objects;\n\n/** Exact LFU, LRU tie-break; one JVM. No TTL, persistence or frequency decay. */\npublic final class ExactLfuCache<K, V> {\n    private static final class Entry<T> {\n        T value;\n        long frequency = 1;\n        Entry(T value) { this.value = value; }\n    }\n    private final int capacity;\n    private final Map<K, Entry<V>> entries = new HashMap<>();\n    private final Map<Long, LinkedHashSet<K>> buckets = new HashMap<>();\n    private long minFrequency;\n\n    public ExactLfuCache(int capacity) {\n        if (capacity < 0) throw new IllegalArgumentException(\"negative capacity\");\n        this.capacity = capacity;\n    }\n    /** Null means absent; null keys and values are disallowed. A hit counts once. */\n    public synchronized V get(K key) {\n        Entry<V> entry = entries.get(Objects.requireNonNull(key));\n        if (entry == null) return null;\n        touch(key, entry);\n        return entry.value;\n    }\n    /** Updating an existing key counts as one access. Capacity zero stores nothing. */\n    public synchronized void put(K key, V value) {\n        Objects.requireNonNull(key); Objects.requireNonNull(value);\n        Entry<V> entry = entries.get(key);\n        if (entry != null) {\n            touch(key, entry);\n            entry.value = value;\n            return;\n        }\n        if (capacity == 0) return;\n        if (entries.size() == capacity) {\n            LinkedHashSet<K> oldestBucket = buckets.get(minFrequency);\n            K victim = oldestBucket.iterator().next();\n            oldestBucket.remove(victim);\n            entries.remove(victim);\n            if (oldestBucket.isEmpty()) buckets.remove(minFrequency);\n        }\n        entries.put(key, new Entry<>(value));\n        buckets.computeIfAbsent(1L, ignored -> new LinkedHashSet<>()).add(key);\n        minFrequency = 1;\n    }\n    private void touch(K key, Entry<V> entry) {\n        // Fail before mutation instead of wrapping the ordering counter.\n        if (entry.frequency == Long.MAX_VALUE)\n            throw new IllegalStateException(\"frequency exhausted\");\n        long old = entry.frequency;\n        LinkedHashSet<K> oldBucket = buckets.get(old);\n        oldBucket.remove(key);\n        if (oldBucket.isEmpty()) {\n            buckets.remove(old);\n            if (minFrequency == old) minFrequency = old + 1;\n        }\n        entry.frequency = old + 1;\n        buckets.computeIfAbsent(entry.frequency, ignored -> new LinkedHashSet<>()).add(key);\n    }\n    public synchronized int size() { return entries.size(); }\n    /** Read-only diagnostic snapshot; does not count as access. O(capacity). */\n    public synchronized Map<K, V> snapshot() {\n        Map<K, V> copy = new HashMap<>();\n        entries.forEach((key, entry) -> copy.put(key, entry.value));\n        return Map.copyOf(copy);\n    }\n    // Test hook only: does not change frequency or LRU order.\n    synchronized long frequencyOf(K key) { return entries.get(key).frequency; }\n    synchronized void checkInvariants() {\n        int seen = 0;\n        long minimum = Long.MAX_VALUE;\n        for (Map.Entry<Long, LinkedHashSet<K>> bucket : buckets.entrySet()) {\n            if (bucket.getValue().isEmpty()) throw new AssertionError(\"empty bucket\");\n            minimum = Math.min(minimum, bucket.getKey());\n            for (K key : bucket.getValue()) {\n                if (!entries.containsKey(key) || entries.get(key).frequency != bucket.getKey())\n                    throw new AssertionError(\"entry/bucket mismatch\");\n                seen++;\n            }\n        }\n        if (seen != entries.size() || entries.size() > capacity\n                || (!entries.isEmpty() && minimum != minFrequency))\n            throw new AssertionError(\"size/minimum mismatch\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "怎样检验 LFU 实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "重点检查同频 LRU、已有 key 更新计数、miss 不计数、零容量、负容量、空参数和频率上界。用一个扫描全表、按频率和最近访问序号挑受害者的独立模型对照随机 get/put，可以避免拿同一套分桶逻辑给自己证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证时应覆盖零容量和多种正容量，用固定种子的随机操作逐步比较返回值、内容、频率和结构不变量；并发命中要检查是否丢计数，频率到达上界时要检查失败前后状态。随机对照只能补充正确性证据，不能替代复杂度证明，也不能代替 Redis 集成压测。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "过期删除与内存淘汰有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "过期删除处理已经到 TTL 的 Key，内存淘汰处理容量压力下需要让出的 Key；未到期甚至没有 TTL 的 Key，也可能被适用的淘汰策略删除。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试官可能这样问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Redis 过期删除会删除 Key，还是只删除过期标记？",
+        "TTL 到点会立刻释放内存吗？",
+        "Redis 有哪些淘汰策略，LRU 和 LFU 怎么选？",
+        "不设置 TTL 就不会丢吗？",
+        "缓存过期策略、更新策略和淘汰策略有什么区别？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "到期失效与物理回收分开说"
+    },
+    {
+      "type": "paragraph",
+      "text": "访问一个已到期的 Key 时，Redis 可进行惰性过期检查；对一直没人访问的到期 Key，还会主动抽样检查并清理。到期意味着业务不能把它继续当有效值读取，但并不意味着时钟一到，所有对象内存就在同一瞬间归还操作系统。物理清理受扫描节奏、对象大小、lazyfree 配置和分配器行为影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "过期删除会移除键空间中的 Key 与关联值，不是只删掉 TTL 留下永久有效的值。只移除过期设置而保留值是 PERSIST 的语义。惰性检查与主动清理也不是缓存更新策略；cache-aside、write-through、write-behind 或提前刷新，回答的是数据何时写入、如何与权威库协调。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis 7.2 的八类常见策略"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确定候选集合，再看选择依据："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "volatile-lru：只在设置了 TTL 的 Key 中，按近似最近最少使用选择。",
+        "volatile-lfu：只在设置了 TTL 的 Key 中，按带衰减的近似访问频率选择。",
+        "volatile-random：在设置了 TTL 的 Key 中随机选择。",
+        "volatile-ttl：从设置了 TTL 的候选中优先选择剩余寿命较短者，Redis 实现采用采样近似，并非每次全库排序。",
+        "allkeys-lru：全部 Key 都是候选，按近似 LRU 选择。",
+        "allkeys-lfu：全部 Key 都是候选，按带衰减的近似 LFU 选择。",
+        "allkeys-random：从全部 Key 中随机选择。",
+        "noeviction：不因 maxmemory 主动淘汰，内存压力下拒绝相应可能增内存的命令。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "记忆方式是 volatile 四类、allkeys 三类、noeviction 一类。这是 Redis 6/7 常见集合，此处以 7.2 为基线；较新版本文档出现的 LRM 等策略不能倒推为 7.2 已有功能。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LRU 与 LFU 比较的是不同热度"
+    },
+    {
+      "type": "paragraph",
+      "text": "LRU（Least Recently Used，最近最少使用）关注最近一次访问。传统精确 LRU 常用哈希表加双向链表定位并维护访问顺序，命中后移到表头，从表尾选择较久未访问项。定位和移动可做到 O(1)，但链表节点占空间，每次访问也要修改指针。Redis 不为淘汰维护一条覆盖所有 Key 的精确大链表，而是在对象中记录访问近似时间，通过随机采样和候选池逼近 LRU。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.2 的 maxmemory-samples 默认值为 5，这是每次采样数量的配置，不是“全库只看五个 Key”或“淘汰顺序绝对准确”。候选池可跨采样保留较好的候选；提高样本数通常提高选择精度，也增加 CPU 成本。一次顺序扫描可能让大量只访问一次的冷数据挤入近期集合，LRU 对这类缓存污染比较敏感。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-redis/ba2ef409499a7c7d.png",
+      "alt": "Redis 7.2 近似 LRU 采样淘汰"
+    },
+    {
+      "type": "paragraph",
+      "text": "LFU（Least Frequently Used，最不经常使用）关注访问频率，适合长期冷热差异明显的负载，但它也不是“永远保留历史访问最多的 Key”。Redis 4.0 起支持 LFU；在 Redis 7.2 中，对象头同一个 24 位 lru 字段按策略复用：LRU 表达近似访问时钟，LFU 则用 16 位记录衰减时间、8 位保存对数概率计数。计数不是每次命中都加一，衰减也让过去的热点有机会变冷；lfu-log-factor 与 lfu-decay-time 会影响这种近似。"
+    },
+    {
+      "type": "paragraph",
+      "text": "LFU 可以减少一次性扫描的影响，却可能对新热点适应较慢；LRU 更偏向近期变化。应按真实访问分布比较命中率、淘汰率与 CPU，而不能说 LFU 在所有业务里都更合理。下图的 C 结构片段只展示字段与布局，省略其他成员，不能独立编译，也不是 Java 业务代码。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-redis/1cfa12775182b846.png",
+      "alt": "Redis 7.2 LRU 与 LFU 复用字段"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样选择以及怎样追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "纯缓存中所有数据都可重建时，可以从 allkeys-lru 或 allkeys-lfu 开始，按流量评估；有 TTL 的数据与无 TTL 的关键状态混放时，volatile 只会让后者避开这类淘汰，却不能提供跨宕机持久安全，而且 TTL 候选耗尽后仍可能拒写。关键状态最好与可丢缓存隔离容量和策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "noeviction 适合不允许因容量策略随意删除状态的场景，但它只是拒绝淘汰，不是数据永不丢的保证。仍需监控、扩容、持久化、复制与恢复设计。内存不足时写失败也要由业务显式处理，不能吞掉 OOM 后假装写入成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问“不设置 TTL 就不会丢吗”：在 allkeys-lru 中，无 TTL 的 Key 仍是候选；实例崩溃时能否恢复则取决于持久化与复制，不由 TTL 决定。追问“volatile 没有候选”：它不会转而偷偷删除无 TTL 的 Key，无法释放所需内存时相关命令可能失败。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "淘汰过程如何理解"
+    },
+    {
+      "type": "paragraph",
+      "text": "处理命令时，Redis 会在相关内存检查路径中判断是否需要释放空间，按策略选择候选并释放，再决定命令是否可执行；不要把它理解成只在“新 Key 写入后”才检查，或每条命令都有精确的写前剩余字节预算。检查失败与命令是否受 denyoom 限制有关。"
+    },
+    {
+      "type": "paragraph",
+      "text": "启用适当的 keyspace/keyevent 通知后，可以观察 evicted 等事件，但通知基于 Pub/Sub，连接断开会丢失；它是观测辅助，不能作为可靠业务账本。到期事件也不是精确定时器，业务不能靠收到它来证明某个截止时刻已经完成处理。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "4"
+}

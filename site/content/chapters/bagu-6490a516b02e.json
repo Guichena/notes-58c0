@@ -1,0 +1,360 @@
+{
+  "entries": [
+    {
+      "id": "bg-mysql-1",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "事务与隔离级别",
+      "number": "5 问",
+      "items": [
+        {
+          "q": "什么是事务？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>操作单元</b>：事务是一组要么全部成功、要么全部失败的数据库操作。</li><li><b>要解决的问题</b>：价值不是让 SQL 更方便，而是让多步数据修改在并发和故障下仍然正确。转账、下单、扣库存、支付落单都不是单条 SQL 能完整表达的。</li><li><b>失败边界</b>：执行到一半失败，而前面的修改已经生效，业务状态就会不一致。</li></ol></div>\n<p class=\"md-p\">所以事务解决的是多步操作在失败和并发下的正确性，不是单条语句能不能执行成功。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>事务的本质是一组要么全成功、要么全失败的操作，保证多步修改在失败和并发下仍正确。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>全成或全败 / 多步修改的正确性 / 半截失败会不一致</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "事务有哪些特性？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>原子性</b>：事务要么全部成功，要么全部失败，通常依赖 undo log。</li><li><b>一致性</b>：执行前后，数据库从一个合法状态变成另一个合法状态；它更像业务约束加上前三者共同作用的结果。</li><li><b>隔离性</b>：多个事务并发时，中间状态不要互相看乱，依赖锁和 MVCC。</li><li><b>持久性</b>：一旦提交成功，即使数据库宕机，结果也不能丢，依赖 redo log。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>把四个特性和 undo log、redo log、锁、MVCC 对上，就不只是背概念。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>ACID 四特性的本质：原子靠 undo，持久靠 redo，隔离靠锁和 MVCC，一致是前三者加业务约束。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>原子性 / 一致性 / 隔离性 / 持久性 / 对应实现机制</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "MySQL 的事务隔离级别有哪些？脏读、不可重复读、幻读分别是什么？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>隔离级别</th><th>能挡住什么</th><th>仍可能出现 / 代价</th></tr></thead><tbody><tr><td>读未提交</td><td>最低</td><td>可能读到别的事务还没提交的数据，即脏读</td></tr><tr><td>读已提交</td><td>解决脏读</td><td>同一事务里前后两次读同一行，可能不同，即不可重复读</td></tr><tr><td>可重复读</td><td>同一事务多次读同一行保持一致</td><td>InnoDB 的默认级别</td></tr><tr><td>串行化</td><td>隔离性最强，几乎把并发事务串起来执行</td><td>性能代价最大</td></tr></tbody></table></div>\n<p class=\"md-p\"><b>幻读</b>：关注的不是“同一行被改了”，而是“符合条件的记录集合变了”。比如第一次查年龄大于 20 的用户有 10 个，另一个事务插入一条符合条件的新记录并提交，第二次再查变成 11 个。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>隔离级别是不是越高越好？</b></p><p class=\"md-p\">不是越高越好，要在一致性、性能和业务容忍度之间做折中。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>隔离级别的本质是一致性、性能和业务容忍度的折中，从读未提交到串行化逐级变严。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>四个标准级别 / 三种读异常 / 幻读看结果集 / 默认与代价</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "什么是幻读？为什么 InnoDB 在可重复读下还能避免大多数幻读？",
+          "a": "<p class=\"md-p\">同一事务里，两次按相同条件做范围查询，第二次结果集多了一行或少了一行，这就是幻读。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>现象</th><th>针对什么</th></tr></thead><tbody><tr><td>不可重复读</td><td>同一行内容被改了</td></tr><tr><td>幻读</td><td>结果集变了</td></tr></tbody></table></div>\n<p class=\"md-p\">InnoDB 的可重复读比教科书里最朴素的 RR 多两套控制：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>快照读</b>：普通一致性读通过 MVCC，事务基于自己的 Read View 读快照，很多场景下感受不到幻读。</li><li><b>当前读</b>：<code class=\"tok-inline\">select ... for update</code>、<code class=\"tok-inline\">update</code>、<code class=\"tok-inline\">delete</code> 会用记录锁、间隙锁和 next-key lock，防止别人往这个范围里插入新记录。</li></ol></div>\n<p class=\"md-p\">所以我会说：InnoDB 结合 MVCC 和锁，把普通快照读和当前读里的幻读风险都做了较强控制。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>容易把“快照读看不到新插入记录”和“数据库层面完全没有幻读”混成一回事。前者是 MVCC 的快照效果，后者还要看当前读、范围更新和加锁语义，要主动区分快照读和当前读。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>幻读的本质是同事务两次相同范围查询结果集变了；InnoDB 用 MVCC 控快照读、用锁控当前读。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>幻读 vs 不可重复读 / 快照读靠 MVCC / 当前读靠锁 / 较强控制非彻底消灭</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "MVCC 是什么？它解决什么问题，又解决不了什么问题？",
+          "a": "<p class=\"md-p\">MVCC 是多版本并发控制。一条记录更新时，通过 undo log 保留历史版本；事务读取时，再结合自己的 Read View 决定该看到哪个版本。这样很多普通查询不必等写锁释放，读写并发更好。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>版本链</b>：InnoDB 里一行带事务 ID、回滚指针等隐藏信息；更新后生成新版本，旧版本挂到 undo 链上。</li><li><b>Read View</b>：读事务创建 Read View 后，根据活跃事务列表判断某个版本对自己是否可见；不可见就顺着 undo 链往前找旧版本。</li><li><b>效果</b>：普通一致性读和写尽量少互相阻塞。</li></ol></div>\n<p class=\"md-p\"><b>解决不了什么</b>：它主要优化普通一致性读，不能替代所有锁。当前读、唯一性约束、更新冲突、范围修改仍然需要锁机制参与。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只记住“多版本”不够。决定能看到哪个版本的是 Read View：不同事务什么时候生成、活跃事务列表里有哪些事务 ID。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>MVCC 解决的是读写并发下怎么看历史版本，所有并发冲突仍可能要加锁。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>生产上要注意什么？</b></p><p class=\"md-p\">长事务会让旧版本迟迟不能清理，导致 undo 膨胀和 purge 压力增大，所以要尽量避免长事务。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MVCC 的本质是写时留历史版本、读时按 Read View 选版本，让普通读和写尽量少互相阻塞。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>隐藏字段 + undo 版本链 / Read View 判可见性 / 解决不了：当前读等 / 长事务风险</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · MySQL"
+    },
+    {
+      "id": "bg-mysql-2",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "锁与并发控制",
+      "number": "4 问",
+      "items": [
+        {
+          "q": "可重复读隔离级别是怎么实现的？",
+          "a": "<p class=\"md-p\">InnoDB 下的可重复读，我按读的类型讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>快照读</b>：普通 <code class=\"tok-inline\">select</code> 这类一致性读，基于当前事务自己的 Read View 读历史版本，同一事务里多次查询通常看到同一个快照结果。</li><li><b>当前读</b>：<code class=\"tok-inline\">select ... for update</code>、<code class=\"tok-inline\">update</code>、<code class=\"tok-inline\">delete</code> 更多依赖记录锁、间隙锁和 next-key lock，去约束并发修改。</li></ol></div>\n<p class=\"md-p\">两套一起用：先让读尽量不阻塞，再在真正改数据或锁范围时加强控制。可重复读只靠 MVCC 或只靠锁都讲不全。遇到锁等待、幻读、更新冲突时，这两类读的表现完全不同。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>一说 RR 就只想到“多次查询结果一样”。工程上要先分清执行的是快照读还是当前读，后面 next-key lock、间隙锁、MVCC 都沿这条主线展开。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>可重复读的本质是两套机制配合：快照读靠 MVCC，当前读靠锁。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>快照读靠 MVCC / 当前读靠锁 / 先分清读类型</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "<code class=\"tok-inline\">select</code> 查询的时候会加锁吗？",
+          "a": "<p class=\"md-p\">不能一概而论。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>普通 select</b>：InnoDB 默认语义下通常是快照读，主要依赖 MVCC，一般不会像当前读那样主动加业务行锁。很多日常查询并不把业务行锁住，这也是读写并发的重要原因。</li><li><b>当前读</b>：<code class=\"tok-inline\">select ... for update</code>、<code class=\"tok-inline\">for share</code> 会进入加锁语义。</li><li><b>更高层保护</b>：即使普通查询，数据库还有元数据锁这类更高层保护。</li></ol></div>\n<p class=\"md-p\">讨论锁之前，我先区分快照读和当前读：普通一致性读通常不加业务行锁，当前读会加锁。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>很多锁冲突是因为以为自己只是“查一下”，实际执行的是当前读，或者语句被事务上下文和加锁语义放大了影响范围。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>线上出现锁等待怎么看？</b></p><p class=\"md-p\">不能只看 SQL 长得像不像 select，还要看它到底是不是当前读、有没有命中索引、锁住了多大范围。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>select 加不加锁，先分快照读和当前读：普通一致性读通常不加业务行锁，当前读会加。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>普通 select 快照读 / 当前读会加锁 / 元数据锁 / 锁等待怎么看</p>",
+          "leadType": "v9:原理/排障"
+        },
+        {
+          "q": "乐观锁和悲观锁分别适合什么场景？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>乐观锁</th><th>悲观锁</th></tr></thead><tbody><tr><td>思路</td><td>先放行再校验</td><td>先锁住再处理</td></tr><tr><td>适合</td><td>冲突概率不高、又想提高并发</td><td>冲突概率高，或这笔操作绝不能并发踩踏</td></tr><tr><td>做法</td><td>版本号、时间戳或状态条件更新，如 <code class=\"tok-inline\">where id = ? and version = ?</code></td><td>依赖数据库锁，例如 <code class=\"tok-inline\">select ... for update</code></td></tr><tr><td>典型场景</td><td>读多写少、允许失败重试</td><td>库存强一致扣减、关键配置修改、人工审核抢占</td></tr><tr><td>代价</td><td>不长时间锁住资源，并发更好；冲突严重时重试成本明显上升</td><td>用锁挡住关键路径上的并发踩踏</td></tr></tbody></table></div>\n<p class=\"md-p\">我们一般按链路分层：读多写少、允许失败重试的地方优先乐观锁；强一致扣减、状态迁移不能并发穿透的关键路径，再落到悲观锁。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>锁方案是冲突概率、失败成本和吞吐要求之间的平衡。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>乐观锁是先放行再校验，适合冲突不高又要并发；悲观锁是先锁住再处理，适合不能被并发踩踏的路径。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先放行再校验 / 先锁住再处理 / 按链路分层 / 冲突与重试成本</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "死锁和间隙锁怎么理解？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>死锁</b>：多个事务或线程形成环状等待。常见原因是加锁顺序不一致，比如事务 A 先锁记录 1 再锁记录 2，事务 B 反过来先锁记录 2 再锁记录 1；另一类高频来源是范围查询和更新在 RR 下引发锁冲突。</li><li><b>间隙锁</b>：锁的不是某一条记录，而是索引值之间的空档区间，经常和记录锁组合成 next-key lock，防止别人往这个范围里插入新行，从而控制幻读。</li><li><b>怎么降低概率</b>：统一加锁顺序、缩短事务时间、让 SQL 命中索引、避免不必要的大范围当前读。</li></ol></div>\n<p class=\"md-p\">排查时我会把死锁和锁等待分开：死锁偏环状等待，锁等待偏有人拿太久，处理手法相关，排障入口不完全一样。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>线上“数据库卡死”不一定是经典死锁，也可能是长时间锁等待。不能只盯死锁日志。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>锁问题排查看哪些信息？</b></p><p class=\"md-p\">还要看锁等待链、活跃事务、慢 SQL 和执行计划。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>死锁本质是事务或线程环状等待；间隙锁锁索引空档，常与记录锁组成 next-key lock 防插入。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>环状等待 / 间隙锁控幻读 / 降低冲突概率 / 死锁 vs 锁等待</p>",
+          "leadType": "v9:原理/排障"
+        }
+      ],
+      "source": "八股面经整理 · MySQL"
+    },
+    {
+      "id": "bg-mysql-3",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "索引与 B+ 树",
+      "number": "7 问",
+      "items": [
+        {
+          "q": "什么是索引？索引为什么能加速查询？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>定位结构</b>：索引是帮助数据库更快定位数据的数据结构，作用类似书的目录。它不替代正文，而是帮你更快找到正文所在的位置。</li><li><b>为什么能加速</b>：没有索引时，很多时候只能全表扫描；有了索引，就能利用有序结构快速缩小搜索范围，减少扫描的数据量和磁盘 IO 次数。</li><li><b>trade-off</b>：用额外空间和写入维护成本，去换查询性能、过滤效率、排序能力和范围查找能力。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能只说“加快查询”，空间、写入维护成本和换来的过滤、排序、范围查找要一起讲。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>索引本质是用额外空间和写维护成本，换更快定位、过滤、排序和范围查找。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>类似书的目录 / 缩小扫描与 IO / 空间换查询能力</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "MySQL 为什么使用 B+ 树？",
+          "a": "<p class=\"md-p\">数据库索引首先面向磁盘页设计。B+ 树是多叉平衡树，一个节点能容纳很多 key，整棵树高度很低；树高低，查一次数据需要的磁盘 IO 次数就更少。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>点</th><th>B+ 树</th><th>对照</th></tr></thead><tbody><tr><td>出发点</td><td>面向磁盘页，树高很低，磁盘 IO 更少</td><td>红黑树树高更高</td></tr><tr><td>非叶子节点</td><td>只存 key 和指针，不存整行数据，单页能容纳更多索引项，进一步降低树高</td><td></td></tr><tr><td>叶子节点</td><td>有序，且常通过链表相连，适合范围查询、排序和顺序扫描</td><td>哈希结构不擅长范围查询</td></tr></tbody></table></div>\n<p class=\"md-p\">所以在数据库场景下，B+ 树更均衡。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MySQL 用 B+ 树，是因为索引面向磁盘页：多叉、树高低、IO 少，叶子有序又适合范围查询。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>面向磁盘页 / 树高决定 IO / 非叶只存 key / 叶子链表 / 对比红黑树与哈希</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "B+ 树有哪些特点？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>多叉且平衡</b>：多叉，并且所有叶子通常在同一层。</li><li><b>非叶只存 key</b>：非叶子节点主要存 key 和指针，不存完整数据。</li><li><b>数据在叶子</b>：真正的数据一般落在叶子节点。</li><li><b>叶子链表有序</b>：叶子有序，并通过链表连接。</li></ol></div>\n<p class=\"md-p\">这几点合在一起，等值查找能定位，范围查询、排序和分页也能顺着叶子走。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>它按页组织、层级稳定，数据库才能做好 Buffer Pool 缓存、预读和范围扫描复用。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>B+ 树的本质是多叉平衡、叶子同层且有序成链，所以既适合等值查找，也适合范围查询。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>多叉且平衡 / 非叶只存 key / 数据在叶子 / 叶子链表有序</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "聚簇索引、二级索引、覆盖索引分别是什么？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>类型</th><th>叶子里有什么</th><th>查询时怎么走</th></tr></thead><tbody><tr><td>聚簇索引</td><td>InnoDB 里主键索引通常就是它，叶子直接存整行数据</td><td>定位到叶子就拿到整行</td></tr><tr><td>二级索引</td><td>叶子通常存索引列和主键值</td><td>定位后往往还要按主键回表再查一次完整数据</td></tr><tr><td>覆盖索引</td><td>不是额外独立索引类型，而是当前查询刚好被这个索引完全覆盖</td><td>需要的字段都在索引里，MySQL 不必回表，通常能明显减少随机 IO</td></tr></tbody></table></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>聚簇索引叶子存整行；二级索引存列加主键，常要回表；覆盖索引是被当前索引盖住、不必回表。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>聚簇存整行 / 二级存主键 / 回表再查 / 覆盖免回表</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "通过二级索引查数据时，MySQL 是怎么一步步找到整行记录的？什么叫回表？",
+          "a": "<p class=\"md-p\">我会按这两跳讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>二级索引定位</b>：InnoDB 的二级索引叶子一般不放整行，只放索引列值和对应主键。MySQL 先在二级索引的 B+ 树里定位到命中的叶子。</li><li><b>决定要不要回表</b>：查询需要的列二级索引里已经有，就可以停在这里；没有，就拿主键去聚簇索引再查一次整行。这第二跳通常就叫回表。</li></ol></div>\n<p class=\"md-p\">扫描到的二级索引记录很多、最终又都要回表时，随机 IO 和整体成本会明显上来。覆盖索引经常能明显提速，就是少了这一跳。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>回表不是额外的神秘机制，就是先拿到主键，再去主键索引取整行。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>回表的本质是先走二级索引拿到主键，再去聚簇索引取整行的两段式访问。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>二级索引定位 / 叶子取出主键 / 聚簇索引取行 / 大量回表变贵</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "联合索引里的最左前缀原则怎么理解？",
+          "a": "<p class=\"md-p\">索引是 <code class=\"tok-inline\">(a, b, c)</code> 时，我按字典序理解，不按“必须从左往右”死背。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>连续前缀</b>：最容易吃到索引有序性的，通常是 <code class=\"tok-inline\">a</code>、<code class=\"tok-inline\">a+b</code>、<code class=\"tok-inline\">a+b+c</code>。</li><li><b>跳过首列</b>：一上来跳过 <code class=\"tok-inline\">a</code> 直接查 <code class=\"tok-inline\">b</code>、<code class=\"tok-inline\">c</code>，数据库通常没法像用一本按 <code class=\"tok-inline\">a</code> 编好的目录那样高效定位。</li><li><b>中间断列</b>：后面的列往往不能继续高效缩小索引扫描范围，但仍可能出现在覆盖索引、索引下推、回表过滤里。</li><li><b>范围条件</b>：某一列进入范围扫描后，后续列通常就很难继续充分利用索引顺序。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能说中间断了一列，后面的列就一点用没有。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>最左前缀的本质是联合索引按多列组合后的字典序排列，连续前缀才能高效定位。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>多列字典序 / 连续前缀 / 断列难缩范围 / 范围截断后续</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "索引区分度为什么重要？索引是不是越多越好？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>区分度</b>：某一列不同取值越分散，作为过滤条件通常越有价值，因为更能把数据切细。用户 ID、订单号区分度高；性别、状态这类取值种类少的列，单独建索引收益往往有限。</li><li><b>不是唯一标准</b>：低区分度列也可以放进联合索引，在前面已有高区分度等值列时，继续细化访问路径。</li><li><b>不是越多越好</b>：索引占空间，会拖慢写入、更新和删除，还会让优化器做更复杂的选择。</li></ol></div>\n<p class=\"md-p\">我会围绕高频查询路径、过滤条件、排序分组和连接条件来建，而不是字段多就都建上。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>区分度是一列取值的分散程度；索引会占空间并拖慢写，要围着高频查询路径来建。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>区分度即分散 / 高低列差别 / 可进联合索引 / 写成本限制</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · MySQL"
+    },
+    {
+      "id": "bg-mysql-4",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "订单表设计与索引",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "订单表一般怎么设计？",
+          "a": "<p class=\"md-p\">我不会一上来只盯字段清单。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>主表核心字段</b>：订单 ID、用户 ID、商家 ID、订单状态、总金额、优惠金额、实付金额、支付单号、创建时间、更新时间。</li><li><b>拆出子表或快照表</b>：订单项很多时，商品明细、履约扩展、地址快照、发票信息经常拆出去，不全部堆在一张大宽表上。</li><li><b>状态机数据</b>：订单不是普通静态记录，状态字段、幂等单号、支付流水和时间字段很关键。</li><li><b>快照属性</b>：下单时的商品名、价格、地址、店铺信息很多时候要存快照，避免后面主数据变化影响历史订单解释。</li><li><b>围着高频路径</b>：按订单号查详情、按用户查列表、按状态查待支付。低频字段不必为了看起来全而塞进主表。</li></ol></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>订单表要先看职责：主表放状态与金额等核心字段，明细和快照拆出，并围着高频查询设计。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>主表核心字段 / 明细拆出去 / 状态机数据 / 快照要留下 / 围高频查询</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如果高频需求是“按用户查订单，并按时间倒序”，索引一般怎么设计？",
+          "a": "<p class=\"md-p\">我先看查询，不急着报一个索引名。最典型的路径是 <code class=\"tok-inline\">where user_id = ? order by create_time desc limit ?</code>。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>联合索引</b>：通常优先 <code class=\"tok-inline\">(user_id, create_time desc, id desc)</code>。<code class=\"tok-inline\">user_id</code> 做等值过滤，<code class=\"tok-inline\">create_time</code> 承接排序，<code class=\"tok-inline\">id</code> 用来做同秒内稳定排序和翻页锚点。</li><li><b>还经常带状态</b>：比如查某用户待支付订单并按时间倒序，更贴近主路径的可能是 <code class=\"tok-inline\">(user_id, status, create_time desc, id desc)</code>。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：过滤和排序尽量共用同一条索引路径，减少 filesort 和大范围回表。<i>缺点 / 边界</i>：字段不是越多越好。只看到“时间排序”就单独给 <code class=\"tok-inline\">create_time</code> 建索引，接不住按用户查这个入口。<i>适用场景</i>：订单索引跟查询入口绑在一起。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>这类查询要让 user_id 等值和 create_time 排序走同一条索引，减少 filesort 和大范围回表。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先看查询条件 / user_id 等值 / 时间承接排序 / id 做翻页锚点 / 带状态再加列</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · MySQL"
+    },
+    {
+      "id": "bg-mysql-5",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "执行计划与慢 SQL",
+      "number": "6 问",
+      "items": [
+        {
+          "q": "<code class=\"tok-inline\">EXPLAIN</code> 做索引优化时，需要重点关注哪些字段？",
+          "a": "<p class=\"md-p\">做索引优化时，我按这些字段解释：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>type</b>：访问方式。<code class=\"tok-inline\">const</code>、<code class=\"tok-inline\">ref</code>、<code class=\"tok-inline\">range</code> 通常比 <code class=\"tok-inline\">ALL</code> 更理想。</li><li><b>key / possible_keys</b>：<code class=\"tok-inline\">key</code> 是最终用了哪个索引，<code class=\"tok-inline\">possible_keys</code> 是候选索引。<code class=\"tok-inline\">key</code> 没用到预期索引，我会怀疑统计信息、区分度或者 SQL 写法。</li><li><b>rows / filtered</b>：<code class=\"tok-inline\">rows</code> 是预计扫描行数。<code class=\"tok-inline\">rows</code> 很大，说明虽然走了索引，扫描范围仍可能很大。<code class=\"tok-inline\">filtered</code> 反映过滤比例。</li><li><b>Extra</b>：<code class=\"tok-inline\">Using filesort</code>、<code class=\"tok-inline\">Using temporary</code> 要警惕排序或临时表成本，<code class=\"tok-inline\">Using index</code> 也很关键。</li></ol></div>\n<p class=\"md-p\">它适合做第一轮判断，回答为什么可能慢。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>EXPLAIN 看到的是优化器打算怎么做，不是实际执行过程中发生的一切，不能替代慢日志、实际耗时、锁等待和监控指标。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>线上怎么把这个判断闭环？</b></p><p class=\"md-p\">还要结合执行时的数据分布和线上负载一起看。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>EXPLAIN 看的是优化器打算怎么做；我会用 type、key、rows、filtered 和 Extra 判断为什么可能慢。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>type 访问方式 / key 与候选 / rows 与过滤 / Extra 成本 / 计划要再闭环</p>",
+          "leadType": "v9:原理/排障"
+        },
+        {
+          "q": "SQL 查询比较慢，除了索引失效，还可能是什么问题？",
+          "a": "<p class=\"md-p\">我会按这条链路查，落地时对上原因再改：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>看样本</b>：先看慢日志或 APM 样本，定位具体语句。</li><li><b>看计划</b>：再看 <code class=\"tok-inline\">EXPLAIN</code> 和执行计划。</li><li><b>对现场</b>：结合锁等待、监控指标、流量变化和调用链，判断是扫描多、排序重、回表多、锁冲突，还是资源瓶颈。</li></ol></div>\n<p class=\"md-p\"><b>语句本身代价高</b>：<code class=\"tok-inline\">select *</code>、深分页、大结果集会拿太多数据；即使走了索引，回表和排序代价也可以很大；过滤条件区分度低时，优化器会觉得走索引不划算。</p>\n<p class=\"md-p\"><b>被外部拖慢</b>：锁等待和事务阻塞会把执行时间拉长；还有连接池耗尽、磁盘 IO 抖动、Buffer Pool 命中率低、统计信息失真、执行计划漂移，以及拿锁太久、网络抖动、磁盘刷脏页、统计信息过期导致选错计划。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>慢的常常不是执行器算不过来，而是前后链路出了问题。语句代价高和外部拖慢，修法完全不一样，不要一上来就建索引。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先分开这两类，再决定改语句还是改锁和资源。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>慢 SQL 排查的本质是先分清语句本身代价高，还是被锁、IO、统计信息等外部因素拖慢。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>拿太多数据 / 回表和排序 / 低区分度 / 锁与资源 / 排查闭环</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "常见会导致索引失效或效果不好的写法有哪些？",
+          "a": "<p class=\"md-p\">高频写法我会分成这几类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>列上函数或表达式</b>：例如 <code class=\"tok-inline\">date(create_time)</code>，索引列被计算后很难按原索引用。</li><li><b>隐式类型转换</b>：字符串列拿数字去比。</li><li><b>前置通配</b>：模糊匹配写成 <code class=\"tok-inline\">like '%abc'</code>。</li><li><b>联合索引用不满</b>：没有遵守最左匹配；或者前面一列已经走了范围，后面的列很难继续高效利用。</li><li><b>优化器主动放弃</b>：<code class=\"tok-inline\">or</code> 条件复杂、过滤后剩余数据很多、区分度太低时，它也可能不愿意走你期待的那条索引。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>所谓索引失效，很多时候不是语法上绝对不能用，而是优化器判断用它不划算。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>索引效果差，常见是列上计算、隐式转换、前置通配或破坏最左匹配，优化器因此不愿走索引。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>列上函数 / 隐式转换 / 前置通配 / 最左匹配 / 优化器放弃</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "<code class=\"tok-inline\">ORDER BY</code> 是怎么实现的？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>索引顺序</b>：最理想是直接利用索引顺序，按索引扫描出来的结果天然有序，基本不用额外排序。</li><li><b>退化成 filesort</b>：排序字段和过滤条件不匹配，或者中间已经发生范围扫描、回表、多表 join，MySQL 就可能走额外排序。</li><li><b>filesort 不一定落盘</b>：它指的是额外排序过程。数据量小可能在内存里完成，数据量大才可能借助磁盘临时文件。</li><li><b>优化关键</b>：尽量让过滤和排序共用同一条索引路径。要不要消掉它，看排序数据量有多大、能不能用联合索引改写路径，以及消掉排序会不会付出更高的写入和维护成本。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>一看到 <code class=\"tok-inline\">Using filesort</code> 就认为一定有问题，并不完全准确。排序优化是权衡整体代价，机械追求绝不 filesort 不合适。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>ORDER BY 的本质是优先走索引顺序；路径对不上就额外 filesort，再按整体代价决定要不要消掉。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>索引顺序 / 退化 filesort / 内存或落盘 / 代价权衡</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "深分页为什么慢？常见优化思路有哪些？",
+          "a": "<p class=\"md-p\"><code class=\"tok-inline\">limit offset, size</code> 会让数据库先扫描并跳过前面大量无用行，offset 越大越慢。为了返回 20 条，前面可能白白扫描并丢弃几万甚至几百万条。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>游标翻页</b>：基于主键或有序字段做 seek method，例如 <code class=\"tok-inline\">where id &gt; 上一页最后一条id order by id limit 20</code>。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：不再用大 offset 去跳。<i>适用场景</i>：能按主键或有序字段向后连续取。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>覆盖索引定位再回表</b>：先用覆盖索引定位主键，再回表拿详情，减少无意义扫描。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：少扫与结果无关的行和列。<i>适用场景</i>：详情要回表、定位可以只走索引。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>业务一起收</b>：限制翻页深度，或改成时间游标、异步导出。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：深分页已经超出单条 SQL 能消化的范围。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只盯着最后那几条结果本身，不先减跳过成本，深分页优化会走偏。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先减跳过成本，书签法和覆盖索引就是顺着这个根因来的。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>深分页慢的本质是 limit 先扫描并跳过大量无用行，优化要先把这段跳过成本降下来。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>跳过成本 / 游标翻页 / 覆盖索引回表 / 业务限深</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "书签记录法规避深分页是怎么做的？前提是什么？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>记住锚点</b>：上一页最后一条记录的有序位置留下来，下次分页直接从这个锚点往后取。</li><li><b>常见写法</b>：基于主键或唯一有序列。上一页最后一条 <code class=\"tok-inline\">id = 5000</code>，下一页就查 <code class=\"tok-inline\">where id &gt; 5000 order by id limit 20</code>。</li><li><b>前提</b>：必须有一个稳定、可比较、最好唯一的排序字段，否则“上一页最后一条之后是谁”说不清。通常最适合主键，或者“时间戳 + 主键”这种稳定顺序。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>没有稳定、可比较、最好唯一的排序字段，锚点之后的下一页就定不下来。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>书签法的本质是记下上一页最后一条的有序锚点，下次从锚点往后取，不再用大 offset 跳。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>有序锚点 / 主键往后取 / 稳定排序字段</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · MySQL"
+    },
+    {
+      "id": "bg-mysql-6",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "分库分表与工程实践",
+      "number": "7 问",
+      "items": [
+        {
+          "q": "单表数据量太大怎么办？如果做水平分表，分表键怎么选？",
+          "a": "<p class=\"md-p\">数据量大时，我不会立刻分库分表。先看更低成本的空间：冷热数据分离、历史归档、合理索引、字段瘦身、垂直拆表、读写分离、缓存前置。这些都扛不住，才考虑水平拆分。</p>\n<p class=\"md-p\">水平分表是把同一种业务数据按某个规则拆成多张结构相同的表，让单表容量、索引高度和单机压力降下来。</p>\n<p class=\"md-p\">分表键看主要访问路径。好的分片键要满足三点：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>分布尽量均匀</b>：避免热点。</li><li><b>撑住主要查询</b>：大多数请求只命中少量分片。</li><li><b>对齐增长模型</b>：和业务怎么增长一致。</li></ol></div>\n<p class=\"md-p\">订单如果最常按用户查，用用户 ID 分片很自然；如果更多按订单号查详情，就要考虑订单号能否编码路由信息，或者额外维护路由表。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么不能一上来就按当前表大小拆？</b></p><p class=\"md-p\">先确认低成本手段是否还够用。分片键要对着主要访问路径和增长模型，否则单表压力下去了，查询仍可能打散或打热。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>单表过大先做低成本优化；水平分表是按访问路径把同类数据拆开，压低容量和单机压力。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先低成本优化 / 水平拆分 / 分片键三点 / 按查询路由</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "分库分表有哪些常见策略？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>垂直拆分</th><th>水平拆分</th></tr></thead><tbody><tr><td>怎么拆</td><td>按业务域拆库拆表，例如用户、订单、支付、库存分到不同库</td><td>同一张逻辑表按分片键拆成多份，例如用户 ID、订单 ID、时间维度</td></tr><tr><td>核心目标</td><td>职责分离，减少无关数据互相影响</td><td>把数据量和访问压力摊开</td></tr><tr><td>适用场景</td><td>域之间耦合、无关数据互相拖累</td><td>单表容量和访问压力需要摊开</td></tr></tbody></table></div>\n<p class=\"md-p\">代价要一起说：跨分片分页、排序、聚合、唯一约束、事务、扩容迁移都会变复杂。我会先确认瓶颈，再按主要查询路径选分片键，并接受这些复杂度。设计优先围着主要访问路径和增长模型，不能只看当前表有多大。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只看表有多大就拆，今天的单表压力解决了，明天容易掉进跨片查询和热点分片。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>拆出去之后通常更难的是什么？</b></p><p class=\"md-p\">后面更难的是数据迁移、热点倾斜和扩容重分片，所以一开始就要按主要访问路径和增长模型设计。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表分两层：垂直拆按业务域隔离职责，水平拆按分片键把数据量和访问压力摊开。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>垂直拆分 / 水平拆分 / 拆分代价 / 迁移与热点</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "秒杀这种高并发场景，为什么最终存储通常还是 MySQL？",
+          "a": "<p class=\"md-p\">我从两层看秒杀的存储：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>Redis 和 MQ</b>：承担预扣库存、热点拦截、削峰和异步化，把突发流量挡在外面。</li><li><b>MySQL</b>：订单、库存、支付这些核心业务状态，要落在事务性强、可审计、可恢复、可查询的可信存储上，MySQL 常扮演这个角色，做最终落库和核心状态迁移。</li></ol></div>\n<p class=\"md-p\">所以是用 Redis 和 MQ 保护 MySQL，让 MySQL 只承担最终落库和核心状态迁移。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>把方案说成用 Redis 取代 MySQL，会丢掉核心状态对事务、审计、恢复和查询的要求。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>Redis 和 MQ 负责保护，MySQL 负责可信的核心状态。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>秒杀最终仍用 MySQL，是因为订单、库存、支付要事务、可审计、可恢复、可查询。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Redis 与 MQ / MySQL 落核心态 / 保护后落库</p>",
+          "leadType": "v9:原理/场景"
+        },
+        {
+          "q": "MySQL 宕机恢复时，怎么知道哪个事务提交了、哪个没提交？",
+          "a": "<p class=\"md-p\">我按写日志和重启恢复两段讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>执行与提交</b>：事务执行时，InnoDB 把修改写进内存页和 redo log buffer，同时生成 undo log；真正提交时，把 redo log 按提交语义落稳。</li><li><b>crash recovery</b>：宕机重启后，MySQL 用 redo log 做 crash recovery，把已经提交、但还没刷到数据页的修改重做到数据页。</li><li><b>未完成回滚</b>：没提交完成的事务，结合 undo 信息回滚掉。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>数据页落盘和事务提交成功发生在不同时刻。很多已提交事务宕机前数据页可能还没刷盘，只要 redo log 已经满足提交语义，恢复时就能补回来。MySQL 借此平衡性能和持久性，而不是每次提交都强行把所有数据页立刻刷盘。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>判断一个事务提交了没有，看 redo 是否按提交语义落稳：落稳就重做，没完成就回滚。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>崩溃恢复和主从复制的语义怎么对齐？</b></p><p class=\"md-p\">靠 binlog 和 redo log 的两阶段提交，让崩溃恢复和主从复制一致性保持较稳定的语义。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>宕机恢复的本质是：redo 已按提交语义落稳就重做，没提交完的事务用 undo 回滚。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>执行与提交 / crash recovery / 未完成回滚</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "redo log 和 undo log 分别是做什么的？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>redo log</th><th>undo log</th></tr></thead><tbody><tr><td>面向</td><td>重做，把已经发生过的修改补回来</td><td>回滚，把这次修改往回找</td></tr><tr><td>核心目标</td><td>崩溃恢复和持久性</td><td>原子性，以及 MVCC 所需的历史版本</td></tr><tr><td>何时用到</td><td>数据页不一定立刻刷盘，宕机后把已提交修改重放回来</td><td>事务中途失败要回到变更前，或其他事务要读旧版本</td></tr><tr><td>回答的问题</td><td>提交了怎么别丢</td><td>没成怎么回去、历史怎么看</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>最容易把两类日志混成一类；一个面向重做，一个面向回滚和读历史。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>redo 保证提交后的修改别丢，undo 保证没成功能回去、历史版本能被读到。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>redo 的本质是把已提交修改补回来保持久，undo 的本质是回滚未完成修改并留下 MVCC 历史版本。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>重做对回滚 / 持久对 MVCC / 别丢对看历史</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "<code class=\"tok-inline\">update set c = c + 1 where id = 10</code> 这类 SQL 在 InnoDB 里大致是怎么执行的？",
+          "a": "<p class=\"md-p\">我会按执行链讲 <code class=\"tok-inline\">id = 10</code> 这种自增更新：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>定位加锁</b>：通过索引定位到这一行，做当前读并加上对应锁。</li><li><b>写 undo</b>：拿到行后，把旧版本信息挂到 undo log 链上。</li><li><b>改页记 redo</b>：在内存页里修改当前值，同时把这次页修改对应的 redo 写进 redo log buffer。</li><li><b>提交恢复</b>：提交时按提交语义把 redo log 刷到更可靠的位置。数据页落盘往往晚于事务提交，崩溃后仍靠 redo log 把已提交更新补回来。</li></ol></div>\n<p class=\"md-p\">原子性不是因为“加一”这个表达式本身，而是整条更新放在事务和锁语义里执行。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只答先查再改会漏掉加锁、写 undo、改内存页、记 redo 和提交恢复。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>这类更新的本质是定位加锁、写undo、改内存页、记redo，提交后靠redo做崩溃恢复。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>索引定位加锁 / undo挂旧版本 / 改页写redo / 提交与恢复</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "MySQL 不适合做向量数据库吗？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>传统 MySQL / InnoDB</th><th>专业向量侧</th></tr></thead><tbody><tr><td>设计取向</td><td>主流优化偏结构化事务查询，不是为大规模高维向量近邻检索设计</td><td>困难在高维近似最近邻搜索、索引构建、召回率和查询时延平衡</td></tr><tr><td>向量能力</td><td>生态已有 VECTOR 类型和相关向量能力，关键不是能不能存</td><td>专业向量库、搜索引擎，或带原生向量能力的数据库</td></tr><tr><td>常见分工</td><td>放结构化元数据</td><td>承担大规模向量索引</td></tr><tr><td>适用场景</td><td>中小规模、强事务绑定、向量只是附属能力</td><td>高并发近邻检索、复杂过滤，且召回率和时延都要兼顾</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>这是主场景是否匹配的问题，不能收成一句能或不能。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MySQL能不能做向量，要看主场景是不是大规模ANN；能存向量，不等于适合扛近邻检索。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>偏事务查询 / 已有VECTOR / 元数据与索引拆分 / 看规模与绑定</p>",
+          "leadType": "v9:对比"
+        }
+      ],
+      "source": "八股面经整理 · MySQL"
+    },
+    {
+      "id": "doc-08",
+      "kind": "doc",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "MySQL 面试题：问到核心问题时如何赢得竞争优势",
+      "html": "<h2 class=\"md-h md-h2\">0. 脑图主干</h2>\n<p class=\"md-p\">原图中心：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>MySQL 面试题：问到某些问题的时候怎么赢得竞争优势</li>\n</ul></div>\n<p class=\"md-p\">主要分支：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>你了解索引吗？</li>\n<li>EXPLAIN 命令？</li>\n<li>你了解 ACID 吗？</li>\n<li>隔离级别？</li>\n<li>MVCC？</li>\n<li>事务？</li>\n<li>锁？</li>\n<li>不同的引擎？</li>\n<li>MySQL 集群 + 主从复制？</li>\n<li>MySQL 崩了怎么办？</li>\n<li>bit ring 实现滑动窗口算法？</li>\n</ul></div>\n<p class=\"md-p\">核心思想：</p>\n<p class=\"md-p\">MySQL 面试里最容易拉开差距的不是背概念，而是把概念和工程案例连接起来：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>索引要能讲慢查询优化。</li>\n<li>EXPLAIN 要能讲执行计划分析。</li>\n<li>ACID 要能讲隔离级别、MVCC、锁。</li>\n<li>事务要能讲崩溃恢复、长事务、分布式事务。</li>\n<li>锁要能讲死锁案例和优化。</li>\n<li>主从复制要能讲数据同步、一致性和故障恢复。</li>\n</ul></div>\n<h2 class=\"md-h md-h2\">1. 你了解索引吗？</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>不要简单查看索引，提及尽可能多的你了解的索引。</li>\n<li>深入讨论 B+ 树，结合其它数据结构来阐述缺点。</li>\n<li>提及你慢查询优化，引导过去一个慢查询优化案例上。</li>\n<li>有对应的话术，留个钩子，但不是要讲细节，等面试官追问。</li>\n<li>横向对比多种中间件的索引原理，抽象出一般的从系统设计、最佳实践，表现出你有一种融会贯通的感觉。</li>\n<li>ES、MongoDB，你说总结它们解决不同的场景，所以它们的索引设计都有所不同，适合比较高级的工程师使用。</li>\n<li>索引使用上的最佳实践。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">1.1 普通回答与高级回答的差别</h3>\n<p class=\"md-p\">普通回答：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">MySQL 索引底层是 B+ 树，能提高查询速度。</p>\n</blockquote>\n<p class=\"md-p\">这个回答没有错，但太普通。</p>\n<p class=\"md-p\">更好的回答：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">MySQL InnoDB 常用 B+ 树索引，适合范围查询、排序和磁盘页读取。实际项目里我不会只看“有没有索引”，而是会结合查询条件、排序字段、回表次数、扫描行数和执行计划判断索引是否有效。如果遇到慢查询，我会先用慢查询日志定位 SQL，再用 EXPLAIN 分析是否命中合适索引，最后考虑加联合索引、覆盖索引、改 SQL 或调整表结构。</p>\n</blockquote>\n<p class=\"md-p\">这个回答多了三层竞争力：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>不是只背 B+ 树，而是知道为什么用 B+ 树。</li>\n<li>不是只说“加索引”，而是知道怎么分析索引。</li>\n<li>主动引出项目案例，给面试官追问空间。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">1.2 不要只背 B+ 树，要讲为什么是 B+ 树</h3>\n<p class=\"md-p\">B+ 树的核心优势：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>非叶子节点只存 key 和指针，扇出更高，树高更低。</li>\n<li>所有数据在叶子节点，查询路径稳定。</li>\n<li>叶子节点有序链表，适合范围查询。</li>\n<li>适合磁盘页读取，减少随机 IO。</li>\n</ul></div>\n<p class=\"md-p\">可以对比：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>哈希索引：等值查询快，但不适合范围查询和排序。</li>\n<li>B 树：非叶子节点也存数据，扇出较低。</li>\n<li>跳表：Redis zset 常用，适合内存结构，但数据库磁盘页场景下 B+ 树更合适。</li>\n<li>倒排索引：ES 适合全文检索，不是事务型数据库的通用索引。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">MySQL、ES、MongoDB 的索引设计不同，本质是因为它们解决的问题不同。MySQL 面向事务型查询，B+ 树适合范围查询和磁盘页；ES 面向全文检索，用倒排索引；MongoDB 面向文档查询，索引设计要结合文档字段和查询模式。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.3 SQL 分析题</h3>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>SQL 分析题，就是给你一个 SQL，让你分析走索引还是不走索引。</li>\n<li>如果是联合索引，会用哪几个列。</li>\n<li>示例索引 <code class=\"tok-inline\">(A, B, C)</code>。</li>\n<li><code class=\"tok-inline\">WHERE B = 1 AND A = 2 AND C = 3</code>，WHERE 顺序和索引顺序不一样。</li>\n<li><code class=\"tok-inline\">WHERE A = 2 AND B &gt; 3 AND C = 4</code>。</li>\n<li>只用 AB，不用 C。</li>\n<li>会用 C，但是是否打下推用到 C。</li>\n<li>最左匹配原则要和索引下推放一起讲。</li>\n<li>深入讨论如何决定联合索引的索引列顺序。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">SQL 分析题的关键不是机械背“最左匹配”，而是要说清：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>哪些列用于索引定位。</li>\n<li>哪些列用于索引范围扫描。</li>\n<li>哪些列只能用于过滤。</li>\n<li>是否可能触发索引下推。</li>\n<li>是否需要回表。</li>\n</ul></div>\n<p class=\"md-p\">示例 1：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_abc ON t(a, b, c);\n\nSELECT * FROM t\nWHERE b = 1 AND a = 2 AND c = 3;</pre></div></section>\n<p class=\"md-p\">虽然 WHERE 条件书写顺序是 <code class=\"tok-inline\">b, a, c</code>，但优化器会重排等值条件，所以联合索引 <code class=\"tok-inline\">(a,b,c)</code> 通常可以完整利用。</p>\n<p class=\"md-p\">示例 2：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT * FROM t\nWHERE a = 2 AND b &gt; 3 AND c = 4;</pre></div></section>\n<p class=\"md-p\">回答：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\"><code class=\"tok-inline\">a</code> 可以用于等值定位，<code class=\"tok-inline\">b</code> 用于范围扫描，<code class=\"tok-inline\">c</code> 通常不能继续用于缩小索引扫描范围。但如果开启索引下推，<code class=\"tok-inline\">c = 4</code> 可能在索引扫描阶段提前过滤，减少回表。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.4 最左匹配原则</h3>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>status 这种枚举字段，是否适合做索引？</li>\n<li>关联覆盖索引和最左匹配原则一起讲。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">最左匹配原则不能孤立讲，要和字段区分度、查询频率、排序需求结合。</p>\n<p class=\"md-p\">比如 <code class=\"tok-inline\">status</code> 字段：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>如果只有 0/1/2 三种状态，单独建索引通常区分度低，效果差。</li>\n<li>如果常和用户 ID、时间字段组合查询，可以放进联合索引。</li>\n</ul></div>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE user_id = ? AND status = ? ORDER BY create_time DESC</pre></div></section>\n<p class=\"md-p\">可以考虑：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">INDEX(user_id, status, create_time)</pre></div></section>\n<p class=\"md-p\">这样 <code class=\"tok-inline\">status</code> 虽然区分度低，但在联合索引中可以辅助过滤，并支持排序。</p>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">低基数字段不一定不能建索引，关键看它是否和高区分度字段组合使用，以及是否服务于过滤、排序或覆盖索引。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.5 联合索引</h3>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>联合索引？</li>\n<li>也是引导一个慢查询优化的案例。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">联合索引设计要考虑：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>等值条件优先。</li>\n<li>高区分度字段优先。</li>\n<li>范围条件放后面。</li>\n<li>排序字段尽量和索引顺序一致。</li>\n<li>覆盖查询字段，减少回表。</li>\n</ul></div>\n<p class=\"md-p\">慢查询案例表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">某个订单列表接口原来只有 <code class=\"tok-inline\">user_id</code> 单列索引，查询条件包含 <code class=\"tok-inline\">user_id</code>、<code class=\"tok-inline\">status</code>，并按 <code class=\"tok-inline\">create_time</code> 排序。执行计划显示扫描行数较高且出现 filesort。我调整为 <code class=\"tok-inline\">(user_id, status, create_time)</code> 联合索引后，扫描行数下降，同时避免了额外排序。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.6 覆盖索引</h3>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>讨论回表，结合 B+ 树特性来装逼。</li>\n<li>MySQL B+ 树深度的问题，MySQL 2000 万的说法。</li>\n<li>3 =&gt; 4 层高，会影响查询性能。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">覆盖索引指查询所需字段都在索引中，不需要回表。</p>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT user_id, status, create_time\nFROM orders\nWHERE user_id = ? AND status = ?\nORDER BY create_time DESC;</pre></div></section>\n<p class=\"md-p\">如果索引是：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">INDEX(user_id, status, create_time)</pre></div></section>\n<p class=\"md-p\">且查询字段都在索引里，就可能形成覆盖索引。</p>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">覆盖索引的价值是减少回表。InnoDB 二级索引叶子节点存的是主键值，如果查询字段不在二级索引中，需要再通过主键索引回表。高频接口如果能用覆盖索引，就能减少随机 IO。</p>\n</blockquote>\n<p class=\"md-p\">关于“2000 万”：</p>\n<p class=\"md-p\">不要死背“单表 2000 万必须分表”。更准确的说法：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">单表多少数据需要分表，取决于数据行大小、索引结构、查询模式、机器配置和维护成本。2000 万只是经验数字，不是硬规则。真正要看查询延迟、索引层级、扫描行数和 DDL 成本。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.7 聚簇索引与非聚簇索引</h3>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>聚簇索引非聚簇索引？</li>\n<li>2000w，分库分表是什么时机？</li>\n<li>数据量 + 读写并发。</li>\n<li>数据量很多影响分表。</li>\n<li>读写并发影响分物理库 / 物理集群。</li>\n<li>逻辑库的数量其实没那么重要。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">InnoDB 的主键索引是聚簇索引：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>数据行和主键索引存放在一起。</li>\n<li>二级索引叶子节点存主键值。</li>\n<li>二级索引查询非覆盖字段时需要回表。</li>\n</ul></div>\n<p class=\"md-p\">分库分表时机：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>单表数据太大：查询、索引、归档、DDL 成本高，考虑分表。</li>\n<li>单库写入压力太高：考虑分库或拆物理集群。</li>\n<li>读压力高：优先缓存、读写分离、加从库，不一定分库。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">分库分表不是因为某个固定行数，而是因为单表维护成本或单库写入压力已经成为瓶颈。数据量大更多影响分表，写并发高更多影响分库。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">2. EXPLAIN 命令</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>一定要准备一个使用 EXPLAIN 的案例。</li>\n<li>SQL 优化前，EXPLAIN 的输出，如何解读。</li>\n<li>SQL 优化后，EXPLAIN 的输出。</li>\n<li>越详细，你就越能拖时间，水时长。</li>\n<li>如果案例你是编的，足够的细节会以假乱真。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">EXPLAIN 是把索引知识变成工程案例的关键。</p>\n<p class=\"md-p\">至少要会看：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li><code class=\"tok-inline\">type</code>：访问类型，从 <code class=\"tok-inline\">ALL</code> 到 <code class=\"tok-inline\">range/ref/const</code> 越来越好。</li>\n<li><code class=\"tok-inline\">key</code>：实际使用哪个索引。</li>\n<li><code class=\"tok-inline\">rows</code>：预估扫描行数。</li>\n<li><code class=\"tok-inline\">Extra</code>：<div class=\"md-list-wrap\"><ul class=\"md-list\"><li><code class=\"tok-inline\">Using index</code>：可能覆盖索引。</li>\n<li><code class=\"tok-inline\">Using where</code>：server 层过滤。</li>\n<li><code class=\"tok-inline\">Using filesort</code>：额外排序。</li>\n<li><code class=\"tok-inline\">Using temporary</code>：临时表。</li>\n</ul></div>\n</li>\n</ul></div>\n<p class=\"md-p\">案例模板：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">优化前，EXPLAIN 显示 <code class=\"tok-inline\">type=ALL</code>，扫描行数约 80 万，<code class=\"tok-inline\">Extra</code> 中有 <code class=\"tok-inline\">Using filesort</code>。分析后发现查询条件和排序字段没有合适联合索引。优化后新增 <code class=\"tok-inline\">(user_id, status, create_time)</code> 索引，<code class=\"tok-inline\">type</code> 变成 <code class=\"tok-inline\">ref/range</code>，扫描行数下降到几百，filesort 消失。</p>\n</blockquote>\n<p class=\"md-p\">面试策略：</p>\n<p class=\"md-p\">准备一个完整案例，不要只背字段解释。最好能讲：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>SQL 原文。</li>\n<li>表数据量。</li>\n<li>现象。</li>\n<li>EXPLAIN 优化前。</li>\n<li>修改方案。</li>\n<li>EXPLAIN 优化后。</li>\n<li>指标改善。</li>\n</ul></div>\n<h2 class=\"md-h md-h2\">3. 你了解 ACID 吗？</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>隔离级别与隔离性：优化案例，隔离级别从可重复读改为已提交读。</li>\n<li>高级工程师专用：分布式事务与 ACID =&gt; 分布式事务解决方案，都是拉扯。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">ACID 四个特性：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>A：原子性，要么全部成功，要么全部失败。</li>\n<li>C：一致性，事务前后数据约束成立。</li>\n<li>I：隔离性，并发事务互相影响的程度。</li>\n<li>D：持久性，提交后数据不丢。</li>\n</ul></div>\n<p class=\"md-p\">普通回答只背定义，高级回答要把 ACID 和项目问题关联。</p>\n<p class=\"md-p\">比如：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>原子性：本地事务保证订单状态和流水同时写入。</li>\n<li>隔离性：并发扣减库存时避免读写冲突。</li>\n<li>持久性：redo log 保证宕机恢复。</li>\n<li>一致性：分布式场景下通过补偿任务保证最终一致。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">在单库内，ACID 由数据库事务机制保证；但到了分布式系统，ACID 会被拆开讨论，很多场景不会追求强一致，而是通过本地事务、消息、补偿任务和对账实现最终一致。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">4. 隔离级别</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>为什么要改为已提交读？</li>\n<li>读已提交和隔离性，跟 ACID 相关。</li>\n<li>和锁连在一起讨论，间隙锁、临键锁这些锁连在一起讨论。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">常见隔离级别：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>读未提交：可能脏读。</li>\n<li>读已提交：避免脏读，可能不可重复读。</li>\n<li>可重复读：InnoDB 默认，配合 MVCC 和锁机制。</li>\n<li>串行化：隔离最强，并发最低。</li>\n</ul></div>\n<p class=\"md-p\">为什么有时从可重复读改为读已提交？</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>减少间隙锁影响。</li>\n<li>降低锁冲突。</li>\n<li>提升并发。</li>\n<li>某些业务不需要可重复读的强语义。</li>\n</ul></div>\n<p class=\"md-p\">但不能盲目改。要说明：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>业务是否能接受读已提交。</li>\n<li>是否依赖同事务多次读一致。</li>\n<li>是否有并发写入风险。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">如果业务不依赖可重复读语义，读已提交可能减少锁冲突，提高并发。但这要结合业务一致性要求，不能为了性能随意降低隔离级别。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">5. MVCC</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>详细并且准确描述 MVCC、undo log 的结构、Read View 的问题。</li>\n<li>MVCC 和锁的关系。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">MVCC 要讲清三个核心：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>undo log：保存历史版本。</li>\n<li>版本链：一行记录的多个版本。</li>\n<li>Read View：判断当前事务能看见哪个版本。</li>\n</ul></div>\n<p class=\"md-p\">Read View 需要理解：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>当前活跃事务 ID 列表。</li>\n<li>最小活跃事务 ID。</li>\n<li>下一个事务 ID。</li>\n<li>当前记录版本的事务 ID 是否可见。</li>\n</ul></div>\n<p class=\"md-p\">隔离级别差异：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>读已提交：每次一致性读生成新的 Read View。</li>\n<li>可重复读：事务第一次一致性读生成 Read View，后续复用。</li>\n</ul></div>\n<p class=\"md-p\">MVCC 和锁：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>快照读主要依赖 MVCC。</li>\n<li>当前读仍然需要加锁。</li>\n<li>MVCC 不能替代所有锁。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">MVCC 解决的是一致性读下的读写并发问题，但 UPDATE、DELETE、SELECT FOR UPDATE 这类当前读仍然会加锁。所以讨论 MySQL 并发控制时，MVCC 和锁要一起看。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">6. 事务</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>深入讨论 MySQL 崩溃之后的数据恢复过程。</li>\n<li>关键点：redo log 是如何判定一个事务提交完了，还是没提交。</li>\n<li>长事务排查和优化：长事务拆短事务，然后引出数据一致性问题 =&gt; 数据划分布式事务。</li>\n<li>慢事务排查和优化：大多数时候慢事务就是长事务。</li>\n<li>ACID、隔离级别、MVCC 都是能串起来的。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">事务面试不能只背 ACID，最好准备两个案例：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>崩溃恢复。</li>\n<li>长事务优化。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">6.1 崩溃恢复</h3>\n<p class=\"md-p\">MySQL 提交事务时涉及：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>redo log。</li>\n<li>binlog。</li>\n<li>两阶段提交。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">InnoDB 通过 redo log 保证崩溃恢复，通过 binlog 支持复制和恢复。为了保证 redo log 和 binlog 一致，MySQL 使用两阶段提交。恢复时可以根据日志状态判断事务是否需要提交或回滚。</p>\n</blockquote>\n<p class=\"md-p\">不需要一开始讲到极细，但要知道关键词：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>prepare。</li>\n<li>commit。</li>\n<li>redo log。</li>\n<li>binlog。</li>\n<li>crash recovery。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">6.2 长事务优化</h3>\n<p class=\"md-p\">长事务危害：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>占用连接。</li>\n<li>持有锁。</li>\n<li>undo log 无法及时清理。</li>\n<li>影响 MVCC。</li>\n<li>造成锁等待。</li>\n</ul></div>\n<p class=\"md-p\">优化：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>缩短事务范围。</li>\n<li>移除事务中的远程调用。</li>\n<li>拆成多个短事务。</li>\n<li>用状态机管理流程。</li>\n<li>用补偿任务处理失败。</li>\n<li>用幂等保证重试安全。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">长事务拆短之后，新的问题是多个步骤之间不再天然原子，需要通过状态机、补偿任务、幂等和对账保证最终一致。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">7. 锁</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>不同的角度看待这个锁：行锁、表锁、间隙锁、临键锁。</li>\n<li>表锁优化案例，就是加在哪里用的？排查过程，也要详细。</li>\n<li>死锁：编制一个死锁排查案例，排查过程要详细。</li>\n<li>使用 RC 产生死锁的概率比较低。</li>\n<li>原用乐观锁代替悲观锁。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">7.1 锁的分类</h3>\n<p class=\"md-p\">MySQL 锁可以从多个角度看：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>粒度：表锁、行锁。</li>\n<li>模式：共享锁、排他锁。</li>\n<li>范围：记录锁、间隙锁、临键锁。</li>\n<li>策略：悲观锁、乐观锁。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">InnoDB 常见的是行锁，但行锁是基于索引实现的。如果查询没有命中索引，可能锁住更多记录，甚至造成类似表锁的效果。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">7.2 间隙锁和临键锁</h3>\n<p class=\"md-p\">间隙锁：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>锁住记录之间的范围，防止插入。</li>\n</ul></div>\n<p class=\"md-p\">临键锁：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>记录锁 + 间隙锁。</li>\n</ul></div>\n<p class=\"md-p\">主要用于：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>防止当前读下的幻读。</li>\n<li>保证范围查询的一致性。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">7.3 死锁排查案例</h3>\n<p class=\"md-p\">案例结构：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list\"><li>现象：接口偶发失败，日志出现 deadlock。</li>\n<li>定位：查看 <code class=\"tok-inline\">SHOW ENGINE INNODB STATUS</code>。</li>\n<li>分析：两个事务以不同顺序更新相同资源。</li>\n<li>修复：统一加锁顺序、缩短事务、增加索引、降低锁范围、重试。</li>\n</ol></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">死锁不是只能靠重试。重试是兜底，根因通常要看事务访问顺序、索引命中和锁范围。我的处理方式是先分析死锁日志，再统一更新顺序，并确保查询条件命中索引，减少锁范围。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">7.4 乐观锁替代悲观锁</h3>\n<p class=\"md-p\">适用场景：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>冲突不高。</li>\n<li>可以接受失败重试。</li>\n<li>需要提升并发。</li>\n</ul></div>\n<p class=\"md-p\">实现方式：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE product\nSET stock = stock - 1, version = version + 1\nWHERE id = ? AND version = ?;</pre></div></section>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">高并发更新时，如果冲突不高，可以用版本号实现乐观锁，避免长时间持有数据库锁。但冲突非常高时，乐观锁会频繁失败重试，也可能不适合。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">8. 不同的引擎</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>MyISAM 和 InnoDB。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">MyISAM 和 InnoDB 常见区别：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>InnoDB 支持事务，MyISAM 不支持。</li>\n<li>InnoDB 支持行锁，MyISAM 主要表锁。</li>\n<li>InnoDB 支持外键，MyISAM 不支持。</li>\n<li>InnoDB 崩溃恢复能力更强。</li>\n<li>InnoDB 是 MySQL 默认主流引擎。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">现在业务系统基本优先 InnoDB，因为它支持事务、行锁和崩溃恢复。MyISAM 更多是历史问题，实际项目中很少主动选择。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">9. MySQL 集群 + 主从复制</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>binlog + Canal，架构设计 / 优化。</li>\n<li>横向对比不同的主从复制机制。</li>\n<li>主库挂了之后，怎么选出一个主库？</li>\n<li>然后谈对比不同的主从选举机制。</li>\n<li>找一个优化主从延迟的案例。</li>\n<li>主从延迟导致读从库数据不一致的问题。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">9.1 主从复制基础</h3>\n<p class=\"md-p\">MySQL 主从复制核心：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>主库写 binlog。</li>\n<li>从库 IO 线程拉取 binlog。</li>\n<li>从库 SQL 线程重放日志。</li>\n</ul></div>\n<p class=\"md-p\">常见用途：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>读写分离。</li>\n<li>数据备份。</li>\n<li>故障切换。</li>\n<li>数据同步到 ES / 缓存 / 数仓。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">9.2 主从延迟</h3>\n<p class=\"md-p\">原因：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>主库写入压力大。</li>\n<li>从库重放慢。</li>\n<li>大事务。</li>\n<li>网络延迟。</li>\n<li>从库机器性能差。</li>\n</ul></div>\n<p class=\"md-p\">解决：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>避免大事务。</li>\n<li>并行复制。</li>\n<li>提升从库配置。</li>\n<li>关键读走主库。</li>\n<li>延迟敏感业务使用一致性读策略。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">读写分离时要考虑主从延迟。对一致性要求高的读，比如刚下单后查询订单状态，可以短时间走主库；普通列表查询可以走从库。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">9.3 binlog + Canal</h3>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">Canal 常用于监听 MySQL binlog，将变更同步到：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>Redis。</li>\n<li>ES。</li>\n<li>MQ。</li>\n<li>数据仓库。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">如果要同步 MySQL 到 ES，我会考虑通过 binlog + Canal 做异步同步，而不是在业务代码里强耦合写 ES。这样可以降低业务写链路复杂度，但要处理同步延迟、失败重试和补偿校验。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">10. MySQL 崩了怎么办？</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>知道一些解决方案，但是没实施过。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">这个问题可以按故障层级回答：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list\"><li>单个连接异常：重试、连接池剔除。</li>\n<li>从库异常：读流量切换。</li>\n<li>主库异常：主从切换、提升从库为主库。</li>\n<li>数据损坏：备份恢复 + binlog 回放。</li>\n<li>全库不可用：降级、限流、只读模式、缓存兜底。</li>\n</ol></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">如果 MySQL 主库故障，首先要保护业务入口，避免请求持续打爆系统；其次通过高可用组件或人工切换提升从库；恢复后要校验数据一致性。对于非核心读，可以用缓存兜底或降级。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">11. bit ring / ring buffer 实现滑动窗口算法</h2>\n<p class=\"md-p\">原图节点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>bit ring、ring buffer，针对破解并发的优化。</li>\n</ul></div>\n<p class=\"md-p\">扩写：</p>\n<p class=\"md-p\">这个节点更偏服务治理中的限流 / 统计思路，可以作为 MySQL 项目之外的工程亮点。</p>\n<p class=\"md-p\">滑动窗口常用于：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>统计错误率。</li>\n<li>统计 QPS。</li>\n<li>统计接口响应时间。</li>\n<li>熔断判断。</li>\n<li>降级判断。</li>\n</ul></div>\n<p class=\"md-p\">ring buffer 思路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>用固定长度数组表示时间窗口。</li>\n<li>每个槽位代表一个时间片。</li>\n<li>时间推进时覆盖旧槽位。</li>\n<li>查询时聚合窗口内数据。</li>\n</ul></div>\n<p class=\"md-p\">bit ring 思路：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>用 bit 表示某个时间片是否失败 / 是否命中。</li>\n<li>空间更省。</li>\n<li>适合统计布尔事件。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">对于限流或熔断判断，可以用滑动窗口统计最近一段时间的请求量、错误率和响应时间。实现上可以用 ring buffer 按时间片滚动，避免每次统计都扫描大量历史数据。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">12. 本图一句话总结</h2>\n<p class=\"md-p\">MySQL 面试要赢得竞争优势，不能停留在“索引是 B+ 树、事务是 ACID”这种基础回答。更好的方式是把索引、EXPLAIN、MVCC、锁、事务、主从复制串成一套工程叙事：我如何发现慢查询，如何分析执行计划，如何优化索引，如何处理事务和锁问题，如何保证数据一致性，以及在主从和故障场景下如何兜底。</p>\n",
+      "images": [
+        {
+          "name": "MySQL 面试题 - 2025.12.4.jpg",
+          "href": "2025.12%E9%9D%A2%E8%AF%95%E8%A3%85%E9%80%BC%E5%9B%BE%E7%89%87/MySQL%20%E9%9D%A2%E8%AF%95%E9%A2%98%20-%202025.12.4.jpg"
+        }
+      ],
+      "lead": "本文严格按原思维导图结构展开。原图的重点不是“把 MySQL 百科背完”，而是告诉你：当面试官问索引、事务、MVCC、锁、主从复制等常见问题时，如何从普通回答升级到“有案例、有深度、有竞争力”的回答。",
+      "number": "精讲",
+      "source": "笔记/整理后的专题文档/08-MySQL面试题-竞争优势版.md"
+    },
+    {
+      "id": "doc-20",
+      "kind": "doc",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "MySQL",
+      "title": "MySQL工程案例：慢查询、大表变更、死锁与长事务",
+      "html": "<h2 class=\"md-h md-h2\">0. 脑图主干</h2>\n<p class=\"md-p\">原图大致分为三组：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>自我介绍/项目介绍/MySQL 八股文 -&gt; 慢查询优化 -&gt; 索引改改 -&gt; 大表表结构变更 -&gt; 不停机数据迁移，同时引出表锁问题。</li>\n<li>MySQL 八股文中的悲观锁、乐观锁、死锁 -&gt; 死锁排查案例。</li>\n<li>MySQL 事务、MVCC、ACID、连接池、最终一致性 -&gt; 长事务案例 -&gt; 分布式事务解决方案。</li>\n</ul></div>\n<p class=\"md-p\">这张图的核心不是“背 MySQL”，而是把八股知识落到真实问题排查里。</p>\n<h2 class=\"md-h md-h2\">1. 慢查询优化案例</h2>\n<p class=\"md-p\">慢查询是 MySQL 项目包装中最基础、也最容易讲深的案例。原图的路径是：先从 MySQL 八股文进入慢查询，再说索引优化，最后进一步牵引到大表变更和不停机迁移。</p>\n<h3 class=\"md-h md-h3\">1.1 怎么发现慢查询</h3>\n<p class=\"md-p\">不要说“我偶然发现某个 SQL 很慢”。更稳的发现链路是：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>数据库慢查询日志记录了超过阈值的 SQL，例如超过 500ms 或 1s。</li>\n<li>APM 链路追踪显示某个接口耗时主要卡在 DB span。</li>\n<li>Prometheus 监控显示数据库连接数、QPS、查询耗时、行扫描数、锁等待或 CPU/IO 异常。</li>\n<li>业务告警显示接口超时率上升，用户侧出现卡顿或任务执行超时。</li>\n</ul></div>\n<p class=\"md-p\">面试表达可以是：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">这个问题最初是接口 P95 耗时告警暴露的。链路追踪里看到主要耗时在数据库查询，然后结合慢查询日志定位到订单列表的一条 SQL。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.2 怎么排查慢查询</h3>\n<p class=\"md-p\">原图强调 EXPLAIN 要回答详细。排查时至少讲清楚：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li><code class=\"tok-inline\">type</code>：是否从 <code class=\"tok-inline\">ALL</code>、<code class=\"tok-inline\">index</code> 优化到 <code class=\"tok-inline\">range</code>、<code class=\"tok-inline\">ref</code>、<code class=\"tok-inline\">const</code> 等。</li>\n<li><code class=\"tok-inline\">key</code>：实际使用了哪个索引，是否符合预期。</li>\n<li><code class=\"tok-inline\">rows</code>：预估扫描行数是否过大。</li>\n<li><code class=\"tok-inline\">Extra</code>：是否出现 <code class=\"tok-inline\">Using filesort</code>、<code class=\"tok-inline\">Using temporary</code>、<code class=\"tok-inline\">Using index</code>。</li>\n<li>where 条件是否命中联合索引最左前缀。</li>\n<li>排序、分组、分页是否导致额外扫描或临时表。</li>\n</ul></div>\n<p class=\"md-p\">一个比较完整的回答是：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">优化前 EXPLAIN 显示 type 是 ALL，rows 预估扫描几十万行，Extra 里还有 Using filesort。原因是 where 里按 user_id 和 status 过滤，但 order by create_time 没有合适的联合索引。后来我加了 <code class=\"tok-inline\">(user_id, status, create_time)</code> 联合索引，让过滤和排序都尽量走索引，优化后 rows 降到几百，filesort 消失，接口 P95 明显下降。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">1.3 怎么解决：不止“加索引”</h3>\n<p class=\"md-p\">原图写到“索引改改”，但后面马上引到大表表结构变更，说明面试不能只停在“加了索引”。</p>\n<p class=\"md-p\">常见解决方向包括：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>调整联合索引顺序，让高频过滤条件和排序字段配合。</li>\n<li>使用覆盖索引减少回表。</li>\n<li>深分页改为游标分页或基于上次最大 ID/时间戳翻页。</li>\n<li>避免在索引字段上做函数、隐式类型转换。</li>\n<li>拆分复杂 SQL，减少临时表和文件排序。</li>\n<li>对低选择性字段谨慎建索引，避免维护成本大于收益。</li>\n</ul></div>\n<p class=\"md-p\">要进一步讲工程落地：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>小表可以直接 <code class=\"tok-inline\">ALTER TABLE ADD INDEX</code>，但要评估锁、复制延迟和磁盘空间。</li>\n<li>大表需要考虑 online DDL、低峰变更、影子表或在线变更工具。</li>\n<li>变更前要压测或在预发环境回放典型 SQL。</li>\n<li>上线后要监控慢查询数量、接口耗时、数据库 CPU/IO、主从延迟。</li>\n</ul></div>\n<h2 class=\"md-h md-h2\">2. 大表表结构变更与不停机迁移</h2>\n<p class=\"md-p\">原图把大表变更作为慢查询优化的进阶装逼点，原因是它能体现线上安全意识。</p>\n<h3 class=\"md-h md-h3\">2.1 为什么大表变更危险</h3>\n<p class=\"md-p\">大表直接 <code class=\"tok-inline\">ALTER TABLE</code> 可能带来：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>表级锁或元数据锁，导致读写阻塞。</li>\n<li>大量 IO 和临时空间占用。</li>\n<li>主从复制延迟。</li>\n<li>DDL 时间不可控，回滚困难。</li>\n<li>业务高峰期影响核心接口。</li>\n</ul></div>\n<p class=\"md-p\">面试时可以说：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">当时不是简单加一个索引就完了，因为订单表是千万级数据。如果直接在业务高峰期 ALTER，可能造成锁表或复制延迟，所以我们按在线变更方案做。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">2.2 Online DDL 与影子表思路</h3>\n<p class=\"md-p\">常见方案有两类：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>利用数据库自身 online DDL 能力。</li>\n<li>使用影子表或在线变更工具，例如 pt-online-schema-change、gh-ost。</li>\n</ul></div>\n<p class=\"md-p\">影子表方案的核心步骤：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list\"><li>创建新表，结构包含新索引或新字段。</li>\n<li>历史数据分批迁移，控制批次大小和间隔。</li>\n<li>增量变更同步，可以通过触发器、binlog 或应用双写。</li>\n<li>校验新旧表数据一致性。</li>\n<li>灰度切读流量到新表。</li>\n<li>观察稳定后切写流量。</li>\n<li>保留回滚窗口，再清理旧表。</li>\n</ol></div>\n<p class=\"md-p\">这就是原图里“不停机数据迁移”的展开。</p>\n<h3 class=\"md-h md-h3\">2.3 表锁问题怎么讲</h3>\n<p class=\"md-p\">表锁问题可以和 DDL、事务、慢查询结合起来：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>DDL 等待元数据锁时，后续查询也可能被阻塞。</li>\n<li>长事务持有读视图或锁，会影响 DDL。</li>\n<li>大事务批量更新可能导致行锁范围扩大，甚至影响热点行。</li>\n<li>缺少索引的更新语句可能扫描大量行，造成锁等待。</li>\n</ul></div>\n<p class=\"md-p\">排查时可以说：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>查看当前会话和锁等待。</li>\n<li>查看 <code class=\"tok-inline\">information_schema</code> 或 <code class=\"tok-inline\">performance_schema</code> 中的事务和锁信息。</li>\n<li>结合慢 SQL、业务日志和 DDL 操作时间线。</li>\n</ul></div>\n<h2 class=\"md-h md-h2\">3. 死锁排查案例</h2>\n<p class=\"md-p\">原图第二条主线是：悲观锁、乐观锁、死锁 -&gt; 死锁排查案例。</p>\n<h3 class=\"md-h md-h3\">3.1 死锁怎么发现</h3>\n<p class=\"md-p\">发现方式包括：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>业务日志出现 deadlock 异常。</li>\n<li>MySQL 错误日志或 <code class=\"tok-inline\">SHOW ENGINE INNODB STATUS</code> 里有最近一次死锁信息。</li>\n<li>监控告警显示事务回滚、锁等待时间升高。</li>\n<li>应用侧出现重试增多、接口偶发失败。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">我们先从业务日志看到死锁异常，然后查 InnoDB status，发现两个事务分别持有 A 表某行和 B 表某行，又互相等待对方释放。</p>\n</blockquote>\n<h3 class=\"md-h md-h3\">3.2 死锁怎么排查</h3>\n<p class=\"md-p\">排查要还原事务执行顺序：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>哪两个或多个事务参与死锁。</li>\n<li>各自执行了哪些 SQL。</li>\n<li>分别持有什么锁、等待什么锁。</li>\n<li>锁住的是主键索引、二级索引还是间隙锁。</li>\n<li>业务代码中 SQL 执行顺序是否不一致。</li>\n</ul></div>\n<p class=\"md-p\">典型根因包括：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>两个事务更新相同资源，但顺序相反。</li>\n<li>范围查询加锁导致间隙锁冲突。</li>\n<li>没有索引导致扫描范围过大，锁住了不该锁的行。</li>\n<li>事务太长，把锁持有时间拉长。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">3.3 死锁怎么解决</h3>\n<p class=\"md-p\">原图给出的方向是重写 SQL、重排 SQL 执行顺序、用乐观锁替代悲观锁。可以展开为：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>统一资源访问顺序，例如所有事务都先更新订单表，再更新库存表。</li>\n<li>缩短事务，把外部 RPC、复杂计算、日志写入挪到事务外。</li>\n<li>给更新条件补充合适索引，减少锁范围。</li>\n<li>对可重试场景加入死锁重试，但重试要有次数和退避。</li>\n<li>对库存扣减等场景使用乐观锁版本号或 CAS。</li>\n<li>对强一致热点资源，可以考虑队列化或分片串行处理。</li>\n</ul></div>\n<p class=\"md-p\">乐观锁表达示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"file-label\">query.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE inventory\nSET stock = stock - 1, version = version + 1\nWHERE sku_id = ? AND stock &gt; 0 AND version = ?;</pre></div></section>\n<p class=\"md-p\">如果影响行数为 0，说明版本冲突或库存不足，再决定重试或失败。</p>\n<h2 class=\"md-h md-h2\">4. 长事务案例</h2>\n<p class=\"md-p\">原图第三条主线把事务、MVCC、ACID、连接池、最终一致性串到“长事务案例”。</p>\n<h3 class=\"md-h md-h3\">4.1 长事务的危害</h3>\n<p class=\"md-p\">长事务不是只影响一条业务逻辑，它会影响数据库整体状态：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>持有锁时间过长，导致其他事务等待。</li>\n<li>MVCC 旧版本无法清理，undo log 膨胀。</li>\n<li>连接长期占用，连接池被打满。</li>\n<li>DDL 等待元数据锁，造成连锁阻塞。</li>\n<li>回滚成本高，一旦失败影响时间更长。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">4.2 长事务怎么发现</h3>\n<p class=\"md-p\">可以从几个入口发现：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>连接池活跃连接数接近上限，等待连接的请求增多。</li>\n<li>数据库中存在运行时间很长的 transaction。</li>\n<li>undo log 或 history list length 异常增长。</li>\n<li>某些接口耗时高，并且 DB 连接占用时间长。</li>\n<li>锁等待告警频繁出现。</li>\n</ul></div>\n<p class=\"md-p\">排查命令可以围绕事务和连接：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>查看当前事务列表。</li>\n<li>查看锁等待关系。</li>\n<li>查看应用连接池指标，例如 active、idle、wait、timeout。</li>\n<li>结合 trace 看事务里是否包含远程调用、循环处理或大批量 SQL。</li>\n</ul></div>\n<h3 class=\"md-h md-h3\">4.3 长事务怎么解决</h3>\n<p class=\"md-p\">解决方向：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>拆短事务，只把必须原子提交的数据库操作放进事务。</li>\n<li>外部 RPC、文件处理、消息发送放到事务外。</li>\n<li>批量操作分批提交，控制每批大小。</li>\n<li>对跨系统一致性使用最终一致性方案。</li>\n<li>设置事务超时和连接池超时，避免无限占用。</li>\n<li>增加幂等控制，支持失败重试和补偿。</li>\n</ul></div>\n<p class=\"md-p\">原图提到“最终一致性”和“分布式事务解决方案”，可以这样展开：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>本地事务 + 消息表：业务数据和消息记录在同一个本地事务提交，后台任务投递消息。</li>\n<li>事务消息：例如消息队列支持半消息和事务状态回查。</li>\n<li>TCC：Try、Confirm、Cancel，适合资源预留场景，但实现成本高。</li>\n<li>Saga：长流程拆成多个本地事务，每步有补偿动作。</li>\n<li>2PC：强一致但性能和可用性压力大，互联网业务中要谨慎。</li>\n</ul></div>\n<p class=\"md-p\">面试重点不是背方案名，而是说明为什么不用一个超长事务包住所有步骤。</p>\n<h2 class=\"md-h md-h2\">5. 一套完整面试说法</h2>\n<p class=\"md-p\">可以把这张图整理成一个故事：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">我在项目里遇到过订单列表接口变慢的问题。最开始是监控发现接口 P95 上升，链路追踪定位到 MySQL 查询耗时。通过慢查询日志和 EXPLAIN 发现 SQL 没有走合适联合索引，还产生 filesort。我们调整了联合索引，并评估大表在线变更风险，选择低峰期配合 online DDL 灰度上线。后来还排查过一次死锁，根因是两个事务更新资源顺序不一致，最终统一 SQL 执行顺序并缩短事务。另一个优化是把原来跨 RPC 的长事务拆成本地事务加消息补偿，避免连接池被长事务占满。</p>\n</blockquote>\n<p class=\"md-p\">这段回答能自然带出索引、EXPLAIN、Online DDL、锁、死锁、事务、MVCC、连接池、最终一致性和分布式事务，比单纯背八股更有竞争力。</p>\n<h2 class=\"md-h md-h2\">6. 慢查询案例的指标口径</h2>\n<p class=\"md-p\">慢查询案例要讲得像真实经历，必须有指标。不要只说“优化后快了很多”，而要准备优化前后对比。</p>\n<p class=\"md-p\">可以准备这些指标：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>接口 P95/P99：例如从 1.8s 降到 180ms。</li>\n<li>慢查询数量：例如每小时慢 SQL 从 300 条降到 10 条以内。</li>\n<li>EXPLAIN 扫描行数：例如从 80 万行降到 2000 行。</li>\n<li><code class=\"tok-inline\">type</code>：从 <code class=\"tok-inline\">ALL</code> 变成 <code class=\"tok-inline\">range</code> 或 <code class=\"tok-inline\">ref</code>。</li>\n<li><code class=\"tok-inline\">Extra</code>：<code class=\"tok-inline\">Using filesort</code>、<code class=\"tok-inline\">Using temporary</code> 是否消失。</li>\n<li>数据库 CPU/IO：优化后是否下降。</li>\n<li>连接池等待时间：SQL 变快后连接占用是否下降。</li>\n</ul></div>\n<p class=\"md-p\">表达示例：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">优化前接口 P95 大约 1.5s，EXPLAIN 显示扫描行数几十万，并且有 <code class=\"tok-inline\">Using filesort</code>。加联合索引并改写分页方式后，扫描行数降到几千以内，P95 降到 200ms 左右，慢查询日志里这条 SQL 基本不再出现。</p>\n</blockquote>\n<p class=\"md-p\">这些指标让案例更可信，也能支撑后续追问。</p>\n<h2 class=\"md-h md-h2\">7. 索引优化的取舍</h2>\n<p class=\"md-p\">加索引不是无成本操作。面试官可能会追问“为什么不多加几个索引”。可以从以下角度回答：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>写入成本：每次 insert/update/delete 都要维护索引。</li>\n<li>磁盘空间：大表索引会占大量空间。</li>\n<li>优化器选择：索引太多不一定更好，可能让优化器选择不稳定。</li>\n<li>低选择性字段：例如性别、状态字段单独建索引收益有限。</li>\n<li>联合索引顺序：要结合等值、范围、排序和覆盖查询。</li>\n<li>回表成本：覆盖索引能减少回表，但索引字段太多也会变重。</li>\n</ul></div>\n<p class=\"md-p\">一个成熟回答：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">我不会为了一个查询无脑加很多索引。会先看这个 SQL 的访问频率、扫描行数和业务重要性，再看新增索引对写入和空间的影响。如果是高频核心查询，可以接受一定写入成本；如果是低频后台查询，可能更适合异步报表或离线处理。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">8. Online DDL 的风险清单</h2>\n<p class=\"md-p\">原图把慢查询引到“大表表结构变更”，这里很容易被追问线上风险。</p>\n<p class=\"md-p\">上线前要评估：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>表大小和索引大小。</li>\n<li>是否会复制整表。</li>\n<li>是否产生元数据锁。</li>\n<li>是否影响写入。</li>\n<li>主从复制延迟。</li>\n<li>临时磁盘空间是否足够。</li>\n<li>变更耗时是否可控。</li>\n<li>是否有回滚方案。</li>\n</ul></div>\n<p class=\"md-p\">执行时要关注：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>低峰期执行。</li>\n<li>控制并发和批次。</li>\n<li>观察数据库 CPU、IO、连接数。</li>\n<li>观察主从延迟。</li>\n<li>保留取消或回滚方案。</li>\n<li>变更后验证查询计划是否真的命中新索引。</li>\n</ul></div>\n<p class=\"md-p\">面试表达：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">大表加索引不是写一条 DDL 就完事。我会先在测试或影子环境评估耗时和锁影响，线上低峰执行，并持续观察主从延迟和业务错误率。变更完成后还要重新 EXPLAIN，确认优化器使用了新索引。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">9. 死锁案例的“最小闭环”</h2>\n<p class=\"md-p\">死锁回答要避免只背“互相等待”。最小闭环应该包含：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list\"><li>两个事务分别执行了哪些 SQL。</li>\n<li>它们按什么顺序加锁。</li>\n<li>为什么形成循环等待。</li>\n<li>哪条 SQL 或哪段业务逻辑需要调整。</li>\n<li>调整后如何证明死锁减少。</li>\n</ol></div>\n<p class=\"md-p\">示例：</p>\n<blockquote class=\"md-quote\"><p class=\"md-p\">事务 A 先更新订单再更新库存，事务 B 先更新库存再更新订单。并发时 A 持有订单行锁等待库存，B 持有库存行锁等待订单，形成死锁。我们把两个业务流程的更新顺序统一为先库存后订单，并缩短事务范围。上线后业务日志里 deadlock 异常明显下降。</p>\n</blockquote>\n<h2 class=\"md-h md-h2\">10. 长事务与连接池的关联</h2>\n<p class=\"md-p\">原图把长事务和连接池放在同一条线上，这个联系要讲出来：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>长事务会长期占用数据库连接。</li>\n<li>连接池被占满后，正常请求也拿不到连接。</li>\n<li>连接等待会放大接口耗时。</li>\n<li>如果线程也阻塞等待连接，线程池也会被拖住。</li>\n<li>最后表现可能不是“数据库 CPU 高”，而是应用侧大量超时。</li>\n</ul></div>\n<p class=\"md-p\">所以排查长事务时，要同时看：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>transaction 执行时间。</li>\n<li>连接池 active/idle/wait。</li>\n<li>线程池队列。</li>\n<li>慢 SQL 和锁等待。</li>\n<li>trace 中获取连接耗时和 SQL 执行耗时。</li>\n</ul></div>\n<h2 class=\"md-h md-h2\">11. 追问清单</h2>\n<p class=\"md-p\">建议准备这些追问：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list\"><li>为什么加索引会影响写入？</li>\n<li>联合索引字段顺序怎么定？</li>\n<li><code class=\"tok-inline\">Using filesort</code> 一定有问题吗？</li>\n<li>深分页为什么慢，怎么优化？</li>\n<li>Online DDL 是否一定不锁表？</li>\n<li>元数据锁是什么，为什么会阻塞业务？</li>\n<li>死锁和锁等待有什么区别？</li>\n<li>乐观锁失败后应该怎么处理？</li>\n<li>长事务为什么会影响 MVCC 清理？</li>\n<li>分布式事务为什么常用最终一致性替代强一致？</li>\n</ul></div>\n",
+      "images": [
+        {
+          "name": "MYSQL.jpg",
+          "href": "2025.12%E9%9D%A2%E8%AF%95%E8%A3%85%E9%80%BC%E5%9B%BE%E7%89%87/%E7%A0%81%E5%86%9C%E6%A0%A1%E6%8B%9B%E9%80%9F%E6%88%90%E8%AE%A1%E5%88%92/10.26%20%E7%BB%88%E6%9E%81%E7%89%88/MYSQL.jpg"
+        }
+      ],
+      "lead": "原图不是 MySQL 八股文清单，而是把 MySQL 八股文串成可面试的工程案例。本文保留原图三条主线：慢查询优化到大表变更和不停机迁移、锁与死锁排查、事务/MVCC/连接池到长事务和分布式事务。",
+      "number": "精讲",
+      "source": "笔记/整理后的专题文档/20-MySQL工程案例-慢查询大表变更死锁与长事务.md"
+    }
+  ]
+}

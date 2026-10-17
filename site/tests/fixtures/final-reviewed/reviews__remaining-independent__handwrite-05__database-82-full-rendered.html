@@ -1,0 +1,55 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">说出常见的 MySQL 索引失效场景，并给出改写方式。</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">索引失效是大厂面经高频。面试官通常会给 SQL，让你判断为什么没走索引。回答时要避免绝对化：是否走索引最终由优化器按成本决定，但下面这些写法确实常导致索引无法用于高效定位。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>对索引列使用函数或表达式。</li><li>隐式类型转换。</li><li><code class="tok-inline">LIKE '%xxx'</code> 为后缀匹配，模式以通配符开头。</li><li>联合索引不满足最左前缀。</li><li>范围条件后的列难以继续用于索引定位。</li><li><code class="tok-inline">OR</code> 两侧索引不完整。</li><li>低选择性条件可能不走索引。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">常见场景和改写：</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>对列使用函数：</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- 不好
+WHERE DATE(created_at) = '2026-05-27'
+
+-- 好
+WHERE created_at &gt;= '2026-05-27 00:00:00'
+  AND created_at &lt;  '2026-05-28 00:00:00'</pre></div></section>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>隐式类型转换：</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- phone 是 varchar，不好
+WHERE phone = 13800138000
+
+-- 好
+WHERE phone = '13800138000'</pre></div></section>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>后缀匹配（前导通配符）：</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- 普通 B+Tree 难以利用前缀定位
+WHERE name LIKE '%abc'
+
+-- 另一业务条件可利用前缀；后缀匹配不能等价改成前缀匹配
+WHERE name LIKE 'abc%'</pre></div></section>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>联合索引跳过最左列：</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- 索引 (tenant_id, status, created_at)
+-- 不好
+WHERE status = 'PUBLISHED'
+
+-- 仅当原业务本就限定受信租户时可用；否则调整索引，不能添加此谓词
+WHERE tenant_id = ?
+  AND status = 'PUBLISHED'</pre></div></section>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li>范围条件放太前：</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- 索引 (tenant_id, created_at, status)
+WHERE tenant_id = ?
+  AND created_at &gt;= ?
+  AND status = ?</pre></div></section>
+<p class="md-p">如果 <code class="tok-inline">status</code> 过滤重要，考虑索引 <code class="tok-inline">(tenant_id, status, created_at)</code>。</p><p class="md-p">DATE 范围边界必须按原查询的会话/业务时区计算；参数类型与列一致。函数索引可支持匹配表达式，skip scan 有限制，FULLTEXT 是分词匹配，不与任意子串 LIKE 等价。禁止为了走索引添加原业务不存在的 tenant_id 条件。</p><p class="md-p">把 phone 的数字常量改为字符串，是修正为业务定义的字符串比较；若原查询有意采用数值比较，两者并不等价，例如前导零、非数字后缀或不同格式可能改变匹配结果，须先固定规范化合同。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：<code class="tok-inline">!=</code> 一定不走索引吗？</strong></p>
+<p class="md-p">问题分析：不能绝对化。</p>
+<p class="md-p">知识点：选择性、成本优化器。</p>
+<p class="md-p">答案：不一定。如果结果很少或索引覆盖，优化器可能选择索引；如果只排除少量数据、返回大部分行，全表扫描可能更便宜。</p>
+<p class="md-p"><strong>变体 2：<code class="tok-inline">OR</code> 怎么优化？</strong></p>
+<p class="md-p">问题分析：<code class="tok-inline">OR</code> 两边如果有一边没索引，整体可能低效。</p>
+<p class="md-p">知识点：union 改写、索引合并。</p>
+<p class="md-p">答案：为两侧条件都建合适索引，或按主键去重合并两支。UNION ALL 不能自动去重；保留原查询行重数的互斥写法是 WHERE A UNION ALL WHERE B AND (A) IS NOT TRUE，后半条件也正确处理 A 为 NULL。只按投影做 UNION 可能错误合并原表不同主键的相同值。</p>
+<p class="md-p"><strong>变体 3：<code class="tok-inline">LIKE '%关键词%'</code> 怎么优化？</strong></p>
+<p class="md-p">问题分析：B+Tree 不适合包含匹配。</p>
+<p class="md-p">知识点：全文索引、倒排索引、ES。</p>
+<p class="md-p">答案：可评估 MySQL FULLTEXT 或 Elasticsearch 的分词检索，但它们不与任意子串 LIKE 等价；只有业务接受该检索语义时才替换，否则保留子串语义并评估专门索引与成本。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

@@ -1,0 +1,287 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-java-io",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 基础与工程实践",
+  "category": "I/O、协议与序列化",
+  "title": "I/O、协议与序列化",
+  "tags": [
+    "Java",
+    "面试",
+    "工程实践"
+  ],
+  "questions": [
+    {
+      "id": "q-own-java-io-models",
+      "order": 1015,
+      "question": "BIO、NIO 与 AIO 怎样区分同步、阻塞、就绪与完成？",
+      "shortAnswer": "阻塞描述调用是否等待，异步描述完成如何通知；NIO 不全是非阻塞，Selector 通知就绪，AIO 完成也可能只是部分字节。",
+      "commonPhrasings": [
+        "BIO、NIO、AIO 的差别是什么？哪个一定更快？",
+        "Selector 是通知数据就绪还是操作完成？",
+        "异步操作返回 Future 后，再 get 会不会阻塞？",
+        "虚拟线程会不会让 NIO 没有价值？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先分开两个问题：调用会不会等，是阻塞问题；完成结果怎样交给调用者，是同步或异步问题。 Java NIO 并非每种操作都非阻塞，AIO 的实现也不保证底层完全不用线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "传统 java.io 的流 API 常以同步阻塞方式使用：当前调用返回读写结果前，调用线程可能等待。CPU 并没有因此停转，操作系统仍可调度其他线程。每连接一个平台线程的模型简单，但大量等待连接会带来线程栈、调度及本地资源成本。对于适中并发、明确超时的业务，阻塞模型完全可能更易维护。"
+        },
+        {
+          "type": "paragraph",
+          "text": "NIO 提供 Buffer、Channel 和 Selector。SocketChannel 可选择阻塞或非阻塞模式；注册到 Selector 的通道需使用适当的非阻塞模式。FileChannel 不属于可注册 Selector 的网络通道，不能把所有 Channel 都丢给一个 Selector 管理。Java NIO 的名字常被解释为 New I/O，其能力包含但不限于非阻塞 I/O。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Selector 告诉你“现在可以尝试读写”，并不替你完成 read/write。就绪以后，一次操作仍可能只处理部分消息：read 返回 0 表示本次没读到数据，-1 表示流末尾；缓冲区没有剩余空间等条件也会影响返回值，不能见到 0 就断开。"
+        },
+        {
+          "type": "paragraph",
+          "text": "事件循环应把状态留到下一次：无进展时让出，避免空转；按循环协议处理并移除 selected keys；待发送数据写完后，通常取消不再需要的写兴趣，避免可写事件不断唤醒。"
+        },
+        {
+          "type": "paragraph",
+          "text": "AIO 使用 AsynchronousSocketChannel、AsynchronousFileChannel 等 API，通过 Future 或 CompletionHandler 报告完成。调用提交后可以继续别的工作；若马上 Future.get，当前调用者仍可能等待。某个平台可能由内核异步能力完成，另一个平台可能使用线程池辅助，不能从 Java API 形态推断操作全在内核、完全零线程或必定零拷贝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完成回调也只报告本次操作的实际字节数。还要处理部分完成、失败、取消、超时、资源关闭和下一次操作；同一通道对并发读写的限制必须遵守，不能在读未结束时任意再发起另一个读。用于结果通知的线程不应长期执行耗时业务，否则会影响其他连接的完成处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同步/异步不是可靠/不可靠的同义词，也与事务的全有或全无无直接等价关系。异步提交成功不代表数据已经持久化或业务成功，系统需要定义确认点、重试、幂等和完成状态。选择模型时综合连接数、等待比例、消息大小、库生态、故障可诊断性和团队维护成本，不只比一句“线程越少越好”。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-buffer-framing",
+      "order": 1045,
+      "question": "Buffer 状态和网络消息边界怎样一起维护？",
+      "shortAnswer": "Buffer 游标管理可读写范围，协议状态管理完整帧；半包、严格解码、EOF 和部分写都必须保留跨调用状态并限制资源。",
+      "commonPhrasings": [
+        "flip、clear、compact 有什么区别？",
+        "一次 read 为什么可能只收到半个消息或多个消息？",
+        "直接缓冲区是不是零拷贝？slice 是副本吗？",
+        "大消息、畸形长度和断开时的残片怎样处理？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Buffer 负责标出“这次能读写哪些字节”，协议负责判断“哪些字节组成一条完整消息”。position、limit、capacity 管前一层；半包、粘包和部分写入则要求两层状态都能留到下一次操作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "capacity 是容量上界，limit 是本次访问边界，position 是下一次相对读写位置，满足 0≤position≤limit≤capacity。若 mark 存在，还满足 mark≤position。相对 get/put 推进 position；绝对索引操作通常不推进 position，但仍受对应边界约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "接收与解析可以顺着这个循环记："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "先留出可写范围，read 写入数据并推进 position。",
+            "调用 flip：把 limit 设为原 position，再把 position 设为 0，开始解析已有字节。",
+            "若还有未消费的半包，用 compact 把剩余字节挪到前部，再继续接收。此时直接 clear 会丢失这些待处理字节。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "clear 只是重置 position/limit 以便重新写入，不会擦掉旧内容。rewind 则是从头重读既有范围，也不表示收到了新数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "slice/duplicate 通常共享底层内容，各自有独立的位置等状态。只读缓冲区不允许经该视图写内容，但 position 仍可变，底层可写别名也可能改变可见数据。ByteBuffer 不是天然线程安全；把 duplicate 交给另一个线程，也只隔开游标，不自动隔开共享字节。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TCP 提供有序字节流，不保存每次应用 write 的消息边界。消息可采用固定长度、分隔符或长度前缀。长度前缀协议要规定字节序、头部长度、最大载荷、字符编码及错误后是否关闭。收到完整头部之前不能分配载荷；收到超大或负长度应立即拒绝，不能先按攻击者提供的长度 new byte[]。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FrameDecoder.java 演示四字节大端有符号非负长度加 UTF-8 载荷，设单帧字节上限。它分开保存不足四字节的头和未收完的载荷，可在任意字节边界恢复；帧完整后用严格 UTF-8 解码，拒绝畸形序列；EOF 时仍有残片则报告截断。收到不可恢复的协议错误后禁止继续复用该解析器，避免把后续字节错当下一帧。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单帧限额仍不等于总内存限额：许多连接同时接近上限、一个批次产生很多小帧、下游消费太慢，都需要连接数、输入批次、队列和在途任务的预算。Parser 正确并不自动实现网络背压。读兴趣可以在应用队列满时暂停，恢复时要有清晰的唤醒协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "写入也要保存 position。调用 write 后只推进已写部分；返回 0 时保留剩余内容并等待下一次就绪，不能忙等或误报整帧完成。线程模型优化的瓶颈可能是协议解码、复制、业务 CPU 或下游等待，不应把所有网络并发收益都归因于“建连接更快”。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-file-export",
+      "order": 1083,
+      "question": "文件与千万级数据导出怎样控制内存、顺序和恢复？",
+      "shortAnswer": "按明确快照或水位，用稳定游标与有界批次流式处理；编码、资源关闭、确定顺序、检查点与幂等发布分别建立契约。",
+      "commonPhrasings": [
+        "InputStream 和 Reader 的区别？字符为什么会乱码？",
+        "Files.readAllBytes 与流式处理如何选？",
+        "mmap、transferTo、直接缓冲区分别省了什么？",
+        "用普通数据库与 Java 原生能力导出千万级记录到对象存储，怎样控制内存？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "处理文件时，先分开字节传输、字符解码、资源关闭和业务一致性。流式读取可以减少内存占用，但导出能否续传、顺序是否正确、数据是否一致，还需要各自的协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "InputStream/OutputStream 面向字节，Reader/Writer 面向字符，二者通过字符集编解码桥接。跨机器协议显式指定 UTF-8 等编码，不把默认字符集当协议。一个多字节字符可能横跨网络或文件缓冲区边界，不能对每一块字节独立 new String 再拼接，否则可能产生替换字符；应保留 CharsetDecoder 状态或让 Reader 负责跨块处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "read 不保证一次填满请求的长度，要处理实际返回数与 EOF。available 不表示文件总长度，也不保证下一次能读出完整业务消息。readAllBytes/readString 对小而有界数据方便；大文件应分块读取或逐行消费，且对单行过长也要设限。Files.lines 返回持有资源的惰性 Stream，使用 try-with-resources 关闭。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FileChannel.transferTo 允许实现利用操作系统能力减少经过用户态的数据复制，但返回字节数可能小于请求量，甚至为 0，需要按 API 与目标通道状态处理。它不是“一次调用永远发送整个文件”的保证。mmap 把文件映射到地址空间，仍有缺页、页缓存、地址空间、同步与解除映射的生命周期问题；DirectByteBuffer 主要减少某些本地 I/O 的中间复制，分配与回收有成本，也不能直接等同于绕过页缓存的 Direct I/O。底层 sendfile、mmap、DMA 的精确路径属于操作系统专题，Java 调用不能无条件承诺固定复制次数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "千万级导出先回答“导出的究竟是哪一批数据”：同一数据库快照、截止水位以前的数据，还是允许最终一致。这个条件决定后面的读取和恢复方式。"
+        },
+        {
+          "type": "paragraph",
+          "text": "然后用稳定主键或复合游标分片，避免边读边改时 offset 分页遗漏或重复。每片按有界批次从数据库读取，按固定字段顺序和编码流式写出，同时维护行数、字节数和校验值。不要先把整个结果集装成 List 再序列化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "加上并行和恢复要求后，继续检查三件事："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "按什么顺序合并？ 固定分片编号与范围，按业务排序键或确定片次序合并，不能按线程完成先后拼接。",
+            "凭什么续跑？ 检查点记录任务版本、快照或水位、分片范围、已提交产物标识及校验，不能只记瞬时页码。",
+            "重复上传会怎样？ 使用稳定对象键与幂等提交协议，部分成功和最终清单分开发布。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "multipart、原子发布、断点续传能怎样实现，还取决于实际 SDK 和服务 API。一个 FileOutputStream 不能代表完整对象存储方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "flush 通常把包装层缓冲推到下层，不等于突然断电后仍能恢复。文件系统、对象存储和数据库都有各自的持久化与提交语义。导出耗时、吞吐和内存收益必须用确定的数据量、字段宽度、依赖与指标测量；流式设计是机制判断，不是未经测量的性能数字。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-serialization-security",
+      "order": 1121,
+      "question": "怎样设计序列化的版本、字节限制和信任边界？",
+      "shortAnswer": "序列化应采用明确数据协议并控制输入；Java 原生对象流还需类与对象图过滤，但过滤器不替代硬字节限额和业务校验。",
+      "commonPhrasings": [
+        "RPC 在哪一步序列化？JSON 与 Java 原生序列化怎么选？",
+        "一个对象序列化成 JSON 有多少字节？",
+        "Serializable、serialVersionUID、transient 分别是什么？",
+        "过滤器能否保证任意不可信对象流都安全？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "序列化是把逻辑数据编码成可以传输或保存的表示。选格式时，要同时看跨语言、版本演进、大小和信任边界。尤其是 Java 原生反序列化，不能把它当作任意输入都能安全恢复成对象的入口。"
+        },
+        {
+          "type": "paragraph",
+          "text": "RPC 客户端把方法参数等逻辑数据按协议编码，加入消息头与帧边界后传输；服务端先还原完整帧，再按约定解码并校验字段，完成方法选择与调用；返回值沿反方向处理。序列化、压缩、加密、分帧是不同层，不能把它们说成同一个动作。Redis 服务端存储字节，并不替所有 Java 客户端选择统一的对象序列化方式，具体要看客户端 serializer 和键值协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JSON 字节数取决于字段、是否省略 null、空格与转义规则、数字表示、编码和库配置，不等于对象堆大小，也不等于 String.length()。例如固定文本 {\"name\":\"中\"} 用 UTF-8 编码时，中文的字节数与 UTF-16 长度不同；如果序列化器把中文转为转义形式，结果还会变化。必须对实际输出的字节数组计数，若随后压缩则另算压缩后的长度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Serializable 是标记接口。默认机制遍历对象图，保留共享引用和环，某个不可序列化的可达对象可能导致 NotSerializableException。transient 字段默认不参与持久化，但自定义 writeObject 仍可写它，static 字段属于类而非实例状态；二者都不是自动保密机制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "serialVersionUID 用来参与版本兼容检查，显式固定它可避免某些无意的不兼容，但不保证任意字段改动都安全。字段删除、类型变化、对象不变量和业务语义仍需处理。普通 Serializable 对象的恢复不等同于正常调用它自己的构造器，因此需要 readObject 等入口校验不变量；record、Externalizable 等类型又有特别规则，不能把某一种恢复路径推广到全部对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "原生对象流与 Java 类名和对象图紧耦合，体积、互操作和安全面都可能不适合公共 RPC。恶意对象图可能触发危险类的反序列化钩子，或通过深度、引用数和数组规模消耗资源。优先对外使用范围明确的数据协议，在解码前限制输入字节，在解码后校验业务字段，不允许任意多态类型由输入决定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "必须接收受控的原生序列化数据时，应在读取任何对象之前设置 ObjectInputFilter，限制允许类、数组大小、深度、引用数和流量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "但过滤器不能单独承担全部保护：它不会对“每个对象、每个字节”都回调，字符串等类型还有特殊行为，所以 streamBytes 阈值不能替代输入通道的硬字节限额。即使类已在白名单里，它的 readObject/readResolve 仍可能执行代码；允许的类越多，风险面也越大。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SerializationLab 仅往返读取它自己生成的简单 DTO，设定输入字节上限、类白名单及图规模限制，并验证拒绝其他类型、过大输入、错误业务版本和截断数据。它没有把恶意 gadget 投到运行环境，也不宣称有限测试就是安全审计。跨语言 JSON/Protobuf 的模式演进则应约定字段标识、默认值、未知字段与版本协商；具体兼容规则属于所选协议，而不是“二进制格式天然更兼容”。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

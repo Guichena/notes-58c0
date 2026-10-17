@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-394",
+  "entryId": "394",
+  "expectedOriginalHash": "19552ce3eb1364ab617d3cf5162a35b7a10c7516a8f5ee70cc40c7fc45191798",
+  "title": "算法练习补充：嵌套字符串解码与真正增量输出：跨块状态、首份早发和磁盘重放",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "嵌套字符串解码与真正增量输出：跨块状态、首份早发和磁盘重放"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通解码可用计数栈和片段栈，在]处重复拼接；但这会等待当前大段闭合，并且需要保存可重放内容。给出的完整实现直接增量解析：因为k>0，读到字母就把第一份立即输出，并写入所有打开组的磁盘spool；组闭合时把其spool重放k−1遍给输出和仍开放的祖先组。这样不用等EOF或当前]才看到首份内容，同时不把无限大的组保留在内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "怎样解码 k[encoded_string] 的嵌套重复？例如 3[ab]2[c2[d]] 的结果是 abababcddcdd。",
+        "如果输入极长且无法等到终止符，怎样跨块保留状态并尽早输出？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "解码语法为正整数 k、ASCII 小写字母和平衡括号，数字只作重复次数；另允许空组，拒绝零或负次数、空白、坏括号和次数溢出。3[ab]2[cdd] 输出 abababcddcdd，展示时分组间的空格不是输出字符。流式接口可多次 feed 任意字符块，finish 确认结束；发现非法输入时可能已输出前缀。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通内存思路维护当前片段、当前整数及外层栈，遇[保存父片段与次数并清空当前，遇]将当前重复k次接回父片段。多位数要持续累积，不能只读一位；嵌套括号天然对应栈。若直接用不可变String反复相加会产生很多复制；输出可指数膨胀，复杂度不能只写编码长度O(m)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "流式解析必须跨输入块保存语法状态，因为网络块不认识你的括号和数字。“12[ab”可能拆成“1”“2[”“a”“b”；number/hasDigits 和每层 frame 都要跨 feed 保留，不能每块重置，也不能每块单独 decode 后拼接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "错误也要在正确的时刻判断：数字后没跟 [ 就来了字母或 EOF、缺 ]、多 ]，都应在相应边界拒绝。但网络流还没结束时，一个块读完不代表表达式结束，不能立刻报缺括号。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为什么能在]之前输出？对正k，k[body]的第一份总是body。读取其中一个字母时，它在所有开放祖先组的第一份中的位置已经确定，可立即输出。每次输出还追加到每个开放组spool，使每个spool始终保存该组第一份已解码的前缀。子组闭合后先从栈弹出它，再重放其第一份k−1次，这些重放字符只写祖先，不再写自身，避免边读边扩展本文件导致无限循环。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这解决的是首份延迟，不消灭重放信息的下界。对输入2[任意长且不可回读的body]，第二份必须再次给出全部body，所以在不能重新获取源的情况下必须保存它或等价信息，可能是内存、磁盘或外部对象存储。不能同时承诺任意数据、严格单遍输入、O(1)总存储、完整重复输出。若流永久没有]，可持续输出已确定的第一份前缀，但无法声称已完成整体解码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代码每个frame独占临时文件和8KiB缓冲，结束组先关闭写入再读文件重放，最后删除该自有spool；try-with-resources确保取消/错误时清理仍打开文件。构造时显式给出输出字符上限、当前活跃spool逻辑字节上限和最大嵌套深度。超过限额明确失败，而不是内存爆炸或计数溢出；缓冲器/文件系统元数据还有额外开销，逻辑quota不是进程RSS/磁盘占用的完全硬保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "巨大次数但空body必须特殊处理：例如9223372036854775807[]输出空串，不应循环这么多次什么都不写。代码length==0时跳过重放；非空时先用除法比较repeats>(剩余输出额度)/length，避免乘法溢出。单个重复次数用long且逐位溢出检查；若业务要更大计数也必须先受可完成的输出配额约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写入Appendable是同步的，慢Writer会自然阻塞形成基本背压；异步网络发送要用有界队列和取消/超时，不能为了“流式”另堆一个无限输出队列。早输出与原子成功互相取舍：后面可能出现错误/配额超限/IO失败，已经发出的前缀无法撤回。此接口要求收到异常后终止并close，不承诺继续feed恢复；如果必须全串有效才交付，先校验或落盘后原子发布，就不能同时保证即时对外输出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整类同时提供decode(String,work,maxOutput)返回字符串的适配器和feed/finish会话。前者结果StringBuilder占O(L)，后者可接Writer/计数sink不积累全部输出；不能把返回String的方法宣传成零结果内存。下游未关闭Writer由调用者持有，本会话只清理自己的临时文件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "3[ab]2[c2[d]]输出abababcddcdd；输入到3[ab尚未有]时已输出ab，收到]再补abab。输入3[a2[c]]得accaccacc。"
+    },
+    {
+      "type": "paragraph",
+      "text": "流式解码可随机生成嵌套表达式及直接展开结果，再切成 1～5 字符块送入。检查闭合前即时输出、输出与重放配额、嵌套深度、计数溢出、空重复及清理。用 300000 字符 body 时，闭括号前应已输出第一份 300000 字符，闭合后总计 600000；接收端只计数而不累计整份输出。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "设m编码长度、L实际输出长度、D最大嵌套。解析O(m)，当前实现每个已输出字符还追加至所有活跃祖先，最多O(D·L)字符IO/操作，不能笼统写最佳O(m+L)；有限深度下常数因子受D影响。内存O(D·缓冲大小)加调用者输入块/输出sink；磁盘活跃spool最坏O(D·L)，受显式quota截断。返回String适配器另需O(L)输出内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里按ASCII字母语法，不处理转义括号/数字字面量/Unicode字素；若扩展协议必须定义转义与增量UTF8解码，不能直接按网络字节强转char。"
+    },
+    {
+      "type": "paragraph",
+      "text": "流式解码测试要检查闭括号前的即时输出、嵌套重放、跨块 token、非法结尾以及输出超过内存缓冲的情况；有限样例不能证明无限输入会结束。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Positive decimal counts, brackets and ASCII lowercase letters only.\n * Emits the first copy before a closing bracket, spools open groups for replay.\n * Errors may leave an already emitted prefix. Caller must close the session.\n */\npublic final class StreamingNestedDecoder implements AutoCloseable {\n    private static final class Frame {\n        final long count; final Path file; final OutputStream spool; long length;\n        Frame(long count,Path file,OutputStream spool){this.count=count;this.file=file;this.spool=spool;}\n    }\n    private final Appendable output; private final Path work;\n    private final long outputLimit,spoolLimit; private final int depthLimit;\n    private final Deque<Frame> frames=new ArrayDeque<>();\n    private long number,emitted,spooled; private boolean hasDigits,finished,closed;\n    public StreamingNestedDecoder(Appendable output,Path work,long outputLimit,long spoolLimit,int depthLimit){\n        this.output=Objects.requireNonNull(output);this.work=Objects.requireNonNull(work);\n        if(outputLimit<0||spoolLimit<0||depthLimit<1)throw new IllegalArgumentException(\"invalid quotas\");\n        this.outputLimit=outputLimit;this.spoolLimit=spoolLimit;this.depthLimit=depthLimit;\n    }\n    private void emit(int c)throws IOException{\n        if(emitted==outputLimit)throw new IllegalArgumentException(\"decoded output quota\");\n        if(frames.size()>spoolLimit-spooled)throw new IllegalArgumentException(\"live spool quota\");\n        output.append((char)c);emitted++;\n        for(Frame f:frames){f.spool.write(c);f.length++;spooled++;}\n    }\n    public void feed(CharSequence chunk)throws IOException{\n        Objects.requireNonNull(chunk);if(finished||closed)throw new IllegalStateException(\"session ended\");\n        for(int i=0;i<chunk.length();i++){\n            char c=chunk.charAt(i);\n            if(c>='0'&&c<='9'){\n                int digit=c-'0';if(number>(Long.MAX_VALUE-digit)/10)throw new IllegalArgumentException(\"repeat overflow\");\n                number=number*10+digit;hasDigits=true;\n            }else if(c=='['){\n                if(!hasDigits||number==0)throw new IllegalArgumentException(\"positive count required\");\n                if(frames.size()==depthLimit)throw new IllegalArgumentException(\"nesting quota\");\n                Path path=Files.createTempFile(work,\"decode-\",\".spool\");OutputStream stream;\n                try{stream=new BufferedOutputStream(Files.newOutputStream(path),8192);}catch(IOException ex){Files.deleteIfExists(path);throw ex;}\n                frames.push(new Frame(number,path,stream));number=0;hasDigits=false;\n            }else if(c==']'){\n                if(hasDigits||frames.isEmpty())throw new IllegalArgumentException(\"unexpected closing bracket\");\n                Frame f=frames.pop();\n                try{\n                    f.spool.close();\n                    long repeats=f.count-1;\n                    if(f.length!=0 && repeats>(outputLimit-emitted)/f.length)throw new IllegalArgumentException(\"decoded output quota\");\n                    // Empty bodies must not cause count-many empty replay loops.\n                    if(f.length!=0)for(long copy=0;copy<repeats;copy++){\n                        try(InputStream in=new BufferedInputStream(Files.newInputStream(f.file),8192)){\n                            int value;while((value=in.read())!=-1)emit(value);\n                        }\n                    }\n                }finally{spooled-=f.length;Files.deleteIfExists(f.file);}\n            }else{\n                if(hasDigits||c<'a'||c>'z')throw new IllegalArgumentException(\"invalid literal/count syntax\");\n                emit(c);\n            }\n        }\n    }\n    public long emitted(){return emitted;}\n    public void finish()throws IOException{\n        if(closed||finished)throw new IllegalStateException(\"session ended\");\n        if(hasDigits||!frames.isEmpty())throw new IllegalArgumentException(\"incomplete encoding\");\n        if(output instanceof Flushable f)f.flush();finished=true;\n    }\n    @Override public void close()throws IOException{\n        if(closed)return;closed=true;IOException failure=null;\n        while(!frames.isEmpty()){\n            Frame f=frames.pop();try{f.spool.close();}catch(IOException ex){if(failure==null)failure=ex;else if(failure!=ex)failure.addSuppressed(ex);}\n            try{Files.deleteIfExists(f.file);}catch(IOException ex){if(failure==null)failure=ex;else if(failure!=ex)failure.addSuppressed(ex);}\n        }\n        if(failure!=null)throw failure;\n    }\n    public static String decode(String encoded,Path work,int maxOutput)throws IOException {\n        StringBuilder result=new StringBuilder();\n        try(StreamingNestedDecoder decoder=new StreamingNestedDecoder(result,work,maxOutput,8_000_000,64)){\n            decoder.feed(encoded);decoder.finish();\n        }\n        return result.toString();\n    }\n    private record Generated(String encoded,String decoded){}\n    private static Generated generate(Random r,int depth){\n        StringBuilder encoded=new StringBuilder(),decoded=new StringBuilder();int pieces=r.nextInt(4);\n        for(int i=0;i<pieces;i++){\n            if(depth>0&&r.nextBoolean()){\n                Generated child=generate(r,depth-1);int count=1+r.nextInt(4);\n                encoded.append(count).append('[').append(child.encoded).append(']');decoded.append(child.decoded.repeat(count));\n            }else{char c=(char)('a'+r.nextInt(3));encoded.append(c);decoded.append(c);}\n        }\n        return new Generated(encoded.toString(),decoded.toString());\n    }\n    private static long fileCount(Path p)throws IOException{try(var files=Files.list(p)){return files.count();}}\n    public static void main(String[] args)throws IOException{\n        Path work=Files.createTempDirectory(\"decoder-test-\");\n        try{\n            Random r=new Random(1017);\n            for(int test=0;test<500;test++){\n                Generated g=generate(r,4);StringBuilder out=new StringBuilder();\n                try(StreamingNestedDecoder d=new StreamingNestedDecoder(out,work,1_000_000,8_000_000,64)){\n                    for(int at=0;at<g.encoded.length();){int end=Math.min(g.encoded.length(),at+1+r.nextInt(5));d.feed(g.encoded.subSequence(at,end));at=end;}\n                    d.finish();if(!out.toString().equals(g.decoded))throw new AssertionError();\n                }\n                if(fileCount(work)!=0)throw new AssertionError(\"leak\");\n            }\n            if(!decode(\"3[a2[c]]\",work,100).equals(\"accaccacc\"))throw new AssertionError();\n            for(boolean depth:new boolean[]{true,false}){\n                try(StreamingNestedDecoder d=new StreamingNestedDecoder(new StringBuilder(),work,100,depth?100:1,depth?1:8)){\n                    try{d.feed(depth?\"2[2[a]]\":\"2[ab]\");throw new AssertionError();}catch(IllegalArgumentException expected){}\n                }\n                if(fileCount(work)!=0)throw new AssertionError(\"quota leak\");\n            }\n            StringBuilder out=new StringBuilder();\n            try(StreamingNestedDecoder d=new StreamingNestedDecoder(out,work,100,1000,8)){\n                d.feed(\"3[ab\");if(!out.toString().equals(\"ab\"))throw new AssertionError(\"no early output\");\n                d.feed(\"]2[c2[d]]\");d.finish();if(!out.toString().equals(\"abababcddcdd\"))throw new AssertionError();\n            }\n            for(String bad:List.of(\"0[a]\",\"2a\",\"[a]\",\"]\",\"3[a\",\"2[1]\",\"9223372036854775808[a]\",\"a b\",\"999999[a]\")){\n                try(StreamingNestedDecoder d=new StreamingNestedDecoder(new StringBuilder(),work,100,1000,8)){\n                    try{d.feed(bad);d.finish();throw new AssertionError(\"accepted \"+bad);}catch(IllegalArgumentException expected){}\n                }\n                if(fileCount(work)!=0)throw new AssertionError(\"leak on error\");\n            }\n            try(StreamingNestedDecoder d=new StreamingNestedDecoder(new StringBuilder(),work,0,0,2)){d.feed(\"9223372036854775807[]\");d.finish();}\n            long[] count={0};Appendable sink=new Appendable(){public Appendable append(char c){if(c!='x')throw new AssertionError();count[0]++;return this;}public Appendable append(CharSequence s){for(int i=0;i<s.length();i++)append(s.charAt(i));return this;}public Appendable append(CharSequence s,int a,int b){return append(s.subSequence(a,b));}};\n            try(StreamingNestedDecoder d=new StreamingNestedDecoder(sink,work,600000,400000,8)){\n                d.feed(\"2[\");String chunk=\"x\".repeat(1000);for(int i=0;i<300;i++)d.feed(chunk);\n                if(count[0]!=300000)throw new AssertionError(\"waited for bracket\");d.feed(\"]\");d.finish();\n            }\n            if(count[0]!=600000||fileCount(work)!=0)throw new AssertionError();\n            System.out.println(\"PASS 500 generated nested encodings split into arbitrary chunks vs independent generation oracle;early prefix before close;source example;invalid/overflow/output quota/huge empty count;300000-char disk body ->600000 streamed chars;owned spool cleanup\");\n        }finally{try(var files=Files.list(work)){for(Path p:files.toList())Files.deleteIfExists(p);}Files.deleteIfExists(work);}\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

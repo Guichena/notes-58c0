@@ -1,0 +1,989 @@
+[
+  {
+    "entryId": "database-79",
+    "entry": {
+      "id": "database-79",
+      "number": 8,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "删除重复数据，只保留一条",
+      "questionHtml": "<p class=\"md-p\">用户表中可能存在重复邮箱：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">user_account(id, email, created_at)</pre></div></section>\n<p class=\"md-p\">要求删除重复邮箱记录，每个邮箱只保留 <code class=\"tok-inline\">id</code> 最小的一条。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察去重删除。不能直接 <code class=\"tok-inline\">DELETE FROM user_account WHERE email IN (...)</code>，否则可能把所有重复邮箱都删掉。要明确保留规则，例如保留最小 id 或最早创建时间。</p>",
+      "knowledge": [
+        "自连接删除。",
+        "窗口函数标号后删除。",
+        "MySQL 8.4 的目标表子查询限制需要真正物化的派生表；本例窗口函数阻止合并，不能推广为任意包一层都安全。",
+        "删除前先 <code class=\"tok-inline\">SELECT</code> 验证，生产环境分批删除。"
+      ],
+      "answerHtml": "<p class=\"md-p\">自连接写法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">DELETE u1\nFROM user_account u1\nJOIN user_account u2\n  ON u1.email &lt;=&gt; u2.email\n AND u1.id &gt; u2.id;</pre></div></section>\n<p class=\"md-p\">窗口函数写法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">DELETE FROM user_account\nWHERE id IN (\n    SELECT id\n    FROM (\n        SELECT\n            id,\n            ROW_NUMBER() OVER (\n                PARTITION BY email\n                ORDER BY id\n            ) AS rn\n        FROM user_account\n    ) t\n    WHERE t.rn &gt; 1\n);</pre></div></section>\n<p class=\"md-p\">删除后应该增加唯一索引防止再次重复：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">ALTER TABLE user_account\nADD UNIQUE KEY uk_email (email);</pre></div></section><p class=\"md-p\">MySQL 8.4/InnoDB：假定 id 是非空唯一主键，邮箱按字段 collation 比较；本题明确把 NULL 视作同一个去重组，自连接使用 NULL 安全等号 &lt;=&gt;，与 PARTITION BY 一致。若 NULL 表示各自未知，应两种方案都排除 NULL。UNIQUE(email) 仍允许多个 NULL。删除与加索引之间必须控制并发写，清理不等于约束已经生效；先备份、核对待删主键，再按获准维护流程执行。此处未运行数据库。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：保留最新一条怎么办？</strong></p>\n<p class=\"md-p\">问题分析：保留规则从最小 id 改为最大 <code class=\"tok-inline\">created_at</code>。</p>\n<p class=\"md-p\">知识点：排序规则、并列处理。</p>\n<p class=\"md-p\">答案：窗口函数中 <code class=\"tok-inline\">ORDER BY created_at DESC, id DESC</code>，删除 <code class=\"tok-inline\">rn &gt; 1</code>。</p>\n<p class=\"md-p\"><strong>变体 2：数据量千万级，直接 delete 会有什么问题？</strong></p>\n<p class=\"md-p\">问题分析：大事务会造成锁时间长、binlog 大、主从延迟。</p>\n<p class=\"md-p\">知识点：分批删除、归档、限速。</p>\n<p class=\"md-p\">答案：先把要删除的 id 写入临时表，然后按主键范围分批删除，每批几千条，并监控主从延迟。</p>\n<p class=\"md-p\"><strong>变体 3：email 允许 NULL，唯一索引怎么处理？</strong></p>\n<p class=\"md-p\">问题分析：MySQL 唯一索引允许多个 NULL。</p>\n<p class=\"md-p\">知识点：NULL 语义、函数索引、业务校验。</p>\n<p class=\"md-p\">答案：如果业务不允许空邮箱，字段设 <code class=\"tok-inline\">NOT NULL</code>；如果允许空但只允许一个，普通 UNIQUE(email) 不够；需另设数据库约束或所有写入口遵守的串行协议，应用先查后写不足以防并发。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    }
+  },
+  {
+    "entryId": "pattern-index-optimization",
+    "entry": {
+      "id": "pattern-index-optimization",
+      "number": "索引优化",
+      "title": "索引与查询优化：B+ 树、最左前缀、Explain、深分页",
+      "kind": "pattern",
+      "kindLabel": "数据库模板",
+      "group": "题型模板",
+      "category": "索引优化",
+      "flat": false,
+      "subtitle": "覆盖 6 道题 · B+ 树 + 最左前缀 + 回表",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别慢查询",
+            "questions": [
+              "这条 SQL 走了哪个索引？",
+              "估计扫描多少行？（EXPLAIN rows；实际行数另测）",
+              "有没有用临时表 / 文件排序？"
+            ],
+            "example": "慢查询日志看到 rows=100 万 → 没走索引或索引选择性差 → 看 EXPLAIN 的 type 是 ALL 还是 index。"
+          },
+          {
+            "stage": "识别索引失效",
+            "questions": [
+              "WHERE 条件是否符合最左前缀？",
+              "有没有函数 / 隐式转换 / LIKE %xx？",
+              "有没有 OR 条件跨多列？"
+            ],
+            "example": "联合索引 (a,b,c) 跳过 a 通常不能普通前缀定位；可能全索引扫描或受限 skip scan，以计划验证。"
+          },
+          {
+            "stage": "识别回表成本",
+            "questions": [
+              "查询的列是否都在索引里？（覆盖索引）",
+              "回表多少次？",
+              "能否用覆盖索引避免回表？"
+            ],
+            "example": "SELECT * 常失去二级覆盖；主键访问并无二次回表。只取索引列与主键常可覆盖，但 MVCC 可见性仍可能访问聚簇记录。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 索引性能估算",
+        "formulas": [
+          {
+            "name": "B+ 树高度",
+            "formula": "log_fanout(N)",
+            "example": "fanout=1000，1 亿行 → log_1000(1e8) ≈ 3 层（树层数估计，不等于物理 I/O）"
+          },
+          {
+            "name": "索引大小",
+            "formula": "粗略字节数 = N × entry_bytes / fill_factor；页数 = 字节数 / page_size",
+            "example": "1 亿项 × 16B = 1.6GB（十进制），约 97,657 个 16KiB 页；未计页/记录头、主键、内部层和填充率，8B 应称 BIGINT。"
+          },
+          {
+            "name": "回表成本",
+            "formula": "一次二级树定位与叶扫描 + 最多 rows 次聚簇查找；缓存和批量访问改变物理 I/O",
+            "example": "二级范围返回一万项通常是一次定位后扫描，并按需要进行聚簇查找，不能算两万次独立根到叶搜索。"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "主键查询",
+            "write": "N/A",
+            "read": "~1ms",
+            "note": "页缓存命中可能没有磁盘 I/O；下列延迟仅假设量级，非实测或保证"
+          },
+          {
+            "resource": "二级索引 + 回表",
+            "write": "N/A",
+            "read": "~2-5ms",
+            "note": "2 次 B+ 树查找"
+          },
+          {
+            "resource": "覆盖索引",
+            "write": "N/A",
+            "read": "~1ms",
+            "note": "不回表"
+          },
+          {
+            "resource": "全表扫描",
+            "write": "N/A",
+            "read": "~100MB/s",
+            "note": "假设吞吐量，硬件/缓存/行宽实测决定"
+          }
+        ],
+        "pitfalls": [
+          "不看 rows 估算 → 不知道扫描了多少行",
+          "不考虑回表成本 → 二级索引不一定比全表快"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 索引设计演进",
+        "stages": [
+          {
+            "stage": "无索引",
+            "architecture": "全表扫描",
+            "pros": [
+              "写入快"
+            ],
+            "cons": [
+              "查询 O(n)"
+            ],
+            "when": "小表且顺序扫描成本合适，没有通用行数阈值",
+            "tradeoff": ""
+          },
+          {
+            "stage": "单列索引",
+            "architecture": "KEY idx_col (col)",
+            "pros": [
+              "单条件查询快"
+            ],
+            "cons": [
+              "多条件可能索引过滤或 Index Merge，未必高效"
+            ],
+            "when": "单条件查询为主",
+            "tradeoff": "用写性能换读性能"
+          },
+          {
+            "stage": "联合索引",
+            "architecture": "KEY idx_a_b_c (a, b, c)",
+            "pros": [
+              "多条件可走索引"
+            ],
+            "cons": [
+              "普通定位依最左前缀；skip scan 等例外受限"
+            ],
+            "when": "固定查询模式",
+            "tradeoff": "用索引大小换查询灵活度"
+          },
+          {
+            "stage": "覆盖索引",
+            "architecture": "KEY idx_cover (a, b, c) 包含所有查询列",
+            "pros": [
+              "不回表"
+            ],
+            "cons": [
+              "索引很大",
+              "写放大"
+            ],
+            "when": "读多写少 + 固定查询",
+            "tradeoff": "用存储空间换查询性能"
+          },
+          {
+            "stage": "字符串前缀索引（与函数索引不同）",
+            "architecture": "KEY idx_prefix (col(20))",
+            "pros": [
+              "支持前缀匹配"
+            ],
+            "cons": [
+              "可能支持前缀范围，但不能覆盖完整长字符串，选择性与排序能力需验证"
+            ],
+            "when": "长字符串前缀查询",
+            "tradeoff": "用索引精确度换索引大小"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 索引 Trade-off",
+        "decisions": [
+          {
+            "question": "聚簇索引 vs 二级索引？",
+            "chooseCache": "聚簇索引：叶子节点存数据，主键点查直接定位聚簇记录，性能仍由访问量与缓存决定",
+            "chooseDB": "二级索引：叶子节点存主键，非覆盖时通常需要回表，覆盖与可见性检查另论",
+            "cost": "非覆盖单行命中通常额外查聚簇树；范围扫描与物理I/O不能按此机械计数"
+          },
+          {
+            "question": "B+ 树 vs 哈希索引？",
+            "chooseCache": "B+ 树：支持范围查询和排序",
+            "chooseDB": "哈希：等值查询 O(1)",
+            "cost": "纯哈希索引不提供按键有序的范围导航或排序；前缀 B+Tree 是另一结构"
+          },
+          {
+            "question": "索引多 vs 索引少？",
+            "chooseCache": "索引多：查询快",
+            "chooseDB": "索引少：写入快，空间省",
+            "cost": "每个索引增加写放大（INSERT/UPDATE 都要维护索引）"
+          },
+          {
+            "question": "长索引 vs 短索引？",
+            "chooseCache": "短索引：索引小，扇出大，B+ 树矮",
+            "chooseDB": "长索引：选择性高",
+            "cost": "长索引占空间大，B+ 树层数多"
+          },
+          {
+            "question": "EXPLAIN 的 type=ref vs range vs index？",
+            "chooseCache": "ref：非唯一索引等值查询，扫描行数少",
+            "chooseDB": "range：范围查询；index：全索引扫描",
+            "cost": "index 类型虽走索引但仍扫全索引，未必比 ALL 快多少"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键分析骨架",
+        "snippets": [
+          {
+            "name": "EXPLAIN 分析实战",
+            "code": "-- MySQL 8.4 教学示意；下面 type/rows/Extra 是假设，不是已执行结果。\n-- 示例 1：可能全表扫描，需要真实 DDL、统计与数据验证\nEXPLAIN SELECT * FROM orders WHERE customer_name = 'Alice';\n-- type: ALL （全表扫描，100 万行）\n-- rows: 1000000\n-- Extra: Using where\n\n-- 优化：加索引\nCREATE INDEX idx_customer_name ON orders(customer_name);\n-- 优化后：\n-- type: ref\n-- rows: 5\n-- Extra: Using index condition\n\n-- 示例 2：索引失效（函数）\nEXPLAIN SELECT * FROM orders WHERE DATE(create_time) = '2024-01-01';\n-- type: ALL（索引失效，因为对列用了函数）\n\n-- 优化：改写为范围查询\nEXPLAIN SELECT * FROM orders\nWHERE create_time >= '2024-01-01' AND create_time < '2024-01-02';\n-- type: range\n\n-- 示例 3：最左前缀失效\nCREATE INDEX idx_a_b_c ON t(a, b, c);\nEXPLAIN SELECT * FROM t WHERE b = 1 AND c = 2;\n-- type: ALL（跳过了 a）\n\n-- 优化：仅当原业务本就要求 a 时加该条件，否则按真实查询调整索引\nEXPLAIN SELECT * FROM t WHERE a = 1 AND b = 1 AND c = 2;\n-- type: ref",
+            "explanation": "EXPLAIN 的 type 描述访问方式，并非速度排名；rows 是估计扫描量；Using filesort / Using temporary 提醒检查排序/临时结构的实际代价，不证明落盘或一定慢。"
+          },
+          {
+            "name": "深度分页优化",
+            "code": "-- 慢：OFFSET 1000000 会扫描并丢弃前 100 万行\nSELECT * FROM orders ORDER BY id LIMIT 1000000, 10;\n\n-- 快：游标方式（记录上次的 id）\nSELECT * FROM orders WHERE id > ? ORDER BY id LIMIT 10;\n\n-- 如果必须跳页：先查 id 再回表\nSELECT o.* FROM orders o\nINNER JOIN (\n  SELECT id FROM orders ORDER BY id LIMIT 1000000, 10\n) t ON o.id = t.id\nORDER BY o.id;\n-- 子查询用覆盖索引，不回表；主查询只回表 10 次",
+            "explanation": "深度分页的本质问题：OFFSET 100 万要扫描并丢弃前 100 万行。游标方式（WHERE id > last_id）利用主键索引直接定位，O(log n) + 10 行。"
+          },
+          {
+            "name": "联合索引设计原则",
+            "code": "-- 原则 1：等值查询的列在前，范围查询的列在后\n-- WHERE a = 1 AND b > 10 ORDER BY c\nCREATE INDEX idx_a_b_c ON t(a, b, c);  -- 候选：a 等值后 b 范围；通常仍不能用 c 消除 ORDER BY c\nCREATE INDEX idx_b_a_c ON t(b, a, c);  -- 另一候选，范围后的 a/c 可过滤/覆盖，需实际比较\n\n-- 原则 2：等值列顺序按可复用前缀与工作负载；不能只按单列选择性\n-- WHERE status = 1 AND user_id = 12345\n-- status 只有 0/1 两种值，选择性低；user_id 有百万种，选择性高\nCREATE INDEX idx_user_status ON t(user_id, status);  -- 候选，支持 user_id 前缀查询\nCREATE INDEX idx_status_user ON t(status, user_id);  -- 两列均等值时未必较差，支持不同前缀\n\n-- 原则 3：覆盖索引避免回表\n-- SELECT user_id, status FROM t WHERE user_id = 12345\nCREATE INDEX idx_cover ON t(user_id, status);  -- 查询列都在索引里，不回表",
+            "explanation": "联合索引三原则：等值在前范围在后；等值列顺序结合可复用前缀与工作负载，不能只按单列选择性；覆盖索引避免回表。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 索引失效场景",
+        "scenarios": [
+          {
+            "failure": "对列用函数",
+            "symptom": "WHERE DATE(create_time) = ...",
+            "mitigation": "改写为范围查询",
+            "detection": "检查计划与扫描量；不保证一定 ALL"
+          },
+          {
+            "failure": "隐式类型转换",
+            "symptom": "WHERE phone = 13800138000（phone 是 VARCHAR）",
+            "mitigation": "参数类型匹配",
+            "detection": "检查计划与扫描量；不保证一定 ALL"
+          },
+          {
+            "failure": "LIKE %xx",
+            "symptom": "后缀匹配，模式以通配符开头",
+            "mitigation": "后缀检索可评估反转字符串索引；全文/ES分词匹配与LIKE子串不同，先固定语义",
+            "detection": "检查计划与扫描量；不保证一定 ALL"
+          },
+          {
+            "failure": "OR 跨多列",
+            "symptom": "WHERE a = 1 OR b = 2",
+            "mitigation": "比较 Index Merge 或按主键合并；UNION可能合并不同原行，UNION ALL须互斥并处理NULL",
+            "detection": "检查计划与扫描量；不保证一定 ALL"
+          },
+          {
+            "failure": "不符合最左前缀",
+            "symptom": "联合索引 (a,b,c) 但 WHERE 只用 b",
+            "mitigation": "按真实查询调整索引；仅允许语义等价的WHERE改写",
+            "detection": "检查计划与扫描量；不保证一定 ALL"
+          },
+          {
+            "failure": "IS NULL / IS NOT NULL",
+            "symptom": "IS NULL/IS NOT NULL 是否采用索引取决于成本与选择性",
+            "mitigation": "IS NULL 可使用索引；按真实 NULL 语义设计，禁止为了性能擅自替换业务值",
+            "detection": "EXPLAIN 验证"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 索引监控",
+        "red": [
+          "慢查询数量（> 1s）",
+          "全表扫描次数（EXPLAIN type=ALL）",
+          "索引命中率"
+        ],
+        "use": [
+          "InnoDB Buffer Pool 命中率（示例观察口径，无通用99%达标阈值）",
+          "索引大小 / 表大小比例"
+        ],
+        "business": [
+          "核心 SQL 的 P99 响应时间",
+          "每天慢查询 TOP 10"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "B+ 树原理",
+          "ids": [
+            "database-80"
+          ],
+          "note": "聚簇索引 / 二级索引 / 回表"
+        },
+        {
+          "range": "联合索引",
+          "ids": [
+            "database-81"
+          ],
+          "note": "最左前缀原则"
+        },
+        {
+          "range": "索引失效",
+          "ids": [
+            "database-82"
+          ],
+          "note": "常见失效场景大全"
+        },
+        {
+          "range": "Explain 分析",
+          "ids": [
+            "database-83"
+          ],
+          "note": "EXPLAIN 每个字段的含义"
+        },
+        {
+          "range": "深分页优化",
+          "ids": [
+            "database-84"
+          ],
+          "note": "OFFSET 100 万的优化方案"
+        },
+        {
+          "range": "索引设计实战",
+          "ids": [
+            "database-85"
+          ],
+          "note": "30 天流水查询的索引设计"
+        }
+      ],
+      "interviewPitch": "索引优化我会按\"识别慢查询 → EXPLAIN 分析 → 找失效原因 → 设计索引\"四步走。EXPLAIN 关键看 type、估计 rows 与实际扫描/返回比；ALL 对小表或大量返回可合理。失效常见原因：函数 / 隐式转换 / LIKE %xx / 最左前缀 / OR。设计联合索引三原则：等值在前范围在后；等值列顺序结合可复用前缀与工作负载，不能只按单列选择性；覆盖索引避免回表。",
+      "pitfalls": [
+        "不知道最左前缀 → 联合索引失效",
+        "SELECT * 导致回表 → 应该只查需要的列",
+        "EXPLAIN 只看 type 不看 rows → type=range 也可能扫 100 万行",
+        "深分页用 OFFSET → 应该用游标"
+      ],
+      "relatedIds": [
+        "database-80",
+        "database-81",
+        "database-82",
+        "database-83",
+        "database-84",
+        "database-85"
+      ],
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化",
+      "supplementHtml": "<p class=\"md-p\">游标绑定上一页真实 id，不是 offset；先查 id 的延迟关联仍需扫描 offset 行，外层显式 ORDER BY。B+Tree/哈希复杂度是模型，InnoDB 自适应哈希不是可任意声明替换 B+Tree 的通用索引。模板数值仅假设，不是项目测量或 SLO。</p><p class=\"md-p\">本页覆盖索引的“不回表”及延迟关联“只回表10次”指理想访问计划中减少完整行读取，不承诺物理零聚簇访问：MVCC可见性检查仍可能访问聚簇记录，实际计划、缓存和扫描行数须验证。</p>"
+    }
+  },
+  {
+    "entryId": "database-80",
+    "entry": {
+      "id": "database-80",
+      "number": 9,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "B+Tree、聚簇索引与回表",
+      "questionHtml": "<p class=\"md-p\">为什么 MySQL InnoDB 常用 B+Tree 索引？聚簇索引和二级索引有什么区别？什么是回表？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是 MySQL 索引面试必考。很多慢 SQL、深度分页、覆盖索引问题都建立在这道题之上。</p>\n<p class=\"md-p\">InnoDB 表按主键组织数据，主键索引的叶子节点存整行数据，因此叫聚簇索引。二级索引叶子节点不存整行，而是存索引列和主键值；如果查询列不在二级索引中，需要拿主键再查聚簇索引，这就是回表。</p>",
+      "knowledge": [
+        "B+Tree 多路平衡树，树高低，适合磁盘页读取。",
+        "B+Tree 叶子节点有序，适合范围查询和排序。",
+        "聚簇索引：叶子节点存整行数据。",
+        "二级索引：叶子节点存主键值。",
+        "回表：通过二级索引找到主键后，再查主键索引取完整行。",
+        "覆盖索引：查询列都在二级索引中，不需要回表。"
+      ],
+      "answerHtml": "<p class=\"md-p\">InnoDB 使用 B+Tree 的原因：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>树高低，查找一次通常只需要少量页 IO。</li><li>非叶子节点只存 key 和指针，能容纳更多 key。</li><li>叶子节点有序并通过链表连接，范围查询高效。</li><li>等值、范围、排序都能较好支持。</li></ol></div>\n<p class=\"md-p\">聚簇索引和二级索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">PRIMARY KEY(id) 的叶子节点：id + 整行数据\nidx_user_id(user_id) 的叶子节点：user_id + 主键 id</pre></div></section>\n<p class=\"md-p\">查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT amount\nFROM orders\nWHERE user_id = 100;</pre></div></section>\n<p class=\"md-p\">如果只有索引 <code class=\"tok-inline\">idx_user_id(user_id)</code>，执行过程是：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>在 <code class=\"tok-inline\">idx_user_id</code> 上找到 user_id=100 的主键 id。</li><li>用 id 回到主键索引查整行。</li><li>取出 amount。</li></ol></div>\n<p class=\"md-p\">这一步 2 就是回表。</p>\n<p class=\"md-p\">如果建立覆盖索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_user_amount\nON orders(user_id, amount);</pre></div></section>\n<p class=\"md-p\">查询 <code class=\"tok-inline\">user_id, amount</code> 时二级索引已经包含所需列，就不需要回表。</p><p class=\"md-p\">覆盖索引是执行计划性质；InnoDB 的 MVCC 可见性检查等情况下仍可能访问聚簇记录，不能把 Using index 当成物理零回表证明。页缓存命中时树层数也不等于磁盘 I/O 次数。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么主键建议短且递增？</strong></p>\n<p class=\"md-p\">问题分析：主键是聚簇索引，所有二级索引叶子节点也保存主键。</p>\n<p class=\"md-p\">知识点：索引空间、页分裂。</p>\n<p class=\"md-p\">答案：短主键能减少所有索引体积；递增主键减少随机插入和页分裂。随机 UUID v4 常导致随机写；有序 UUID 需分别讨论布局、存储大小和热点。</p>\n<p class=\"md-p\"><strong>变体 2：没有主键会怎样？</strong></p>\n<p class=\"md-p\">问题分析：InnoDB 必须有聚簇索引。</p>\n<p class=\"md-p\">知识点：隐藏 row_id。</p>\n<p class=\"md-p\">答案：如果没有显式主键，InnoDB 会选择唯一非空索引；如果也没有，会生成隐藏 row_id。工程上应显式定义主键。</p>\n<p class=\"md-p\"><strong>变体 3：覆盖索引是不是越多越好？</strong></p>\n<p class=\"md-p\">问题分析：索引能加速读，但会拖慢写。</p>\n<p class=\"md-p\">知识点：写放大、存储成本。</p>\n<p class=\"md-p\">答案：不是。索引会占空间，插入/更新/删除都要维护。只为高频、核心查询设计覆盖索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  },
+  {
+    "entryId": "database-81",
+    "entry": {
+      "id": "database-81",
+      "number": 10,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "联合索引与最左前缀",
+      "questionHtml": "<p class=\"md-p\">表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">article(id, tenant_id, status, category_id, created_at, title)</pre></div></section>\n<p class=\"md-p\">常见查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, title\nFROM article\nWHERE tenant_id = ?\n  AND status = ?\n  AND category_id = ?\nORDER BY created_at DESC\nLIMIT 20;</pre></div></section>\n<p class=\"md-p\">如何设计索引？哪些查询能用上这个索引？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察联合索引顺序。一般原则是等值条件在前，排序/范围条件在后。对于多租户业务，<code class=\"tok-inline\">tenant_id</code> 常作为查询前缀，但索引列顺序不是权限隔离；租户谓词必须来自可信身份并覆盖所有入口。</p>",
+      "knowledge": [
+        "最左前缀：联合索引从最左列开始连续使用。",
+        "等值条件可以连续匹配。",
+        "遇到范围条件后，后续列通常不能继续缩小连续定位区间，但仍可能通过 ICP 过滤或用于覆盖。",
+        "排序字段要和索引顺序一致，才能避免 filesort。",
+        "覆盖索引：查询列包含在索引中。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_tenant_status_category_created\nON article(tenant_id, status, category_id, created_at DESC, id DESC);</pre></div></section>\n<p class=\"md-p\">这个索引能很好支持：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE tenant_id = ?\n  AND status = ?\n  AND category_id = ?\nORDER BY created_at DESC, id DESC\nLIMIT 20</pre></div></section>\n<p class=\"md-p\">也能支持只查租户和状态：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE tenant_id = ?\n  AND status = ?</pre></div></section>\n<p class=\"md-p\">不能高效支持跳过 <code class=\"tok-inline\">tenant_id</code> 的查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE status = ?\n  AND category_id = ?</pre></div></section>\n<p class=\"md-p\">因为不满足最左前缀。若后台管理确实需要全局按状态查询，应另建索引。</p><p class=\"md-p\">目标 MySQL 8.4，降序索引需要 MySQL 8.0+。title 不在该索引内，列表读取 title 仍需取行；相同 created_at 用 id 决定顺序。跳过前导列可能采用全索引扫描或受条件限制的 skip scan，不应概括为完全不能用索引。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">status</code> 区分度很低，要不要放索引里？</strong></p>\n<p class=\"md-p\">问题分析：低区分度字段单独建索引意义不大，但放在联合索引中可配合其他字段。</p>\n<p class=\"md-p\">知识点：选择性、组合过滤。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">status</code> 单列索引价值低；在 <code class=\"tok-inline\">(tenant_id, status, category_id, created_at)</code> 中有价值，因为它参与等值过滤并帮助排序定位。</p>\n<p class=\"md-p\"><strong>变体 2：范围条件如何影响索引？</strong></p>\n<p class=\"md-p\">问题分析：例如 <code class=\"tok-inline\">created_at &gt;= ? AND category_id = ?</code>。</p>\n<p class=\"md-p\">知识点：范围列之后的列难以继续用于索引定位。</p>\n<p class=\"md-p\">答案：应把等值过滤列放在范围列前。常见顺序是 <code class=\"tok-inline\">(tenant_id, status, category_id, created_at)</code>，不要把 <code class=\"tok-inline\">created_at</code> 放到 <code class=\"tok-inline\">category_id</code> 前面，除非时间过滤是主要入口。</p>\n<p class=\"md-p\"><strong>变体 3：查询 <code class=\"tok-inline\">SELECT *</code> 有什么问题？</strong></p>\n<p class=\"md-p\">问题分析：查询列过多会导致回表，覆盖索引失效。</p>\n<p class=\"md-p\">知识点：回表、覆盖索引、宽字段。</p>\n<p class=\"md-p\">答案：列表页只查必要字段；大字段如正文、JSON、向量信息不要放列表查询，详情页再按主键查。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  },
+  {
+    "entryId": "database-82",
+    "entry": {
+      "id": "database-82",
+      "number": 11,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "索引失效场景",
+      "questionHtml": "<p class=\"md-p\">说出常见的 MySQL 索引失效场景，并给出改写方式。</p>",
+      "analysisHtml": "<p class=\"md-p\">索引失效是大厂面经高频。面试官通常会给 SQL，让你判断为什么没走索引。回答时要避免绝对化：是否走索引最终由优化器按成本决定，但下面这些写法确实常导致索引无法用于高效定位。</p>",
+      "knowledge": [
+        "对索引列使用函数或表达式。",
+        "隐式类型转换。",
+        "<code class=\"tok-inline\">LIKE '%xxx'</code> 为后缀匹配，模式以通配符开头。",
+        "联合索引不满足最左前缀。",
+        "范围条件后的列难以继续用于索引定位。",
+        "<code class=\"tok-inline\">OR</code> 两侧索引不完整。",
+        "低选择性条件可能不走索引。"
+      ],
+      "answerHtml": "<p class=\"md-p\">常见场景和改写：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>对列使用函数：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 不好\nWHERE DATE(created_at) = '2026-05-27'\n\n-- 好\nWHERE created_at &gt;= '2026-05-27 00:00:00'\n  AND created_at &lt;  '2026-05-28 00:00:00'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>隐式类型转换：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- phone 是 varchar，不好\nWHERE phone = 13800138000\n\n-- 好\nWHERE phone = '13800138000'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>后缀匹配（前导通配符）：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 普通 B+Tree 难以利用前缀定位\nWHERE name LIKE '%abc'\n\n-- 另一业务条件可利用前缀；后缀匹配不能等价改成前缀匹配\nWHERE name LIKE 'abc%'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>联合索引跳过最左列：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 索引 (tenant_id, status, created_at)\n-- 不好\nWHERE status = 'PUBLISHED'\n\n-- 仅当原业务本就限定受信租户时可用；否则调整索引，不能添加此谓词\nWHERE tenant_id = ?\n  AND status = 'PUBLISHED'</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>范围条件放太前：</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 索引 (tenant_id, created_at, status)\nWHERE tenant_id = ?\n  AND created_at &gt;= ?\n  AND status = ?</pre></div></section>\n<p class=\"md-p\">如果 <code class=\"tok-inline\">status</code> 过滤重要，考虑索引 <code class=\"tok-inline\">(tenant_id, status, created_at)</code>。</p><p class=\"md-p\">DATE 范围边界必须按原查询的会话/业务时区计算；参数类型与列一致。函数索引可支持匹配表达式，skip scan 有限制，FULLTEXT 是分词匹配，不与任意子串 LIKE 等价。禁止为了走索引添加原业务不存在的 tenant_id 条件。</p><p class=\"md-p\">把 phone 的数字常量改为字符串，是修正为业务定义的字符串比较；若原查询有意采用数值比较，两者并不等价，例如前导零、非数字后缀或不同格式可能改变匹配结果，须先固定规范化合同。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">!=</code> 一定不走索引吗？</strong></p>\n<p class=\"md-p\">问题分析：不能绝对化。</p>\n<p class=\"md-p\">知识点：选择性、成本优化器。</p>\n<p class=\"md-p\">答案：不一定。如果结果很少或索引覆盖，优化器可能选择索引；如果只排除少量数据、返回大部分行，全表扫描可能更便宜。</p>\n<p class=\"md-p\"><strong>变体 2：<code class=\"tok-inline\">OR</code> 怎么优化？</strong></p>\n<p class=\"md-p\">问题分析：<code class=\"tok-inline\">OR</code> 两边如果有一边没索引，整体可能低效。</p>\n<p class=\"md-p\">知识点：union 改写、索引合并。</p>\n<p class=\"md-p\">答案：为两侧条件都建合适索引，或按主键去重合并两支。UNION ALL 不能自动去重；保留原查询行重数的互斥写法是 WHERE A UNION ALL WHERE B AND (A) IS NOT TRUE，后半条件也正确处理 A 为 NULL。只按投影做 UNION 可能错误合并原表不同主键的相同值。</p>\n<p class=\"md-p\"><strong>变体 3：<code class=\"tok-inline\">LIKE '%关键词%'</code> 怎么优化？</strong></p>\n<p class=\"md-p\">问题分析：B+Tree 不适合包含匹配。</p>\n<p class=\"md-p\">知识点：全文索引、倒排索引、ES。</p>\n<p class=\"md-p\">答案：可评估 MySQL FULLTEXT 或 Elasticsearch 的分词检索，但它们不与任意子串 LIKE 等价；只有业务接受该检索语义时才替换，否则保留子串语义并评估专门索引与成本。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  },
+  {
+    "entryId": "database-83",
+    "entry": {
+      "id": "database-83",
+      "number": 12,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "Explain 怎么看",
+      "questionHtml": "<p class=\"md-p\">给一条慢 SQL，如何通过 <code class=\"tok-inline\">EXPLAIN</code> 判断问题？重点看哪些字段？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题和慢 SQL 排查强相关。很多候选人只会说“看有没有走索引”，但面试官更希望听到访问类型、扫描行数、索引选择、排序、临时表、回表等。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">type</code>：访问类型，常见有 const、eq_ref、ref、range、index、ALL；不是脱离扫描量与成本的速度排名。",
+        "<code class=\"tok-inline\">possible_keys</code>：可能使用的索引。",
+        "<code class=\"tok-inline\">key</code>：实际使用的索引。",
+        "<code class=\"tok-inline\">rows</code>：估算扫描行数。",
+        "<code class=\"tok-inline\">filtered</code>：过滤比例。",
+        "<code class=\"tok-inline\">Extra</code>：Using index、Using where、Using filesort、Using temporary。"
+      ],
+      "answerHtml": "<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">EXPLAIN\nSELECT id, title\nFROM article\nWHERE tenant_id = 1\n  AND status = 'PUBLISHED'\nORDER BY created_at DESC\nLIMIT 20;</pre></div></section>\n<p class=\"md-p\">重点解读：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">type=ALL</code>：可能全表扫描，大表危险。</li><li><code class=\"tok-inline\">key=NULL</code>：没有使用索引。</li><li><code class=\"tok-inline\">rows</code> 很大：扫描代价高。</li><li><code class=\"tok-inline\">Using filesort</code>：排序没有利用索引，可能需要优化索引顺序。</li><li><code class=\"tok-inline\">Using temporary</code>：分组/排序产生临时表，数据大时要关注。</li><li><code class=\"tok-inline\">Using index</code>：覆盖索引，通常是好信号。</li></ul></div>\n<p class=\"md-p\">针对上面查询可建：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_tenant_status_created\nON article(tenant_id, status, created_at DESC, id DESC);</pre></div></section><p class=\"md-p\">rows/filtered 是估计；filesort 未必落盘，Using temporary 未必是磁盘临时表。MySQL 8.0.18+ EXPLAIN ANALYZE 会实际执行受支持的语句，先限制资源并在获准环境使用；本文只有推演，没有实际执行计划测量。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">Using filesort</code> 一定很差吗？</strong></p>\n<p class=\"md-p\">问题分析：小结果集排序没问题。</p>\n<p class=\"md-p\">知识点：排序成本、数据量。</p>\n<p class=\"md-p\">答案：不一定。要结合 rows、返回行数和耗时。大表深分页出现 filesort 需要重点优化。</p>\n<p class=\"md-p\"><strong>变体 2：<code class=\"tok-inline\">Using index</code> 和 <code class=\"tok-inline\">Using index condition</code> 区别？</strong></p>\n<p class=\"md-p\">问题分析：名字相近但含义不同。</p>\n<p class=\"md-p\">知识点：覆盖索引、索引下推 ICP。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">Using index</code> 通常表示覆盖索引；<code class=\"tok-inline\">Using index condition</code> 表示使用索引下推，在存储引擎层先过滤部分条件，但可能仍需回表。</p>\n<p class=\"md-p\"><strong>变体 3：为什么 EXPLAIN 估算不准？</strong></p>\n<p class=\"md-p\">问题分析：优化器依赖统计信息。</p>\n<p class=\"md-p\">知识点：统计信息、数据倾斜。</p>\n<p class=\"md-p\">答案：数据分布倾斜、统计信息过期会导致估算偏差。可更新统计信息，MySQL 8 也可用直方图辅助。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  },
+  {
+    "entryId": "database-84",
+    "entry": {
+      "id": "database-84",
+      "number": 13,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "深度分页优化",
+      "questionHtml": "<p class=\"md-p\">订单表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">orders(id, user_id, amount, created_at)</pre></div></section>\n<p class=\"md-p\">查询某用户订单：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, user_id, amount, created_at\nFROM orders\nWHERE user_id = 12345\nORDER BY created_at DESC\nLIMIT 10000, 50;</pre></div></section>\n<p class=\"md-p\">为什么慢？如何优化？</p>",
+      "analysisHtml": "<p class=\"md-p\"><code class=\"tok-inline\">LIMIT 10000, 50</code> 不是只读 50 行。MySQL 需要按条件和排序找到前 10050 行，再丢弃前 10000 行。如果查询列不在索引中，还可能发生大量回表。</p>\n<p class=\"md-p\">面试官想听到两个方向：减少回表，以及避免大 offset。</p>",
+      "knowledge": [
+        "InnoDB 聚簇索引：主键索引叶子节点存整行。",
+        "二级索引：叶子节点存二级索引列 + 主键值，查其他列需要回表。",
+        "覆盖索引：查询列都在索引里，不需要回表。",
+        "延迟关联：先用覆盖索引拿主键，再回表取少量完整行。",
+        "游标分页/Keyset Pagination：用上一页最后一条记录作为下一页起点。"
+      ],
+      "answerHtml": "<p class=\"md-p\">先建立适配索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_user_created_id\nON orders(user_id, created_at DESC, id DESC);</pre></div></section>\n<p class=\"md-p\">方案 A：延迟关联，适合仍需要页码的场景：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT o.id, o.user_id, o.amount, o.created_at\nFROM orders o\nJOIN (\n    SELECT id\n    FROM orders\n    WHERE user_id = 12345\n    ORDER BY created_at DESC, id DESC\n    LIMIT 10000, 50\n) t ON o.id = t.id\nORDER BY o.created_at DESC, o.id DESC;</pre></div></section>\n<p class=\"md-p\">子查询只查 <code class=\"tok-inline\">id</code>，可以利用 <code class=\"tok-inline\">(user_id, created_at, id)</code> 索引，减少前 10000 行的回表。外层只回表 50 次。</p>\n<p class=\"md-p\">方案 B：游标分页，适合信息流、订单列表、评论列表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, user_id, amount, created_at\nFROM orders\nWHERE user_id = 12345\n  AND (\n      created_at &lt; '2026-05-01 12:00:00'\n      OR (created_at = '2026-05-01 12:00:00' AND id &lt; 987654)\n  )\nORDER BY created_at DESC, id DESC\nLIMIT 50;</pre></div></section>\n<p class=\"md-p\">这里用 <code class=\"tok-inline\">(created_at, id)</code> 作为稳定游标，避免相同时间导致翻页重复或漏数据。</p><p class=\"md-p\">假定 created_at 非空、id 唯一且分页排序键不变；若允许 NULL，必须另外定义 NULL 分区与游标。唯一游标只解决并列歧义，不解决并发回填、删除或排序字段更新；严格一致导出需要固定快照/物化结果。原题单列排序存在并列，这里增加 id 明确选择顺序。</p><p class=\"md-p\">外层“只回表50次”描述至多50个主键的详情查找，不含子查询可能发生的MVCC可见性聚簇访问；真实访问计划与I/O仍须测量。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：能不能只说“加索引”？</strong></p>\n<p class=\"md-p\">问题分析：加索引只能减少排序和过滤成本，但 offset 仍然要跳过大量记录。</p>\n<p class=\"md-p\">知识点：扫描行数、回表、offset。</p>\n<p class=\"md-p\">答案：不能只说加索引。要说明深度分页的核心成本是扫描并丢弃 offset 行，优化要么减少回表，要么改成游标分页。</p>\n<p class=\"md-p\"><strong>变体 2：必须跳到第 1000 页怎么办？</strong></p>\n<p class=\"md-p\">问题分析：游标分页不适合任意页跳转。</p>\n<p class=\"md-p\">知识点：产品约束、搜索引擎、缓存。</p>\n<p class=\"md-p\">答案：限制最大跳页；使用延迟关联；对静态结果做快照；搜索类需求交给 ES；后台报表走离线导出。</p>\n<p class=\"md-p\"><strong>变体 3：为什么排序要加 id？</strong></p>\n<p class=\"md-p\">问题分析：<code class=\"tok-inline\">created_at</code> 可能重复，单独排序不稳定。</p>\n<p class=\"md-p\">知识点：稳定排序、游标边界。</p>\n<p class=\"md-p\">答案：用 <code class=\"tok-inline\">(created_at, id)</code> 组成唯一有序游标，避免翻页时重复或遗漏。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  },
+  {
+    "entryId": "database-85",
+    "entry": {
+      "id": "database-85",
+      "number": 14,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "查询用户过去 30 天流水与索引设计",
+      "questionHtml": "<p class=\"md-p\">设计一张用户流水表，并查询某用户过去 30 天流水。要求说明索引如何建。</p>",
+      "analysisHtml": "<p class=\"md-p\">这是后端常见索引题。查询条件是“等值用户 + 时间范围”，典型联合索引场景。索引顺序应先放等值过滤字段，再放范围字段。</p>",
+      "knowledge": [
+        "联合索引最左前缀。",
+        "等值字段在前，范围字段在后。",
+        "覆盖索引可减少回表。",
+        "时间范围查询要避免对列使用函数。",
+        "大表按时间归档或分区要结合业务。"
+      ],
+      "answerHtml": "<p class=\"md-p\">表设计：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE user_transactions (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    user_id BIGINT NOT NULL,\n    amount DECIMAL(18, 2) NOT NULL,\n    direction TINYINT NOT NULL,\n    txn_time DATETIME(6) NOT NULL,\n    biz_no VARCHAR(64) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_biz_no (biz_no),\n    KEY idx_user_time_id (user_id, txn_time DESC, id DESC)\n);</pre></div></section>\n<p class=\"md-p\">查询：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id, user_id, amount, direction, txn_time, biz_no\nFROM user_transactions\nWHERE user_id = ?\n  AND txn_time &gt;= ?\n  AND txn_time &lt; ?\nORDER BY txn_time DESC, id DESC\nLIMIT 100;</pre></div></section>\n<p class=\"md-p\">索引解释：<code class=\"tok-inline\">user_id</code> 是等值条件，放第一位；<code class=\"tok-inline\">txn_time</code> 是范围和排序字段，放第二位；<code class=\"tok-inline\">id</code> 用于稳定排序和游标分页。</p>\n<p class=\"md-p\">传入首次请求冻结的 UTC 起止时间，后续页复用；NOW() 在单语句内是固定值，改绑定参数的重点是跨页一致边界：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WHERE user_id = ?\n  AND txn_time &gt;= ?\n  AND txn_time &lt; ?</pre></div></section><p class=\"md-p\">主表的 direction 表示方向、amount 表示绝对金额，须约束方向枚举与金额范围；补充完整示例采用有符号 amount 和 currency，是另一独立表模型，不可把两份同名 CREATE TABLE 连续执行。主答案参数依次绑定可信 user_id、end−30天、end；仅返回前 100 条，后续完整 JDBC 分页见本页补充。DATETIME 不携带时区，写读统一 UTC。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：如果查询所有用户过去 30 天流水汇总，索引怎么变？</strong></p>\n<p class=\"md-p\">问题分析：查询不再按单个用户过滤，而是按时间范围扫。</p>\n<p class=\"md-p\">知识点：索引顺序取决于查询条件。</p>\n<p class=\"md-p\">答案：增加 <code class=\"tok-inline\">idx_time_user(txn_time, user_id)</code>，用于按时间范围统计。不能指望 <code class=\"tok-inline\">(user_id, txn_time)</code> 高效支持没有 <code class=\"tok-inline\">user_id</code> 条件的查询。</p>\n<p class=\"md-p\"><strong>变体 2：流水表能不能更新？</strong></p>\n<p class=\"md-p\">问题分析：流水通常是账务事实，更新会破坏审计。</p>\n<p class=\"md-p\">知识点：不可变日志、冲正、审计。</p>\n<p class=\"md-p\">答案：流水尽量只追加不修改。错误流水用反向冲正记录修复，保留完整审计链路。</p>\n<p class=\"md-p\"><strong>变体 3：数据量过亿怎么办？</strong></p>\n<p class=\"md-p\">问题分析：单表过大影响索引高度、备份、DDL 和查询。</p>\n<p class=\"md-p\">知识点：冷热分离、归档、分库分表、分区。</p>\n<p class=\"md-p\">答案：按用户维度查询为主可按 <code class=\"tok-inline\">user_id</code> 分库分表；按时间归档为主可冷热分离；分区表能优化时间范围管理，但不能替代合理索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化",
+      "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-mysql-database-85\">MySQL 手册：具体条件、完整推演与实验</h2><h3 class=\"md-h md-h3\">最近三十天流水</h3><p class=\"md-p\">这里把过去三十天定义为 UTC 时间上的 [window_end−30 days,window_end)，开始包含、结束不包含。第一次请求冻结 window_end，后续页复用，不要每翻一页都重新 NOW()；若业务要“最近三十个自然日”，应按业务时区另算边界。</p><p class=\"md-p\">金额采用 DECIMAL，币种单独存储，不把 CNY 与 USD 直接相加。时间用 DATETIME(6) 并约定其中存 UTC，游标完整保留微秒及 id。数据包括恰好起点、恰好终点、前一微秒、另一用户、未来、负金额和同一时间两币种：第一页应为 8、7，下一页为 4、1。</p><p class=\"md-p\">应用绑定用户、固定起止、复合游标和有界页大小，不能字符串拼接。连接、事务和时间转换由应用边界统一管理；本章只负责 SQL 与分页机制，JDBC 的完整资源和参数绑定实现应与应用章节配合。</p><p class=\"md-p\">固定窗口只是稳定筛选边界，不是跨请求的数据库快照。之后回填一条窗口内旧时间流水，仍可能出现在某个后续请求里；如需审计导出完全一致，应使用明确的一致性快照、导出任务或已物化结果，并管理持有快照的资源成本。</p><h3 class=\"md-h md-h3\">三十天流水的完整边界数据</h3><p class=\"md-p\">保存为 transactions_page.sql。</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">components/query/code/transactions_page.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE user_transactions (\n  id BIGINT PRIMARY KEY AUTO_INCREMENT,\n  user_id BIGINT NOT NULL,\n  amount DECIMAL(18,2) NOT NULL,\n  currency CHAR(3) NOT NULL,\n  txn_time DATETIME(6) NOT NULL,\n  description VARCHAR(255) NOT NULL DEFAULT &#39;&#39;,\n  INDEX idx_user_time_id (user_id, txn_time DESC, id DESC)\n) ENGINE=InnoDB;\n\nINSERT INTO user_transactions(id,user_id,amount,currency,txn_time,description) VALUES\n (1,12345,10.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;inclusive start&#39;),\n (2,12345,20.00,&#39;CNY&#39;,&#39;2026-10-09 00:00:00.000000&#39;,&#39;exclusive end&#39;),\n (3,99999,30.00,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.000000&#39;,&#39;another user&#39;),\n (4,12345,40.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;same-time tie&#39;),\n (5,12345,50.00,&#39;CNY&#39;,&#39;2026-10-10 00:00:00.000000&#39;,&#39;future&#39;),\n (6,12345,60.00,&#39;CNY&#39;,&#39;2026-09-08 23:59:59.999999&#39;,&#39;too old&#39;),\n (7,12345,-0.10,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;outgoing&#39;),\n (8,12345,0.20,&#39;USD&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;other currency&#39;);\nSET @uid=12345;\nSET @window_end=CAST(&#39;2026-10-09 00:00:00.000000&#39; AS DATETIME(6));\nSET @window_start=DATE_SUB(@window_end,INTERVAL 30 DAY);\n-- First page: expected IDs 8,7. Literal LIMIT makes this directly runnable.\nSELECT id,amount,currency,txn_time,description\nFROM user_transactions\nWHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end\nORDER BY txn_time DESC,id DESC LIMIT 2;\n-- Copy the complete last row cursor; never recompute the window per page.\nSET @last_time=CAST(&#39;2026-10-08 12:00:00.123456&#39; AS DATETIME(6));\nSET @last_id=7;\n-- Next page: expected IDs 4,1.\nSELECT id,amount,currency,txn_time,description\nFROM user_transactions\nWHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end\n  AND (txn_time&lt;@last_time OR (txn_time=@last_time AND id&lt;@last_id))\nORDER BY txn_time DESC,id DESC LIMIT 2;\n</pre></div></div><h3 class=\"md-h md-h3\">5. 完整示例：用户过去三十天流水</h3><p class=\"md-p\">“过去三十天”在这个示例中严格指固定 end 之前的 30×24 小时，窗口是 [end−30天,end)，分页复用同一 end 和完整的时间/id 游标。</p><p class=\"md-p\">DATETIME(6) 没有时区。这里约定写入端、查询端把 UTC 墙上时间保存到 DATETIME(6)，Java 使用 UTC Calendar 绑定和读取，end 先截断到微秒。若产品指本地自然日，需要重新定义边界，夏令时日不保证 24 小时。Connector/J 的 connectionTimeZone 不一定改变服务端会话时区，必须配合明确的会话约定；示例连接配置采用 connectionTimeZone=UTC、forceConnectionTimeZoneToSession=true、preserveInstants=true，并要求所有写入端同样遵守。跨 JVM 默认时区、连接时区与会话时区的集成测试仍不可省。</p><p class=\"md-p\">金额为 DECIMAL(18,2)，Java 读取 BigDecimal；收入支出用正负号表达，不同币种不能直接相加。查询身份来自认证结果，pageSize 为 1–1000。固定 end 只防窗口每页滑动，不会阻止晚到的历史补写、删除或更正；严格历史导出还需要固定快照或版本化数据。LIMIT 100 只是第一页，不等于导出了全部流水。</p><p class=\"md-p\">将下面内容保存为 transaction_fixture.sql。它给出全部表和八行边界数据；若用户自行在独立测试 schema 执行，首屏预期 id 为 8、7，后续页为 4、1，这是结果推演，不是运行测量。</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">components/application/code/transaction_fixture.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- MySQL 8.4.0/InnoDB teaching fixture. Use an empty local test schema.\nCREATE TABLE user_transactions (\n  id BIGINT PRIMARY KEY AUTO_INCREMENT,\n  user_id BIGINT NOT NULL,\n  amount DECIMAL(18,2) NOT NULL,\n  currency CHAR(3) NOT NULL,\n  txn_time DATETIME(6) NOT NULL,\n  description VARCHAR(255) NOT NULL DEFAULT &#39;&#39;,\n  INDEX idx_user_time_id (user_id, txn_time DESC, id DESC)\n) ENGINE=InnoDB;\n\n\nINSERT INTO user_transactions(id,user_id,amount,currency,txn_time,description) VALUES\n (1,12345,10.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;inclusive start&#39;),\n (2,12345,20.00,&#39;CNY&#39;,&#39;2026-10-09 00:00:00.000000&#39;,&#39;exclusive end&#39;),\n (3,99999,30.00,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.000000&#39;,&#39;another user&#39;),\n (4,12345,40.00,&#39;CNY&#39;,&#39;2026-09-09 00:00:00.000000&#39;,&#39;same-time tie&#39;),\n (5,12345,50.00,&#39;CNY&#39;,&#39;2026-10-10 00:00:00.000000&#39;,&#39;future&#39;),\n (6,12345,60.00,&#39;CNY&#39;,&#39;2026-09-08 23:59:59.999999&#39;,&#39;too old&#39;),\n (7,12345,-0.10,&#39;CNY&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;outgoing&#39;),\n (8,12345,0.20,&#39;USD&#39;,&#39;2026-10-08 12:00:00.123456&#39;,&#39;other currency&#39;);\nSET @uid=12345;\nSET @window_end=CAST(&#39;2026-10-09 00:00:00.000000&#39; AS DATETIME(6));\nSET @window_start=DATE_SUB(@window_end,INTERVAL 30 DAY);\n-- First page: expected IDs 8,7. Literal LIMIT makes this directly runnable.\nSELECT id,amount,currency,txn_time,description\nFROM user_transactions\nWHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end\nORDER BY txn_time DESC,id DESC LIMIT 2;\n-- Copy the complete last row cursor; never recompute the window per page.\nSET @last_time=CAST(&#39;2026-10-08 12:00:00.123456&#39; AS DATETIME(6));\nSET @last_id=7;\n-- Next page: expected IDs 4,1.\nSELECT id,amount,currency,txn_time,description\nFROM user_transactions\nWHERE user_id=@uid AND txn_time&gt;=@window_start AND txn_time&lt;@window_end\n  AND (txn_time&lt;@last_time OR (txn_time=@last_time AND id&lt;@last_id))\nORDER BY txn_time DESC,id DESC LIMIT 2;\n</pre></div></div><p class=\"md-p\">将下面完整类保存为 TransactionQueries.java。firstPage 与 nextPage 共用窗口规则，返回页面而不一次性加载全部数据；调用方循环取最后一行形成下一页游标，空页结束。当前连接由调用方管理，方法只关语句和结果集。main 仅检查时间、金额和输入边界，不连接数据库。</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">components/application/code/TransactionQueries.java</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.math.BigDecimal;\nimport java.sql.*;\nimport java.time.*;\nimport java.time.temporal.ChronoUnit;\nimport java.util.*;\n\npublic final class TransactionQueries {\n    private TransactionQueries() {}\n    public record Transaction(long id, BigDecimal amount, String currency,\n                              Instant time, String description) {}\n    public record Cursor(Instant time, long id) {\n        public Cursor {\n            Objects.requireNonNull(time, &quot;time&quot;);\n            if (id &lt;= 0 || !time.equals(time.truncatedTo(ChronoUnit.MICROS)))\n                throw new IllegalArgumentException(&quot;positive id and exact microsecond cursor required&quot;);\n        }\n    }\n    public static Instant startOfWindow(Instant end) {\n        return Objects.requireNonNull(end, &quot;end&quot;).truncatedTo(ChronoUnit.MICROS)\n                      .minus(30, ChronoUnit.DAYS);\n    }\n    public static List&lt;Transaction&gt; firstPage(Connection c, long trustedUser,\n            Instant end, int pageSize) throws SQLException {\n        return page(c, trustedUser, end, pageSize, null);\n    }\n    public static List&lt;Transaction&gt; nextPage(Connection c, long trustedUser,\n            Instant end, int pageSize, Cursor cursor) throws SQLException {\n        return page(c, trustedUser, end, pageSize, Objects.requireNonNull(cursor));\n    }\n    private static List&lt;Transaction&gt; page(Connection c, long user, Instant end,\n            int size, Cursor cursor) throws SQLException {\n        Objects.requireNonNull(c, &quot;connection&quot;);\n        if (user &lt;= 0 || size &lt; 1 || size &gt; 1000)\n            throw new IllegalArgumentException(&quot;user &gt; 0, pageSize 1..1000&quot;);\n        end = Objects.requireNonNull(end, &quot;end&quot;).truncatedTo(ChronoUnit.MICROS);\n        Instant start = startOfWindow(end);\n        if (cursor != null &amp;&amp; (cursor.time().isBefore(start) || !cursor.time().isBefore(end)))\n            throw new IllegalArgumentException(&quot;cursor must belong to the fixed window&quot;);\n        String sql = &quot;SELECT id,amount,currency,txn_time,description FROM user_transactions &quot;\n                   + &quot;WHERE user_id=? AND txn_time&gt;=? AND txn_time&lt;? &quot;\n                   + (cursor == null ? &quot;&quot; : &quot;AND (txn_time&lt;? OR (txn_time=? AND id&lt;?)) &quot;)\n                   + &quot;ORDER BY txn_time DESC,id DESC LIMIT ?&quot;;\n        Calendar utc = Calendar.getInstance(TimeZone.getTimeZone(&quot;UTC&quot;));\n        try (PreparedStatement p = c.prepareStatement(sql)) {\n            int i = 1;\n            p.setLong(i++, user);\n            p.setTimestamp(i++, Timestamp.from(start), utc);\n            p.setTimestamp(i++, Timestamp.from(end), utc);\n            if (cursor != null) {\n                p.setTimestamp(i++, Timestamp.from(cursor.time()), utc);\n                p.setTimestamp(i++, Timestamp.from(cursor.time()), utc);\n                p.setLong(i++, cursor.id());\n            }\n            p.setInt(i, size); p.setQueryTimeout(10);\n            try (ResultSet r = p.executeQuery()) {\n                List&lt;Transaction&gt; result = new ArrayList&lt;&gt;();\n                while (r.next()) result.add(new Transaction(r.getLong(&quot;id&quot;),\n                    r.getBigDecimal(&quot;amount&quot;), r.getString(&quot;currency&quot;),\n                    r.getTimestamp(&quot;txn_time&quot;, utc).toInstant(), r.getString(&quot;description&quot;)));\n                return List.copyOf(result);\n            }\n        }\n    }\n    public static void main(String[] args) {\n        Instant end = Instant.parse(&quot;2026-10-09T00:00:00.000000999Z&quot;);\n        if (!startOfWindow(end).equals(Instant.parse(&quot;2026-09-09T00:00:00Z&quot;)))\n            throw new AssertionError(&quot;time window&quot;);\n        if (new BigDecimal(&quot;0.10&quot;).add(new BigDecimal(&quot;0.20&quot;))\n                .compareTo(new BigDecimal(&quot;0.30&quot;)) != 0) throw new AssertionError(&quot;money&quot;);\n        try {\n            new Cursor(end, 1);\n            throw new AssertionError(&quot;nanosecond cursor accepted&quot;);\n        } catch (IllegalArgumentException expected) { }\n        System.out.println(&quot;PASS pure Java time/money/cursor checks; no database connection&quot;);\n    }\n}\n</pre></div></div><p class=\"md-p\">有 JDK 21 时，在 TransactionQueries.java 所在目录运行：javac --release 21 TransactionQueries.java，然后 java TransactionQueries。纯 Java 自检无需 Connector/J。数据库集成才需要 com.mysql:mysql-connector-j:8.4.0 和获准的本地测试连接；本章不提供会自动连库或读取生产凭据的启动器。可在你已有项目中用 DataSource 借连接后调用这些方法，驱动加载、连接参数与访问凭据由该项目安全配置负责。</p><p class=\"md-p\">继续追问时应能回答：start 包含而 end 不包含；同一微秒以 id 消除并列；下一页保留完整微秒；负金额不是非法；汇总按 currency；SQL NULL 与零不同；无数据与查询失败不同；何时需要一致快照；连接谁拥有，事务谁结束。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mysql-guide\">版本、练习前提与验证边界</a></li></ul>"
+    }
+  },
+  {
+    "entryId": "database-86",
+    "entry": {
+      "id": "database-86",
+      "number": 15,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第二章：索引与查询优化",
+      "flat": false,
+      "title": "慢 SQL 排查流程",
+      "questionHtml": "<p class=\"md-p\">线上某接口突然变慢，怀疑是 MySQL 查询问题。你如何排查和优化慢 SQL？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是工程面试常问题。面试官看的是系统化排查能力，不是只会说 <code class=\"tok-inline\">EXPLAIN</code>。完整路径是先定位 SQL，再看执行计划，再结合数据量、索引、锁等待、返回行数和业务口径优化。</p>",
+      "knowledge": [
+        "慢查询日志：定位慢 SQL。",
+        "<code class=\"tok-inline\">EXPLAIN</code>：看访问类型、索引选择、扫描行数、Extra。",
+        "<code class=\"tok-inline\">EXPLAIN ANALYZE</code>：MySQL 8.0.18+ 对支持的语句实际执行并报告计时，需控制负载与副作用；不是仅估算。",
+        "索引：过滤、排序、覆盖、回表。",
+        "锁等待：慢不一定是 SQL 写得差，也可能是等锁。",
+        "大结果集：网络传输和应用处理也会慢。"
+      ],
+      "answerHtml": "<p class=\"md-p\">排查步骤：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>从监控确认慢的是 DB、应用、网络还是下游。</li><li>打开慢查询日志或 APM，定位具体 SQL 和参数。</li><li>用相同参数执行 <code class=\"tok-inline\">EXPLAIN</code>，关注 <code class=\"tok-inline\">type</code>、<code class=\"tok-inline\">key</code>、<code class=\"tok-inline\">rows</code>、<code class=\"tok-inline\">Extra</code>。</li><li>看是否走了错误索引、全表扫描、filesort、temporary、回表过多。</li><li>检查表数据量、索引基数、统计信息是否过期。</li><li>检查是否有锁等待：事务未提交、批量更新、DDL。</li><li>优化 SQL：改写条件、增加/调整联合索引、减少返回列、分页、拆查询。</li><li>验证优化前后执行计划和耗时，灰度上线。</li></ol></div>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">EXPLAIN\nSELECT id, title\nFROM article\nWHERE tenant_id = 1\n  AND status = 'PUBLISHED'\nORDER BY created_at DESC\nLIMIT 20;</pre></div></section>\n<p class=\"md-p\">索引：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE INDEX idx_tenant_status_created\nON article(tenant_id, status, created_at DESC, id DESC);</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">EXPLAIN</code> 中 type=ALL 一定很差吗？</strong></p>\n<p class=\"md-p\">问题分析：小表全表扫描可能比走索引更快。</p>\n<p class=\"md-p\">知识点：成本优化器、数据量。</p>\n<p class=\"md-p\">答案：不一定。要结合表大小、过滤比例和实际耗时。大表核心查询出现 <code class=\"tok-inline\">ALL</code> 通常需要警惕。</p>\n<p class=\"md-p\"><strong>变体 2：为什么明明有索引却没走？</strong></p>\n<p class=\"md-p\">问题分析：索引不一定被优化器选择。</p>\n<p class=\"md-p\">知识点：函数、隐式转换、选择性、统计信息。</p>\n<p class=\"md-p\">答案：可能对索引列用了函数、类型不匹配、like 前缀 <code class=\"tok-inline\">%</code>、条件选择性太低、统计信息过期，或返回大量行导致优化器认为全表扫更便宜。</p>\n<p class=\"md-p\"><strong>变体 3：慢 SQL 优化只靠加索引吗？</strong></p>\n<p class=\"md-p\">问题分析：索引不是万能药。</p>\n<p class=\"md-p\">知识点：SQL 改写、架构优化。</p>\n<p class=\"md-p\">答案：还包括减少查询列、拆分宽表、游标分页、预聚合、缓存、读写分离、归档历史数据和异步化。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "索引与查询优化"
+    }
+  },
+  {
+    "entryId": "pattern-transaction-ha",
+    "entry": {
+      "id": "pattern-transaction-ha",
+      "number": "事务高可用",
+      "title": "事务、锁、日志与高可用：MVCC、三日志、分库分表",
+      "kind": "pattern",
+      "kindLabel": "数据库模板",
+      "group": "题型模板",
+      "category": "事务与高可用",
+      "flat": false,
+      "subtitle": "关联 8 道题，题目地图另含 4 道项目表设计题 · 事务 + 复制 + 分库分表",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别事务边界",
+            "questions": [
+              "这个操作涉及几张表 / 几个库？",
+              "允许脏读 / 不可重复读 / 幻读吗？",
+              "需要分布式事务吗？"
+            ],
+            "example": "扣库存 + 创建订单：要么都成功要么都失败 → 单库本地事务；跨独立资源（订单库 + 库存库）→ 按原子性、预留及补偿能力评估 XA/2PC、TCC、Saga 或 Outbox；Saga/Outbox 不等于跨库原子提交。"
+          },
+          {
+            "stage": "识别并发冲突",
+            "questions": [
+              "会有并发更新同一行吗？",
+              "是读多写少还是写多读少？",
+              "能接受悲观锁还是必须乐观锁？"
+            ],
+            "example": "库存扣减：高并发写同一行 → 悲观锁（SELECT ... FOR UPDATE）或乐观锁（version 字段）。"
+          },
+          {
+            "stage": "识别可用性等级",
+            "questions": [
+              "DB 主库挂了能容忍多久不可用？",
+              "数据能丢吗？（RPO / RTO）",
+              "需要跨机房容灾吗？"
+            ],
+            "example": "如目标 RPO=0、RTO<1分钟，需定义故障域、持久化、候选提升与旧主隔离并演练；半同步加自动切换不自动满足该目标。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 性能估算",
+        "formulas": [
+          {
+            "name": "行锁竞争",
+            "formula": "TPS × avg_lock_hold_time",
+            "example": "1000/s × 0.01s = 平均 10 个在途事务的量纲估计；同一排他行锁同时只有一个持有者，10ms 持锁约束单热点理论不超过约100/s。"
+          },
+          {
+            "name": "Undo Log 大小",
+            "formula": "TPS × avg_tx_size × longest_trx_duration",
+            "example": "1000 TPS × 1KB × 60s = 60MB Undo"
+          },
+          {
+            "name": "Binlog 增长",
+            "formula": "TPS × avg_binlog_bytes_per_tx × retention_days × 86400",
+            "example": "1000/s × 1000B × 7×86400s = 604.8GB；假设每事务 binlog 为1000B，非实测"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "MySQL 行锁竞争",
+            "write": "~1000 TPS/行",
+            "read": "N/A",
+            "note": "仅假设持锁约1ms的量级；不是普遍上限，持锁时间决定串行瓶颈"
+          },
+          {
+            "resource": "MySQL 半同步复制延迟",
+            "write": "~1-10ms",
+            "read": "N/A",
+            "note": "比异步多一个 ACK 等待"
+          },
+          {
+            "resource": "MySQL 主从切换",
+            "write": "N/A",
+            "read": "RTO 需故障演练实测，无固定30秒保证",
+            "note": "故障检测、隔离旧主、恢复/提升、路由与校验均计入"
+          }
+        ],
+        "pitfalls": [
+          "不考虑行锁竞争 → 单行走不下去",
+          "不估算 Undo Log → 长事务撑爆磁盘"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 高可用架构演进",
+        "stages": [
+          {
+            "stage": "单机",
+            "architecture": "单 MySQL 实例",
+            "pros": [
+              "简单"
+            ],
+            "cons": [
+              "单点故障"
+            ],
+            "when": "内部系统",
+            "tradeoff": ""
+          },
+          {
+            "stage": "主从复制",
+            "architecture": "MySQL 主 + 从（异步复制）",
+            "pros": [
+              "读写分离"
+            ],
+            "cons": [
+              "主从延迟",
+              "切换丢数据"
+            ],
+            "when": "读多写少",
+            "tradeoff": "用数据丢失风险换可用性"
+          },
+          {
+            "stage": "半同步复制",
+            "architecture": "MySQL 主 + 从（半同步）",
+            "pros": [
+              "降低丢失风险；ACK、降级、持久化与提升候选决定保证"
+            ],
+            "cons": [
+              "写入延迟增加"
+            ],
+            "when": "希望降低部分故障的数据丢失风险，需验证ACK/降级与提升策略",
+            "tradeoff": "用延迟换数据安全"
+          },
+          {
+            "stage": "MHA / Orchestrator",
+            "architecture": "自动故障检测 + 切换",
+            "pros": [
+              "RTO 需演练，不承诺30s"
+            ],
+            "cons": [
+              "复杂"
+            ],
+            "when": "业务要求自动恢复且具备安全隔离与恢复运维能力时评估",
+            "tradeoff": "用复杂度换可用性"
+          },
+          {
+            "stage": "分库分表",
+            "architecture": "Sharding Sphere / MyCat",
+            "pros": [
+              "水平扩展"
+            ],
+            "cons": [
+              "跨分片查询难",
+              "分布式事务难"
+            ],
+            "when": "单机存不下 / 写瓶颈",
+            "tradeoff": "用复杂度换扩展性"
+          },
+          {
+            "stage": "Paxos / Raft（NewSQL）",
+            "architecture": "TiDB / OceanBase",
+            "pros": [
+              "在法定组与故障模型内提供约定一致性；失去法定组可能拒绝服务"
+            ],
+            "cons": [
+              "成本高"
+            ],
+            "when": "金融级核心系统",
+            "tradeoff": "用成本换强一致"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ 事务与高可用 Trade-off",
+        "decisions": [
+          {
+            "question": "Read Uncommitted vs Read Committed vs Repeatable Read vs Serializable？",
+            "chooseCache": "RR（MySQL 默认）：性能 + 一致性平衡",
+            "chooseDB": "RC可能减少部分范围锁冲突；Serializable提供可串行化隔离，等待与吞吐取决于负载",
+            "cost": "RR 一致性快照与范围锁各有边界，仍有写偏差；RC 一致性读可见性随语句变化"
+          },
+          {
+            "question": "悲观锁 vs 乐观锁？",
+            "chooseCache": "悲观锁（FOR UPDATE）：冲突激烈时",
+            "chooseDB": "乐观锁（version）：冲突少时",
+            "cost": "两种写法都竞争数据库写锁；显式锁增加持锁范围，版本冲突增加重试，按负载测量"
+          },
+          {
+            "question": "同步复制 vs 异步复制 vs 半同步？",
+            "chooseCache": "半同步：等待副本接收确认，未必已应用，超时可退化异步",
+            "chooseDB": "异步：提交不等待副本确认，可能丢已确认写；性能按负载测量",
+            "cost": "半同步增加 ACK 等待，1–10ms 只是示例假设，实际由网络、副本持久化及超时策略决定"
+          },
+          {
+            "question": "垂直拆分 vs 水平拆分？",
+            "chooseCache": "水平拆分（sharding）：数据量大的表",
+            "chooseDB": "垂直拆分：按业务拆库",
+            "cost": "水平拆分引入跨分片查询问题；垂直拆分不能解决单表过大"
+          },
+          {
+            "question": "Sharding 中间件 vs 客户端分片？",
+            "chooseCache": "中间件（ShardingSphere Proxy）：对应用透明",
+            "chooseDB": "客户端（ShardingSphere JDBC）：性能好",
+            "cost": "中间件多一跳；客户端耦合业务代码"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键代码骨架",
+        "snippets": [
+          {
+            "name": "库存扣减（防超卖）",
+            "code": "-- 方案 1：先锁后判断的短事务；条件UPDATE也竞争同一热点行\nBEGIN;\nSELECT stock FROM products WHERE id = 1 FOR UPDATE;  -- 行锁\n-- 检查 stock > 0\nUPDATE products SET stock = stock - 1 WHERE id = 1 AND stock > 0;\n-- 必须检查恰好1行，失败回滚；下句仅成功路径。\nCOMMIT;\n\n-- 方案 2：可选版本条件，所有相关写维护 version，并防止溢出\nUPDATE products\nSET stock = stock - 1, version = version + 1\nWHERE id = 1 AND stock > 0 AND version = 123;\n-- 返回 affected_rows = 0 → 扣减失败（库存不足或版本冲突）\n\n-- 方案 3：Redis 预留是独立架构，不能仅使用下面的 DECR 注释证明安全\n-- DECR 是原子操作但可减到负数；须同一原子脚本检查正数量与余额\n-- 库存预热到 Redis，DB 异步持久化",
+            "explanation": "悲观锁：简单但行锁竞争大；乐观版本协议的 UPDATE 仍加数据库写锁，冲突需有界完整事务重试；Redis 需原子检查并扣减，DECR 单独可能负数；权威状态、持久性、切换与对账是独立协议。"
+          },
+          {
+            "name": "分布式事务（TCC 原始反例与完整协议）",
+            "code": "// 以下保留为不安全反例，非可运行 TCC：orderId 未使用，重复和乱序会破坏库存。\n// Try 阶段：预留资源\npublic boolean tryDeductStock(String orderId, int count) {\n    // 冻结库存（不实际扣减）\n    int rows = jdbc.update(\n        \"UPDATE products SET frozen = frozen + ? WHERE id = 1 AND stock - frozen >= ?\",\n        count, count);\n    return rows > 0;\n}\n\n// Confirm 阶段：真正扣减\npublic boolean confirmDeductStock(String orderId, int count) {\n    int rows = jdbc.update(\n        \"UPDATE products SET stock = stock - ?, frozen = frozen - ? WHERE id = 1\",\n        count, count);\n    return rows > 0;\n}\n\n// Cancel 阶段：释放冻结\npublic boolean cancelDeductStock(String orderId, int count) {\n    int rows = jdbc.update(\n        \"UPDATE products SET frozen = frozen - ? WHERE id = 1\", count);\n    return rows > 0;\n}",
+            "explanation": "上面三个方法故意保留原反例，不得作为正确实现调用。完整持久协议：以(tenant,orderId)唯一收据绑定SKU与正数量；所有分支同事务先串行锁定/建立该收据，再锁库存；Try只允许ABSENT→RESERVED且库存足够，冻结与收据一起提交；重复Try核对参数后返回原状态；Confirm只允许RESERVED→CONFIRMED，同时扣stock与frozen，重复同终态不再扣；Cancel对ABSENT持久写CANCELLED墓碑，对RESERVED释放对应冻结后转CANCELLED，对CONFIRMED拒绝相反终态；迟到Try不得越过墓碑。冲突插入后回滚并重新查收据，失败整体回滚；提交未知按原键查，数量/版本范围需校验。保留终态到重放窗口结束，故障恢复扫描仅重放已决分支。这里给出完整状态转移契约，但没有数据库适配器实现或执行证明，TCC仍有数据库锁与预留成本。"
+          },
+          {
+            "name": "分库分表路由",
+            "code": "// 按 user_id 分 16 个库，每库 16 张表（共 256 张表）\npublic class ShardingRouter {\n    private static final int DB_COUNT = 16;\n    private static final int TABLE_COUNT_PER_DB = 16;\n\n    public String routeDb(long userId) {\n        if (userId <= 0) throw new IllegalArgumentException(\"positive userId\");\n        int dbIndex = (int) (userId % DB_COUNT);\n        return \"db_\" + dbIndex;\n    }\n\n    public String routeTable(long userId) {\n        if (userId <= 0) throw new IllegalArgumentException(\"positive userId\");\n        int tableIndex = (int) ((userId / DB_COUNT) % TABLE_COUNT_PER_DB);\n        return \"orders_\" + tableIndex;\n    }\n}\n\n// 下列是依赖注入伪代码；Order/jdbc/queryShard 未提供，不能作为完整 Java 编译。\n// 查询：单分片查询，必须按 db 选择 DataSource，不能算出 db 后忽略它\npublic Order getOrder(long userId, long orderId) {\n    String db = router.routeDb(userId);\n    String table = router.routeTable(userId);\n    return jdbc.query(\"SELECT * FROM \" + table + \" WHERE user_id=? AND order_id=?\",\n        userId, orderId);\n}\n\n// 跨分片查询：广播 + 归并\npublic List<Order> getOrdersByTime(LocalDate date) {\n    List<Order> results = new ArrayList<>();\n    for (int db = 0; db < DB_COUNT; db++) {\n        for (int table = 0; table < TABLE_COUNT_PER_DB; table++) {\n            results.addAll(queryShard(db, table, date));\n        }\n    }\n    return results;\n}",
+            "explanation": "分片键选择：user_id 是常见选择（保证同一用户的订单在同一分片）。跨分片查询：尽量避免（设计时按查询维度分片）；必须时用广播 + 归并。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 事务与高可用故障",
+        "scenarios": [
+          {
+            "failure": "死锁",
+            "symptom": "MySQL 检测到死锁并回滚",
+            "mitigation": "按固定顺序加锁 + 减小事务粒度 + 超时重试",
+            "detection": "InnoDB 死锁日志"
+          },
+          {
+            "failure": "长事务",
+            "symptom": "Undo Log 膨胀 + 锁等待",
+            "mitigation": "限制事务时长 + 拆大事务",
+            "detection": "information_schema.innodb_trx"
+          },
+          {
+            "failure": "主从延迟",
+            "symptom": "写完立刻读不到",
+            "mitigation": "读己之写（强制读主）/ GTID 等待",
+            "detection": "Seconds_Behind_Source 监控"
+          },
+          {
+            "failure": "脑裂（双主）",
+            "symptom": "两个主库同时写入",
+            "mitigation": "MHA / Raft 选主 + fencing",
+            "detection": "数据不一致告警"
+          },
+          {
+            "failure": "分片热点",
+            "symptom": "某个分片特别大",
+            "mitigation": "重新分片 + 一致性哈希",
+            "detection": "分片大小监控"
+          },
+          {
+            "failure": "分布式事务悬挂",
+            "symptom": "Try 成功后终态通知失败或迟到 Try 遇到先前 Cancel",
+            "mitigation": "事务日志 + 定时对账 + 重试",
+            "detection": "持久事务状态与异常停留年龄；迟到 Try 的防悬挂另查"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 监控指标",
+        "red": [
+          "事务提交/回滚率",
+          "锁等待时间",
+          "死锁次数"
+        ],
+        "use": [
+          "主从延迟（Seconds_Behind_Source）",
+          "InnoDB Buffer Pool 命中率",
+          "Redo Log 写入速率"
+        ],
+        "business": [
+          "库存超卖数量（应为 0）",
+          "订单状态一致性对账",
+          "跨分片查询比例、扇出与成本（阈值由业务预算确定，1%不是通用要求）"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "事务隔离级别",
+          "ids": [
+            "database-88"
+          ],
+          "note": "MVCC + 四种隔离级别 + 幻读"
+        },
+        {
+          "range": "三大日志",
+          "ids": [
+            "database-89"
+          ],
+          "note": "Redo / Undo / Binlog 的作用和写入顺序"
+        },
+        {
+          "range": "库存超卖",
+          "ids": [
+            "database-87"
+          ],
+          "note": "悲观锁 / 乐观锁 / Redis 三种方案"
+        },
+        {
+          "range": "唯一索引与幂等",
+          "ids": [
+            "database-90"
+          ],
+          "note": "防重复的 DB 层方案"
+        },
+        {
+          "range": "主从复制",
+          "ids": [
+            "database-91"
+          ],
+          "note": "读写分离 + 主从延迟处理"
+        },
+        {
+          "range": "分库分表",
+          "ids": [
+            "database-92"
+          ],
+          "note": "分片策略 + 跨分片查询"
+        },
+        {
+          "range": "Outbox 模式",
+          "ids": [
+            "database-93"
+          ],
+          "note": "可靠消息 + 幂等消费"
+        },
+        {
+          "range": "中间态补偿",
+          "ids": [
+            "database-94"
+          ],
+          "note": "补偿扫描 + 状态机"
+        },
+        {
+          "range": "项目定制",
+          "ids": [
+            "database-95",
+            "database-96",
+            "database-97",
+            "database-98"
+          ],
+          "note": "分片上传 / 会话消息 / RAG / AI 工作台的表设计"
+        }
+      ],
+      "interviewPitch": "事务与高可用我会按\"隔离级别 → 锁策略 → 日志保证 → 复制拓扑 → 分片方案\"五步走。RR 是 InnoDB 默认；快照读与锁定读各自有边界，跨行不变量仍需显式协议。单行库存优先讲清正数量条件更新；version 是额外校验，DECR 单独不能保证非负。跨资源按原子性、预留能力与可补偿性选择 XA/2PC、TCC、Saga 或 Outbox，不能仅按长短事务决定。分库分表的关键是选好分片键（user_id / tenant_id），避免跨分片查询。核心原则：单机事务最简单，分布式事务是不得已的选择。",
+      "pitfalls": [
+        "不知道 RR 和 RC 的区别 → MySQL 默认是 RR 不是 RC",
+        "仅按锁名称判断性能 → 按冲突、等待与恢复协议选择；条件 UPDATE 同样竞争行锁",
+        "分布式事务只会说 2PC → XA/2PC、TCC、Saga 依据原子性与补偿能力取舍，不能一概排除",
+        "分库分表后跨分片查询 → 设计时应该按查询维度选分片键"
+      ],
+      "relatedIds": [
+        "database-87",
+        "database-88",
+        "database-89",
+        "database-90",
+        "database-91",
+        "database-92",
+        "database-93",
+        "database-94"
+      ],
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志",
+      "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-mysql-pattern-transaction-ha\">MySQL 手册：具体条件、完整推演与实验</h2><h2 class=\"md-h md-h2\">第29章 高可用 故障切换与 RPO RTO</h2><p class=\"md-p\">高可用的核心是故障后仍有唯一合法写主，并且新主的数据满足已承诺的恢复点；“能连上另一台”既不证明无损，也不证明不会双写。</p><p class=\"md-p\">可能的问法：一主一从是否已经高可用？异步、半同步和组复制分别保证什么？切主前为什么先隔离旧主？有副本为什么还要备份？</p><p class=\"md-p\">RPO 描述故障时允许丢失的数据范围，RTO 描述恢复服务所需时间。两者必须说明故障域、复制确认策略、日志持久化和选择候选节点的规则。可以把时间线分为故障检测、写权隔离、追平判断、提升、路由刷新、应用重连与业务核对；任何一步省略都会把恢复时间或数据风险隐藏在一个“自动切换”名词里。</p><h3 class=\"md-h md-h3\">MySQL怎样做高可用，异步、半同步、Group Replication和备份各保证什么？</h3><p class=\"md-p\">高可用是复制、故障检测、安全提升、客户端切换和恢复的共同协议，RPO 与 RTO 要在明确故障模型下分别验证。</p><p class=\"md-p\">可能的问法：MySQL怎样做高可用，异步、半同步、Group Replication和备份各保证什么？</p><h3 class=\"md-h md-h3\">先约定RPO、RTO和故障模型</h3><p class=\"md-p\">明确可丢失多少已确认事务、多久恢复写服务、是否允许短暂旧读，以及覆盖单进程/整机/机房/网络分区哪类故障。主副本跨故障域、监控、连接路由、备份与恢复演练共同服务这些目标；主库本地日志双1持久化只能保证其相应故障模型，不替代复制/备份。</p><p class=\"md-p\">传统异步binlog→receiver/relay log→applier，源提交不用等副本，延迟与故障提升都可能丢已确认写。</p><h3 class=\"md-h md-h3\">安全切换比检测端口更重要</h3><p class=\"md-p\">切主先交接写权，再开放新入口：确认故障与复制进度，可靠隔离旧主，选满足水位和政策的候选，提升成唯一写主，再切路由、让客户端重连，最后校验业务不变量与复制拓扑。网络分区时，旧主可能仍能服务另一部分客户端；探活失败就另立一个主，会制造双写。改 DNS 也不会清掉已经建立的旧连接。</p><p class=\"md-p\">若某个请求已提交但丢了应答，自动切换也无法替它去重，重试仍须沿业务幂等键回查。旧主回归要受控重新加入、追平，不能直接恢复写入；落后副本也不能靠跳过错误就变成合格新主。</p><h3 class=\"md-h md-h3\">组复制与其他方案的选择</h3><p class=\"md-p\">Group Replication使用组通信、事务认证/成员管理，可单主或多主；InnoDB Cluster结合组复制、Shell管理和Router路由，仍需理解quorum、认证冲突、流控和一致性选项。多主不是任意跨节点写都无冲突，也不是每个副本应用同步完成才响应的简单模型。</p><p class=\"md-p\">BEFORE/AFTER等一致性设置可增加应用/读取等待，需要同时考虑一致性要求与延迟预算；丢法定组时停止写保护一致性可能牺牲可用性。跨地域一般增加网络延迟，不能仅靠增加节点承诺同时无损、低延迟且分区双方可写。受托管服务封装时仍核对实际承诺和故障演练结果。</p><h3 class=\"md-h md-h3\">备份不能被副本替代</h3><p class=\"md-p\">HA主要缩短服务中断，备份降低历史数据不可恢复风险，二者覆盖不同失败。</p><p class=\"md-p\">演练主进程退出、主机失联、网络分区、落后副本、半同步超时、路由旧连接和恢复主归队，观测实际RTO、最终业务键/金额及丢失范围。</p><h3 class=\"md-h md-h3\">Group Replication 的一致性也有边界</h3><p class=\"md-p\">组复制通过组通信、成员关系与事务认证管理复制，不等于每个节点在任何时点都已完成相同行的本地应用。单主简化写入入口，多主仍可能认证冲突；分区中不足法定组的一侧不能为了可用性任意继续接受写入。多个节点存在于同一主机或故障域也不能提供所需容灾。</p><p class=\"md-p\">一致性级别影响等待位置。EVENTUAL 允许相应滞后；BEFORE 让事务执行前等待先前事务应用；AFTER 让读写事务提交对外完成前等待其变更在其他成员应用；BEFORE_AND_AFTER 组合两者。BEFORE_ON_PRIMARY_FAILOVER 对新主切换后的积压应用提供额外保护，但不是所有副本读自动具有任意请求的因果屏障。AFTER 对只读事务没有上述提交等待作用。BEFORE、AFTER 与 BEFORE_AND_AFTER 还包含切主积压保护；新主上的普通业务读写可被挂起，而状态诊断等特定查询仍允许执行。挂起超过相应等待限制会报错，应用不能当作提交成功。模式选择需要同时考虑成员变更、慢成员和尾延迟。</p><p class=\"md-p\">InnoDB Cluster 通常由 Group Replication、MySQL Shell 管理能力和 Router 配合构成。Router 改变新连接路径，不自动消除已建立的旧连接，也不能决定一个超时请求在数据库是否已提交。连接池应丢弃失效连接，业务重试使用幂等收据。</p><h3 class=\"md-h md-h3\">一次安全提升如何交代</h3><p class=\"md-p\">第一，区分进程故障、主机故障和网络分区，确认旧主是否仍有写入能力。第二，用能够在实际故障模型中生效的措施隔离旧写权，不能仅靠健康检查失败。第三，核对候选节点接收与执行的事务集合、错误与本地持久状态，按 RPO 策略处理缺失。第四，单点提升并发布新写路由，客户端刷新连接。第五，核对业务唯一键与关键账目、修复复制拓扑，并把旧主重新构建或按受控规则追平后加入。</p><p class=\"md-p\">若不能证明旧主已经被隔离，宁可短暂拒绝写入，也不能制造两个独立权威。若选择接受数据损失恢复可用性，应先明确业务和恢复策略，不能事后称为无损切换。</p><p class=\"md-p\">副本会忠实复制误删。备份应独立保存、定期恢复验证，并与连续 binlog 链共同服务时间点恢复。RTO 还包括下载备份、重放日志、校验与应用重连，不能只测新主监听端口的耗时。</p><h2 class=\"md-h md-h2\">第33章 跨分片事务与协调方案</h2><p class=\"md-p\">跨分片事务选型从业务不变量和外部可见性出发：XA 追求受控资源的原子提交，TCC 显式预留，Saga 用业务补偿，Outbox 把本地事实与异步意图绑定。</p><p class=\"md-p\">可能的问法：两个库各 COMMIT 为什么不够？XA 故障后怎样恢复？TCC 的空回滚和悬挂是什么？Saga 补偿是否等于回滚？Outbox 能否保证跨库强一致？</p><p class=\"md-p\">先尝试让必须一起裁决的不变量共置，例如一条幂等记录与对应业务状态位于同一权威分片。同一 MySQL 实例中多个 schema 的 InnoDB 表可以由同一连接控制本地事务；这里的“跨库”若只是不同库名，和跨两个资源管理器是不同问题。真正跨实例后，要显式承担协调、恢复、超时与人工介入成本。</p><h3 class=\"md-h md-h3\">为什么分库分表，跨库事务出现后怎样在XA、TCC、Saga与Outbox之间选择？</h3><p class=\"md-p\">跨分片强不变量应尽量共置；无法共置时依据原子性、可补偿性和恢复成本选择 XA、TCC、Saga 或 Outbox。</p><p class=\"md-p\">可能的问法：为什么分库分表，跨库事务出现后怎样在XA、TCC、Saga与Outbox之间选择？</p><h3 class=\"md-h md-h3\">尽量把强不变量放回本地</h3><p class=\"md-p\">容量、写入吞吐、热点工作集、故障域和维护时间可能推动分片，但先优化SQL/索引/归档与资源。选分片键时优先使常一起更新的聚合落同一分片，减少跨片JOIN/事务。按user分片后用户间转账仍可能跨片，不能以单条SQL看起来简单就否认问题。</p><p class=\"md-p\">同一MySQL实例内多张InnoDB表可以由同一连接本地事务控制；跨两个独立数据库的两次COMMIT不能同时原子。网络故障可能只有一边成功，应用catch后发反向UPDATE也可能失败或覆盖其他变化，必须有明确协议。</p><h3 class=\"md-h md-h3\">几种方案各自承诺</h3><p class=\"md-p\">XA/2PC在prepare后持久保留决策所需状态，再由协调者决定commit/rollback，提供资源管理器支持范围内的原子提交；代价是prepare持锁、协调者恢复和故障时阻塞/不确定处理。它不自动涵盖任意HTTP服务或发邮件。</p><p class=\"md-p\">TCC把业务拆成Try预留、Confirm确认、Cancel取消，需处理重复、空回滚和悬挂，业务侵入明显。Saga由多个已提交本地事务组成，失败执行有业务语义的补偿，补偿不等同时间倒流，外部观察可能见过中间状态。Outbox将业务变更与事件意图同事务写入，消费者幂等投影/推进流程，通常提供最终一致，不应命名成跨库强ACID。</p><h3 class=\"md-h md-h3\">选型与验收</h3><p class=\"md-p\">如果业务允许短时中间状态并有合理补偿，事件流程常更可用；若必须跨资源原子且所有参与者支持XA，可评估2PC和运维恢复能力；库存/额度可Try预留，失败释放；已经对外发货不能简单“撤销”成未发生，需真实反向业务。</p><p class=\"md-p\">每步有稳定业务幂等键、状态机、版本和审计，对未知提交结果先查状态。测试协调者崩溃、prepare后超时、重复confirm/cancel、乱序事件、消费者死信、补偿失败和人工恢复；以业务总额/资源不变量验收，不能只看每个RPC返回200。</p><h3 class=\"md-h md-h3\">XA 的失败时间线</h3><p class=\"md-p\">设 A、B 两个受支持的资源管理器参加同一 XID。协调者让两边执行并结束分支，再发 PREPARE；准备成功才表示参与者可靠保存了承诺所需状态，可以等待最终决定。协调者先可靠记录提交决定，再向两边发 COMMIT。调用超时只能说应答未知，恢复应重发同一决定，不能随意改口回滚。</p><p class=\"md-p\">把崩溃点依次往后移，就能解释恢复责任。A 已 prepare、B 尚未准备成功时，协调者最终决定回滚，A 在确认决定前可能继续占资源；提交决定已持久、只通知 A 时，协调者重启后必须继续通知 B 提交，不能因 B 超时改成取消；客户端只是不知道结果时，则按 XID 和业务收据查询。MySQL XA RECOVER 能列 prepared 分支，却不能替代协调者自己的可靠业务决策日志。</p><p class=\"md-p\">XA 的原子提交不自动提高应用隔离级别，也不自动覆盖邮件、短信或不支持 XA 的 HTTP。另须核对选定 MySQL 版本中的 XA 限制、复制与备份恢复规则；不要把 MySQL 引擎与 binlog 的内部两阶段提交当作业务已拥有一个跨库协调器。</p><h3 class=\"md-h md-h3\">TCC 为什么需要空回滚和防悬挂</h3><p class=\"md-p\">Try 以业务 ID 预留资源，Confirm 把同一预留转成完成，Cancel 释放同一预留。重复 Confirm/Cancel 要幂等，终态不能相互覆盖。如果 Cancel 先到而 Try 尚未来到，仍要记住“该事务已取消”；否则迟来的 Try 又会创建永远无人确认的预留，这就是需要防悬挂的原因。只有进程内标记不能在崩溃后提供保证。</p><p class=\"md-p\">预留量、可用量和总量必须有明确不变量，租约过期清理不能释放已确认资源。业务截止时间也要定义判定点，不能把本地计时器响了当成远端已取消。</p><h3 class=\"md-h md-h3\">Saga 的补偿是新业务动作</h3><p class=\"md-p\">预订、扣款、发货是已提交的独立步骤。取消预订或退款通常可以补偿，已发货则可能只能走退货，短信已经送出更无法擦除。补偿有自己的幂等 ID、版本、失败重试和人工收敛；步骤之间的中间状态可能被观察，因此不能声称它等同一笔数据库回滚。</p><p class=\"md-p\">当撤销步骤与原步骤重试并发时，先明确最终状态与命令次序，让迟到成功不会把取消意图覆盖。补偿执行顺序常与正向相反，但业务依赖可能要求特殊次序，需要显式设计。</p><h3 class=\"md-h md-h3\">Outbox 与验收口径</h3><p class=\"md-p\">Outbox 让本地业务事实与“需要向外发布”的意图同事务提交。发布成功、回写失败会重发，消费者和外部副作用仍要有幂等与结果查询。本地账本、请求收据与外部操作 ID 必须贯穿重试及对账。</p><p class=\"md-p\">选择时先问：不变量是否真跨资源？允许多长中间状态？所有参与者是否支持 prepare？补偿是否可能且被业务认可？未知结果由谁查清？测试应覆盖协调者重启、prepared 残留、相反终态竞争、补偿失败及旧消息重放。通过的标准是业务不变量与恢复过程可解释，而不是每个接口都返回 200。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mysql-guide\">版本、练习前提与验证边界</a></li></ul><p class=\"md-p\">以上吞吐、延迟、RTO、Undo 大小都是条件化估算，未做服务实测。半同步 ACK 是接收持久化阶段的确认，不等于副本已应用；等待超时可切回异步，必须监控降级并保证安全提升与 fencing。跨分片广播须限制并发、总结果和超时，分别处理部分失败与一致快照；模256扩容需版本化路由与迁移，不会自动重分布旧数据。</p><p class=\"md-p\">TCC 正确答案的完整参与者边界：stock 表示尚未消费的总量，frozen 是其中已预留部分，须保持 0≤frozen≤stock；Try(q) 仅在 stock−frozen≥q 时令 frozen+=q，Confirm 令 stock-=q 且 frozen-=q，Cancel 仅令 frozen-=q。唯一身份至少为(tenant,globalTransactionId,branchId)，本文一个订单只有一个库存分支时才能简写orderId；收据绑定SKU、正数量及规范化输入，不把调用方新传数量用于释放。对ABSENT收到Confirm必须拒绝或进入待核实，不能扣库存或伪造成功；CANCELLED只幂等接受Cancel，CONFIRMED只幂等接受Confirm，反向终态拒绝。Try库存不足的确定失败也需记录稳定REJECTED结果，同号重试返回它；若允许再次预留，应另开新业务尝试身份。协调者必须先持久记录唯一COMMIT/CANCEL决定并验证全部Try结果，恢复只重发该决定，参与者不能因本地超时自行推翻已决事务。收据/墓碑保留覆盖重放、备份恢复及迟到窗口；否则拒绝旧时代请求而非删除后重新受理。所有写入遵循先收据后库存的锁序、同一本地事务和行数检查；同键冲突需回滚后核验原收据，未知提交查询原键。这里给的是可实现与可验收的协议，未提供跨资源协调器/JDBC实现或数据库运行证明。</p>"
+    }
+  },
+  {
+    "entryId": "database-87",
+    "entry": {
+      "id": "database-87",
+      "number": 16,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第三章：事务、锁与日志",
+      "flat": false,
+      "title": "库存扣减与超卖",
+      "questionHtml": "<p class=\"md-p\">秒杀场景中，商品库存为 100。高并发下如何扣减库存，避免超卖？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是事务和锁的高频题。错误做法是先查库存，再在应用内判断，然后更新。并发下多个线程都可能看到库存充足，导致超卖。</p>\n<p class=\"md-p\">正确思路是把“库存大于 0”和“扣减”放到同一条原子 SQL 中，或者使用行锁保护读改写过程。</p>",
+      "knowledge": [
+        "原子条件更新：<code class=\"tok-inline\">UPDATE ... SET stock = stock - 1 WHERE stock &gt; 0</code>。",
+        "悲观锁：<code class=\"tok-inline\">SELECT ... FOR UPDATE</code>。",
+        "乐观锁：版本号或条件更新。",
+        "事务隔离：扣库存和创建订单要在事务中保持一致。",
+        "业务限购与请求幂等分开：同用户同 SKU 唯一是限购策略，请求 ID 才绑定一次重试身份。"
+      ],
+      "answerHtml": "<p class=\"md-p\">最常用扣减 SQL：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE sku_stock\nSET stock = stock - 1\nWHERE sku_id = ?\n  AND stock &gt; 0;</pre></div></section>\n<p class=\"md-p\">应用层判断影响行数：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">int affected = stockMapper.decrease(skuId);\nif (affected == 0) {\n    throw new ReservationRejectedException(); // 不存在或不足等业务条件未满足，按授权上下文查明\n}</pre></div></section>\n<p class=\"md-p\">订单幂等约束：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE seckill_order (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    user_id BIGINT NOT NULL,\n    sku_id BIGINT NOT NULL,\n    order_no VARCHAR(64) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_user_sku (user_id, sku_id),\n    UNIQUE KEY uk_order_no (order_no)\n);</pre></div></section>\n<p class=\"md-p\">事务流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>插入订单，依赖 <code class=\"tok-inline\">uk_user_sku</code> 防重复下单。</li><li>执行库存条件扣减。</li><li>如果扣减成功，提交事务；如果失败，回滚订单。</li></ol></div>\n<p class=\"md-p\">也可以先扣库存再插订单，但同一本地事务中订单插入失败必须回滚整个事务，库存随之回滚；只有已提交的跨步骤业务才讨论补偿。实际工程会结合 Redis 预扣、MQ 异步下单、库存流水和补偿任务。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：用 <code class=\"tok-inline\">SELECT stock</code> 再 <code class=\"tok-inline\">UPDATE</code> 为什么不安全？</strong></p>\n<p class=\"md-p\">问题分析：读和写之间存在并发窗口。</p>\n<p class=\"md-p\">知识点：竞态条件、原子更新。</p>\n<p class=\"md-p\">答案：多个事务都读到 stock=1 后各自扣减，会超卖。应使用条件更新，或在事务中 <code class=\"tok-inline\">SELECT ... FOR UPDATE</code> 加行锁。</p>\n<p class=\"md-p\"><strong>变体 2：悲观锁怎么写？</strong></p>\n<p class=\"md-p\">问题分析：需要锁住库存行直到事务结束。</p>\n<p class=\"md-p\">知识点：行锁、事务范围。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">START TRANSACTION;\n\nSELECT stock\nFROM sku_stock\nWHERE sku_id = ?\nFOR UPDATE;\n\nUPDATE sku_stock\nSET stock = stock - 1\nWHERE sku_id = ?\n  AND stock &gt; 0;\n\n-- 应用检查行数必须为 1，否则 ROLLBACK；只在成功路径 COMMIT。\nCOMMIT;</pre></div></section>\n<p class=\"md-p\">但高并发秒杀下悲观锁阻塞严重，条件更新通常更简洁。</p>\n<p class=\"md-p\"><strong>变体 3：如何防止接口重复提交？</strong></p>\n<p class=\"md-p\">问题分析：用户连点、网络重试、MQ 重投都会重复。</p>\n<p class=\"md-p\">知识点：唯一索引、幂等 token、状态机。</p>\n<p class=\"md-p\">答案：用业务唯一键，例如 <code class=\"tok-inline\">(user_id, sku_id)</code> 或 <code class=\"tok-inline\">request_id</code> 唯一索引。相同请求键须比较不可变参数并返回已提交结果；其他唯一冲突不是重复成功。未知提交结果先按请求键查询。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志",
+      "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-mysql-database-87\">MySQL 手册：具体条件、完整推演与实验</h2><h3 class=\"md-h md-h3\">S2-B：检查和修改放错位置，写锁也救不了</h3><h3 class=\"md-h md-h3\">错误方案：两人都把 10-1 算成常量 9</h3><p class=\"md-p\">两会话回滚后，由 A 重置：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-037.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE s2_stock SET available=10,version=0 WHERE sku=1;\nCOMMIT;\n</pre></div></div><p class=\"md-p\">先完成 A1 与 B1，再执行 A2，最后执行 B2：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-038.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- A1\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT available INTO @a_seen FROM s2_stock WHERE sku=1; -- 10\nSET @a_next=@a_seen-1; -- 模拟 Java 中基于读值计算的 9\n</pre></div></div><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-039.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- B1：必须在 A2 之前完成读取。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT available INTO @b_seen FROM s2_stock WHERE sku=1; -- 10\nSET @b_next=@b_seen-1; -- 9\n</pre></div></div><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-040.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- A2\nUPDATE s2_stock SET available=@a_next,version=version+1 WHERE sku=1;\nCOMMIT;\n</pre></div></div><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-041.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- B2：A2 已提交，但 B 仍使用先前算出的常量。\nUPDATE s2_stock SET available=@b_next,version=version+1 WHERE sku=1;\nCOMMIT;\nSELECT available,version FROM s2_stock WHERE sku=1; -- 预期 (9,2)\n</pre></div></div><p class=\"md-p\">两个请求都读到 10，各自在应用里算出 9，再先后把 9 写回。写锁确实让写入排了队，却没办法把第二个请求带来的旧常量重新算成 8。于是两条成功路径各认为预留一份，库存总共只少一份，这是丢失更新式的业务错误。把初值改成 1，同样的先查后写就可能让两笔订单都以为抢到了最后一份。</p><h3 class=\"md-h md-h3\">正确的单行约束：把条件与算术放在数据库里</h3><p class=\"md-p\">两边回滚，A 重置 (1,10,0)。按 A1→B1→等待证据→A2→B2：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-042.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- A1：UPDATE 返回后先不提交。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nUPDATE s2_stock\nSET available=available-1,version=version+1\nWHERE sku=1 AND available&gt;=1;\nSELECT ROW_COUNT() AS a_changed; -- 预期 1\n</pre></div></div><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-043.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- B1：只提交这条 UPDATE 到服务器，然后停在等待中。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nUPDATE s2_stock\nSET available=available-1,version=version+1\nWHERE sku=1 AND available&gt;=1;\n</pre></div></div><p class=\"md-p\">此时在 A 执行共同约定中的等待观察 SQL。看到 B 等待 A 的 s2_stock 锁之后，A 才执行：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-044.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- A2\nCOMMIT;\n</pre></div></div><p class=\"md-p\">等 B1 的 UPDATE 返回，B 紧接着执行，ROW_COUNT 之前不要夹任何其他语句：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-045.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- B2\nSELECT ROW_COUNT() AS b_changed; -- 初值 10 时预期 1\nCOMMIT;\nSELECT available,version FROM s2_stock WHERE sku=1; -- 预期 (8,2)\n</pre></div></div><p class=\"md-p\">同一 SQL 会在写入所需锁定下判断条件和修改行。重新结束事务并把 available=1、version=0，按完全相同关卡执行，A 成功 1 行，B 等待后影响 0 行，最终 (0,1)。改为 RC 也应保持这一单行条件约束。</p><p class=\"md-p\">这只证明库存条件，并未实现请求幂等。同一逻辑请求超时重试，换一轮再扣仍可能成功。完整业务还需要稳定请求键、同键同参数校验，以及请求记录与扣减同事务；不能把“影响 0 行”统称为重复成功。0 行也可能是 SKU 不存在、库存不足、版本冲突或其他谓词未满足。</p><h3 class=\"md-h md-h3\">乐观版本条件的边界</h3><p class=\"md-p\">若确实要检测从读取后发生的相关变化，可使用业务 version：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch20/fence-046.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">-- 示例前提：quantity=1，预期 version=7，数据库当前库存=1、version=7。\nUPDATE s2_stock\nSET available=available-1,version=version+1\nWHERE sku=1 AND version=7 AND available&gt;=1;\nSELECT ROW_COUNT();\n</pre></div></div><p class=\"md-p\">独立测试前应由 A 在两边回滚后重置 available=1、version=7。两次使用这个条件的竞争预期仅一次影响 1 行，最终库存 0、version=8。版本条件是应用协议，所有相关写必须维护它，递增还要考虑数值上界。失败后重新读取、重新判断整个业务，不能只替换版本号继续用旧决策；旧 RR 快照中盲目重读可能永远读到旧版本。</p><p class=\"md-p\">quantity 必须大于 0。若把 -1 带进 available&gt;=quantity 与 available=available-quantity，“扣库存”反而会加库存。接口层校验正数量，金额和数量范围也要受控；不要等数据库整数溢出才发现契约有洞。</p><h3 class=\"md-h md-h3\">最后用不变量验收，而不是只看 SQL 成功</h3><p class=\"md-p\">建议在同一基线上逐项观察以下预期：</p><ul class=\"md-list\"><li>同一 SKU 两次扣 1：初值 10 最终 8；初值 1 只一次成功、最终 0；初值 0 两次均 0 行。</li><li>不同 SKU：另插入 (2,10,0) 后，各自按主键扣减，不应仅因业务使用同一张表就被全局串行化；额外索引、外键或其他共享资源仍要另查。</li><li>非正数量：应用拒绝，不能进入扣减 SQL。</li><li>中途异常：成功扣减后未完成必要后续写就回滚，库存恢复；提交后响应丢失则走结果查询，不能盲重扣。</li><li>重复逻辑请求：只有稳定身份与同事务去重记录才能检验此契约；本章单行条件更新本身不提供它。</li><li>两设备或两医生：失败方案可能得到 0；守卫、汇总或正确 Serializable 重试应保持至少 1。</li><li>长事务：跟踪事务年龄、历史保留和空间趋势；低 CPU 不代表没有成本。</li></ul><p class=\"md-p\">库存先查后改为什么仍可能超卖？条件更新保护单行后，能否自动保护跨行约束？ 检查与修改若分离，会基于过时状态作决定；同一行条件更新只能保护该行表达的条件。跨行约束必须让竞争者在共同受保护的决策点相遇。</p><p class=\"md-p\">RR 有 MVCC 和间隙锁，为什么仍可能需要 Serializable？ 普通快照读未自动锁住决策集合，非相交写集合仍可能形成写偏差。更强隔离是选择之一，守卫和集中约束也是；它们都需要完整失败处理。</p><h3 class=\"md-h md-h3\">单行库存怎样防超卖</h3><p class=\"md-p\">假设一个租户一个 SKU 只有一条库存记录，stock/version 均为非负 BIGINT，quantity 必须大于 0。读到 stock=1、version=7 的两个请求，各自扣 1：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch24/fence-131.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE inventory\nSET stock=stock-?,version=version+1\nWHERE tenant_id=? AND sku_id=? AND version=? AND stock&gt;=?;\n</pre></div></div><p class=\"md-p\">最后一个参数必须绑定同一 quantity。一个成功后变为 stock=0/version=8，另一个带 version=7 的更新不能再次成功。只需保护单行不负数时，WHERE stock&gt;=quantity 的原子条件扣减已经足够；version 是检测其他相关变化的额外协议，不必为“乐观锁”名词强加。所有会影响决策的写入口必须推进 version，达到 Long.MAX_VALUE 要拒绝或迁移，不能回绕。</p><p class=\"md-p\">影响 1 行表示这一条 CAS 通过，最终事务提交才表示业务完成。影响 0 行可能是库存不足、版本过期、记录不存在、租户或状态条件不符；数据库异常又是另一类结果。应在不泄露其他租户数据的前提下重新确认状态，不能统一当成重复成功。MySQL 驱动的 matched/changed 行数选项还需关注，不过本例成功必增加 version，因此不会出现“命中但写回相同值”歧义。</p><p class=\"md-p\">保存为 OptimisticStock.java，调用者负责事务、订单、预留收据和 outbox；它明确只完成单次 CAS：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">components/transactions/code/locking/OptimisticStock.java</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.sql.*;\n\n/** A single SQL CAS. Caller owns transaction, receipt, order and outbox. */\npublic final class OptimisticStock {\n    private OptimisticStock() {}\n    public static boolean tryReserve(Connection c,long tenant,long sku,long quantity,long expected)\n            throws SQLException {\n        if (tenant&lt;=0 || sku&lt;=0 || quantity&lt;=0 || expected&lt;0 || expected==Long.MAX_VALUE)\n            throw new IllegalArgumentException(&quot;positive IDs/quantity and incrementable version required&quot;);\n        try (PreparedStatement p = c.prepareStatement(\n                &quot;UPDATE inventory SET stock=stock-?,version=version+1 &quot; +\n                &quot;WHERE tenant_id=? AND sku_id=? AND version=? AND stock&gt;=?&quot;)) {\n            p.setQueryTimeout(10);\n            p.setLong(1,quantity); p.setLong(2,tenant); p.setLong(3,sku);\n            p.setLong(4,expected); p.setLong(5,quantity);\n            int changed=p.executeUpdate();\n            if (changed&gt;1) throw new SQLException(&quot;stock key is not unique&quot;);\n            return changed==1;\n        }\n    }\n}\n</pre></div></div><p class=\"md-p\">同一个请求若超时后重新读 version 再扣一次，CAS 仍可能再次成功。因此业务重放需要独立的唯一 (tenant,request_id) 收据，绑定不可变 SKU/数量并与扣减同事务。缺库存是业务结果，不应无限重试；RR 中反复使用原读视图又可能总拿到旧版本。只有可恢复竞争才开新事务重读，限制次数、时间并退避。多 SKU 全成全败需同一事务与固定锁序，单行条件不保护“总额不超预算”等跨行约束。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mysql-guide\">版本、练习前提与验证边界</a></li></ul><p class=\"md-p\">OptimisticStock.java 现仅依赖 JDK java.sql，调用方提供 Connection，并负责事务和异常回滚。双会话 s2_stock 片段需要本模块完整隔离实验的初始化 DDL 与等待观察语句，不能孤立复制后认为已完成实验。此处仅静态审阅，未执行 MySQL。</p>"
+    }
+  },
+  {
+    "entryId": "database-88",
+    "entry": {
+      "id": "database-88",
+      "number": 17,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第三章：事务、锁与日志",
+      "flat": false,
+      "title": "事务隔离级别、MVCC 与幻读",
+      "questionHtml": "<p class=\"md-p\">解释 MySQL InnoDB 的事务隔离级别。什么是脏读、不可重复读、幻读？InnoDB 默认的可重复读如何解决幻读？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察 MySQL 底层。不要只背四个隔离级别，要能结合 MVCC、快照读、当前读、Next-Key Lock 说明。</p>\n<p class=\"md-p\">InnoDB 默认隔离级别是 Repeatable Read。普通 <code class=\"tok-inline\">SELECT</code> 通常是一致性读，RR 通常复用 Read View；自己的写仍可见，不能把所有读取都当成不变快照；<code class=\"tok-inline\">SELECT ... FOR UPDATE</code>、<code class=\"tok-inline\">UPDATE</code>、<code class=\"tok-inline\">DELETE</code> 是当前读，需要加锁。</p>",
+      "knowledge": [
+        "Read Uncommitted：可能脏读。",
+        "Read Committed：避免脏读，但可能不可重复读。",
+        "Repeatable Read：一致性读通常复用首次 Read View，但自己的写可见，混合当前读并非同一快照。",
+        "Serializable：更强隔离，可增加等待/死锁，吞吐影响取决于负载，不是固定性能排名。",
+        "MVCC：通过 undo log 和 Read View 实现多版本读。",
+        "Next-Key Lock：记录锁 + 间隙锁，防止当前读场景下的幻读。"
+      ],
+      "answerHtml": "<p class=\"md-p\">现象解释：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>脏读：读到其他事务尚未提交的数据。</li><li>不可重复读：同一事务内两次读同一行，结果不同，通常因为别的事务提交了更新。</li><li>幻读：同一事务内按范围查询，两次读出现新增或消失的行。</li></ul></div>\n<p class=\"md-p\">InnoDB 在 Repeatable Read 下：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>普通 <code class=\"tok-inline\">SELECT</code> 使用 MVCC 快照读，同一事务内 Read View 一致，因此不会看到后续提交的新行。</li><li>RR 中范围当前读如 <code class=\"tok-inline\">SELECT ... FOR UPDATE</code> 通常会加 Next-Key Lock，锁住记录和间隙，阻止其他事务在范围内插入，从而避免当前读幻读。</li></ul></div>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">START TRANSACTION;\n\nSELECT *\nFROM orders\nWHERE user_id = 1\n  AND amount &gt; 100\nFOR UPDATE;\n\n-- 其他事务不能在该锁范围内插入满足条件的数据\n\nCOMMIT;</pre></div></section><p class=\"md-p\">MySQL 8.4/InnoDB：锁范围由隔离级别、索引访问路径及唯一键命中/缺失决定；唯一键完整等值命中通常只需记录锁。RR 不能自动消除跨行写偏差，自己的写会改变后续普通读可见结果；当前读也包括自己未提交的写。混用普通读和锁定读应先明确协议。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：RC 和 RR 最大区别是什么？</strong></p>\n<p class=\"md-p\">问题分析：都是 MVCC，但 Read View 创建时机不同。</p>\n<p class=\"md-p\">知识点：Read View。</p>\n<p class=\"md-p\">答案：RC 每次普通一致性读使用新的已提交视图，所以能看到其他事务已提交的新数据；RR 通常事务第一次快照读创建 Read View，后续复用，所以可重复读。</p>\n<p class=\"md-p\"><strong>变体 2：快照读和当前读区别？</strong></p>\n<p class=\"md-p\">问题分析：很多锁问题都卡在这里。</p>\n<p class=\"md-p\">知识点：普通 SELECT、FOR UPDATE、UPDATE。</p>\n<p class=\"md-p\">答案：RC/RR 中普通 InnoDB SELECT 通常是一致性读，不加事务记录锁但仍有元数据锁；SERIALIZABLE 多语句事务另论。<code class=\"tok-inline\">SELECT ... FOR UPDATE</code>、<code class=\"tok-inline\">UPDATE</code>、<code class=\"tok-inline\">DELETE</code> 是当前读，读取最新已提交版本并加锁。</p>\n<p class=\"md-p\"><strong>变体 3：没有索引时加锁会怎样？</strong></p>\n<p class=\"md-p\">问题分析：锁依赖索引定位，没索引会扫描更多行。</p>\n<p class=\"md-p\">知识点：行锁、索引、锁范围扩大。</p>\n<p class=\"md-p\">答案：条件列没有索引时，InnoDB 可能扫描大量记录并加锁，导致锁范围扩大，并发性能急剧下降。事务更新条件必须有合适索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "事务、锁与日志",
+      "supplementHtml": "<h2 class=\"md-h md-h2\" id=\"add-own-mysql-database-88\">MySQL 手册：具体条件、完整推演与实验</h2><h3 class=\"md-h md-h3\">BEGIN 并不通常等于快照建立</h3><p class=\"md-p\">BEGIN 通常只是打开 RR 事务，还没给业务表拍下快照。第一次对 InnoDB 表做普通一致性读时，才通常建立 Read View。</p><p class=\"md-p\">按这个时点推结果：A BEGIN；B 把库存从 10 改为 9 并提交；A 第一次普通 SELECT 应看到 9。如果把顺序改成 A 先读到 10，再由 B 提交，那么 A 下一次普通读通常仍是 10。只改变“首次读在谁提交之前”，答案就不同。</p><p class=\"md-p\">要在事务启动时主动建立一致快照，可在 RR 下使用：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch19/fence-014.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY;\n-- 此处开始多条普通一致性查询；结束时 COMMIT。\nCOMMIT;\n</pre></div></div><p class=\"md-p\">WITH CONSISTENT SNAPSHOT 不会替你改变隔离级别；MySQL 8.4 对非 RR 级别忽略该修饰并发出警告。因此不能在 RC 下加这一句，就声称获得贯穿整个事务的固定快照。只有读取常量、用户变量或查询某些元数据，也不能当作“已建立业务表的一致性读视图”的证据。</p><p class=\"md-p\">RC 所说的“每次新快照”，限定于每次一致性读，不是每一条 SQL 都创建同样的 Read View。优化实现还可能安全复用内部对象；概念上的可见性契约比“是否分配了一个新的对象地址”重要。</p><h3 class=\"md-h md-h3\">无索引 UPDATE 是大扫描 不是锁升级</h3><p class=\"md-p\">题目“按一个没有索引的非主键列找一条数据并更新”没给 DDL 或精确 SQL，应先回答语法，再解释缺失信息。以下 label 故意有两条 A：</p><div class=\"code-card md-code-card\"><div class=\"code-toolbar\"><span class=\"file-label\">code/ch22/fence-079.sql</span></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE items SET price=price+1 WHERE label=&#39;A&#39;;\n-- 初始值(1,A,10),(2,A,20),(3,B,30)，此语句修改两条 A。\nUPDATE items SET price=price+1 WHERE id=1 AND label=&#39;A&#39;;\n-- 才是限制为既定主键的一条。\n</pre></div></div><p class=\"md-p\">第一条 UPDATE 可能要扫聚簇树，沿路对大量记录申请保护。RR 保留的记录锁或 next-key 锁会让许多看似无关的操作等待，但过程不是“先升成表 X、查到目标、再降成行锁”；IX 和 MDL 也都不是数据表 X。</p><p class=\"md-p\">LIMIT 1 只限制这次最多处理一条匹配记录，不能证明 label 具有业务唯一性；没有稳定选择规则时，它只是从候选里选中一条。要改善这个问题，应先减少无效扫描，为真实谓词建立合适索引，并缩短事务；新增索引自己的写维护成本也要一并评估。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mysql-guide\">版本、练习前提与验证边界</a></li></ul>"
+    }
+  }
+]

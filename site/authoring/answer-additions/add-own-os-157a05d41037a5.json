@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-157a05d41037a5",
+  "entryId": "own-juc-correctness",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "29666c00233ac8489adf145b7ce2054b421031ad9f14ed8b8b6bfeec9cc07bc4",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q18 如何确定性复现丢失更新并验证修复"
+    },
+    {
+      "type": "paragraph",
+      "text": "演示丢失更新，最好控制竞争窗口，而不是反复跑到碰巧出错。让两个线程循环 i++，有时得到正确结果，不方便解释；用 CyclicBarrier 让双方先读同一个 old，再各自写 old+1，就能确定性展示两次更新只留下 1。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里屏障只是安排读写顺序，不代表业务写入因此具备了原子性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：控制读时序→复现丢更新→锁内读改写"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：多次随机运行正确不是证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "修复要让读改写在同一临界区，或使用合适的原子更新。SharedStateDemo同时演示ReentrantLock的同线程重入和有界生产消费：每个工作者收到自己的停止消息，主线程回收完成与失败，超时能结束测试，不留下不受控线程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名：SharedStateDemo.java。编译运行：javac -encoding UTF-8 SharedStateDemo.java；java SharedStateDemo。在JDK9及以上可使用javac --release 8进行Java8 API与字节码兼容检查。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "SharedStateDemo.java",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.locks.ReentrantLock;\n\n/** Force one lost update, then protect a compound operation and transfer ownership via a queue. */\npublic final class SharedStateDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static final class Ledger {\n        final ReentrantLock lock = new ReentrantLock();\n        int value;\n        boolean nestedObserved;\n        void increment() {\n            lock.lock();\n            try { value++; audit(); } finally { lock.unlock(); }\n        }\n        void audit() { // The same thread may acquire a ReentrantLock again.\n            lock.lock();\n            try { nestedObserved |= lock.getHoldCount() == 2; }\n            finally { lock.unlock(); }\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(2);\n        try {\n            final int[] broken = {0};\n            CyclicBarrier bothRead = new CyclicBarrier(2);\n            Callable<Void> loseUpdate = () -> {\n                int snapshot = broken[0];\n                bothRead.await(3, TimeUnit.SECONDS); // Both read 0 before either writes.\n                broken[0] = snapshot + 1;\n                return null;\n            };\n            Future<Void> a = pool.submit(loseUpdate), b = pool.submit(loseUpdate);\n            a.get(3, TimeUnit.SECONDS); b.get(3, TimeUnit.SECONDS);\n            check(\"barrier forces a lost update\", broken[0] == 1);\n            // volatile alone would not make a read-modify-write operation atomic.\n            Ledger ledger = new Ledger();\n            Runnable add = () -> { for (int i = 0; i < 1000; i++) ledger.increment(); };\n            Future<?> c = pool.submit(add), d = pool.submit(add);\n            c.get(3, TimeUnit.SECONDS); d.get(3, TimeUnit.SECONDS);\n            check(\"lock protects compound updates\", ledger.value == 2000);\n            check(\"lock is reentrant\", ledger.nestedObserved);\n            check(\"all lock acquisitions released\", !ledger.lock.isLocked());\n\n            final int poison = Integer.MIN_VALUE; // Reserve a value outside the input domain.\n            BlockingQueue<Integer> queue = new ArrayBlockingQueue<>(2);\n            List<Integer> consumed = Collections.synchronizedList(new ArrayList<Integer>());\n            Callable<Void> consumer = () -> {\n                while (true) {\n                    Integer item = queue.poll(3, TimeUnit.SECONDS);\n                    if (item == null) throw new TimeoutException(\"missing item or poison\");\n                    if (item == poison) return null;\n                    consumed.add(item * item);\n                }\n            };\n            Future<Void> e = pool.submit(consumer), f = pool.submit(consumer);\n            for (int input : new int[]{1, 2, 3, 4, poison, poison})\n                if (!queue.offer(input, 3, TimeUnit.SECONDS)) throw new TimeoutException(\"queue full\");\n            e.get(3, TimeUnit.SECONDS); f.get(3, TimeUnit.SECONDS);\n            Collections.sort(consumed); // Consumers finish out of order, so compare as a multiset.\n            check(\"queue delivers every work item once\", consumed.equals(Arrays.asList(1, 4, 9, 16)));\n            check(\"one poison pill stops each consumer\", e.isDone() && f.isDone() && queue.isEmpty());\n            Future<Void> g = pool.submit(consumer), h = pool.submit(consumer);\n            for (int i = 0; i < 2; i++)\n                if (!queue.offer(poison, 3, TimeUnit.SECONDS)) throw new TimeoutException(\"queue full\");\n            g.get(3, TimeUnit.SECONDS); h.get(3, TimeUnit.SECONDS);\n            check(\"empty input still stops every consumer\", consumed.size() == 4 && queue.isEmpty());\n        } finally {\n            pool.shutdownNow();\n            if (!pool.awaitTermination(3, TimeUnit.SECONDS)) throw new AssertionError(\"pool stuck\");\n        }\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "演算：A/B都读取0，屏障放行后均写1；锁版本每次在锁内读取最新值再写回，累计次数等于所有线程循环总和。同一线程调用持同一锁的方法可再次获取ReentrantLock，退出时必须逐次unlock。n次计数工作O(n)，状态O(1)；队列项目与结果集合另计。该实验验证停止通知、Future回收和资源终止；空输入与逐项失败另见Q13和Q28，不以打印顺序替代断言。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-lost-update",
+  "targetOrigin": "authored"
+}

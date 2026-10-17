@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-hwqa-2-1",
+  "entryId": "hwqa-2",
+  "expectedOriginalHash": "e2387a021b97ba453f35d0c6c3405a9b33d4ec2ae8eb0ab9f2b8489b68e919bb",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "8. Outbox、CDC、事务消息、TCC 和 Saga 的边界如何回答？"
+    },
+    {
+      "type": "paragraph",
+      "text": "Outbox 的本地承诺是业务状态与发送意图一起提交。提交前崩溃，两者都不生效；提交后发布前崩溃，扫描器仍能找到待办；发布已成功但标完成失败，会再次发送。所以还需要下游稳定身份去重，不能据此宣称所有外部效果 exactly-once。发送超时只是结果未知，不能机械翻译成发送失败。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如租赁订单受理，可以用下面完整 outbox_order.sql 表达三种身份：请求身份、不可变事件身份及消费命名空间。SQL 是未执行的 MySQL 8.4.0 教学表结构，业务订单表和操作由具体业务另定，因此这里不声称已经给出整个租赁系统。该表采用轮询 sent_at 模型。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/application/code/outbox_order.sql",
+      "value": "-- MySQL 8.4.0 / InnoDB teaching schema; not executed. Polling model, not insert-only CDC.\nCREATE TABLE s6_request (\n tenant_id BIGINT NOT NULL,\n request_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n order_id BIGINT NULL, result_json JSON NULL,\n PRIMARY KEY(tenant_id,request_id)\n) ENGINE=InnoDB;\nCREATE TABLE s6_outbox (\n tenant_id BIGINT NOT NULL,\n event_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n aggregate_id BIGINT NOT NULL, aggregate_version BIGINT NOT NULL,\n event_type VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n payload JSON NOT NULL, created_at DATETIME(6) NOT NULL, sent_at DATETIME(6) NULL,\n PRIMARY KEY(tenant_id,event_id),\n UNIQUE KEY uk_event(tenant_id,aggregate_id,aggregate_version,event_type),\n KEY ix_pending(sent_at,created_at,event_id)\n) ENGINE=InnoDB;\nCREATE TABLE s6_inbox (\n tenant_id BIGINT NOT NULL,\n consumer_name VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n event_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n handled_at DATETIME(6) NOT NULL,\n PRIMARY KEY(tenant_id,consumer_name,event_id)\n) ENGINE=InnoDB;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "在订单事务中插入请求占位、写业务、写唯一事件并补齐 order_id/result_json 后才允许提交；不能把仍为空的占位先提交。重放核对同一可信租户范围内的规范化载荷摘要，返回保存的原响应。事件的业务唯一键 (tenant,aggregate,version,event_type) 与随机 eventId 是不同防线，前者防止同一业务版本被重复包装成两个新事件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "派发先区分身份，再讨论重试。eventId 指不可变事件，taskId 指任务，attemptId 指一次尝试，traceId 只用于追踪，不能随意拿其中一个替代另一个去重键。扫描到候选也不等于获得执行权：派发器要条件认领，记录 owner/epoch/lease；完成、失败、续租时都用相同身份做 CAS，避免旧执行者的迟到成功覆盖新认领状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "eventId 防重复，aggregateVersion 防状态倒退。完整快照可以拒绝旧版；“库存加 3”这类增量却不能跳过迟到版本，必须补齐缺口或从权威快照重建。同一分区也不保证多个发布者按业务版本先后发送。消息若只携带 taskId，消费者还须固定它指向的不可变任务版本，否则同一条旧消息重放时，可能执行后来改过的内容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面完整 task_dispatch.sql 保存任务与精简事件信封的本地表及参数模板。它是未执行的 MySQL 8.4.0 教学 SQL，带 ? 的部分分别由 JDBC 绑定；前两个 INSERT 必须在同一连接事务中执行，任何失败都回滚，COMMIT 异常归为未知。epoch、事件身份和 immutable_payload 的维护只开放给受信任服务。broker 发布确认、消费 ACK/offset 与远端动作不是该 SQL 文件的功能。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/application/code/task_dispatch.sql",
+      "value": "-- MySQL 8.4.0 / InnoDB teaching DDL and separately prepared JDBC templates; not executed.\nCREATE TABLE durable_task (\n tenant_id BIGINT NOT NULL, task_id BIGINT NOT NULL, version BIGINT NOT NULL,\n immutable_payload MEDIUMTEXT NOT NULL, deadline_at DATETIME(6) NOT NULL,\n state VARCHAR(16) NOT NULL, epoch BIGINT NOT NULL DEFAULT 0,\n lease_until DATETIME(6) NULL,\n PRIMARY KEY(tenant_id,task_id,version),\n KEY task_scan(state,lease_until,tenant_id,task_id),\n CHECK(epoch>=0), CHECK(version>0)\n) ENGINE=InnoDB;\nCREATE TABLE task_notice (\n tenant_id BIGINT NOT NULL,\n event_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n task_id BIGINT NOT NULL, task_version BIGINT NOT NULL,\n event_type VARCHAR(32) NOT NULL, schema_version INT NOT NULL,\n created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),\n PRIMARY KEY(tenant_id,event_id),\n FOREIGN KEY(tenant_id,task_id,task_version) REFERENCES durable_task(tenant_id,task_id,version)\n) ENGINE=InnoDB;\n-- In one transaction: bind trusted tenant, task identity, immutable version/payload/deadline.\nINSERT INTO durable_task(tenant_id,task_id,version,immutable_payload,deadline_at,state)\nVALUES(?,?,?,?,?,'PENDING');\nINSERT INTO task_notice(tenant_id,event_id,task_id,task_version,event_type,schema_version)\nVALUES(?,?,?,?,'EXECUTE',1);\n-- Claim candidates in a SHORT transaction, check affected rows=1, read new epoch, COMMIT.\nUPDATE durable_task SET state='RUNNING',epoch=epoch+1,\n lease_until=UTC_TIMESTAMP(6)+INTERVAL 30 SECOND\nWHERE tenant_id=? AND task_id=? AND version=? AND epoch=?\n AND epoch<9223372036854775807 AND deadline_at>UTC_TIMESTAMP(6)\n AND (state='PENDING' OR (state='RUNNING' AND lease_until<=UTC_TIMESTAMP(6)));\n-- Completion requires the same immutable task version and owned epoch; bind state to a server enum.\nUPDATE durable_task SET state=?,lease_until=NULL\nWHERE tenant_id=? AND task_id=? AND version=? AND epoch=?\n AND state='RUNNING' AND lease_until>UTC_TIMESTAMP(6);\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个任务的新版本在这个教学模型中是不同不可变执行目标；如果业务要求“只能执行最新版”，认领时还必须锁定并检查权威最新版本指针，不能仅凭该表存在一行就执行。状态参数应由服务端枚举限制为 SUCCEEDED/FAILED 等合法终态，未知外部效果不能写 FAILED。业务 deadline 决定还能否首次受理/执行，lease 决定何时能恢复执行权；本例截止前已认领的任务允许在期限后完成，若要求硬取消，需另定义终止协议。扫描器要按状态/租约索引有界分页，监控最老任务和恢复进度，不能一次全表扫完。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只发精简 ID/版本可减少消息网络、磁盘和敏感载荷，却增加回查 QPS 和对数据库可用性的依赖；积压恢复要限流。不可变输入的保留期限应覆盖重放窗口，提前删除 task 会让旧消息无法恢复。也可以发送不可变完整业务事件，是否比仅发 ID 更合适取决于历史重放与载荷大小。若 Kafka 仅负责唤醒，消费位移可以在工作已可靠转交持久任务恢复器后推进；没有独立扫描、租约接管和异常恢复，就不能用这个理由提前确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "轮询可以维护单独的投递状态表。采用 Debezium 3.3.2.Final Outbox Event Router 时，事件表按 insert-only 契约设计；该 SMT 面向 INSERT，UPDATE 不是正常事件输入，DELETE 被过滤。不能把一张不断更新 status 的表，不加过滤和契约区分就接到同样的 CDC 路由。事件载荷与派发进度分表，是一种更容易讲清的实现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务消息可以帮助协调某些 broker 与业务事务的确认流程，仍需解释回查依据和消费幂等；不能把 broker 的事务能力扩展成对任意 HTTP 系统的事务。TCC 的 Try 需要真实预留资源，Confirm/Cancel 都幂等，并处理空回滚、防悬挂和乱序；Saga 用一系列已提交的本地事务及业务补偿，补偿本身也可能失败。何时采用它们取决于资源能否预留、业务是否可补偿、延迟预算和运维成本，而不是列出框架名称便算解决一致性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对照 Seata 2.2.0 的 AT 模式：它要求受支持的关系数据库和代理 JDBC 路径，第一阶段把业务数据与 undo_log 一起本地提交，释放本地资源；第二阶段提交做清理，回滚按镜像补偿，并协调全局锁。绕过该协议的写入、脏写校验、SQL 支持和全局读隔离都要单独分析。Kafka 加本地 Outbox 是把已提交事实可靠异步传播，通常不会自动撤销上游已提交业务，因此与 AT 的目标和侵入点不同。XA/2PC 适用于参与者真实支持且业务需要跨资源原子提交的情况，要承担协调、锁持有和故障恢复成本；不能把 InnoDB 内部日志协调或普通 @Transactional 当成已经启用跨库 XA。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "1"
+}

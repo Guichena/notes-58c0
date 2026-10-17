@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-2-0",
+  "entryId": "bg-mysql-2",
+  "expectedOriginalHash": "5b28e4af10e295a4cec698237afe949fbf79621fadc672223a2e23747faf814e",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "普通一致性读与当前加锁读"
+    },
+    {
+      "type": "paragraph",
+      "text": "RC/RR 下的普通 SELECT 通常是一致性非锁定读，按视图决定可见性，可以读当前版本，也可能用 undo 重建旧版。快照读不是固定“读倒数第二版”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "SELECT ... FOR UPDATE、SELECT ... FOR SHARE 需要对可操作的当前记录建立相应锁定；UPDATE、DELETE 的搜索和修改也不能按旧快照简单推理。如果目标记录被其他未结束事务锁住，它们可能等待，随后重新判断；“当前读”不等于脏读，更不是越过他人未提交写锁读取并修改。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通一致性读通常不与同一行的写锁互相阻塞，但不能扩张为“SELECT 永远不等待”。元数据锁、资源排队、I/O、DDL 边界都可能影响它。INSERT ... SELECT 等复合语句中的 SELECT 也不能只按关键字套用普通 SELECT 的语义。涉及这些形式时要核对具体语句、隔离级别和访问路径。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "S2-A：同一事务的两个“现在”"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存初值严格重置为 10、version=0。两次成功扣 1 后应为 8；这与余额 100→80 的练习互不混用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "A、B 都结束前一事务后，由 A 执行："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-030.sql",
+      "value": "UPDATE s2_stock SET available=10,version=0 WHERE sku=1;\nCOMMIT;\nSELECT sku,available,version FROM s2_stock WHERE sku=1; -- (1,10,0)\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 A1→B1→A2："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-031.sql",
+      "value": "-- A1：这一次普通读建立 RR 视图。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nSELECT available,version FROM s2_stock WHERE sku=1; -- (10,0)\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-032.sql",
+      "value": "-- B1\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nUPDATE s2_stock SET available=9,version=version+1 WHERE sku=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-033.sql",
+      "value": "-- A2：先确认 B 的 COMMIT 返回。\nSELECT available,version FROM s2_stock WHERE sku=1; -- (10,0)\nSELECT available,version FROM s2_stock WHERE sku=1 FOR UPDATE; -- (9,1)\nSELECT available,version FROM s2_stock WHERE sku=1; -- 仍 (10,0)，本事务尚未写\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "把 A 改成 RC、重新重置 10 后重复，A2 的普通读也应得到 (9,1)。当前加锁读并没有“刷新”RR 后续一致性读的旧视图；它本来就是另一种读取契约。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "BEGIN 与首次读之间的提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立重置 (1,10,0) 后，只执行下面顺序："
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-034.sql",
+      "value": "-- A1：不要在这里读 s2_stock。\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-035.sql",
+      "value": "-- B1\nSTART TRANSACTION;\nUPDATE s2_stock SET available=9,version=1 WHERE sku=1;\nCOMMIT;\n"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch20/fence-036.sql",
+      "value": "-- A2：第一次普通一致性读发生在 B 提交之后。\nSELECT available FROM s2_stock WHERE sku=1; -- 预期 9\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "若独立重置后将 A1 改为 START TRANSACTION WITH CONSISTENT SNAPSHOT，且仍为 RR，则 A2 预期 10。要变更的只有快照建立时点，不能沿用前一轮的 9。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "0"
+}

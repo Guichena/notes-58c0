@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch24",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 版本 CAS 热点行与并发状态机",
+  "title": "版本 CAS 热点行与并发状态机",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s5621",
+      "order": 5621,
+      "question": "库存分桶与批量合并怎样保证守恒和每笔请求可追溯？",
+      "shortAnswer": "分桶分的是有限配额，100 份分四桶不能变成每桶 100；请求稳定路由到 bucket/epoch，调拨回收还要阻止旧轮次继续花额度。同桶批量先按请求号去重核载荷，只合计新请求，并让库存变化和逐笔预留同事务提交。整批成功与部分成功是不同契约，溢出、跨桶同号、释放与取消须另外设计，不能只留一个总差值。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "分桶与合并不能丢掉每笔预留"
+        },
+        {
+          "type": "paragraph",
+          "text": "分桶先守住一件事：库存总量不能凭空增加。100 份分到 4 桶，是每桶 25 份，不是每桶都拥有 100。各桶 available+held 与未分配额度应保持守恒；同一个 request_id 稳定路由到 bucket/epoch。一个桶空了而其他桶仍有货，是局部短缺，可以有限探测、调拨或拒绝，但会影响公平性和售尽率。扩桶或回收还要冻结旧 epoch，防止旧执行恢复后继续花已重新分配的额度，不能只靠超时回收。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若 MySQL 是权威库存，同桶请求可先去重并核对载荷，只把新请求的数量相加，一次更新库存，同时保存每笔 reservation。必须等整个事务提交才能确认。下面的实现选择整批全成或全拒，批量范围 1–1000，数量求和和 held 增长都做精确溢出检查；若要部分成功，需要另定稳定分配次序。全局唯一约束会拒绝不同桶复用同一请求号，不能随机换桶重试掩盖路由错误。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若 MySQL 只是可靠事件的投影，合并的则是同桶增量，还要在同一事务保存去重、处理进度和逐笔追溯。只保留最后值，迟到旧快照可能把状态倒回去；只累计而不记事件，重复投递又会重复扣减。允许投影延迟，不等于允许权威受理、去重和效果半提交；Redis+Lua 的原子性也不会自动延伸到 MySQL。"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 BucketReservations.java。它只做同库同桶预留；支付、释放、取消、跨桶调拨、epoch 迁移均须另建状态机，不能从此类名推断已经实现："
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/transactions/code/locking/BucketReservations.java",
+          "value": "import java.sql.*;\nimport java.util.*;\n\n/** Same-bucket all-or-none batch reservation; no release, payment or cross-bucket transfer. */\npublic final class BucketReservations {\n    public record Request(String id,long quantity) {\n        public Request { Db.key(id); if(quantity<=0) throw new IllegalArgumentException(\"quantity\"); }\n    }\n    private final Db.Source source;\n    public BucketReservations(Db.Source source){this.source=source;}\n    static List<Request> normalize(List<Request> input) {\n        if(input==null || input.isEmpty() || input.size()>1000) throw new IllegalArgumentException(\"batch 1..1000\");\n        Map<String,Request> unique=new TreeMap<>();\n        for(Request r:input) {\n            Objects.requireNonNull(r);\n            Request previous=unique.putIfAbsent(r.id(),r);\n            if(previous!=null && previous.quantity()!=r.quantity()) throw new IllegalArgumentException(\"conflicting duplicate\");\n        }\n        return List.copyOf(unique.values());\n    }\n    public boolean reserve(int bucket,List<Request> input,boolean failAfterReceipts) throws SQLException {\n        if(bucket<=0) throw new IllegalArgumentException(\"bucket\");\n        List<Request> requests=normalize(input);\n        return Db.transaction(source,c->{\n            long available,held;\n            try(PreparedStatement p=Db.prepare(c,\"SELECT available,held FROM bucket WHERE id=? FOR UPDATE\")) {\n                p.setInt(1,bucket);\n                try(ResultSet r=p.executeQuery()) {\n                    if(!r.next()) throw new IllegalArgumentException(\"missing bucket\");\n                    available=r.getLong(1);held=r.getLong(2);\n                }\n            }\n            List<Request> fresh=new ArrayList<>();long total=0;\n            for(Request request:requests) {\n                try(PreparedStatement p=Db.prepare(c,\"SELECT bucket_id,qty FROM reservation WHERE request_id=?\")) {\n                    p.setString(1,request.id());\n                    try(ResultSet r=p.executeQuery()) {\n                        if(r.next()) {\n                            if(r.getInt(1)!=bucket || r.getLong(2)!=request.quantity())\n                                throw new IllegalArgumentException(\"same ID must keep bucket and quantity\");\n                        } else {total=Math.addExact(total,request.quantity());fresh.add(request);}\n                    }\n                }\n            }\n            if(available<total) return false; // No mutations before this point.\n            long newHeld=Math.addExact(held,total);\n            for(Request request:fresh) {\n                try(PreparedStatement p=Db.prepare(c,\"INSERT INTO reservation(request_id,bucket_id,qty) VALUES(?,?,?)\")) {\n                    p.setString(1,request.id());p.setInt(2,bucket);p.setLong(3,request.quantity());p.executeUpdate();\n                }\n            }\n            if(failAfterReceipts) throw new SQLException(\"injected after receipts\");\n            try(PreparedStatement p=Db.prepare(c,\"UPDATE bucket SET available=?,held=? WHERE id=?\")) {\n                p.setLong(1,available-total);p.setLong(2,newHeld);p.setInt(3,bucket);\n                if(p.executeUpdate()!=1) throw new SQLException(\"locked bucket missing\");\n            }\n            return true;\n        });\n    }\n    public long[] snapshot(int bucket) throws SQLException {\n        try(Connection c=source.open();PreparedStatement p=Db.prepare(c,\n                \"SELECT available,held,(SELECT COALESCE(SUM(qty),0) FROM reservation WHERE bucket_id=?) FROM bucket WHERE id=?\")) {\n            p.setInt(1,bucket);p.setInt(2,bucket);\n            try(ResultSet r=p.executeQuery()) {\n                if(!r.next()) throw new IllegalArgumentException(\"missing bucket\");\n                return new long[]{r.getLong(1),r.getLong(2),r.getLong(3)};\n            }\n        }\n    }\n}\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "scenario-seckill-system",
+          "label": "秒杀系统设计（含运行中增加库存）"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s5778",
+      "order": 5778,
+      "question": "长时间人工审批怎样校验期限、版本和会签，又避免长事务？",
+      "shortAnswer": "等待审批保存为持久状态与截止时间，批准时才开短事务，校验当前权限、版本、不可变内容并同事务写审计、回执和唯一外部意图。须定义期限判定点：NOW() 是语句开始时间，锁等待跨过截止后不能据此宣称提交仍准时；可在取得行锁后重新读数据库时间判受理。会签应共锁草稿、核对同 revision 的全部角色结果，编辑后旧批准失效。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "审批的有效期和会签"
+        },
+        {
+          "type": "paragraph",
+          "text": "单审批应检查登录身份的当前权限、草稿版本、参数摘要、PENDING_REVIEW 状态及截止条件，然后将批准事实、唯一执行意图与审计放在同一事务。approvedRevision 和不可变 payload 由已经校验的服务端草稿导出，不能直接信任请求体。0 行可能是冲突、错误租户、过期、缺失或状态不符；重复成功必须由同号同载荷的已提交命令结果证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以教学规则“送审后 4 小时提醒、72 小时过期，每 5 分钟扫描”为例，起点是该 revision 实际送审时间，不是最初创建时间。过期不能自动批准，也不能依赖 Job 先把状态改成 EXPIRED。审批路径自己判断截止；提醒按草稿/revision/档位去重。驳回后重新送审是否重置期限应由业务定义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要特别说明时间语义：MySQL NOW() 是语句开始时的时间。UPDATE 在截止前启动、随后锁等待跨过截止，不能由 review_deadline>NOW() 推出“提交瞬间仍未过期”。若业务定义为取得草稿锁后的判定时点，可先锁定，再用后续语句取得数据库时间并校验，期间保持锁且不做远程操作；这仍不等于保证物理 COMMIT 时刻早于截止。截止的线性化点、锁等待跨期限与重试时重新取时钟必须明确测试，不能随意换成 SYSDATE 就宣称解决所有问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "会签是另一协议：每个 revision 有必需角色计划，每个角色一份结果；所有审批路径先锁同一草稿行，再记录角色结果、检查全部必需角色是否同版本通过，最后只生成一份执行意图。编辑使旧 revision 的会签失效。普通单人批准 SQL 不得绕过安全员要求。完整审批权限、deadline、执行意图代码由应用章节统一提供，本章给出并发与时间契约，不另造一个脱离权限的“简化审批服务”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "9. 72 小时人工审批如何避免长事务和重复外部工单？"
+        },
+        {
+          "type": "paragraph",
+          "text": "教学维修工单流程把模型生成的现象、疑似原因和检查项，与规则确定的优先级、班组、SLA 和审批角色分开；字段完整、证据回链与低置信度提示帮助人审核，模型不能自行批准生产写入。等待人的 72 小时应保存为 PENDING 状态和截止时间，不应让一个 JDBC 事务、连接或分布式锁存活 72 小时。审批到达时再开短事务，鉴权、锁定当前版本、验证不可变审批内容，推进状态并创建持久外部意图。审批命令 ID 代表一次逻辑确认，页面超时或重试必须沿用它；每次点击都生成新 ID 不能自然去重同一意图，服务端还要以业务唯一键约束一份有效意图。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的完整教学实现将“期限内受理”的线性化点定义为取得 run 行锁后的一次数据库 UTC 时间读取，而不是提交时刻。若请求在截止前到达却排队到截止后才拿到锁，它会被拒绝；若在截止前取得锁并检查通过，提交在截止后完成，本契约仍接受。直接在一个可能长时间等待锁的 UPDATE 里写 NOW()，其值是语句开始时间，不能把它宣传成精确提交截止线。业务若要求截止时刻之后绝不提交，需要重新定义更强协议，不能用一句时间谓词保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "将下面两段保存为 approval.sql 和 ApprovalService.java，用 JDK 21 的 javac ApprovalService.java 编译 Java。SQL 为未执行的 MySQL 8.4.0 教学建表及示例数据。DataSource 由调用者提供；以可信租户 1、操作者 10、run 100、期望版本 0 及调用者持久保存的同一个 UUID 调用 approve。代码返回持久的外部 requestId，不会发起 HTTP 或创建任何真实工单。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/application/code/approval.sql",
+          "value": "-- MySQL 8.4.0 / InnoDB teaching schema; not executed here.\nCREATE TABLE approval_role (\n tenant_id BIGINT NOT NULL, actor_id BIGINT NOT NULL, enabled BOOLEAN NOT NULL,\n PRIMARY KEY(tenant_id,actor_id)\n) ENGINE=InnoDB;\nCREATE TABLE approval_run (\n tenant_id BIGINT NOT NULL, run_id BIGINT NOT NULL, version BIGINT NOT NULL,\n status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n deadline_at DATETIME(6) NOT NULL,\n approved_payload MEDIUMTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,\n payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n PRIMARY KEY(tenant_id,run_id), CHECK(version>=0)\n) ENGINE=InnoDB;\nCREATE TABLE approval_receipt (\n tenant_id BIGINT NOT NULL,\n command_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n run_id BIGINT NOT NULL, actor_id BIGINT NOT NULL, expected_version BIGINT NOT NULL,\n payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n PRIMARY KEY(tenant_id,command_id)\n) ENGINE=InnoDB;\nCREATE TABLE external_intent (\n tenant_id BIGINT NOT NULL, business_key BIGINT NOT NULL,\n stable_request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n approved_payload MEDIUMTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,\n payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n state VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n epoch BIGINT NOT NULL DEFAULT 0, lease_until DATETIME(6) NULL,\n remote_id VARCHAR(128) NULL,\n PRIMARY KEY(tenant_id,business_key), UNIQUE KEY uq_request(tenant_id,stable_request_id),\n CHECK(epoch>=0)\n) ENGINE=InnoDB;\nCREATE TABLE approval_audit (\n tenant_id BIGINT NOT NULL, run_id BIGINT NOT NULL,\n command_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n actor_id BIGINT NOT NULL, admitted_at DATETIME(6) NOT NULL,\n PRIMARY KEY(tenant_id,command_id)\n) ENGINE=InnoDB;\nCREATE TABLE external_notice (\n tenant_id BIGINT NOT NULL,\n stable_request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n event_type VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n remote_id VARCHAR(128) NOT NULL,\n PRIMARY KEY(tenant_id,stable_request_id,event_type),\n FOREIGN KEY(tenant_id,stable_request_id) REFERENCES external_intent(tenant_id,stable_request_id)\n) ENGINE=InnoDB;\n-- trusted setup code inserts PENDING + version 0 + immutable server-generated payload/hash.\n-- It computes deadline_at from the selected business rule, e.g. created_at + INTERVAL 72 HOUR.\n-- This schema intentionally has no credentials, real approver, payload or live endpoint.\nINSERT INTO approval_role VALUES(1,10,TRUE);\nINSERT INTO approval_run VALUES(1,100,0,'PENDING',UTC_TIMESTAMP(6)+INTERVAL 72 HOUR,\n '{\"action\":\"create\",\"workOrder\":\"demo\"}',\n SHA2('{\"action\":\"create\",\"workOrder\":\"demo\"}',256));\n"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/application/code/ApprovalService.java",
+          "value": "import javax.sql.DataSource;\nimport java.nio.charset.StandardCharsets;\nimport java.security.MessageDigest;\nimport java.security.NoSuchAlgorithmException;\nimport java.sql.*;\nimport java.time.LocalDateTime;\nimport java.util.HexFormat;\nimport java.util.UUID;\n\npublic final class ApprovalService {\n    // trustedTenant and actor come from authenticated server context, not request JSON.\n    public static String approve(DataSource ds, long trustedTenant, long actor, long runId,\n            long expectedVersion, UUID command) throws SQLException {\n        if(ds==null || trustedTenant<=0 || actor<=0 || runId<=0 || expectedVersion<0 || command==null)\n            throw new IllegalArgumentException();\n        String cmd=command.toString();\n        try(Connection c=ds.getConnection()) {\n            if(!c.getAutoCommit()) throw new SQLException(\"fresh auto-commit connection required\");\n            c.setAutoCommit(false);\n            try {\n                try(PreparedStatement p=c.prepareStatement(\"SELECT enabled FROM approval_role WHERE tenant_id=? AND actor_id=? FOR SHARE\")) {\n                    p.setLong(1,trustedTenant);p.setLong(2,actor);\n                    try(ResultSet r=p.executeQuery()){if(!r.next() || !r.getBoolean(1)) throw reject(\"not authorized\");}\n                }\n                String status,payload,hash; long version; LocalDateTime deadline;\n                try(PreparedStatement p=c.prepareStatement(\"SELECT version,status,deadline_at,approved_payload,payload_hash \"\n                        + \"FROM approval_run WHERE tenant_id=? AND run_id=? FOR UPDATE\")) {\n                    p.setLong(1,trustedTenant);p.setLong(2,runId);\n                    try(ResultSet r=p.executeQuery()) {\n                        if(!r.next()) throw reject(\"run unavailable\");\n                        version=r.getLong(1);status=r.getString(2);deadline=r.getObject(3,LocalDateTime.class);\n                        payload=r.getString(4);hash=r.getString(5);\n                    }\n                }\n                if(!sha256(payload).equals(hash)) throw reject(\"stored payload hash mismatch\");\n                try(PreparedStatement p=c.prepareStatement(\"SELECT run_id,actor_id,expected_version,payload_hash,request_id \"\n                        + \"FROM approval_receipt WHERE tenant_id=? AND command_id=?\")) {\n                    p.setLong(1,trustedTenant);p.setString(2,cmd);\n                    try(ResultSet r=p.executeQuery()) {\n                        if(r.next()) {\n                            if(r.getLong(1)!=runId || r.getLong(2)!=actor || r.getLong(3)!=expectedVersion || !hash.equals(r.getString(4)))\n                                throw reject(\"command identity conflict\");\n                            String previous=r.getString(5);commit(c);return previous;\n                        }\n                    }\n                }\n                if(!\"PENDING\".equals(status) || version!=expectedVersion) throw reject(\"state or version conflict\");\n                // This query starts after the row lock is acquired. Admission time, not commit deadline.\n                LocalDateTime admitted;\n                try(Statement s=c.createStatement();ResultSet r=s.executeQuery(\"SELECT UTC_TIMESTAMP(6)\")) {\n                    r.next();admitted=r.getObject(1,LocalDateTime.class);\n                }\n                if(!admitted.isBefore(deadline)) throw reject(\"approval expired\");\n                long next=Math.addExact(version,1L);\n                String request=UUID.randomUUID().toString();\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE approval_run SET status='APPROVED',version=? \"\n                        + \"WHERE tenant_id=? AND run_id=? AND status='PENDING' AND version=?\")) {\n                    p.setLong(1,next);p.setLong(2,trustedTenant);p.setLong(3,runId);p.setLong(4,version);\n                    if(p.executeUpdate()!=1) throw reject(\"state transition lost\");\n                }\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO external_intent \"\n                        + \"(tenant_id,business_key,stable_request_id,approved_payload,payload_hash,state) VALUES (?,?,?,?,?,'READY')\")) {\n                    p.setLong(1,trustedTenant);p.setLong(2,runId);p.setString(3,request);p.setString(4,payload);p.setString(5,hash);p.executeUpdate();\n                }\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO approval_receipt VALUES (?,?,?,?,?,?,?)\")) {\n                    p.setLong(1,trustedTenant);p.setString(2,cmd);p.setLong(3,runId);p.setLong(4,actor);\n                    p.setLong(5,expectedVersion);p.setString(6,hash);p.setString(7,request);p.executeUpdate();\n                }\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO approval_audit VALUES (?,?,?,?,?)\")) {\n                    p.setLong(1,trustedTenant);p.setLong(2,runId);p.setString(3,cmd);p.setLong(4,actor);p.setObject(5,admitted);p.executeUpdate();\n                }\n                commit(c);return request;\n            } catch(SQLException | RuntimeException e) {\n                try{c.rollback();}catch(SQLException rollback){if(e!=rollback)e.addSuppressed(rollback);}throw e;\n            }\n        }\n    }\n    public static String sha256(String s) {\n        try{return HexFormat.of().formatHex(MessageDigest.getInstance(\"SHA-256\").digest(s.getBytes(StandardCharsets.UTF_8)));}\n        catch(NoSuchAlgorithmException e){throw new AssertionError(e);}\n    }\n    private static SQLException reject(String message){return new SQLException(message,\"45000\");}\n    private static void commit(Connection c)throws SQLException {\n        try{c.commit();}catch(SQLException e){throw new SQLException(\"approval commit UNKNOWN; retry same command\", \"08007\",e);}\n    }\n    private ApprovalService(){}\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "这里的角色行与 run 行都在事务中锁定，角色撤销也必须修改同一权威角色行，才形成明确串行顺序；这不证明其他系统的授权缓存或所有撤权路径都已同步。批准内容从服务端已存的 immutable payload 读取，客户端不提供任意可执行参数；hash 校验的是这份确定的 UTF-8 字节，并不是“随便重新序列化一遍 JSON”就必然同 hash。版本在服务端验证后增加，不能相信浏览器自称的最新版。审批后的审计、回执、意图和状态一起提交，审计失败会使这次审批失败。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果另外需要记录“被拒绝的审批尝试”，它必须成为独立、脱敏且限流的审计动作；REQUIRES_NEW 可以用于独立审计，却会增加连接需求，并且审计失败不能被意外当成审批成功。成功业务审计与失败尝试审计是不同语义。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mq-tasks",
+          "label": "信审多轮、工单与 Agent 如何关联任务、审批版本并终止无进展循环？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-memory-store",
+  "kind": "doc",
+  "module": "ai",
+  "part": "Memory 与上下文工程",
+  "category": "实现参考与验证边界",
+  "title": "完整 Java：记忆真源与读写门控",
+  "tags": [
+    "Memory",
+    "完整教学代码"
+  ],
+  "sections": [
+    {
+      "id": "s-748",
+      "title": "28 Java 实作：带作用域与版本的记忆真源",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "先在受控读写边界内管住身份、状态、版本、有效期和删除，再接索引。 并发检索仍须回到真源检查。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能问法：用 Java 写一个记忆模块，怎样防止串用户和旧索引复活？两个后台任务同时更新如何避免覆盖？为什么不能把向量库返回正文直接交给模型？"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面四个文件组成一个无第三方依赖的完整教学程序，保存为同名文件即可一起编译。MemoryStoreLesson.java 是有界单进程真源，ContextCompilerLesson.java 编译不可变上下文，MemoryFlowDemo.java 演示完整调用，MemoryLessonsTest.java 验证失败边界。代码中使用 List<MemoryStoreLesson.Ref>、Map<String, String> 等实际泛型，而不是省略类型的伪代码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "真源以 Scope(tenant, user, project) 和逻辑 ID 组成键。grant 是受信应用的管理入口，不开放给模型；实际系统要从已验证会话或安全上下文构造 Auth，不能把这里可直接创建的 Java record 当签名令牌。Origin 必须由来源适配器设置，不能接受模型自己声明 USER_EXPLICIT。示例中的来源门控只验证机制，不实现自然语言的真实性判断或完整人工审核界面。"
+        },
+        {
+          "type": "paragraph",
+          "text": "正常写入先 propose 成为候选，再由 approve 允许特定可信来源生效；正文修改生成新 revision，并重新成为候选，不能继承旧审核。"
+        },
+        {
+          "type": "paragraph",
+          "text": "索引只存 Ref(scope, id, revision)。读取时 resolve 在同一锁内核验主体 epoch、作用域、当前 head、状态、版本和有效期。旧索引可能漏掉新内容，但在这条读路径不能重新暴露旧内容。"
+        },
+        {
+          "type": "paragraph",
+          "text": "更新要求 expected revision；两个线程都基于 revision 2 修改时，只有一个能写入 revision 3，另一个得到 CONFLICT，随后应重读和重新判断，不能无条件自旋覆盖。lockInterruptibly 让等待锁的线程能响应中断；每次成功获取锁都在 finally 释放。为方便穷尽验证，这个模型把所有作用域共用一把锁，生产应衡量分片锁或数据库事务的吞吐，而不是照搬成全站热点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除保留 tombstone 的 ID、状态与递增 revision，并移除该对象中的正文和来源；撤销后不能靠先转隔离再审批复活。示例没有持久化、历史版本表、备份或外部索引，因此不声称实现了完整合规删除。已返回调用者的旧对象也不会被魔法擦除；读取在锁内有明确顺序，但“读取后、外发前发生撤权”的问题仍要在实际执行边界重新校验或使用短期授权租约。"
+        },
+        {
+          "type": "paragraph",
+          "text": "容量、字符串长度、引用数量均有限。ID 不允许路径穿越字符，正文拒绝未配对代理项和不允许的控制字符。限制属于资源与编码保护，不是语义防注入；一段编码合法的恶意指令仍需保持低信任资料身份。"
+        }
+      ]
+    },
+    {
+      "id": "s-770",
+      "title": "28.1 MemoryStoreLesson.java",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "label": "java/MemoryStoreLesson.java",
+          "value": "import java.time.Instant;\nimport java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.LinkedHashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.concurrent.locks.ReentrantLock;\n\n/** Bounded, single-process teaching model. No network, files or database. */\npublic final class MemoryStoreLesson {\n    public enum Origin { USER_EXPLICIT, VERIFIED_TOOL, EXTERNAL, MODEL }\n    public enum Status { CANDIDATE, ACTIVE, QUARANTINED, REVOKED, DELETED }\n\n    public record Scope(String tenant, String user, String project) {\n        public Scope {\n            id(tenant); id(user); id(project);\n        }\n    }\n\n    /** Construct only from server-verified identity in a real application. */\n    public record Auth(Scope scope, String actor, long epoch) {\n        public Auth {\n            Objects.requireNonNull(scope);\n            id(actor);\n            if (epoch < 1) throw new IllegalArgumentException(\"invalid epoch\");\n        }\n    }\n\n    public record Item(String id, long revision, String text, Origin origin,\n                       Status status, Instant validUntil, String sourceRef) { }\n    public record Ref(Scope scope, String id, long revision) { }\n    private record Key(Scope scope, String id) { }\n    private record Grant(long epoch, boolean enabled) { }\n\n    public static final class Failure extends RuntimeException {\n        private static final long serialVersionUID = 1L;\n        public final String code;\n        Failure(String code) { super(code); this.code = code; }\n    }\n\n    private static final int MAX_ITEMS = 128;\n    private static final int MAX_TEXT = 4096;\n    private static final int MAX_QUERY_REFS = 128;\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Map<Scope, Grant> grants = new HashMap<>();\n    private final Map<Key, Item> heads = new LinkedHashMap<>();\n\n    /** Trusted administration boundary, not a model-callable tool. */\n    public Auth grant(Scope scope) throws InterruptedException {\n        Objects.requireNonNull(scope);\n        lock.lockInterruptibly();\n        try {\n            Grant old = grants.get(scope);\n            if (old == null && grants.size() >= MAX_ITEMS) fail(\"CAPACITY\");\n            long epoch = old == null ? 1 : Math.addExact(old.epoch(), 1);\n            grants.put(scope, new Grant(epoch, true));\n            return new Auth(scope, scope.user(), epoch);\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public void revokeAccess(Auth auth) throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            authorize(auth);\n            grants.put(auth.scope(), new Grant(Math.addExact(auth.epoch(), 1), false));\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public Item propose(Auth auth, String memoryId, String text, Origin origin,\n                        Instant validUntil, String sourceRef) throws InterruptedException {\n        id(memoryId); validateText(text); Objects.requireNonNull(origin);\n        validateSource(sourceRef);\n        lock.lockInterruptibly();\n        try {\n            authorize(auth);\n            Key key = new Key(auth.scope(), memoryId);\n            if (heads.containsKey(key)) fail(\"ALREADY_EXISTS\");\n            if (heads.size() >= MAX_ITEMS) fail(\"CAPACITY\");\n            Item item = new Item(memoryId, 1, text, origin, Status.CANDIDATE,\n                    validUntil, sourceRef);\n            heads.put(key, item);\n            return item;\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public Item approve(Auth auth, String memoryId, long expected) throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            Item old = checked(auth, memoryId, expected);\n            if (old.status() != Status.CANDIDATE) fail(\"INVALID_TRANSITION\");\n            if (old.origin() != Origin.USER_EXPLICIT && old.origin() != Origin.VERIFIED_TOOL) {\n                fail(\"REVIEW_REQUIRED\");\n            }\n            return save(auth.scope(), old, old.text(), Status.ACTIVE, old.origin());\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public Item revise(Auth auth, String memoryId, long expected, String text,\n                       Origin origin, String sourceRef) throws InterruptedException {\n        validateText(text); Objects.requireNonNull(origin); validateSource(sourceRef);\n        lock.lockInterruptibly();\n        try {\n            Item old = checked(auth, memoryId, expected);\n            if (old.status() == Status.DELETED || old.status() == Status.REVOKED) {\n                fail(\"INVALID_TRANSITION\");\n            }\n            // New evidence is explicit. This small model stores no revision history.\n            Item next = new Item(old.id(), Math.addExact(old.revision(), 1), text,\n                    origin, Status.CANDIDATE, old.validUntil(), sourceRef);\n            heads.put(new Key(auth.scope(), memoryId), next);\n            return next;\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public Item retire(Auth auth, String memoryId, long expected, Status status)\n            throws InterruptedException {\n        if (status != Status.QUARANTINED && status != Status.REVOKED && status != Status.DELETED) {\n            throw new IllegalArgumentException(\"not a retirement state\");\n        }\n        lock.lockInterruptibly();\n        try {\n            Item old = checked(auth, memoryId, expected);\n            if (old.status() == Status.DELETED\n                    || (old.status() == Status.REVOKED && status != Status.DELETED)) {\n                fail(\"INVALID_TRANSITION\");\n            }\n            // Tombstone keeps the revision but removes text and source payload.\n            Item item = new Item(old.id(), Math.addExact(old.revision(), 1),\n                    status == Status.DELETED ? \"\" : old.text(), old.origin(), status,\n                    old.validUntil(), status == Status.DELETED ? \"\" : old.sourceRef());\n            heads.put(new Key(auth.scope(), memoryId), item);\n            return item;\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    /** Index/cache returns references only. Every use rechecks current authority and head. */\n    public List<Item> resolve(Auth auth, List<Ref> refs, Instant now)\n            throws InterruptedException {\n        Objects.requireNonNull(refs); Objects.requireNonNull(now);\n        List<Ref> stable = List.copyOf(refs);\n        if (stable.size() > MAX_QUERY_REFS) fail(\"CAPACITY\");\n        lock.lockInterruptibly();\n        try {\n            authorize(auth);\n            Map<String, Item> result = new LinkedHashMap<>();\n            for (Ref ref : stable) {\n                if (!auth.scope().equals(ref.scope())) fail(\"SCOPE_DENIED\");\n                Item current = heads.get(new Key(auth.scope(), ref.id()));\n                if (current == null || current.revision() != ref.revision()\n                        || current.status() != Status.ACTIVE) continue;\n                if (current.validUntil() != null && !now.isBefore(current.validUntil())) continue;\n                result.putIfAbsent(current.id(), current);\n            }\n            return List.copyOf(result.values());\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    /** Administrative view, still scope-authorized; no hidden global lookup. */\n    public Item inspect(Auth auth, String memoryId) throws InterruptedException {\n        id(memoryId);\n        lock.lockInterruptibly();\n        try {\n            authorize(auth);\n            Item item = heads.get(new Key(auth.scope(), memoryId));\n            if (item == null) fail(\"NOT_FOUND\");\n            return item;\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public List<Ref> indexSnapshot(Auth auth) throws InterruptedException {\n        lock.lockInterruptibly();\n        try {\n            authorize(auth);\n            List<Ref> refs = new ArrayList<>();\n            heads.forEach((key, item) -> {\n                if (key.scope().equals(auth.scope()) && item.status() == Status.ACTIVE) {\n                    refs.add(new Ref(key.scope(), key.id(), item.revision()));\n                }\n            });\n            return List.copyOf(refs);\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    private Item checked(Auth auth, String memoryId, long expected) {\n        id(memoryId);\n        if (expected < 1) throw new IllegalArgumentException(\"invalid revision\");\n        authorize(auth);\n        Item old = heads.get(new Key(auth.scope(), memoryId));\n        if (old == null) fail(\"NOT_FOUND\");\n        if (old.revision() != expected) fail(\"CONFLICT\");\n        return old;\n    }\n\n    private Item save(Scope scope, Item old, String text, Status status, Origin origin) {\n        Item item = new Item(old.id(), Math.addExact(old.revision(), 1), text,\n                origin, status, old.validUntil(), old.sourceRef());\n        heads.put(new Key(scope, old.id()), item);\n        return item;\n    }\n\n    private void authorize(Auth auth) {\n        Objects.requireNonNull(auth);\n        Grant grant = grants.get(auth.scope());\n        if (!auth.actor().equals(auth.scope().user()) || grant == null\n                || !grant.enabled() || grant.epoch() != auth.epoch()) fail(\"ACCESS_DENIED\");\n    }\n\n    private static void id(String value) {\n        if (value == null || !value.matches(\"[A-Za-z0-9_-]{1,64}\")) {\n            throw new IllegalArgumentException(\"invalid identifier\");\n        }\n    }\n\n    private static void validateSource(String value) {\n        if (value == null || !value.matches(\"event:[A-Za-z0-9_-]{1,64}\")) {\n            throw new IllegalArgumentException(\"invalid source reference\");\n        }\n    }\n\n    private static void validateText(String value) {\n        if (value == null || value.isBlank() || value.length() > MAX_TEXT) {\n            throw new IllegalArgumentException(\"invalid text length\");\n        }\n        for (int i = 0; i < value.length(); i++) {\n            char ch = value.charAt(i);\n            if (Character.isHighSurrogate(ch)) {\n                if (++i >= value.length() || !Character.isLowSurrogate(value.charAt(i))) {\n                    throw new IllegalArgumentException(\"invalid Unicode\");\n                }\n            } else if (Character.isLowSurrogate(ch)\n                    || (Character.isISOControl(ch) && ch != '\\n' && ch != '\\t')) {\n                throw new IllegalArgumentException(\"invalid character\");\n            }\n        }\n    }\n\n    private static void fail(String code) { throw new Failure(code); }\n}\n"
+        }
+      ]
+    }
+  ]
+}

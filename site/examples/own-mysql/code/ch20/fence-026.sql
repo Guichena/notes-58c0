@@ -1,0 +1,3 @@
+DELETE FROM s2_open;
+INSERT INTO s2_open VALUES (1,'OPEN'),(2,'OPEN');
+COMMIT;

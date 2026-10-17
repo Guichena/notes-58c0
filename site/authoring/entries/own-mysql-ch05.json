@@ -1,0 +1,812 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch05",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 范式 关系 约束与业务身份",
+  "title": "范式 关系 约束与业务身份",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s3152",
+      "order": 3152,
+      "question": "MySQL 主键应该选什么类型？BIGINT、自增、UUID 与联合主键怎样取舍？",
+      "shortAnswer": "InnoDB 主键应稳定、唯一、非空且尽量窄；有序写局部性、全局发号、二级索引放大和 Java 数值范围要共同评估。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "MySQL 主键应该选什么类型？BIGINT、自增、UUID与联合主键如何取舍？"
+        },
+        {
+          "type": "paragraph",
+          "text": "InnoDB 主键应稳定、唯一、非空且尽量窄；自增整数常有较好的写入局部性，分布式身份和业务唯一性仍须单独设计。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：MySQL 主键应该选什么类型？BIGINT、自增、UUID与联合主键如何取舍？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下讨论 MySQL 8.4 的 InnoDB。具体选型需要现有 DDL、生命周期上限、访问路径及全局发号方式。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "核心要求与成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "主键应唯一、非NULL、稳定且尽量窄。InnoDB用主键组织聚簇索引，并把主键列携带在二级索引记录中；因此主键从8字节变成很宽的字符串会同时影响主树和多棵二级树的扇出、缓存命中与写入。更新主键也比修改普通非索引列更重，还可能影响外键。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单库常从BIGINT自增或足够范围的整数开始：比较便宜、递增写入局部性较好。INT是否足够由生命周期上限决定，不能只看现在行数。SIGNED BIGINT与UNSIGNED BIGINT在Java侧的范围不完全相同；若可能超过Long.MAX_VALUE，接口、驱动映射、JSON和前端数字精度必须统一。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "分布式ID与安全边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "多分片独立自增可能冲突，可以使用服务分配号段、明确配置的步长/偏移、全局生成器或合适UUID方案。时间有序ID改善局部性但引入时间回拨、节点号分配和热点边界；UUID随机写可能增加页分裂与缓存离散，BINARY(16)通常比文本36字符紧凑，但是否按时间有序仍取决于具体版本和字节布局。"
+        },
+        {
+          "type": "paragraph",
+          "text": "联合主键适合天然关系，如(tenant_id,entity_id)或(follower_id,followee_id)，能把同一主体数据放在相邻键范围，但宽度传播到二级索引，应评估主要访问路径。数据库主键可预测不等于授权漏洞，访问控制必须独立实现；仅把ID改成随机数不能替代鉴权。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例、边界与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "若订单有5个二级索引，选择8字节ID与36字符ID的区别不仅发生在订单表主键，还会累积到二级记录，具体放大需看字符集、记录头和压缩。没有显式主键时InnoDB会选合适的NOT NULL唯一键，否则建立隐藏聚簇ID；这不是免去聚簇键成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试并发ID分配、重试重复、跨节点冲突、故障后号段回收、时钟回拨、最大值与排序；压测随机/顺序插入和二级查询。唯一约束最终兜住冲突，客户端必须处理重复键，不能以概率很低为由忽略错误路径。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "scenario-unique-id",
+          "label": "分布式唯一 ID 生成器设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3268",
+      "order": 3268,
+      "question": "PaaS平台允许租户定制业务对象和字段时，数据库怎样支持安全的CRUD与索引？",
+      "shortAnswer": "可定制业务对象需要把字段元数据和实例数据分开管理，并同时约束租户隔离、类型校验、查询白名单和 schema 演进。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "PaaS平台允许租户定制业务对象和字段时，数据库怎样支持安全的CRUD与索引？"
+        },
+        {
+          "type": "paragraph",
+          "text": "可定制业务对象需要把字段元数据和实例数据分开管理，并同时约束租户隔离、类型校验、查询白名单和 schema 演进。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：PaaS平台允许租户定制业务对象和字段时，数据库怎样支持安全的CRUD与索引？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "元数据和实例数据分离"
+        },
+        {
+          "type": "paragraph",
+          "text": "元数据描述tenant_id、object_type、field_id、稳定字段编码、类型、是否必填、默认值、校验、索引意图与版本；实例数据有tenant_id、object_type、object_id、version及字段值。字段展示名可改，稳定ID不能随改名变化，否则历史数据与过滤条件失联。服务端按元数据校验所有增删改，不能相信前端控件已校验。"
+        },
+        {
+          "type": "paragraph",
+          "text": "方案一每租户/对象真实建表，类型与索引直接但大量DDL、表数量和迁移复杂；方案二公共表+JSON扩展，演进方便但常用过滤字段需合适生成列/表达式索引，不能指望任意JSON路径自动高效；方案三EAV把属性拆成行，灵活但多属性筛选/JOIN和类型约束复杂。常见折中是核心公共列结构化、冷扩展JSON、热点查询字段显式投影。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "CRUD与索引控制"
+        },
+        {
+          "type": "paragraph",
+          "text": "所有查询必须由可信身份注入tenant_id和object_type；字段名/排序方向从元数据白名单转成安全SQL，值用参数绑定，不能把用户自定义显示名直接拼进DDL/SQL。更新采用版本CAS避免两个编辑覆盖，唯一约束/业务校验包含租户范围。批量导入分段校验与事务提交，失败行可定位而不是整个系统长事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "索引按真实查询和字段类型审批建立，限制租户自助索引/大字段/复杂表达式，防止一个租户耗尽磁盘与优化器预算。动态字段从字符串变数字会影响旧值和比较语义，应版本化迁移、预检查非法值、双读兼容和灰度，不能直接改元数据后假定历史全部合法。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "验收与运维成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试跨租户ID碰撞、字段改名/删除、旧版本客户端、类型变化、默认值与NULL、并发编辑、动态唯一约束、导入部分失败和索引创建期间写入。审计保留actor、对象版本与变更来源，敏感字段按权限脱敏。"
+        },
+        {
+          "type": "paragraph",
+          "text": "公共表可能遇热点租户，JSON/EAV查询可能扫描大集合，独立表方案则有运维爆炸；用对象/租户级指标识别大户并按需分片。题目中的“平台定制”应落到数据契约、索引与演进成本，不能只回答“用一张万能表”。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-73",
+          "label": "第三范式 3NF 判断与反范式设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3392",
+      "order": 3392,
+      "question": "地铁表怎么建，怎样用SQL判断两个站是否在同一条线路上？",
+      "shortAnswer": "两个站同线等价于存在共同线路成员关系，站点与线路应通过多对多表关联，不能用同名或可换乘代替同线。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "地铁表怎么建，怎样用SQL判断两个站是否在同一条线路上？"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个站同线等价于存在共同线路成员关系，站点与线路应通过多对多表关联，不能用同名或可换乘代替同线。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：地铁表怎么建，怎样用SQL判断两个站是否在同一条线路上？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "实体与多对多关系"
+        },
+        {
+          "type": "paragraph",
+          "text": "metro_station保存站点ID、城市和名称，metro_line保存线路ID、城市和名称，metro_line_station用(line_id,station_id)复合主键表达多对多。换乘站在不同线路各有一条成员记录，不能只给station加一个line_id，也不能用逗号字符串塞多条线。"
+        },
+        {
+          "type": "paragraph",
+          "text": "站名、线路名跨城市可重复，甚至同城有同名站，业务接口必须先解析稳定ID；示例中城市不同的两个Central并非同一站。外键约束存在性，写入时还需保证站/线城市相容；如数据库必须强制这个不变量，可冗余city_id并对两端建立相应组合唯一键/组合外键。示例没有伪称两条独立外键已经约束城市相等。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "同线路是两份成员集合的交集"
+        },
+        {
+          "type": "paragraph",
+          "text": "把成员表按line_id自连接，a.station_id绑定第一个站、b.station_id绑定第二个站，EXISTS返回是否存在共同线。若要全部共同线路，再连接line并返回其ID/名称；主键保证每站每线至多一条，多个共同线也不影响EXISTS布尔结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单站查询路径加(station_id,line_id)，从两个站各自所属线路求交。集合大小通常是换乘线数量，不需对全网跑最短路径；实际JOIN计划仍由优化器选择。参数使用PreparedStatement绑定ID，不拼接来自用户的站名。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "环线、站序与同站边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "同站且至少属于一条线返回真；不存在站或尚未归属线路返回假。若业务要求“必须是两个不同站”再额外检查ID不等。两个站可通过换乘到达但无共同线，本题必须返回假；可达性或最短换乘才是另外的图搜索题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "成员表故意不放唯一station_sequence来限制重复经过。需要方向、支线、环线同站再经过时，另建route(pattern_id,line_id,direction,validity)和route_stop(pattern_id,sequence,station_id)，按pattern与sequence表示站序；不能强制一条路线每站只能出现一次。运营图随日期变化时把有效区间用于同线判断，避免拿今天的线路回答历史行程。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整 SQL"
+        },
+        {
+          "type": "paragraph",
+          "text": "subway.sql提供三张表、外键、两种索引、换乘与同名数据、EXISTS和共同线列表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "关系约束只能验证站点与线路归属；最短路径还需要完整网络、换乘成本和运行规则。上线应验证大量站点、并发线路更新、删除策略和读到同一版本的网络。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 subway.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/subway.sql",
+          "value": "-- Teaching schema: MySQL 8.4/InnoDB by configured default; no existing tables are changed.\nCREATE TABLE metro_station(station_id BIGINT PRIMARY KEY, city_id BIGINT NOT NULL, name VARCHAR(100) NOT NULL);\nCREATE TABLE metro_line(line_id BIGINT PRIMARY KEY, city_id BIGINT NOT NULL, name VARCHAR(100) NOT NULL);\nCREATE TABLE metro_line_station(\n line_id BIGINT NOT NULL, station_id BIGINT NOT NULL,\n PRIMARY KEY(line_id,station_id),\n FOREIGN KEY(line_id) REFERENCES metro_line(line_id),\n FOREIGN KEY(station_id) REFERENCES metro_station(station_id)\n);\nCREATE INDEX ix_station_line ON metro_line_station(station_id,line_id);\nINSERT INTO metro_station VALUES(1,1,'Central'),(2,1,'River'),(3,1,'Park'),(4,1,'Lake'),(5,2,'Central');\nINSERT INTO metro_line VALUES(10,1,'Red'),(20,1,'Blue'),(30,2,'Red');\nINSERT INTO metro_line_station VALUES(10,1),(10,2),(20,1),(20,3),(30,5);\n-- Bound station IDs 2 and 1. EXISTS returns one boolean even if several lines match.\nSELECT EXISTS(\n SELECT 1 FROM metro_line_station a JOIN metro_line_station b ON a.line_id=b.line_id\n WHERE a.station_id=2 AND b.station_id=1\n) AS same_line;\n-- Return every shared line when requested, not a transit path with transfers.\nSELECT l.line_id,l.name FROM metro_line l\nJOIN metro_line_station a ON a.line_id=l.line_id\nJOIN metro_line_station b ON b.line_id=l.line_id\nWHERE a.station_id=2 AND b.station_id=1 ORDER BY l.line_id;\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "同线判断还应检查交换两个站 ID 的对称性、同站、未知 ID、已存在但未归属任何线路的站、跨城同名、两站共享两条线以及重复成员拒绝。返回真假与返回共同线路列表是两个接口契约；共同线列表不能因为 EXISTS 只要一个命中就丢掉第二条线。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-73",
+          "label": "第三范式 3NF 判断与反范式设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3456",
+      "order": 3456,
+      "question": "数据库一对一、一对多、多对多怎样实现，外键、唯一键和关联表各保证什么？",
+      "shortAnswer": "一对多在多端放非唯一外键，一对一再加唯一约束，多对多用关联表；外键只保证引用存在。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "数据库一对一、一对多、多对多怎样实现，外键、唯一键和关联表各保证什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "一对多在多端放非唯一外键，一对一再加唯一约束，多对多用关联表；外键只保证引用存在。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：数据库一对一、一对多、多对多怎样实现，外键、唯一键和关联表各保证什么？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一对多把外键放在多的一侧"
+        },
+        {
+          "type": "paragraph",
+          "text": "客户customer可有多张order，每张订单customer_id引用一个客户；customer.id为主键，order.customer_id非唯一，NOT NULL表示每张订单必须归属客户。不能给order.customer_id加UNIQUE后仍说允许同一客户多订单。"
+        },
+        {
+          "type": "paragraph",
+          "text": "外键保证引用存在而非自动提供所有应用查询效率，按(customer_id,id)建列表访问路径；查没有订单的客户用LEFT JOIN或NOT EXISTS。客户有多订单时JOIN会生成多行，统计客户人数别被展开后的COUNT(*)误导。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一对一用外键加唯一性，是否必有双方是另一个约束"
+        },
+        {
+          "type": "paragraph",
+          "text": "独立profile表可直接用customer_id既作主键又作外键，保证一个客户最多一份profile、每份profile属于存在客户。这个设计仍允许客户没有profile；要所有客户必有profile，最简单是合并同生命周期字段，或通过受控创建事务与额外完整性机制实现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果用独立profile_id则customer_id需要UNIQUE且通常NOT NULL；MySQL UNIQUE可空列允许多个NULL，不能用它表示所有profile都有唯一关联。不要默认双向互指两个外键就解决创建先后和必有关系。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "多对多拆成有关联身份的中间表"
+        },
+        {
+          "type": "paragraph",
+          "text": "学生与课程用enrollment(student_id,course_id,score)；两端各可出现多次，组合主键约束同学生同课程最多一条，同时两端外键保证存在。成绩、选课时间是这段关系的属性，不应放在任意一端导致覆盖。relations.sql用customer充当学员作同一套小型示例，命名不同不改变N:N约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若允许同一课程重修，业务键须增加semester/attempt或使用独立enrollment_id并约束真正不重复的组合；不能因教科书模板而禁止合法重修。反向课程找学员要(course_id,customer_id)索引，字符串姓名不能代替ID。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "删除、分片与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "默认不指定级联时不能假定删客户会自动删除订单；按审计/业务政策选择RESTRICT、逻辑删除或显式处理。跨分片不能靠单库外键自动约束，需要改变聚合归属或做可靠一致性协议；去掉外键也不能去掉不变量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这组DDL与SQL的预期不变量包括一客户多订单、无订单保留、多学员选同课、同学员多课、重复关联/重复profile拒绝和孤儿引用/非法删除拒绝。约束检查与并发锁行为应分别验证。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 relations.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/relations.sql",
+          "value": "CREATE TABLE rel_customer(id BIGINT PRIMARY KEY,name VARCHAR(100) NOT NULL);\nCREATE TABLE rel_profile(customer_id BIGINT PRIMARY KEY,bio VARCHAR(200),FOREIGN KEY(customer_id) REFERENCES rel_customer(id));\nCREATE TABLE rel_order(id BIGINT PRIMARY KEY,customer_id BIGINT NOT NULL,FOREIGN KEY(customer_id) REFERENCES rel_customer(id));\nCREATE INDEX ix_order_customer ON rel_order(customer_id,id);\nCREATE TABLE rel_course(id BIGINT PRIMARY KEY,name VARCHAR(100) NOT NULL);\nCREATE TABLE rel_enrollment(customer_id BIGINT NOT NULL,course_id BIGINT NOT NULL,score DECIMAL(5,2),\n PRIMARY KEY(customer_id,course_id),FOREIGN KEY(customer_id) REFERENCES rel_customer(id),FOREIGN KEY(course_id) REFERENCES rel_course(id));\nCREATE INDEX ix_course_customer ON rel_enrollment(course_id,customer_id);\nINSERT INTO rel_customer VALUES(1,'same'),(2,'same');\nINSERT INTO rel_profile VALUES(1,'learner');\nINSERT INTO rel_order VALUES(10,1),(11,1);\nINSERT INTO rel_course VALUES(20,'Database'),(21,'Java');\nINSERT INTO rel_enrollment VALUES(1,20,90),(1,21,80),(2,20,NULL);\nSELECT c.id,o.id AS order_id FROM rel_customer c LEFT JOIN rel_order o ON o.customer_id=c.id ORDER BY c.id,o.id;\nSELECT e.customer_id,c.id AS course_id,c.name,e.score FROM rel_enrollment e JOIN rel_course c ON c.id=e.course_id ORDER BY e.customer_id,c.id;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-73",
+          "label": "第三范式 3NF 判断与反范式设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3508",
+      "order": 3508,
+      "question": "学生多选课、课程多学生、老师只教一课而课程有多老师，应该怎样建表？",
+      "shortAnswer": "学生与课程是多对多，课程与老师是一对多；老师表的 course_id 外键不能加唯一约束，否则会改变题意。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "学生多选课、课程多学生、老师只教一课而课程有多老师，应该怎样建表？"
+        },
+        {
+          "type": "paragraph",
+          "text": "学生与课程是多对多，课程与老师是一对多；老师表的 course_id 外键不能加唯一约束，否则会改变题意。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：学生多选课、课程多学生、老师只教一课而课程有多老师，应该怎样建表？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "严格保留学生可多选、课程可多学生、每名老师只教一课而课程可多老师的基数。题目未给查询目标，不能据此唯一确定某条报表 SQL。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "两段关系的基数不同"
+        },
+        {
+          "type": "paragraph",
+          "text": "student和course通过enrollment(student_id,course_id)关联表实现多对多，组合主键禁止同学生同课重复选；course到teacher是一对多，把非唯一course_id外键放teacher。teacher_id主键保证每名老师只有一条当前记录，所以一行只能指向一门课；不能在teacher.course_id上加UNIQUE，否则错误禁止多个老师教同一课。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若只是“最多一课”而允许未排课老师，course_id可为NULL；若每名老师必须一课，NOT NULL配合外键约束存在性。课程可有多个老师通常是允许多而非要求至少一个，当前schema允许零老师课程；若要求每课至少一老师需要额外受控事务约束，普通外键不保证反向存在。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "键、外键与查询路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "给enrollment建反向(course_id,student_id)索引，给teacher建(course_id,teacher_id)，支持从课程列学生/老师。名字允许重名，业务ID不能用姓名代替。删除课程默认须先处理引用，不能默默级联删除需要保留的成绩。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果学期不同可以重修，关联键要扩展term/attempt；如果老师跨学期能改教课程，当前teacher.course_id只存现在，历史任课应改为带term和唯一(teacher_id,term)的assignment。不要把新增假设强加到题目，也不能为历史场景仍声称“一辈子只能一门课”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "多对多JOIN展开是常见坑"
+        },
+        {
+          "type": "paragraph",
+          "text": "用课程 10 手算一次：它有 2 名学生、2 位老师，course JOIN enrollment JOIN teacher 会配出 4 行。此时 COUNT(*) 数的是“学生与老师的组合”，既不是学生人数，也不是老师人数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "要同时输出两种人数，可以先分别按 course 汇总学生和老师，再 LEFT JOIN 两个结果；或者在这个计人数的场景中，对各自身份做正确的 DISTINCT。无学生或无老师的课程也要保留并返回 0。course_schema.sql 给出了四表、索引和样本，后面分别演示每课程学生数，以及独立预聚合后的学生数和教师数。这两种报表分别回答不同的查询目标；只知道关系约束时，还要先确认究竟统计什么，不能默认唯一报表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "基数与查询边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "检查模型时应覆盖多课/多学生/多老师、重复老师/选课、NULL任课、孤儿引用与删除拒绝，以及JOIN乘法和改课仍一行。关系基数确定以后，查询目标仍需另行给出，不能仅凭这些约束推出唯一报表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 course_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/course_schema.sql",
+          "value": "CREATE TABLE student (student_id BIGINT PRIMARY KEY, name VARCHAR(80) NOT NULL);\nCREATE TABLE course (course_id BIGINT PRIMARY KEY, title VARCHAR(120) NOT NULL);\nCREATE TABLE teacher (\n teacher_id BIGINT PRIMARY KEY, name VARCHAR(80) NOT NULL,\n course_id BIGINT NOT NULL,\n FOREIGN KEY(course_id) REFERENCES course(course_id)\n);\nCREATE INDEX ix_teacher_course ON teacher(course_id,teacher_id);\nCREATE TABLE enrollment (\n student_id BIGINT NOT NULL, course_id BIGINT NOT NULL,\n PRIMARY KEY(student_id,course_id),\n FOREIGN KEY(student_id) REFERENCES student(student_id),\n FOREIGN KEY(course_id) REFERENCES course(course_id)\n);\nCREATE INDEX ix_enrollment_course ON enrollment(course_id,student_id);\nINSERT INTO course VALUES(10,'Databases'),(20,'Networks'),(30,'Empty');\nINSERT INTO student VALUES(1,'A'),(2,'B'),(3,'C');\nINSERT INTO teacher VALUES(100,'T1',10),(200,'T2',10),(300,'T3',20);\nINSERT INTO enrollment VALUES(1,10),(1,20),(2,10);\n-- Illustration only: retain courses with no students; count each student once.\nSELECT c.course_id,c.title,COUNT(e.student_id) AS students\nFROM course c LEFT JOIN enrollment e ON e.course_id=c.course_id\nGROUP BY c.course_id,c.title ORDER BY c.course_id;\n-- A raw join to teacher multiplies course 10's two students by its two teachers.\n-- To report both counts, aggregate the two independent relations before joining.\nSELECT c.course_id,COALESCE(s.n,0) AS students,COALESCE(t.n,0) AS teachers\nFROM course c\nLEFT JOIN (SELECT course_id,COUNT(*) AS n FROM enrollment GROUP BY course_id) s\n ON s.course_id=c.course_id\nLEFT JOIN (SELECT course_id,COUNT(*) AS n FROM teacher GROUP BY course_id) t\n ON t.course_id=c.course_id\nORDER BY c.course_id;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3581",
+      "order": 3581,
+      "question": "设计用户表时怎样选择主键、唯一键、字段、关联和索引？",
+      "shortAnswer": "用户表先确定稳定身份、租户内登录名唯一性和生命周期，再拆出会话、凭据、权限等不同关系。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "设计用户表时怎样选择主键、唯一键、字段、关联和索引？"
+        },
+        {
+          "type": "paragraph",
+          "text": "用户表先确定稳定身份、租户内登录名唯一性和生命周期，再拆出会话、凭据、权限等不同关系。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：设计用户表时怎样选择主键、唯一键、字段、关联和索引？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先写不变量再列字段"
+        },
+        {
+          "type": "paragraph",
+          "text": "app_user以(tenant_id,user_id)稳定标识，login_normalized在租户内唯一，display_name可重复，status与version记录生命周期和并发控制，created_at统一UTC。先规定登录名大小写/Unicode/空格规范，再选collation和唯一约束，不能靠前端查重避免并发重复。"
+        },
+        {
+          "type": "paragraph",
+          "text": "密码验证材料另表按成熟密码哈希方案保存，不用明文/快速无盐hash；个人资料和高频变化计数可按访问隔离，权限用role/permission及关联表表示，避免逗号分隔角色ID。多设备session是1:N，不能每次登录覆盖用户的一枚token。单会话撤销还需结合前述服务端状态与 JWT 过期窗口。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "约束与访问路径一起设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "按ID点查走主键，登录走(tenant_id,login_normalized)，用户会话列表走(tenant_id,user_id,expires_at)并过滤撤销时间。排序列表需稳定tie-break，按生日/状态是否建索引由真实查询、基数和覆盖决定，不把每个字段都加索引。宽主键会传播到InnoDB二级树，需要与租户防串和路由约束权衡。"
+        },
+        {
+          "type": "paragraph",
+          "text": "唯一/FK/CHECK保护部分结构不变量，权限、规范化、状态机边和数据保留仍需服务控制。软删除并不自动释放UNIQUE登录名，是否允许新账户复用必须设计历史账户标识与占用协议；不能加deleted布尔联合唯一就以为可保留无限条历史同名。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "模型演进"
+        },
+        {
+          "type": "paragraph",
+          "text": "上线前按真实数据做迁移/回填/重复值清理和索引构建评估，记录行宽、索引空间、读写比例、热点与恢复目标。设计说明应由实际 DDL、访问 SQL 与容量要求共同支撑。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 user_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/user_schema.sql",
+          "value": "-- Portable teaching DDL; integer UTC times, caller-authenticated tenant IDs.\nCREATE TABLE app_user(\n tenant_id BIGINT NOT NULL,user_id BIGINT NOT NULL,login_normalized VARCHAR(128) NOT NULL,\n display_name VARCHAR(128) NOT NULL,status VARCHAR(12) NOT NULL,\n version BIGINT NOT NULL CHECK(version>=0),created_at BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,user_id),UNIQUE(tenant_id,login_normalized),\n CHECK(status IN ('ACTIVE','DISABLED','DELETED')));\nCREATE TABLE user_session(\n tenant_id BIGINT NOT NULL,session_id VARCHAR(128) NOT NULL,user_id BIGINT NOT NULL,\n expires_at BIGINT NOT NULL,revoked_at BIGINT,PRIMARY KEY(tenant_id,session_id),\n FOREIGN KEY(tenant_id,user_id) REFERENCES app_user(tenant_id,user_id));\nCREATE INDEX ix_session_user ON user_session(tenant_id,user_id,expires_at);\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "会话模型的反例包括同租户重名、不同租户同名、会话引用不存在用户、跨租户引用和撤销手机但保留电脑。唯一键与复合外键裁决关系合法性，密码哈希、token 校验与撤销传播还需独立的安全协议。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-4",
+          "label": "订单表一般怎么设计？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3626",
+      "order": 3626,
+      "question": "在线音乐系统如何设计歌曲、专辑与歌单关系，并安全支持个性化排序？",
+      "shortAnswer": "歌曲、专辑和歌单通过具有身份的关联实体建模，顺序属于歌单中的某次出现，个人视图还需独立版本与并发保护。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "在线音乐系统如何设计歌曲、专辑与歌单关系，并安全支持个性化排序？"
+        },
+        {
+          "type": "paragraph",
+          "text": "歌曲、专辑和歌单通过具有身份的关联实体建模，顺序属于歌单中的某次出现，个人视图还需独立版本与并发保护。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：在线音乐系统如何设计歌曲、专辑与歌单关系，并安全支持个性化排序？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "主体与关联表各承担什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "song保存录音ID、标题、时长等；album保存发行实体。若同一录音可出现在原专辑、精选集或重新发行中，用album_track(album_id,disc_no,track_no,song_id)表示N:N及专辑内曲序。只有业务保证一首录音只属一个专辑时才简化成song.album_id。作品、录音、艺人/作者与发行版权还可另建实体，不能靠一个字符串歌名唯一识别所有录音。"
+        },
+        {
+          "type": "paragraph",
+          "text": "playlist是用户维护的列表，playlist_entry把一个歌单与一个song关联，是多对多的桥。允许同歌多次出现时用稳定entry_id，而不是把(playlist_id,song_id)设唯一；若产品禁止重复，才增加该唯一约束。反向查询哪些歌单包含此歌需(song_id,playlist_id)索引。音频字节通常放对象存储/CDN，关系库存授权元数据/版本，不把所有音频塞进普通查询行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "个性化顺序不能放在song的全局字段里"
+        },
+        {
+          "type": "paragraph",
+          "text": "顺序属于歌单中的某次出现。示例playlist_order与playlist_order_item保存一个视图的version及entry→position；view_user_id=0约定为共享顺序，正ID表示某用户个人顺序，身份与编辑权在服务端核验。一个用户重排自己的视图不应改别人顺序。若实际只是歌单所有者编辑共享列表，可只保留共享视图。"
+        },
+        {
+          "type": "paragraph",
+          "text": "新建个人视图可复制共享顺序；新增/删除成员时定义个人视图如何继承，例如新歌追加、删除项移除并推进版本。也可只保存偏好覆盖并按基准顺序补齐，但必须定义总排序与合并规则。DDL的FK/UNIQUE只能保护引用和位置唯一，不能自动保证每个视图都是全体成员的排列。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java事务重排与并发证明"
+        },
+        {
+          "type": "paragraph",
+          "text": "重排的难点不是给位置赋值，而是确保校验和写入面对同一批歌单成员。PlaylistOrder 在专用空闲连接上开事务，先锁 playlist 父行，再用 CAS 推进视图 version；增删成员和重排的所有入口都须先锁同一父行，避免刚核对完成员集合就被别人改掉。"
+        },
+        {
+          "type": "paragraph",
+          "text": "锁定后，检查请求不含 null 或重复项、最多 10000 项，并且恰好等于当前 entry 集合。再删除这个视图的旧位置，批量写入 0..n-1，最后提交；任何一步失败都回滚，稳定 entry 本身不被删改。这样做也避免直接交换位置 1、2 时中途撞上唯一索引，因为被替换的是独立顺序表。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两个请求拿同一 expectedVersion，只有一份能成功；0 行表示冲突，客户端应重读或合并，不能无限覆盖。若成功应答丢失，应按稳定歌单身份、版本与目标排列回查。COMMIT 抛错后，即使 rollback 返回，也不能证明原提交没有成功；提交成功后仅连接清理失败，也不能重做业务。恢复 autoCommit 失败应关闭连接并保留原异常；不同的清理异常作为 suppressed 附加，同一异常对象不能自我抑制。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "成本与扩展"
+        },
+        {
+          "type": "paragraph",
+          "text": "全量重排O(n)读写与内存，长歌单写放大/父行竞争明显。可用带空隙整数或可比较分数rank只改移动项，空间耗尽时在版本保护下重编号；浮点精度、相同rank与并发插入必须有确定tie-break，分数排序不是免费并发控制。共享/个人排序查询按(playlist,viewer,position)索引顺读并关联歌曲。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 playlist_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/playlist_schema.sql",
+          "value": "-- On MySQL choose InnoDB, utf8mb4/collation, SQL modes and actual ID policy.\nCREATE TABLE song(song_id BIGINT PRIMARY KEY,title VARCHAR(200) NOT NULL,duration_ms BIGINT NOT NULL CHECK(duration_ms>=0));\nCREATE TABLE album(album_id BIGINT PRIMARY KEY,title VARCHAR(200) NOT NULL);\nCREATE TABLE album_track(album_id BIGINT NOT NULL,disc_no INTEGER NOT NULL CHECK(disc_no>0),track_no INTEGER NOT NULL CHECK(track_no>0),song_id BIGINT NOT NULL,\n PRIMARY KEY(album_id,disc_no,track_no),FOREIGN KEY(album_id) REFERENCES album(album_id),FOREIGN KEY(song_id) REFERENCES song(song_id));\nCREATE INDEX ix_album_song ON album_track(song_id,album_id);\nCREATE TABLE playlist(playlist_id BIGINT PRIMARY KEY,owner_id BIGINT NOT NULL,title VARCHAR(200) NOT NULL);\nCREATE TABLE playlist_entry(entry_id BIGINT PRIMARY KEY,playlist_id BIGINT NOT NULL,song_id BIGINT NOT NULL,added_at BIGINT NOT NULL,\n UNIQUE(playlist_id,entry_id),FOREIGN KEY(playlist_id) REFERENCES playlist(playlist_id),FOREIGN KEY(song_id) REFERENCES song(song_id));\nCREATE INDEX ix_entry_song ON playlist_entry(song_id,playlist_id);\n-- view_user_id=0 is the shared order; positive IDs are authenticated personal views.\n-- Auth, view creation and membership mutation protocols are enforced by the service.\nCREATE TABLE playlist_order(playlist_id BIGINT NOT NULL,view_user_id BIGINT NOT NULL CHECK(view_user_id>=0),version BIGINT NOT NULL CHECK(version>=0),\n PRIMARY KEY(playlist_id,view_user_id),FOREIGN KEY(playlist_id) REFERENCES playlist(playlist_id));\nCREATE TABLE playlist_order_item(playlist_id BIGINT NOT NULL,view_user_id BIGINT NOT NULL,entry_id BIGINT NOT NULL,position_no INTEGER NOT NULL CHECK(position_no>=0),\n PRIMARY KEY(playlist_id,view_user_id,entry_id),UNIQUE(playlist_id,view_user_id,position_no),\n FOREIGN KEY(playlist_id,view_user_id) REFERENCES playlist_order(playlist_id,view_user_id),\n FOREIGN KEY(playlist_id,entry_id) REFERENCES playlist_entry(playlist_id,entry_id));\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 PlaylistOrder.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/data/code/PlaylistOrder.java",
+          "value": "import java.sql.*;\nimport java.util.*;\n\n/** Transaction-owned, bounded whole-list reorder. Authorize the caller before calling. */\npublic final class PlaylistOrder {\n    private PlaylistOrder() {}\n    private static void suppress(Exception primary,Exception secondary) {\n        if(primary!=secondary) primary.addSuppressed(secondary);\n    }\n    public static boolean reorder(Connection c, long playlist, long viewer, long expected,\n                                  List<Long> input, boolean failAfterDelete) throws SQLException {\n        List<Long> ids = List.copyOf(input); // immutable, rejects null entries\n        if (viewer < 0 || expected < 0 || expected == Long.MAX_VALUE || ids.size() > 10_000\n            || new HashSet<>(ids).size() != ids.size()) throw new IllegalArgumentException(\"invalid reorder\");\n        if (!c.getAutoCommit()) throw new IllegalArgumentException(\"requires an unowned connection\");\n        c.setAutoCommit(false);\n        boolean transactionEnded = false;\n        Exception primary = null;\n        try {\n            // Every add/remove/reorder must lock the same parent first, in the same order.\n            try (PreparedStatement p = c.prepareStatement(\"SELECT playlist_id FROM playlist WHERE playlist_id=? FOR UPDATE\")) {\n                p.setLong(1, playlist);\n                try (ResultSet r = p.executeQuery()) { if (!r.next()) throw new IllegalArgumentException(\"playlist absent\"); }\n            }\n            try (PreparedStatement p = c.prepareStatement(\"UPDATE playlist_order SET version=version+1 WHERE playlist_id=? AND view_user_id=? AND version=?\")) {\n                p.setLong(1, playlist); p.setLong(2, viewer); p.setLong(3, expected);\n                if (p.executeUpdate() != 1) { c.rollback(); transactionEnded = true; return false; }\n            }\n            Set<Long> members = new HashSet<>();\n            try (PreparedStatement p = c.prepareStatement(\"SELECT entry_id FROM playlist_entry WHERE playlist_id=?\")) {\n                p.setLong(1, playlist);\n                try (ResultSet r = p.executeQuery()) { while (r.next()) members.add(r.getLong(1)); }\n            }\n            if (!members.equals(new HashSet<>(ids))) throw new IllegalArgumentException(\"not an exact permutation\");\n            try (PreparedStatement p = c.prepareStatement(\"DELETE FROM playlist_order_item WHERE playlist_id=? AND view_user_id=?\")) {\n                p.setLong(1, playlist); p.setLong(2, viewer); p.executeUpdate();\n            }\n            if (failAfterDelete) throw new SQLException(\"injected rollback test\");\n            try (PreparedStatement p = c.prepareStatement(\"INSERT INTO playlist_order_item VALUES(?,?,?,?)\")) {\n                for (int i=0;i<ids.size();i++) {\n                    p.setLong(1,playlist); p.setLong(2,viewer); p.setLong(3,ids.get(i)); p.setInt(4,i); p.addBatch();\n                }\n                p.executeBatch();\n            }\n            c.commit(); transactionEnded = true; return true;\n        } catch (SQLException | RuntimeException ex) {\n            primary = ex;\n            try { c.rollback(); transactionEnded = true; }\n            catch (SQLException rollback) {\n                suppress(ex,rollback);\n                // Never enable autoCommit after an unconfirmed rollback: that can commit.\n                try { c.close(); } catch (SQLException close) { suppress(ex,close); }\n            }\n            throw ex;\n        } finally {\n            if (transactionEnded) {\n                try { c.setAutoCommit(true); }\n                catch (SQLException | RuntimeException reset) {\n                    // Cleanup must never replace the original failure, especially COMMIT UNKNOWN.\n                    try { c.close(); } catch (SQLException | RuntimeException close) { suppress(reset,close); }\n                    if (primary != null) suppress(primary,reset);\n                    else throw reset;\n                }\n            }\n        }\n    }\n}\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "scenario-realtime-music-ranking",
+          "label": "实时歌曲播放量排行榜系统设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s3757",
+      "order": 3757,
+      "question": "为什么数据库唯一索引能给文件中的ID去重，有哪些语义与容量边界？",
+      "shortAnswer": "数据库唯一约束可以在磁盘上裁决重复 ID，但必须先定义字节或业务相等规则，并用有界批次和可恢复导出控制成本。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么数据库唯一索引能给文件中的ID去重，有哪些语义与容量边界？"
+        },
+        {
+          "type": "paragraph",
+          "text": "数据库唯一约束可以在磁盘上裁决重复 ID，但必须先定义字节或业务相等规则，并用有界批次和可恢复导出控制成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：为什么数据库唯一索引能给文件中的ID去重，有哪些语义与容量边界？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "文件去重场景包含几十 GB、有界内存且不依赖 Redis/Kafka 的约束；是否允许本地数据库仍需按题意确认。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "唯一约束在写入时裁决相等键"
+        },
+        {
+          "type": "paragraph",
+          "text": "在job_id+规范化ID上建立NOT NULL唯一键/主键，每个输入ID尝试INSERT；数据库依据索引比较语义检查是否已有相等键，并通过事务并发协调，阻止两笔成功提交留下同一唯一键。先SELECT不存在再INSERT不是等价保证，因为两个线程可能同时读到不存在；最终仍需唯一约束兜底。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“相等”必须定义：01与1是不同字符串还是同一个数字，大小写/重音/前后空白是否折叠，空串是否非法。MySQL可空UNIQUE通常允许多个NULL；前缀唯一只约束前缀；字符排序规则也可能把不同字节看作相等。示例用VARBINARY(256)按字节身份，job隔离不同导入。超长/非法ID先报错，不隐式截断或只取不带碰撞校验的hash。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "大文件处理仍要有界和可恢复"
+        },
+        {
+          "type": "paragraph",
+          "text": "流式解码和分行，限制单行字节与在途批次，分批事务写暂存job；只把确定的重复键当重复，其他类型/长度/IO错误不能用INSERT IGNORE一并吞掉。该方法将全集去重状态放到磁盘数据库，内存仅保留小批；索引空间、日志、IO和导入速度仍可能成为瓶颈。"
+        },
+        {
+          "type": "paragraph",
+          "text": "完成导入后按稳定唯一键游标分批导出，固定job已发布状态和输入hash/进度，输出临时文件并校验完成后发布，重启能重新生成未完成产物。若约束允许本地数据库，可采用上述磁盘暂存；若连数据库也不允许，则采用外部排序或磁盘哈希分桶；排序法按块排序再多路归并去相邻重复，桶法必须处理倾斜和递归分桶，不能把一个超大桶全读内存。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "效果与限制"
+        },
+        {
+          "type": "paragraph",
+          "text": "索引插入大致付出树定位及页/日志维护，不是O(1)内存Set；按已有键序批量载入可能改善局部性。若只要去重文件而不需长期查询，外部排序可能更简单；若需要恢复/并发/审计，唯一表有成熟约束。重试的同一job需一致归一化规则，避免导入和导出解释不一。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 id_unique.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/id_unique.sql",
+          "value": "-- MySQL8.4: exact byte identity. A VARCHAR alternative needs explicit collation semantics.\nCREATE TABLE import_id (\n job_id BIGINT NOT NULL,\n id_bytes VARBINARY(256) NOT NULL,\n PRIMARY KEY(job_id,id_bytes)\n) ENGINE=InnoDB;\n-- Submit one bounded transaction/batch, bind values, and handle ONLY duplicate-key\n-- errors as duplicates. Do not hide truncation/encoding/constraint errors with IGNORE.\nINSERT INTO import_id(job_id,id_bytes) VALUES(?,?);\n-- First page includes the minimum/empty byte key if the business domain allows it.\nSELECT id_bytes FROM import_id WHERE job_id=? ORDER BY id_bytes LIMIT ?;\n-- Subsequent pages use the last emitted byte key, with the job fixed and published.\nSELECT id_bytes FROM import_id WHERE job_id=? AND id_bytes>? ORDER BY id_bytes LIMIT ?;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-79",
+          "label": "删除重复数据，只保留一条"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

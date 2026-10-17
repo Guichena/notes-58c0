@@ -1,0 +1,299 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s8759",
+  "entryId": "ai-agent-4",
+  "expectedOriginalHash": "247875a19449de780c9edde82127f342dae944a398a88388b3b5fe14c68df6c7",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.9 同一个Agent Session被多个请求同时修改，怎样避免冲突"
+    },
+    {
+      "type": "paragraph",
+      "text": "同会话并发请求用串行执行或版本CAS裁决，事件和结果绑定run及状态版本，失败者重读后再决定合并。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：同一Session多个请求怎么办；Redis Session是否线程安全；旧请求晚回如何防覆盖。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Agent Session是会话执行状态，放进Redis不自动实现复合更新原子性；Java与H2示例展示语言无关协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "确定顺序和共享范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "主键包含可信tenantId与sessionId，turnId标识一次用户输入，operationId标识具体副作用。可以按Session队列单写者逐轮处理，或允许并行生成但用version乐观提交；两者都要限定队列/并发、幂等输入与回复顺序。单进程async锁不能协调多进程/多实例。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同Session并发有两种做法。串行执行时，先持久受理轮次，再交给单owner；接管时在权威状态里推进epoch，拦住旧owner。"
+    },
+    {
+      "type": "paragraph",
+      "text": "允许并行生成时，先读取版本v和不可变输入快照，在锁外调用模型，最后用expectedVersion=v条件提交。冲突者重读上下文，判断是否需要重算，不能直接覆盖新轮次。LLM可能等待几十秒，数据库事务和行锁只保护短暂提交，不要覆盖整个模型调用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把状态和消息发布绑在同一提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次Session提交要同时留下新状态和可重放的响应。事务内校验版本、更新状态、保存turn的输入摘要与固定响应，再写outbox，最后统一commit。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同turnId、同输入的重试，返回已经保存的响应；即使模型又生成了不同文字，也不能替换旧结果。同turnId却换了输入，应报冲突。若先推进version，再另存turn，进程崩溃就可能留下新状态却丢掉重放证据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并行分支先各存各的结果：用(stepId,attempt,inputVersion)划分独立namespace，再由汇总器按约定规则合并。不要让所有Agent同时append同一个可变JSON数组。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户轮次存在因果顺序时，后轮不能缺着前轮状态就直接发布。UI流式片段标明turnId，并视为临时输出；正式提交失败，要明确撤销或重算，不能把未提交片段记成会话事实。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "副作用与恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "CAS失败只表示不能提交本地状态，不撤销模型生成期间已经执行的外部写。因此并行阶段尽量纯读/纯计算，有副作用先按稳定operationId持久授权/执行，再查询结果并以合法当前版本归并；不能CAS失败就再付一次款。"
+    },
+    {
+      "type": "paragraph",
+      "text": "历史事件可append-only并做快照，裁剪时保留未完成任务和幂等恢复需要的事实；会话过期/用户删除/权限收紧需传播到worker。服务器保存状态仍要对象级鉴权，知道UUID不代表能读别人的Session。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可运行测试与边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "SessionCAS使用真实H2短事务：30个不同turn均基于v0，只有1个提交、29个冲突；30个同turn重试只生效一次并返回同v2响应；注入错误使Session/turn/outbox一起回滚。另测相同turn不同输入、跨租户同sessionId、关闭重开及旧baseVersion重放已保存结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例提交body是调用者已经据快照构造的新状态，未实现LLM、Python异步、队列单writer/租约、流式前端或完整历史归档；事务模型并非这些框架的集成测试。代码在提交时先锁定Session短暂串行并比较版本，是乐观计算+受保护提交，不声称无锁。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下代码可独立运行；其测试不代表外部服务联调。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "026/SessionCAS.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** H2 local transaction model. Generation is outside commit(); no LLM or remote tool integration. */\npublic final class SessionCAS {\n    private final String url;\n    public record Snapshot(long version, String body) {}\n    public record Result(String state, long version, String body) {}\n    public SessionCAS(String url) throws SQLException {\n        this.url=url;\n        try(Connection c=open();Statement s=c.createStatement()) {\n            s.execute(\"CREATE TABLE IF NOT EXISTS sessions(tenant VARCHAR, sid VARCHAR, ver BIGINT, body VARCHAR, PRIMARY KEY(tenant,sid))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS turns(tenant VARCHAR, sid VARCHAR, tid VARCHAR, input_text VARCHAR, base_ver BIGINT, result_ver BIGINT, result_body VARCHAR, PRIMARY KEY(tenant,sid,tid))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS notifications(tenant VARCHAR,sid VARCHAR,tid VARCHAR,PRIMARY KEY(tenant,sid,tid))\");\n        }\n    }\n    private Connection open()throws SQLException{return DriverManager.getConnection(url);}\n    public void create(String tenant,String sid)throws SQLException{\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"INSERT INTO sessions VALUES(?,?,0,'')\")){p.setString(1,tenant);p.setString(2,sid);p.executeUpdate();}\n    }\n    public Snapshot read(String tenant,String sid)throws SQLException{\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"SELECT ver,body FROM sessions WHERE tenant=? AND sid=?\")){\n            p.setString(1,tenant);p.setString(2,sid);try(ResultSet r=p.executeQuery()){if(!r.next())throw new IllegalArgumentException(\"missing session\");return new Snapshot(r.getLong(1),r.getString(2));}}\n    }\n    public Result commit(String tenant,String sid,String tid,String input,long expected,String generated,boolean fail)throws SQLException{\n        if(expected<0||tid==null||tid.isBlank()||input==null||generated==null)throw new IllegalArgumentException();\n        try(Connection c=open()){\n            c.setAutoCommit(false);\n            try {\n                long current;\n                try(PreparedStatement p=c.prepareStatement(\"SELECT ver FROM sessions WHERE tenant=? AND sid=? FOR UPDATE\")){\n                    p.setString(1,tenant);p.setString(2,sid);try(ResultSet r=p.executeQuery()){if(!r.next())throw new IllegalArgumentException(\"missing session\");current=r.getLong(1);}}\n                try(PreparedStatement p=c.prepareStatement(\"SELECT input_text,result_ver,result_body FROM turns WHERE tenant=? AND sid=? AND tid=?\")){\n                    p.setString(1,tenant);p.setString(2,sid);p.setString(3,tid);try(ResultSet r=p.executeQuery()){\n                        if(r.next()){\n                            if(!input.equals(r.getString(1)))throw new IllegalArgumentException(\"turn payload conflict\");\n                            Result result=new Result(\"REPLAY\",r.getLong(2),r.getString(3));c.commit();return result;}}}\n                if(current!=expected){c.rollback();return new Result(\"CONFLICT\",current,null);}\n                long next=Math.incrementExact(current);\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE sessions SET ver=?,body=? WHERE tenant=? AND sid=? AND ver=?\")){\n                    p.setLong(1,next);p.setString(2,generated);p.setString(3,tenant);p.setString(4,sid);p.setLong(5,expected);if(p.executeUpdate()!=1)throw new SQLException(\"CAS lost\");}\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO turns VALUES(?,?,?,?,?,?,?)\")){\n                    p.setString(1,tenant);p.setString(2,sid);p.setString(3,tid);p.setString(4,input);p.setLong(5,expected);p.setLong(6,next);p.setString(7,generated);p.executeUpdate();}\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO notifications VALUES(?,?,?)\")){\n                    p.setString(1,tenant);p.setString(2,sid);p.setString(3,tid);p.executeUpdate();}\n                if(fail)throw new SQLException(\"injected before commit\");\n                c.commit();return new Result(\"COMMITTED\",next,generated);\n            }catch(SQLException|RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public long count(String table)throws SQLException{\n        if(!Set.of(\"turns\",\"notifications\").contains(table))throw new IllegalArgumentException();\n        try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery(\"SELECT COUNT(*) FROM \"+table)){r.next();return r.getLong(1);}\n    }\n    private static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args)throws Exception {\n        SessionCAS s=new SessionCAS(\"jdbc:h2:\"+args[0]+\";LOCK_TIMEOUT=20000\");s.create(\"a\",\"s\");\n        ExecutorService pool=Executors.newFixedThreadPool(12);\n        try{\n            List<Callable<Result>> work=new ArrayList<>();\n            for(int i=0;i<30;i++){String id=\"t\"+i;work.add(()->s.commit(\"a\",\"s\",id,id,0,id,false));}\n            int wins=0, conflicts=0;for(Future<Result> f:pool.invokeAll(work)){Result r=f.get();if(r.state().equals(\"COMMITTED\"))wins++;else if(r.state().equals(\"CONFLICT\"))conflicts++;}\n            check(wins==1&&conflicts==29&&s.read(\"a\",\"s\").version()==1&&s.count(\"turns\")==1);\n            work.clear();for(int i=0;i<30;i++)work.add(()->s.commit(\"a\",\"s\",\"same\",\"question\",1,\"answer\",false));\n            wins=0;for(Future<Result> f:pool.invokeAll(work)){Result r=f.get();if(r.state().equals(\"COMMITTED\"))wins++;check(r.version()==2&&r.body().equals(\"answer\"));}\n            check(wins==1&&s.count(\"turns\")==2&&s.count(\"notifications\")==2);\n        }finally{pool.shutdownNow();}\n        try{s.commit(\"a\",\"s\",\"same\",\"different\",2,\"bad\",false);throw new AssertionError();}catch(IllegalArgumentException ok){}\n        try{s.commit(\"a\",\"s\",\"rollback\",\"q\",2,\"bad\",true);throw new AssertionError();}catch(SQLException e){check(e.getMessage().contains(\"injected\"));}\n        check(s.read(\"a\",\"s\").equals(new Snapshot(2,\"answer\"))&&s.count(\"turns\")==2&&s.count(\"notifications\")==2);\n        SessionCAS reopened=new SessionCAS(s.url);check(reopened.read(\"a\",\"s\").version()==2);\n        check(reopened.commit(\"a\",\"s\",\"same\",\"question\",0,\"new nondeterministic answer\",false).body().equals(\"answer\"));\n        s.create(\"b\",\"s\");check(s.commit(\"b\",\"s\",\"same\",\"other tenant\",0,\"b\",false).version()==1);\n        check(s.read(\"a\",\"s\").version()==2);\n        System.out.println(\"PASS SessionCAS: 30 stale snapshots yield1 commit/29 conflicts, 30 duplicate turns one effect, saved response replay, input conflict, rollback session+turn+outbox, reopen, tenant isolation\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.15 有状态Agent会话如何绑定执行机、路由新Prompt并处理测试机离线和升级"
+    },
+    {
+      "type": "paragraph",
+      "text": "有状态会话通过持久目录绑定执行环境和owner代际，新Prompt按当前归属路由，离线升级按检查点与未知操作恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：会话怎样绑定执行机；测试机离线怎么办；页面关闭后任务还能继续吗。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话有状态不等于独占物理机，工作区、执行环境和在途动作才决定绑定与迁移边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "独占的是逻辑写权，不一定整机"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话保存轮次、计划、检查点、工作区/测试环境、产物和外部操作身份。可以多会话共享一台隔离良好的机器，各有目录/容器和配额；同一会话的可变工作区通常需单owner或明确事务合并。纯读取与彼此独立子任务可并行，不能把“有状态”直接推成“所有动作都串行”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话归属要有持久权威目录：SessionRoute(tenant,sessionId,ownerInstance,environmentId,epoch,state,leaseUntil,checkpointVersion)。入口可以缓存目录版本，但不能把自己的缓存当成最终归属。"
+    },
+    {
+      "type": "paragraph",
+      "text": "新Prompt先按turnId幂等持久受理，进入该Session的有序邮箱，再交给当前owner领取。“消息已受理”和“模型已回答”分别确认，避免把短连接是否还在当作任务是否存在。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "稳定URL与正确机器路由"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端访问稳定HTTPS域名和不含授权秘密的sessionId，例如/app/sessions/{id}；网关认证并检查会话归属，然后查目录转发到内部owner。公开域名本身会解析到入口IP，这不等于暴露测试worker的原始地址；不把workerIP写进长期URL。若需直传/直连，使用限定对象、期限和权限的受控凭据并说明暴露范围。"
+    },
+    {
+      "type": "paragraph",
+      "text": "新Prompt可以命中任一健康网关，最终到同一Session owner；持旧路由的网关收到epoch不符后刷新、重发相同turnId。有在途长连接时连接粘性只维持传输，不能代替业务所有权。入口转发失败时查已受理记录，避免把同Prompt以新ID交给另一台执行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试机损坏时先分可恢复与不可恢复状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "机器坏了能恢复多少，取决于哪些状态已经离开那台机器。仓库commit、环境镜像/依赖锁、检查点和已校验产物进入可靠共享存储后，才有条件在替代机重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只在本机的未同步文件、内存、socket、硬件设备状态或人工交互，不能假定可以迁移。缺失内容要重做或明确阻塞；专属设备离线且无等价资源时，任务保持WAITING_ENV，不能显示成仍在执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制面确认失联后在权威目录推进epoch并给新owner恢复许可；旧机网络分区后仍活着，所以共享工作区/发布产物/下游动作须验证新epoch或稳定operationId。仅删注册信息不能阻止旧worker写。恢复检查最后已提交产物和所有UNKNOWN工具，不从最后一句聊天猜执行到哪。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "计划升级采用排空、检查点、交接"
+    },
+    {
+      "type": "paragraph",
+      "text": "计划升级按排空、保存、交接的顺序做。先标DRAINING，停止新Session和新步骤进入；入口刷新路由，已经受理的Prompt仍留在持久邮箱。短步骤等它完成，长计算在可中断检查点暂停。"
+    },
+    {
+      "type": "paragraph",
+      "text": "确认产物落地、操作回执和状态版本后，原子交接owner/epoch。新机验证镜像与schema兼容，再继续执行，旧机此后才能退出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "无法中断的设备操作需维护窗口/等待或人工决策，不能超时后直接杀机再重复。SSE/WebSocket通知重连并从持久游标恢复，客户端看到短暂重连不代表业务重新执行。灰度少量会话，比较失败/恢复时间、孤儿环境、排空超时与重复效果；测试旧机复活、Prompt跨切换到达、检查点失败和新版本不能读旧状态。接入真实测试机时，还须验证进程排空、不可中断设备操作和旧机恢复后的失权行为。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.24 会话A完成拆解规划后，怎样迁移上下文让会话B可靠接续剩余任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话交接应生成带版本和产物引用的任务快照，核对未决副作用，再原子转移执行权，使新会话从已确认边界继续。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：A规划后B怎样接着执行；如何避免重复做已完成操作；上下文很长怎样保留关键约束。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整迁移指业务状态足以继续任务，不包括隐藏推理、私有模型状态或跨模型直接搬移KV缓存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先整理可重建的任务包"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存原目标、用户已确认约束/授权、当前计划版本、依赖图、已完成与待做步骤、验收条件，以及必要的对话原文和引用。每个事实区分用户明确说明、工具验证结果、临时假设和未解决问题，带来源/时间/版本；摘要不能把A的猜测升级为事实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大文件、代码、检索证据和工具产物用不可变引用/hash，记录访问权限和恢复所需版本。工具操作单独保存稳定operationId、参数摘要、已确认结果与UNKNOWN状态；仅把最后一段自然语言总结贴给B，无法证明之前哪步已经真正执行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一致快照和所有权交接"
+    },
+    {
+      "type": "paragraph",
+      "text": "A先在安全点停止新派发，收集或标记在途操作，再用事务保存checkpoint、已完成步骤和产物manifest。随后创建handoffId，记录源会话、目标任务的关联及状态版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "B核对完整性和权限后，用CAS领取新的ownerEpoch；此后A的旧结果不能覆盖当前状态。重复交接通知只唤醒同一个handoff，不应产生两个合法执行者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果允许A继续只读协助，就把它与唯一有权提交结果的执行者区分；若两者同时编辑计划/文件，使用版本冲突或明确分支合并，不称为一次无竞争迁移。外部副作用不能靠改会话owner自动撤销，目的端稳定键/fencing和回执核对仍必需。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "B先校验再执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "B加载任务包，检查schema、模型/工具能力、输入版本和访问授权；列出已完成证据与剩余步骤，缺信息先补读/澄清，而非从头重复已完成发布/付款等动作。UNKNOWN按原operationId查询；纯计算可重算，但不能换新ID盲目重做未知写操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "恢复计划可以调整后续路线，但保留已经发生的外部事实和用户限制，计划变更推进版本并记原因。若B没有A的工具/文件权限，记录这一具体阻塞或取得所需授权，不能复制凭据/越权链接来冒充完整上下文。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "上下文很长时怎样不丢关键约束"
+    },
+    {
+      "type": "paragraph",
+      "text": "长上下文先保住不能压掉的内容：当前目标、硬约束、权限、执行状态和未决风险，放进结构化摘要。其余证据按步骤或实体建立可检索索引，需要时再读原文。"
+    },
+    {
+      "type": "paragraph",
+      "text": "原始对话可以存档，不必每轮全部塞入prompt。摘要也要有版本和来源；新证据改变了旧事实，就更新相应内容，不能只把互相冲突的描述一直往后叠加。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自动交接摘要经过程序检查必填字段、引用可访问、产物hash和状态总数；重要歧义由人或明确规则确认。不能因为字数更短就说“完全等价”，评测要看B是否能回答关键约束并完成剩余步骤、是否遗漏未决副作用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试和可证明边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试A存快照后退出、B领取后退出、重复handoff、A晚回包、摘要漏约束、文件版本变化、授权过期、工具成功但检查点缺结果和不同模型上下文长度。对照从原完整业务状态直接执行的期望结果，核对没有漏步/重效/串租户。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久检查点、升级兼容和会话CAS共同约束A到B的交接。平台必须提供可导出的完整状态与相应接口，才能讨论具体迁移；不能假定任意产品的所有内部状态都可无损搬迁。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "2"
+}

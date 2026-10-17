@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-business-atomicity",
+  "order": 141,
+  "question": "Lua 原子执行怎样对应业务原子性、JVM 临界区与失败恢复？",
+  "shortAnswer": "串行不交错不代表运行错误回滚，也不覆盖数据库和外部调用；先定义不变量，再安排权威提交、稳定身份和恢复协议。",
+  "commonPhrasings": [
+    "锁、事务、CAS 能完全替代 Lua 吗？",
+    "资源预留、一人一单和红包怎样比较？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Lua 的业务原子性怎样与事务和 JVM 并发对应"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 的价值是把同一 Redis 执行范围内的读取、条件判断和有界多步修改放在一起，避免并发请求都基于同一个旧状态通过检查。单条 INCR 已能完成的无条件计数不需要靠 Lua 变得“更原子”；涉及额度、资格、去重和结果记录时，才要共同定义业务裁决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“Lua 防止 vcore 超卖，能否完全替代”“红包为什么不用 INCR/DECR”“一人一单如何保证”“JVM 有什么类似方法”应围绕同一个不变量比较，不能拿不同成功条件的实现声称等价。下面的 vcore、红包、库存和 Java 代码都是教学或假设设计，不能直接当作个人已经落地的实现。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "从 vcore 到一人一单先定义需要一起成立的条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设可用 vcore 为 remaining，请求需要 amount，目标是 amount 为正、remaining 足够时才扣减，且同一业务请求不会因重试再次扣减。脚本应先校验输入数量、整数格式、正负、类型、范围与请求身份，再检查当前额度和已有结果，满足条件才扣减并登记此次裁决。其他客户端不能插入该脚本的读取与扣减之间，因此不会同时基于一份旧额度各自通过。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单纯 DECRBY 只保证“减”这一步原子，不保证“足够才减”。DECR 遇到不存在的键会按 0 减成 −1，负数结果也不是自动回滚。先扣到负数再加回，会让中间负值和并发补偿暴露出来，也可能因进程崩溃而补不回，不能等价为原子条件扣减。无条件单计数增加或减少可以用 INCRBY/DECRBY；一旦有检查条件，就要选择能覆盖这些条件的协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "秒杀的库存与“一人一单”还多一个约束：同一次裁决中检查购买标记、检查库存，随后扣减并写入用户购买标记或预留收据。只用 SADD 可以去重，却不会顺便正确扣库存；只用 SET NX 可以争一个键，却不会顺便保证用户身份、活动有效与数据库订单已提交。身份来自应用鉴权，稳定 request_id 应绑定调用者与参数，不能由客户端随便换 ID 绕过规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在普通 Redis Cluster 设计里，涉及的键要显式声明并安排在同一执行槽；一个调用提交一次脚本，传入本次键与参数，它不会自动收集多个用户未来要执行的命令。多个调用依次观察共享状态，才形成并发裁决。Lua 也不会自动把 Redis 配额与 Spark 的实际资源分配一起提交：预留成功而外部调度失败，需要根据稳定申请号和真实调度状态恢复，释放必须只对合法终态生效一次，不能见到超时就盲目加回。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "红包和排行榜增加了哪些不同约束"
+    },
+    {
+      "type": "paragraph",
+      "text": "红包增减要先问清单位、剩余金额、剩余份数、用户资格、活动时间、分配规则和重复领取的定义。无条件把一个统计值加一，INCR 就够；若要求同一人只领一次、金额不能负、份数不能超、一次分配有稳定收据，就要把这些条件放在同一裁决中。没有明确分配算法和金额约束时，不能临时编造一套随机红包公式再声称能用于实际业务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "金额通常用最小货币单位的整数表达，但仍需检查上下界和乘加溢出。Redis 计数命令支持有符号 64 位整数，不代表 Lua number 可无损表示任意 64 位值；常见双精度数值在 2^53 之外不能逐个表示所有整数。大 ID 宜按字符串处理，数值运算限定在经过证明的精确范围内。涉及资金的权威账本、领款收据和发布意图还要有可解释的持久事务，Redis 预扣不能直接当作领款最终完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "排行榜的并发控制也不能只说“Redis 单线程”。ZINCRBY 可以避免客户端先 GET 分数、算出新分数再 ZADD 导致的丢增量；同一事件重复消费仍会重复加分。资格、事件去重和增分若必须同时成立，应同槽原子裁决，或者用持久事件表驱动可重建的榜单投影。分数已更新但排名是另一次读取，两次结果也不天然来自同一视图；严格展示可以用同一实例上的有界脚本一起读，或返回明确版本，跨榜、跨槽仍不能自动得到全局快照。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Lua 运行期错误不会撤销已经完成的写入"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本隔离执行不等于数据库式全成全败。例如先成功扣额度，再写一条类型不匹配的记录，后一步报错不会自动把额度还回去。redis.call 出错会中止后续脚本；redis.pcall 可以把错误交给脚本判断，但两者都没有自动撤销已经成功的写。把报错包起来并返回“失败”，不能让已经扣掉的额度消失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以先验证能预见的错误，限制类型、参数、数值范围、循环与返回量，再执行写入；还要为资源不足、权限变化等异常准备可识别的状态与审计恢复路径。写前验证减少错误窗口，并不是对所有运行环境异常的万能证明。补偿是新的业务操作，要有身份、条件和幂等，不能假设执行“反向命令”就等于回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本报错后的部分执行、回复丢失后的结果未知、切主后的已确认状态丢失，是三条不同的恢复路径。回复丢失时，脚本可能已经全部成功；先查稳定 request_id 的结果，或重放同一裁决，比直接再扣一次更可靠。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果是副本晋升丢写，问题又变成已经确认的 Redis 状态消失，需要按权威持久边界恢复。不能用一句“Lua 原子所以不用管”，把这三种情况当成同一种失败。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "怎样判断其他机制是否能完全替代 Lua"
+    },
+    {
+      "type": "paragraph",
+      "text": "只比较语言或命令名没有意义，要比较同一个成功条件、失败结果和作用范围。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "原生单命令：能直接表达目标时最简单，例如无条件计数、单元素去重。多个分别原子的命令，不会自动组合成一个原子业务。",
+        "WATCH 配合 MULTI/EXEC：先监视、读算，再条件提交；可以表达部分读改写逻辑，但增加往返和冲突重试，必须独占连接、监视全部相关键，并处理执行期错误与未知结果。",
+        "分布式锁包住多次读写：所有访问者必须遵守同一资源粒度，还要处理租约、重入、释放、续期、暂停和故障切换。它不额外提供跨 Redis 与外部调度的回滚，也未必比短脚本更便宜。",
+        "Redis Functions：Redis 7.0 起可把部分脚本逻辑作为函数库管理，改变部署、持久与复制方式；执行范围与运行错误边界并没有因此变成跨系统事务。调用和加载细节沿用 Lua 专章。",
+        "权威数据库事务：适合需要把配额、唯一业务记录和可靠事件一起持久提交的情况，但要考虑热点行、连接占用、隔离级别与重试成本。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式锁通常是悲观协调：先取得独占资格，再执行临界区，是否立即失败或等待不改变这个分类。底层 NX 用了一次条件判断，也不能因此把整个业务称作乐观锁。乐观方案是先读算，提交时通过 version CAS 或 WATCH 验证；两者可以组合，用租约减少冲突，用资源端条件写保障最后裁决。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "JVM 中相似的是临界区和条件更新"
+    },
+    {
+      "type": "paragraph",
+      "text": "synchronized 在同一个 monitor 上提供互斥，解锁与后续成功加锁建立 happens-before；所有共享状态访问遵守同一把锁时，可以保护多字段不变量。同步块通常对应 monitorenter/monitorexit，同步方法通过 ACC_SYNCHRONIZED 方法标志表达同步语义；监视器可重入。HotSpot 的锁实现和优化随版本变化，不能把某一版偏向锁或锁膨胀流程当作 Java 语言永恒规范。"
+    },
+    {
+      "type": "paragraph",
+      "text": "CAS 比较当前值是否等于预期，匹配才更新；不匹配就根据业务重读重算。AtomicLong 提供相应的原子与内存可见性契约，但 CAS 并不自动把多个独立字段一起提交。volatile 只解决相应读写的可见性和顺序约束，不会把“读取、检查、减额”这组三步合为一个原子动作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 Java 例子只分配不释放，capacity 不得为负，amount 必须为正。before≥amount 时计算 before−amount 不会产生该非负模型的下溢；成功 CAS 是扣减的线性化点。它是单 JVM、单计数模型，不包含多进程共享、持久恢复、外部 Spark 配额或请求幂等。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.concurrent.atomic.AtomicLong;\n\n/** Monotonic allocation only: no releases, request deduplication, persistence or remote workers. */\npublic final class VcoreQuota {\n    private final AtomicLong remaining;\n    public VcoreQuota(long capacity) {\n        if (capacity < 0) throw new IllegalArgumentException(\"negative capacity\");\n        remaining = new AtomicLong(capacity);\n    }\n    public boolean reserve(long amount) {\n        if (amount <= 0) throw new IllegalArgumentException(\"amount must be positive\");\n        long before = remaining.get();\n        while (before >= amount) {\n            if (remaining.compareAndSet(before, before - amount)) return true;\n            before = remaining.get();\n        }\n        return false;\n    }\n    public long remaining() { return remaining.get(); }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "只扣不加使 remaining 单调下降，这个模型中不会出现值先变走又变回来的 ABA；若加入释放、对象复用或多个字段，就要重新定义状态与版本，必要时把版本戳与值一起比较，避免只见数值相同就误认为状态未变。CAS 重试不保证每个线程公平，也没有单个调用的有界等待保证；高争用会增加重复比较的成本。额度不足时在对应读取点返回 false，而不是先扣成负数再补回。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果只在一个 JVM 内保护多字段，用同一 monitor 可能更直接；若多个 JVM 同时申请一份外部额度，本地 AtomicLong 和 synchronized 都不能替代共享权威状态。审批里的数据库版本 CAS、Redis 的条件更新与 CPU CAS 在“比较后更新”上有相似性，但作用域、故障模式和实现机制不同。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "多线程的收益与真实项目怎样衔接"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立的 CPU 计算可以按可用核心并行；阻塞 I/O 可以通过有界线程池或合适的虚拟线程提高等待重叠，但数据库连接、模型额度、内存与下游容量仍有限。还要处理共享状态、异常收敛、取消、超时和提交顺序。Redis 6/7 的网络 I/O 线程、后台任务与主命令执行路径是不同维度，不能因为应用多开线程，就推导 Redis 脚本的业务步骤会并行执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 适合低延迟访问、丰富数据结构和可管理过期的共享状态；关系数据库适合权威关系数据、索引查询、约束与事务。数据库也有 Buffer Pool 和日志机制，不能把两者的区别简化成“一个全内存、另一个每次都读写磁盘”。组合使用时，先确定谁承载不可丢的事实，再决定缓存、额度预筛和事件投影能接受什么故障窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "联系个人项目，可以明确说：制造业通知链路使用 Redis Lua 令牌桶控制渠道出口，并给 P0 预留配额，结合积压滞回降级；可靠发布与副作用恢复还依赖 Transactional Outbox、RabbitMQ 的确认机制、数据库账本、处理轮次及渠道稳定请求号。令牌桶成功只说明出口额度裁决通过，不等于通知已送达，更不等于外部副作用只发生一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave 的 Kafka 异步任务覆盖解析、切片、向量化和索引构建，并有任务幂等与失败恢复。若进一步设计重复任务的并发协调，可以考虑按任务与版本限定资源、用租约减少重复计算，再用权威状态拒绝过期结果；这是设计延伸，具体 Redis 锁、数据库种类、租期、拓扑和压测指标要按真实实现回答。工单审批的版本 CAS 也不能直接描述成已经实践过 JVM AtomicLong 或 MySQL 行锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "被问“实习用了什么分布式锁、遇到过哪些事故”时，应给出能核对的实际机制和自己负责的部分。租约过期、误删、续期失败、切主丢锁、响应未知可以作为故障推演，但不要把推演包装成亲历事故。好的回答是能画出谁持有哪一代授权、哪一步已提交、怎样查结果和拒绝重复，而不是堆叠 Redis、Lua、锁、事务这些名词。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

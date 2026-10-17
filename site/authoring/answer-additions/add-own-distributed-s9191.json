@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s9191",
+  "entryId": "own-rag-workflow",
+  "expectedOriginalHash": "d772fd44fd063c2aac31d4645e5be67211ea2b7750df63aefbba8ef630d32b33",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.14 用户提交工单给Agent，从受理到执行审计怎样防丢单与重复操作"
+    },
+    {
+      "type": "paragraph",
+      "text": "工单应先持久受理并生成稳定任务身份，再受控执行、保存动作回执和审计，以可查询终态闭合责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：用户提交工单后Agent怎么处理；怎样防丢单重复操作；模型结果如何验收。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "工单从提交到完成包含任务事实、模型判断和真实动作，三者正确性分别验收。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "受理时就建立工单责任"
+    },
+    {
+      "type": "paragraph",
+      "text": "工单防丢，关键是在回复“已受理”之前把责任落库。入口先验证身份、工单对象权限、必填字段、附件版本和业务约束。客户端一次提交沿用稳定requestId，服务以(tenant,requestId)唯一，并保存规范化内容摘要。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同ID、同内容，返回原ticketId；同ID、不同内容，报冲突。工单RECEIVED状态、输入引用、初始事件和outbox放在同一事务，提交成功后才返回受理结果和查询入口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "队列可保存待执行事件，工单状态与审计仍在权威库。消息不应成为唯一可变工单详情；它携ticketId、eventId、expectedVersion即可，消费者重新查合法状态。量小可用第5.11节的持久任务表加有界worker替代Broker，不能只提交线程池就向用户保证工单不会丢。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "业务流程和模型建议分层"
+    },
+    {
+      "type": "paragraph",
+      "text": "工单的主路径可以是RECEIVED→VALIDATED→PLANNED→RUNNING→WAITING_INPUT/WAITING_APPROVAL→SUCCEEDED，异常路径还需RETRY_WAIT、FAILED、CANCEL_REQUESTED和UNKNOWN。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些状态不能当成任意可覆盖的字符串。每个命令都要声明前置版本、允许的来源状态和完成证据。关闭工单前，检查必要节点、真实工具回执和业务验收；模型只说“完成了”，不足以推进终态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计划包含步骤ID、依赖、输入/规则版本、目标对象和允许工具。独立只读任务可并行，写同一业务实体的操作按约束串行/CAS；补充用户信息生成新工单版本，旧计划迟到结果不得覆盖。高影响动作审批绑定具体对象、参数及版本，审批通过后目标改变必须重新评估。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "领取与每一步只提交一次"
+    },
+    {
+      "type": "paragraph",
+      "text": "worker用租约/epoch条件领取任务，心跳和实际进展分别监控。步骤的稳定operationId可由ticketId+planVersion+stepId定义；重试只换attempt，不换业务意图ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交方式按效果所在位置区分。本地效果、inbox、步骤状态和outbox放进同一事务；外部工具则先记录调用责任，再依靠目的端幂等/查询，回执丢失进入UNKNOWN。第11.2节和第11.11节分别给出本地检查点、真实子进程超时验证，但它们不会让任意外部工具自动获得恰好一次语义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例：发货工具成功而工单更新失败，重新派工不能直接再发货。按原operationId查发货单，核实同对象同参数后补记步骤成功，再继续依赖节点；如果工具既无去重也无查询，只能保持待核实并人工处理。重复消息只是唤醒，不应创建第二张工单或第二次效果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "过程审计和恢复闭环"
+    },
+    {
+      "type": "paragraph",
+      "text": "追加审计事件记录谁在何版本申请/批准/领取/执行、输入摘要、错误类别、attempt、工具回执和产物hash，trace串调用链。审计不保存秘密或无必要完整提示词；状态表提供当前视图，事件历史用于解释和核对，二者更新边界明确。大附件放不可变对象，先确认可读再发布引用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扫描应执行但无通知、过期租约、最老UNKNOWN与outbox积压，自动重试有退避次数/总deadline并区分永久拒绝；死信仍有处理责任。验收提交即宕机、重复工单、并发修改、审批撤销、工具已成功但状态失败、取消与完成竞争。按任务/租户分片可扩不同工单，同工单强顺序有串行成本；项目容量和线上收益须用实际测量与故障证据说明。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-rag-research-ticket",
+  "targetOrigin": "authored"
+}

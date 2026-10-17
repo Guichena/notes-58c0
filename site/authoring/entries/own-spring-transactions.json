@@ -1,0 +1,413 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-spring-transactions",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Spring 与 Java 服务端",
+  "category": "Spring 事务与失败边界",
+  "title": "Spring 事务与失败边界",
+  "tags": [
+    "Spring",
+    "Java17教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-spring-transaction-resources",
+      "order": 13,
+      "question": "声明式与编程式事务如何管理真实连接？",
+      "shortAnswer": "Spring 事务负责划定边界，再请事务管理器操作真实资源。对 JDBC 来说，最终提交或回滚的是参与事务的 Connection；@Transactional 本身不执行 SQL，也不能顺带撤销数据库外的操作。",
+      "commonPhrasings": [
+        "Spring 事务有哪些实现方式？",
+        "@Transactional 底层原理是什么？",
+        "事务拦截器具体做什么？",
+        "Spring 事务与数据库事务有什么区别？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "13 声明式与编程式事务如何管理真实连接"
+        },
+        {
+          "type": "paragraph",
+          "text": "Spring 事务负责划定边界，再请事务管理器操作真实资源。对 JDBC 来说，最终提交或回滚的是参与事务的 Connection；@Transactional 本身不执行 SQL，也不能顺带撤销数据库外的操作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以一次外部调用受管事务方法为例，声明式事务按这条顺序工作："
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "TransactionInterceptor 根据目标方法和类取得 TransactionAttribute。属性可以来自注解，也可以通过 XML advice 描述。",
+            "选择 PlatformTransactionManager，按传播行为取得事务状态；已有事务可能被复用，不一定新开物理事务。",
+            "调用目标方法。正常返回时尝试提交，异常时按回滚规则处理。",
+            "恢复、清理事务上下文。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，目标方法返回和事务提交完成是两个时刻。后面判断事件时机、分布式锁释放或提交失败，都要沿这条调用顺序分析。"
+        },
+        {
+          "type": "paragraph",
+          "text": "DataSourceTransactionManager 管理一个 DataSource。常见过程是取得连接，保存原状态，关闭自动提交，再把 ConnectionHolder 绑定到当前线程。业务中的 JdbcTemplate 通过 DataSourceUtils 取得这条受管连接，于是 SQL 才真正加入事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果业务直接调用 dataSource.getConnection 并拿到了另一条连接，那条连接不会自动加入前一事务。遗留代码可以借助合适的 TransactionAwareDataSourceProxy 接入，但事务管理器和业务仍必须指向兼容资源。排查“注解有了却没回滚”，不能省略连接来源这一环。"
+        },
+        {
+          "type": "paragraph",
+          "text": "编程式通常优先 TransactionTemplate，把一段数据库操作放入回调，由模板负责事务控制。直接使用管理器的 getTransaction、commit、rollback 也可以，但需要正确处理状态、异常和清理，容易在提交异常后再次回滚已完成状态。两种写法改变的是应用如何表达边界，并不是数据库有两套 ACID 算法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "事务定义、事务状态与管理器也不同：TransactionDefinition 描述隔离、传播、超时等；TransactionStatus 描述当前调用的状态、rollback-only 或保存点；管理器实施资源操作。JDBC、JPA、JTA、响应式各有不同管理器，不应只说“找一个 transactionManager 就够了”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：加事务就能同时撤销 Redis、消息、文件和 RPC 吗？普通调用不会自动加入该数据库事务。事务方法中慢 RPC 还会拉长连接和锁占用；短数据库事务加 outbox、幂等与恢复协议往往更合适。Spring 常用的标准事务注解是 @Transactional；遇到 @Transaction 这样的写法，应先确认实际依赖与注解类型。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "57 真实 JDBC 事务结果"
+        },
+        {
+          "type": "paragraph",
+          "text": "事务实验应查询数据库最终行集，才能区分未进入事务、规则提交、整体回滚和独立提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "十五个场景都用最终行集判断结果，每个场景后清空表，避免互相污染。阅读时先对照三组容易混淆的结果："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "本实验的运行时异常跨过代理会回滚，自调用却可能没进入事务；checked 异常默认提交，显式规则可以改成回滚。",
+            "REQUIRED 中内层失败可让整体回滚；REQUIRES_NEW 的内层提交可以保留；NESTED 失败退回保存点。MANDATORY 和 NEVER 则检查进入前是否有事务。",
+            "取消、吞异常、模板提交/回滚和提交回调各有不同路径；特别是 afterCommit 抛错时，业务行可能已经提交。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "下方 rows 断言查的是数据库实际留下的行，不以方法是否抛异常代替提交结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "源文件：code/framework/src/main/java/handbook/TransactionLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "package handbook;\nimport java.util.*;\nimport javax.sql.DataSource;\nimport org.h2.jdbcx.JdbcDataSource;\nimport org.springframework.context.annotation.*;\nimport org.springframework.jdbc.core.JdbcTemplate;\nimport org.springframework.jdbc.datasource.DataSourceTransactionManager;\nimport org.springframework.transaction.*;\nimport org.springframework.transaction.annotation.*;\nimport org.springframework.transaction.support.*;\n\npublic class TransactionLab {\n    @Configuration(proxyBeanMethods=false) @EnableTransactionManagement(proxyTargetClass=true)\n    static class Config {\n        @Bean DataSource dataSource(){var d=new JdbcDataSource();d.setURL(\"jdbc:h2:mem:tx_lab;DB_CLOSE_DELAY=-1\");return d;}\n        @Bean JdbcTemplate jdbc(DataSource d){return new JdbcTemplate(d);}\n        @Bean PlatformTransactionManager transactionManager(DataSource d){return new DataSourceTransactionManager(d);}\n        @Bean Inner inner(JdbcTemplate j){return new Inner(j);}\n        @Bean Outer outer(JdbcTemplate j,Inner i){return new Outer(j,i);}\n    }\n    public static class Inner {\n        final JdbcTemplate j;\n        Inner(JdbcTemplate j){this.j=j;}\n        @Transactional public void fail(){put(\"inner\");throw new IllegalStateException(\"fail\");}\n        public void self(){this.fail();}\n        @Transactional public void checked() throws Exception{put(\"checked\");throw new Exception(\"checked\");}\n        @Transactional(rollbackFor=Exception.class) public void checkedRollback() throws Exception{put(\"checked\");throw new Exception(\"checked\");}\n        @Transactional(propagation=Propagation.REQUIRES_NEW) public void independent(){put(\"independent\");}\n        @Transactional(propagation=Propagation.NESTED) public void nested(){put(\"nested\");throw new IllegalStateException(\"savepoint\");}\n        @Transactional(propagation=Propagation.MANDATORY) public void mandatory(){put(\"mandatory\");}\n        @Transactional(propagation=Propagation.NEVER) public void never(){put(\"never\");}\n        @Transactional public void cancel(){put(\"cancel\");throw new java.util.concurrent.CancellationException();}\n        @Transactional public void swallowed(){put(\"swallowed\");try{throw new IllegalStateException();}catch(IllegalStateException expected){}}\n        void put(String value){j.update(\"insert into events(name) values (?)\",value);}\n    }\n    public static class Outer {\n        final JdbcTemplate j;final Inner i;\n        Outer(JdbcTemplate j,Inner i){this.j=j;this.i=i;}\n        @Transactional public void caught(){i.put(\"outer\");try{i.fail();}catch(IllegalStateException expected){}}\n        @Transactional public void independentThenFail(){i.put(\"outer\");i.independent();throw new IllegalStateException();}\n        @Transactional public void nestedCaught(){i.put(\"outer\");try{i.nested();}catch(IllegalStateException expected){}}\n        @Transactional public void neverInside(){i.never();}\n    }\n    interface Work{void run()throws Exception;}\n    static void throwsType(Class<? extends Throwable> t,Work w){try{w.run();}catch(Throwable e){if(t.isInstance(e))return;throw new AssertionError(e);}throw new AssertionError(\"missing error\");}\n    static void rows(JdbcTemplate j,String... wanted){var got=j.queryForList(\"select name from events order by name\",String.class);if(!got.equals(List.of(wanted)))throw new AssertionError(got);j.update(\"delete from events\");}\n    public static void main(String[] args){\n        try(var c=new AnnotationConfigApplicationContext(Config.class)){\n            var j=c.getBean(JdbcTemplate.class);j.execute(\"create table events(name varchar(40) primary key)\");\n            var i=c.getBean(Inner.class);var o=c.getBean(Outer.class);\n            throwsType(IllegalStateException.class,i::fail);rows(j);\n            throwsType(IllegalStateException.class,i::self);rows(j,\"inner\");\n            throwsType(Exception.class,i::checked);rows(j,\"checked\");\n            throwsType(Exception.class,i::checkedRollback);rows(j);\n            throwsType(UnexpectedRollbackException.class,o::caught);rows(j);\n            throwsType(IllegalStateException.class,o::independentThenFail);rows(j,\"independent\");\n            o.nestedCaught();rows(j,\"outer\");\n            throwsType(IllegalTransactionStateException.class,i::mandatory);rows(j);\n            throwsType(IllegalTransactionStateException.class,o::neverInside);rows(j);\n            throwsType(java.util.concurrent.CancellationException.class,i::cancel);rows(j);\n            i.swallowed();rows(j,\"swallowed\");\n            var tx=new TransactionTemplate(c.getBean(PlatformTransactionManager.class));\n            tx.executeWithoutResult(s->i.put(\"template\"));rows(j,\"template\");\n            tx.executeWithoutResult(s->{i.put(\"rollback\");s.setRollbackOnly();});rows(j);\n            List<String> callbacks=new ArrayList<>();\n            tx.executeWithoutResult(s->{i.put(\"committed\");TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization(){\n                public void afterCommit(){callbacks.add(\"committed\");}\n                public void afterCompletion(int status){callbacks.add(\"completion:\"+status);}\n            });});rows(j,\"committed\");\n            if(!callbacks.equals(List.of(\"committed\",\"completion:0\")))throw new AssertionError(callbacks);\n            throwsType(IllegalStateException.class,()->tx.executeWithoutResult(s->{\n                i.put(\"after_commit_failure\");\n                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization(){\n                    public void afterCommit(){throw new IllegalStateException(\"notification failed\");}\n                });\n            }));rows(j,\"after_commit_failure\");\n            System.out.println(\"PASS 15 real Spring/JDBC/H2 transaction scenarios\");\n        }\n    }\n}\n",
+          "label": "code/framework/src/main/java/handbook/TransactionLab.java"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-transaction-attributes",
+      "order": 14,
+      "question": "Transactional 属性如何逐项解释？",
+      "shortAnswer": "@Transactional 可以理解为给事务管理器的一组执行要求：用哪个资源、怎样参与事务、何时回滚。先确认调用被拦截、资源确实参与、管理器支持相应规则，再逐项解释属性。",
+      "commonPhrasings": [
+        "注解有哪些属性？",
+        "readOnly 会禁止一切写入吗？",
+        "timeout 是不是定时杀线程？",
+        "内层隔离级别能否覆盖外层？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "14 Transactional 属性如何逐项解释"
+        },
+        {
+          "type": "paragraph",
+          "text": "@Transactional 可以理解为给事务管理器的一组执行要求：用哪个资源、怎样参与事务、何时回滚。先确认调用被拦截、资源确实参与、管理器支持相应规则，再逐项解释属性。"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "value/transactionManager：指定要使用的事务管理器，避免多数据源选错资源",
+            "propagation：方法遇到已有事务时如何参与、挂起或拒绝",
+            "isolation：新物理事务的隔离要求，DEFAULT 使用底层默认",
+            "timeout/timeoutString：事务允许的超时要求，落实方式依管理器与资源",
+            "readOnly：只读语义或优化提示，是否强制取决于具体管理器与数据库",
+            "rollbackFor/noRollbackFor：按异常类型指定回滚或不回滚",
+            "rollbackForClassName/noRollbackForClassName：名称匹配规则，宽泛模式容易误匹配",
+            "label：事务标签，实际用途取决于管理器与集成方"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "假设外层事务已经打开连接，内层方法再声明另一隔离级别或超时，通常不会重新设置这条外层连接。DataSourceTransactionManager 可以通过既有事务校验暴露不兼容设置，但不能把已经开始的物理事务变成另一个隔离级别。"
+        },
+        {
+          "type": "paragraph",
+          "text": "readOnly 也应看具体实现：有些管理器只传递优化提示，另一些配置会执行数据库只读事务语句。无论哪种，都不能拿它代替 SQL 权限或租户授权。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JDBC 事务超时可能在后续语句执行与超时检查中起作用，不是任意 Java 代码的抢占式中断。连接获取超时、SQL 查询超时、锁等待超时、网络读超时与整个请求 deadline 需要分别配置；把其中一个设成三秒，不意味着所有请求三秒后底层工作都消失。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：所有 checked exception 都加 rollbackFor=Exception.class 是否最好？看业务含义。若业务异常代表“必须撤销”，明确配置；若异常是在已完成业务后报告非关键失败，则应重新划分边界。类型安全规则比模糊的异常名称字符串更容易核对。Framework 6.2 支持配置全局 ALL_EXCEPTIONS 默认回滚策略，不能将该能力默认套入 6.1。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-propagation",
+      "order": 15,
+      "question": "七种传播行为怎样推演？",
+      "shortAnswer": "传播行为回答的是：内层方法遇到已有事务时，继续共用、另开一个，还是不允许执行？重点先分清 REQUIRED 共用事务、REQUIRES_NEW 独立事务、NESTED 保存点。隔离级别回答数据怎样并发访问，是另一件事。",
+      "commonPhrasings": [
+        "事务类型有哪些？",
+        "一个事务里调用另一个事务会怎样？",
+        "为什么 catch 内层异常仍然回滚？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "15 七种传播行为怎样推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "传播行为回答的是：内层方法遇到已有事务时，继续共用、另开一个，还是不允许执行？重点先分清 REQUIRED 共用事务、REQUIRES_NEW 独立事务、NESTED 保存点。隔离级别回答数据怎样并发访问，是另一件事。"
+        },
+        {
+          "type": "paragraph",
+          "text": "七种传播行为可按“进入方法时有没有事务”来推演："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "REQUIRED：有就加入，没有就新建。SUPPORTS：有就参与，没有就非事务执行。MANDATORY：必须已有事务，否则报错。",
+            "REQUIRES_NEW：挂起已有事务上下文，新建独立物理事务。NOT_SUPPORTED：挂起已有事务，非事务执行。NEVER：必须没有事务，否则报错。",
+            "NESTED：已有事务时通常建立保存点；没有事务时开启事务。能否支持，仍由管理器和驱动决定。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "判断时先标出进入前的状态，再看是否创建新的物理事务，不能看到两个事务方法就画两条 Connection。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“事务类型”若缺少上下文，应先区分问题想问传播、声明式/编程式、本地/全局还是命令式/响应式，不能把它们混成一个枚举。一个有事务属性的方法是一段逻辑事务范围，不一定对应新的 Connection。"
+        },
+        {
+          "type": "paragraph",
+          "text": "外层先写订单，接着调用另一个受管 Bean 的内层方法；内层写审计后抛 RuntimeException。若内层是 REQUIRED，它的事务拦截器会把共享物理事务标成 rollback-only。"
+        },
+        {
+          "type": "paragraph",
+          "text": "即使外层 catch 后正常返回，最外层尝试提交时仍会回滚，通常抛 UnexpectedRollbackException，防止调用方把它当作成功提交。反过来，如果异常完全在同一个目标方法内部被捕获，没有越过内层事务拦截器，数据库也没有使事务失效，就可能正常提交。差别在异常穿过了哪个边界，不能只看有没有 catch。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把内层改成 REQUIRES_NEW，内层就有自己的物理事务和连接，外层上下文被挂起，但外层连接通常仍占着。内层已经提交的“尝试日志”可以在外层回滚后保留；若日志写的是“订单已完成”，却可能与最终业务事实冲突。"
+        },
+        {
+          "type": "paragraph",
+          "text": "独立事务也有代价。内层如果需要获取与外层冲突的锁，可能等待外层释放；外层又在等待内层结束，就可能卡住。普通 MVCC 快照读不必因此等待这些行锁。连接池同样可能耗尽：所有线程各占一条外层连接，又一起等待内层新连接。解释选型时要把业务语义、连接占用和锁关系一起说清。"
+        },
+        {
+          "type": "paragraph",
+          "text": "NESTED 通常在同一物理连接上创建保存点，内层失败回到保存点，外层可继续；外层最终回滚时，内层成功部分也一起撤销。它没有独立提交。DataSourceTransactionManager 常能使用 JDBC 保存点；不要直接推广到任意 JPA、JTA 或响应式事务管理器。保存点对锁、ORM 内存状态的影响也需核对具体实现。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：REQUIRES_NEW 是不是新线程？不是。NOT_SUPPORTED 是否等于什么都不写入？不是，资源可能用自动提交分别提交。SUPPORTS 在无事务时是否完全没有同步上下文？取决于管理器的同步策略，不能将“无实际数据库事务”与“任何上下文都不存在”划等号。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-spring/transaction-propagation.png",
+          "alt": "REQUIRED 共用物理事务，REQUIRES_NEW 独立连接，NESTED 同连接保存点；外层回滚会撤销嵌套成功部分。"
+        },
+        {
+          "type": "paragraph",
+          "text": "图二 用实际连接与保存点推演事务传播。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-rollback-diagnostics",
+      "order": 17,
+      "question": "回滚规则与事务失效怎样排查？",
+      "shortAnswer": "遇到“事务没回滚”，先问两件事：调用有没有经过事务代理，执行 SQL 的连接有没有加入正确事务。再看方法能否拦截、异常怎样传播，以及传播属性、线程切换和数据库支持，通常比反复改注解更容易找到原因。",
+      "commonPhrasings": [
+        "private、protected、final、static 能用事务吗？",
+        "为什么抛异常仍提交？",
+        "没有异常能不能回滚？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "17 回滚规则与事务失效怎样排查"
+        },
+        {
+          "type": "paragraph",
+          "text": "遇到“事务没回滚”，先问两件事：调用有没有经过事务代理，执行 SQL 的连接有没有加入正确事务。再看方法能否拦截、异常怎样传播，以及传播属性、线程切换和数据库支持，通常比反复改注解更容易找到原因。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见默认对 RuntimeException 与 Error 回滚，对 checked exception 默认不回滚，显式规则可以改变。catch 后正常返回，拦截器看不到原异常；但若共享事务已被内层标 rollback-only，仍会回滚。手动设置 rollback-only 可以在不抛异常时要求回滚，此时返回值要避免误导调用者认为业务成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "private 不能被类代理覆盖，static 不是实例代理调用。Framework 6 起，类代理可默认支持 protected 和包可见事务方法；JDK 接口代理仍需 public 接口方法。final 的限制要看代理类型。为跨版本可读性和稳定服务边界，事务入口使用明确公开方法通常最容易说明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以把常见原因沿执行过程分开查："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "没进入预期代理：手工 new、同类自调用、取错容器，或在初始化阶段提前调用。先确认实际对象引用和调用路径。",
+            "进入了代理，但资源没参与：选错事务管理器，业务直接拿了另一连接，或资源本身不支持事务。再核对连接来源。",
+            "事务运行了，但规则允许提交：checked 异常的默认规则、noRollbackFor，或异常被转换、吞掉。最后追踪拦截器实际看见的异常。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "这些现象都可能被口头称作“注解失效”，但修复位置完全不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "命令式事务常通过 TransactionSynchronizationManager 的线程绑定资源关联连接。新线程不自动加入旧线程事务，不能把连接 holder 复制到另一线程共享使用。异步方法应在自己的工作线程开启明确事务；若主线程先返回，子线程异常也不会让已经提交的主线程事务时光倒流。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：怎么证明真的回滚？用真实数据库读取最终行集，关闭当前测试事务后再查，别只看 log 或单元测试 mock。测试至少涵盖成功、运行时异常、checked 规则、自调用、catch、REQUIRED rollback-only、独立事务、保存点与线程边界。本书 H2 结果只能证明该教学管理器和驱动组合，MySQL 隔离与锁仍应在对应环境测。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-spring-commit-outcomes",
+      "order": 18,
+      "question": "提交失败 清理失败与结果未知？",
+      "shortAnswer": "提交抛错不能简单等价于数据库一定没提交，清理失败也不应覆盖最初的业务失败；必须区分失败发生的阶段与可确认的持久化结果。",
+      "commonPhrasings": [
+        "commit 超时后能否重试整个业务？",
+        "rollback 也失败怎么办？",
+        "finally close 抛错会发生什么？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "18 提交失败 清理失败与结果未知"
+        },
+        {
+          "type": "paragraph",
+          "text": "提交抛错不能简单等价于数据库一定没提交，清理失败也不应覆盖最初的业务失败；必须区分失败发生的阶段与可确认的持久化结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "连接取得或 begin 失败时，业务尚未成功进入事务，释放已获得的资源即可。业务执行失败后应按事务契约回滚；回滚也失败时，记录两个错误和连接状态，不能把最后一个异常当唯一原因。commit 请求发出后网络断开，客户端可能不知道数据库是否已持久化，这属于结果未知，需要业务幂等键、结果查询或对账，盲目重放可能重复扣减。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在直接调用 Spring PlatformTransactionManager 时，commit 完成与异常的生命周期由管理器定义，不能无条件在 catch 内再次调用 rollback。应用通常选 TransactionTemplate 避免自己错误重建控制流程。资源已经提交后 close 失败，业务数据可能已经生效；关闭连接异常不意味着可撤回提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "自写资源包装器若要保留多个失败，可以把清理错误添加到 primary.addSuppressed(secondary)。当 primary 与 secondary 恰好是同一 Throwable 实例，Java 会因自抑制抛 IllegalArgumentException，反而掩盖原始异常，必须先判断二者不相同。后文 ResourceFailureLab 用故障注入验证 begin、业务、rollback、commit、close 与取消路径；它是教学资源协议，不冒充 Spring 内部实现或真实数据库分布式原子提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "继续追问：InterruptedException 是否要恢复中断？若捕获后无法继续向上抛中断，通常恢复标记，让上层取消策略可见；同时按业务决定事务回滚。CancellationException 是运行时异常，跨命令式事务拦截边界时通常命中回滚规则，但客户端取消与服务端实际抛出该异常不是同一件事。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "53 资源失败与异常保留"
+        },
+        {
+          "type": "paragraph",
+          "text": "业务失败、回滚失败和关闭失败同时发生时，应保留首个失败，提交结果未知时不能自动重放业务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "该教学资源契约在提交失败后不再盲目回滚；它不是 Spring 事务管理器替代品。七种断言覆盖成功、业务与清理多重失败、同一 Throwable、begin 失败、commit 未知、取消和单独 close 失败。"
+        },
+        {
+          "type": "paragraph",
+          "text": "源文件：code/jdk/ResourceFailureLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.CancellationException;\n\npublic class ResourceFailureLab {\n    interface Action { void run() throws Throwable; }\n    interface Resource { void begin() throws Throwable; void commit() throws Throwable;\n        void rollback() throws Throwable; void close() throws Throwable; }\n    // Teaching contract: a commit error means UNKNOWN, so never replay automatically.\n    static void execute(Resource r, Action work) throws Throwable {\n        Throwable primary = null;\n        boolean begun = false, commitAttempted = false;\n        try {\n            r.begin(); begun = true;\n            work.run();\n            commitAttempted = true; r.commit();\n        } catch (Throwable failure) {\n            primary = failure;\n            if (begun && !commitAttempted) {\n                try { r.rollback(); } catch (Throwable cleanup) { suppress(primary, cleanup); }\n            }\n        } finally {\n            try { r.close(); }\n            catch (Throwable cleanup) {\n                if (primary == null) primary = cleanup;\n                else suppress(primary, cleanup);\n            }\n        }\n        if (primary != null) throw primary;\n    }\n    static void suppress(Throwable primary, Throwable secondary) {\n        if (primary != secondary) primary.addSuppressed(secondary);\n    }\n    static final class Fake implements Resource {\n        final List<String> calls = new ArrayList<>();\n        final Map<String, Throwable> errors = new HashMap<>();\n        void step(String name) throws Throwable { calls.add(name); if(errors.containsKey(name)) throw errors.get(name); }\n        public void begin() throws Throwable { step(\"begin\"); }\n        public void commit() throws Throwable { step(\"commit\"); }\n        public void rollback() throws Throwable { step(\"rollback\"); }\n        public void close() throws Throwable { step(\"close\"); }\n    }\n    static Throwable failure(Fake f, Action work) {\n        try { execute(f, work); throw new AssertionError(\"expected failure\"); }\n        catch (Throwable t) { return t; }\n    }\n    static void check(boolean b) { if (!b) throw new AssertionError(); }\n    public static void main(String[] args) throws Throwable {\n        Fake success = new Fake(); execute(success, () -> {});\n        check(success.calls.equals(List.of(\"begin\",\"commit\",\"close\")));\n        Fake failed = new Fake(); Throwable business = new Exception(\"business\");\n        Throwable rollback = new Exception(\"rollback\"), close = new Exception(\"close\");\n        failed.errors.put(\"rollback\", rollback); failed.errors.put(\"close\", close);\n        check(failure(failed, () -> {throw business;}) == business);\n        check(Arrays.equals(business.getSuppressed(), new Throwable[]{rollback,close}));\n        Fake same = new Fake(); Throwable shared = new Exception(\"same instance\");\n        same.errors.put(\"rollback\", shared); same.errors.put(\"close\", shared);\n        check(failure(same, () -> {throw shared;}) == shared);\n        check(shared.getSuppressed().length == 0);\n        Fake begin = new Fake(); Throwable unavailable = new Exception(\"begin\");\n        begin.errors.put(\"begin\", unavailable); check(failure(begin, () -> {}) == unavailable);\n        check(begin.calls.equals(List.of(\"begin\",\"close\")));\n        Fake commit = new Fake(); Throwable unknown = new Exception(\"commit outcome unknown\");\n        commit.errors.put(\"commit\", unknown); check(failure(commit, () -> {}) == unknown);\n        check(commit.calls.equals(List.of(\"begin\",\"commit\",\"close\")));\n        Fake cancel = new Fake(); Throwable cancellation = new CancellationException(\"cancelled\");\n        check(failure(cancel, () -> {throw cancellation;}) == cancellation);\n        check(cancel.calls.equals(List.of(\"begin\",\"rollback\",\"close\")));\n        Fake closeOnly = new Fake(); Throwable closeFailure = new Exception(\"close only\");\n        closeOnly.errors.put(\"close\", closeFailure);\n        check(failure(closeOnly, () -> {}) == closeFailure);\n        System.out.println(\"PASS 7 resource-failure scenarios\");\n    }\n}\n",
+          "label": "code/jdk/ResourceFailureLab.java"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-spring-reference",
+          "label": "教学版本与完整运行支持"
+        }
+      ],
+      "tags": [
+        "Spring",
+        "Java17教学"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

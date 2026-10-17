@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-theory-inference-51a0846e65",
+  "entryId": "ai-模型与评测-3",
+  "questionId": "2",
+  "expectedOriginalHash": "4c84a28b227b273c8555569e1f1ffa766f839f80e56b5814a2613a928b9fda65",
+  "title": "推理部署与性能优化面试手册：机制与条件",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4 PagedAttention 和 FlashAttention"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法： PagedAttention 与 FlashAttention 的区别？分页后为什么仍有碎片/OOM？两种优化可以一起用吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心回答：PagedAttention 重点解决 KV 存储管理，FlashAttention 重点减少 attention 的内存读写，两者原则上可协作。 PagedAttention 不是替代 KV Cache，而是管理 KV 的一种方式。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以把 PagedAttention 的一次查找说清楚：请求持有逻辑块表，表中每个条目指向一个固定 token 大小的 KV 物理块；物理块可以不连续，因此不必给每个变长请求预留最大连续空间。合法公共前缀可以共享完整块，再用引用计数和写时复制防止分支相互污染。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分页仍有成本。尾块可能留空槽，块表与其他 GPU 张量也占内存，所以不能说“分页后零碎片”。这里的 KV 页块是存储管理单位，不是 CUDA thread block。"
+    },
+    {
+      "type": "paragraph",
+      "text": "FlashAttention 先把 Q/K/V 分块搬到片上存储，在同一次计算中衔接分数、softmax 和加权和，避免反复把完整 S×S 中间矩阵写回 HBM。关键是各块不能各自独立归一化，后来的分数可能改变之前的最大值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在线 softmax 因而维护最大值 m、归一化和 l、加权累加 acc。遇到新块时令 m′=max(m,max(s))，将旧 l、acc 乘 exp(m−m′)，再按 exp(s−m′) 加入新贡献，最后用 acc/l 得到结果。读后面的数值参照时，可重点追踪这个重新缩放过程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是精确 attention 的计算重排，浮点舍入可不同，不是把一般 dense attention 的算术复杂度改成线性。反向重计算部分中间量换取显存。具体 kernel 是否支持 paged KV、head 维度、dtype、mask 和硬件要核对，不能任意开两个开关便保证兼容。"
+    },
+    {
+      "type": "paragraph",
+      "text": "收益下降先找瓶颈，不要只看是否启用了分页。低并发、短序列、CPU 或网络瓶颈、分页块不合适、频繁抢占重算，以及长短请求混排不合理，都可能削弱 PagedAttention 的收益。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若看到 OOM 或“碎片更严重”，先把 allocated/reserved、有效 KV、尾槽、CUDA Graph 和 workspace 分开核对，确认内存花在何处后再归因。OOM 本身并不能证明分页没有用途。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-theory-inference-guide",
+      "label": "使用与验证边界"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-practice-mini-promise",
+  "kind": "qa",
+  "module": "code",
+  "part": "代码手撕",
+  "category": "跨册场景补充",
+  "title": "20. 手写简易 Promise，最容易漏掉什么？",
+  "questions": [
+    {
+      "id": "q-own-practice-mini-promise",
+      "question": "20. 手写简易 Promise，最容易漏掉什么？",
+      "shortAnswer": "面试回答： 除了三种状态和 then 链，还必须处理异步回调、异常传递、thenable 吸收和重复决议，不能只把 resolve 的值存在一个字段里。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "20. 手写简易 Promise，最容易漏掉什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 除了三种状态和 then 链，还必须处理异步回调、异常传递、thenable 吸收和重复决议，不能只把 resolve 的值存在一个字段里。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面实现提供 then、catch、resolve 与 reject，回调通过微任务执行。executor 同步调用，首次 resolve/reject 锁定外部决议；如果 resolve 接收仍未完成的 Promise，就等待它，而不是立即把 Promise 对象当最终值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "then 必须返回新 Promise，后续链条才能接住这次回调的结果：回调返回值进入新 Promise 的解析流程，抛错进入拒绝流程，没有回调则透传。"
+        },
+        {
+          "type": "paragraph",
+          "text": "解析 thenable 时还要防两类异常：读取 then 属性本身可能抛错；thenable 也可能多次调用两个回调，需要一次性保护。若返回自身形成直接循环，则拒绝。"
+        },
+        {
+          "type": "code",
+          "language": "javascript",
+          "label": "frontend 原语言代码 L1277–1334（完整围栏，未执行）",
+          "value": "// Teaching Promise with thenable assimilation and microtask callbacks.\n// Not a replacement for native Promise (no species/unhandled-rejection machinery).\nexport class MiniPromise {\n  #state = 'pending'; #value; #handlers = [];\n  constructor(executor) {\n    if (typeof executor !== 'function') throw new TypeError('executor');\n    let locked = false;\n    const resolve = value => { if (!locked) { locked = true; this.#adopt(value); } };\n    const reject = reason => { if (!locked) { locked = true; this.#settle('rejected', reason); } };\n    try { executor(resolve, reject); } catch (error) { reject(error); }\n  }\n  #settle(state, value) {\n    if (this.#state !== 'pending') return;\n    this.#state = state; this.#value = value;\n    const list = this.#handlers; this.#handlers = [];\n    for (const h of list) this.#schedule(h);\n  }\n  #adopt(value) {\n    if (value === this) { this.#settle('rejected', new TypeError('self resolution')); return; }\n    if ((typeof value === 'object' && value !== null) || typeof value === 'function') {\n      let then;\n      try { then = value.then; } catch (e) { this.#settle('rejected',e); return; }\n      if (typeof then === 'function') {\n        // Defer invocation, preventing synchronous recursion through long chains.\n        queueMicrotask(() => {\n          let called = false;\n          try {\n            then.call(value,\n              v => { if (!called) { called = true; this.#adopt(v); } },\n              e => { if (!called) { called = true; this.#settle('rejected',e); } });\n          } catch (e) { if (!called) { called = true; this.#settle('rejected',e); } }\n        });\n        return;\n      }\n    }\n    this.#settle('fulfilled', value);\n  }\n  #schedule(h) {\n    queueMicrotask(() => {\n      const fn = this.#state === 'fulfilled' ? h.ok : h.fail;\n      if (typeof fn !== 'function') {\n        (this.#state === 'fulfilled' ? h.resolve : h.reject)(this.#value); return;\n      }\n      try { h.resolve(fn(this.#value)); } catch (e) { h.reject(e); }\n    });\n  }\n  then(ok, fail) {\n    return new MiniPromise((resolve, reject) => {\n      const h = {ok, fail, resolve, reject};\n      if (this.#state === 'pending') this.#handlers.push(h); else this.#schedule(h);\n    });\n  }\n  catch(fail) { return this.then(undefined, fail); }\n  static resolve(value) {\n    return value instanceof MiniPromise ? value : new MiniPromise(resolve => resolve(value));\n  }\n  static reject(reason) { return new MiniPromise((_, reject) => reject(reason)); }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "这是教学实现，不替代原生 Promise，没有实现 species、全部静态组合器、finally 与宿主的未处理拒绝追踪。恶意 thenable 可以一直不结束，Promise 机制本身不负责超时。需要取消 I/O 时应使用对应 API 的取消协议，而不是以为拒绝一个 Promise 就终止了底层工作。"
+        }
+      ]
+    }
+  ]
+}

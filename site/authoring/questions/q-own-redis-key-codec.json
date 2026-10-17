@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-1",
+  "id": "q-own-redis-key-codec",
+  "order": 102,
+  "question": "Redis Key、序列化和版本升级怎样形成可演进的契约？",
+  "shortAnswer": "先固定业务身份和最终键字节，再分别定义 schema、业务版本、TTL 和安全边界；迁移不能复活旧数据。",
+  "commonPhrasings": [
+    "Redis 用什么序列化？",
+    "Hash Tag、键身份、Java 字符与 UTF-8 字节怎样区分？",
+    "部门人员树与字段加密怎样设计？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis Key、版本与序列化：把缓存当成一份可演进的契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "Key 决定“这份数据是谁的、什么场景可以复用”，序列化决定“各个读写方怎样理解同一串字节”。两者都要明确身份、版本和失败边界。Key 拼得出来不等于隔离正确，JSON 能解析也不等于业务数据兼容；TLS、权限和字段加密又各自保护不同的边界。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一、Key 怎么设计：先说清缓存身份，再谈命名格式"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试里可以先回答：“我会先确定缓存对象与复用范围，再把环境、服务、业务用途、租户、资源和版本表达清楚；所有可变组件都按统一规则编码。需要同槽操作时，再单独设计 Hash Tag。”这比只报一个“业务名加 ID”的格式更完整。"
+    },
+    {
+      "type": "paragraph",
+      "text": "环境用于区分 prod、stage 等部署；service 区分服务的责任边界；purpose 区分同一资源上的详情、锁、限流状态等用途；tenant 防止不同租户重复的 ID 命中同一个键；entity 表示稳定业务资源。即使值也是按租户查出的，Key 漏了 tenant，缓存命中仍然可能直接返回另一个租户的值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "schema 表示结构或序列化契约，例如字段从字符串改为结构化对象；generation 表示同一结构的数据代际，例如组织快照从第 20 代变为第 21 代。业务记录自身的 businessVersion 可以放在值中，用于判断内容的新旧。三者不是同一件事：结构没有变化，也可能产生新数据；结构升级后，也不能自动断定缓存内容更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查询结果的身份还要包括过滤条件、排序规则、页大小或游标，以及影响可见内容的授权域与策略版本。先定义哪些请求应当复用同一结果，再确定规范形式。例如无序过滤集合可按契约排序去重；有序排序字段不能随手重排。默认值是否省略、空值是否等于不存在，都要明确。不要直接拿任意 Map 的输出顺序或任意 JSON 字符串当稳定身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "命名中的“租户”和“权限域”必须来自可信认证、授权上下文或经授权校验的参数，不能因为请求里传了一个 tenant 就允许访问它。命名空间是应用约定，不是 Redis 自动提供的访问隔离；仍需正确的 ACL、服务边界与每次请求应有的授权检查。业务 ID 优先使用稳定内部标识，不把密码、访问 token、完整手机号或大段私人内容塞进可能被日志、监控和排障工具看到的 Key。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. 无歧义编码要发生在每一层组件边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "直接拼接 tenant + \":\" + entity 会出问题：(\"a:b\", \"c\") 与 (\"a\", \"b:c\") 都变成 a:b:c。加一个固定前缀没有帮助。可选方案是逐组件写明字节长度，或先对每个组件做可逆编码，再用不会出现在编码结果中的分隔符连接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里采用严格 UTF-8 加无 padding 的 Base64URL。编码组件只含字母、数字、短横线和下划线，不含冒号、点和花括号。冒号分隔外层字段，点分隔 Hash Tag 内部字段，因此原始 ID 中的冒号、花括号、NUL、中文和 emoji 都不会改变键结构。Base64URL 只是可逆表示，不负责保密。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还有一个容易遗漏的边界：如果 entity 本身由“部门 ID + 页游标”组成，先用冒号把它们拼坏，再对整个 entity 做 Base64，仍然会碰撞。必须先给内部二元组定义无歧义编码，例如两个 UTF-8 字节串分别带长度前缀，或分别 Base64URL 后再连接；把这个规范结果作为 entity。这样也要计入 entity 的最终输入长度预算，不能认为外层编码会替自己完成内部字段规范化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里对合法身份保留精确字符序列，不隐式 trim、不改大小写、不做 Unicode 归一化。因此 é 与 e 加组合重音是两个不同身份，A 与 a 也不同。若业务希望它们等价，应由业务先定义并执行规范化规则，给规则一个版本，再进入键构造器；否则升级某个客户端可能悄悄改变缓存身份。更简单的办法往往是直接使用权威系统分配的稳定 ID。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. Java 字符长度、UTF-8 字节长度与非法输入"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java String 的 length() 统计 UTF-16 代码单元，并不等于 UTF-8 字节数。一个常见汉字通常占 3 个 UTF-8 字节，一个 emoji 可以占 4 个 UTF-8 字节、两个 UTF-16 代码单元。这里 tenant 和 atomicGroup 各限制 128 个 UTF-8 字节，entity 限制 256 个；128 个 ASCII 字符可以通过，43 个这样的汉字超过 128 字节，就应拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "构造器先用 UTF-16 长度做廉价上限检查，再严格编码并检查实际字节数。对合法 Unicode 文本，UTF-8 字节数不会少于 UTF-16 代码单元数，所以第一步不会误拒绝本来满足字节上限的输入；它能在编码分配前挡住极长字符串。编码器使用 REPORT 拒绝孤立的高代理项、低代理项和错误配对。不要把所有编码 API 都当成同一种策略：CharsetEncoder 默认报告错误，而 String.getBytes(Charset) 会替换非法输入。身份编码若使用替换，原来不同的非法字符串可能变成相同字节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读入外部字节时也应严格解码，拒绝截断、过长编码、代理区编码和超出 Unicode 范围的 UTF-8。这个构造器接收 String，负责拒绝非法 UTF-16；它并不是外部 byte[] 的解码入口。若前一层已经宽松解码并丢失信息，后面再严格编码无法还原原来的错误。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. Hash Tag 决定同槽，完整 Key 决定身份"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Cluster 有 16,384 个槽，通常对完整键字节计算 CRC16/XMODEM，再取模得到槽号。Hash Tag 改变的是参与槽计算的字节，不会把整个 Key 的身份缩成 Tag。"
+    },
+    {
+      "type": "paragraph",
+      "text": "具体规则必须说准确：先找第一个左花括号，再找它右边第一个右花括号；只有两者之间至少有一个字节时，才对其中的字节计算槽。没有配对或这对括号为空，就对完整 Key 计算，不会继续寻找后面的“有效括号”。因此 foo{}{bar} 使用整个键，foo{{bar}}zap 使用 {bar，foo{bar}{zap} 使用 bar。让用户输入直接进入花括号结构，会使路由粒度脱离预期；逐组件编码可以阻止这种括号注入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 Tag 包含 environment、service、tenant 和 atomicGroup。atomicGroup 表示确实需要共同参与同槽脚本或事务的最小业务资源；purpose、schema、entity、generation 放在 Tag 外。因此同一资源的锁与状态可以是不同 Key，但被路由到同一槽。即使同槽，也仍需真正的脚本、事务或其他并发协议完成操作，Tag 本身不会让多个普通请求自动原子化。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果不需要跨键原子操作，可以让 group 使用独立实体身份，减少不必要的集中。同一租户所有键共用一个 group，会把该租户压力集中到一槽；一个巨大热点资源也不会因为增加环境、服务等前缀而被自动拆散。拆分热点必须同时讨论业务上的原子性边界，不能只把键随机打散。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同 Tag 仍然可能映射到同一槽，因为槽数有限；这只是路由碰撞，不是完整键碰撞，不会因为同槽就互相覆盖。同槽也是 Cluster 多键操作的重要前提，但迁槽、失败和客户端重试仍有独立的可用性边界，不能从同槽推出“跨系统事务”或“永远可执行”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4. 一份有界、可逆的 Java 命名契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面给出一套可选实现。k1 固定表示键格式版本，v 后是正 int 的 schema，g 后是非负 long 的 generation。environment、service、purpose 必须匹配 [a-z][a-z0-9_-]{0,31}。空标识不被接受；null 会抛 NullPointerException，其他违反格式、长度或版本约束的输入抛 IllegalArgumentException。这是应用自己的限制，不能推成 Redis 不支持空键或二进制键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数值直接由 int、long 输出十进制，所以不会产生 +1、01 等多种表示。schema 最大为 2,147,483,647，generation 最大为 9,223,372,036,854,775,807；到达上界应停止并更换版本分配协议，不能溢出后循环使用旧代际。从 HTTP 或其他文本入口转换数值时，也要在边界层拒绝溢出和不符合约定的表示。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输出全部是 ASCII，字符数就是字节数。实现还设有 2,048 字节总上限；按当前各字段上限，实际最长输出为 911 字节，因此总上限是防御性检查，不是建议把键做这么长。各组件越长，网络、存储和比较成本就越高；是否需要无损长身份，还是受控短 ID，应由业务决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个方法是纯函数，只负责命名，不执行鉴权、加密、过期、缓存读写、schema 迁移或多键事务。编码和拼接的时间、额外空间都随输入字节量线性增长，而且输入有明确上限。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.nio.ByteBuffer;\nimport java.nio.CharBuffer;\nimport java.nio.charset.CharacterCodingException;\nimport java.nio.charset.CodingErrorAction;\nimport java.nio.charset.StandardCharsets;\nimport java.util.Base64;\nimport java.util.Objects;\n\n/** A bounded, lossless naming contract; not authentication or encryption. */\npublic final class CacheKey {\n    private CacheKey() { }\n    public static String create(String environment, String service, String purpose,\n                                int schema, String tenant, String atomicGroup,\n                                String entity, long generation) {\n        checkLabel(environment); checkLabel(service); checkLabel(purpose);\n        if (schema <= 0 || generation < 0) throw new IllegalArgumentException(\"version\");\n        String tag = encode(environment, 32) + \".\" + encode(service, 32) + \".\"\n                + encode(tenant, 128) + \".\" + encode(atomicGroup, 128);\n        String key = \"k1:\" + environment + \":\" + service + \":\" + purpose + \":v\" + schema\n                + \":{\" + tag + \"}:\" + encode(entity, 256) + \":g\" + generation;\n        if (key.length() > 2048) throw new IllegalArgumentException(\"key too large\");\n        return key; // All output characters are ASCII; char count equals byte count.\n    }\n    private static void checkLabel(String value) {\n        Objects.requireNonNull(value);\n        if (!value.matches(\"[a-z][a-z0-9_-]{0,31}\"))\n            throw new IllegalArgumentException(\"label\");\n    }\n    private static String encode(String value, int byteLimit) {\n        Objects.requireNonNull(value);\n        if (value.isEmpty() || value.length() > byteLimit)\n            throw new IllegalArgumentException(\"empty or oversized identifier\");\n        try {\n            ByteBuffer buffer = StandardCharsets.UTF_8.newEncoder()\n                    .onMalformedInput(CodingErrorAction.REPORT)\n                    .onUnmappableCharacter(CodingErrorAction.REPORT)\n                    .encode(CharBuffer.wrap(value));\n            if (buffer.remaining() > byteLimit) throw new IllegalArgumentException(\"byte limit\");\n            byte[] bytes = new byte[buffer.remaining()];\n            buffer.get(bytes);\n            return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);\n        } catch (CharacterCodingException e) {\n            throw new IllegalArgumentException(\"malformed Unicode\", e);\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5. 为什么能避免键碰撞，怎样验证它"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里可以给出可逆性论证，而不只是说“随机测了很多次”。先按固定分隔符解析外层字段，再拆开 Tag，Base64URL 解码后严格按 UTF-8 还原各组件；合法 Unicode 到 UTF-8 是可逆的，Base64URL 编码也保留全部字节。schema 和 generation 有唯一十进制形式，因此相同输出必然对应相同的整个输入元组。环境、服务在 Tag 中重复出现，解析时还可以检查内外是否一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个论证针对已经确定的八个输入字段。若业务漏掉权限域或排序条件，或者上游先把复合 entity 拼成歧义字符串，构造器不能知道缺失的语义。若改用摘要截短 Key，也要另外说明摘要碰撞假设、碰撞检测或二次比对；不能继续声称是完全无损的一一对应，更不能把 Java hashCode 当成唯一业务身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证时应同时检查确定性、字段往返恢复、命名空间隔离、特殊分隔符、NUL、组合字符、所有非法代理项、每个字节上限及版本上界。对路由，用官方 CRC 检查向量和独立算法核对，并验证空括号、嵌套括号、未配对括号，以及同 Tag 不同 purpose/schema/generation 的键同槽。随机样本没有碰撞只说明样本通过；正确性的依据仍是契约和可逆性。真实部署还应对所用客户端最终发送的键字节检查，避免客户端又套一层不同的 serializer。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二、“Redis 用什么序列化”要拆成四层回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先回答：“应用对象怎样变成字节，由客户端和应用契约决定。Redis 不会自动理解 Java 类，JSON、Protobuf、Java 原生序列化都属于这一层。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "沿着这些字节继续看，就能分清另外三层：命令和响应在线路上使用 RESP；Redis 在内存里用 SDS、listpack、Dict 等表示数据；需要持久化时使用 RDB、AOF。内部表示与持久化机制都不会替应用定义 DTO 字段的业务含义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "String 值能保存二进制安全字节，Hash 的 field 和 value 也要经过客户端编码。所谓“在 Redis 存一个对象”，实际是应用选择结构与字节契约，再通过命令保存。例如整个 DTO 可以序列化成一段字节存入 String，也可以把字段拆开存 Hash；这会影响局部更新、命令使用与失效粒度，但不能仅从对象名称决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "字符串通常明确约定 UTF-8。对象若强调跨语言可读性和排障便利，可以考虑字段明确、类型受控的 JSON DTO；若已有 schema 工具链，也可以考虑 Protobuf 等二进制格式。二进制格式可能改善特定载荷的体积或解析成本，JSON 通常更便于直接查看，但快慢必须在自己的对象、运行时和访问路径上测量。不能断言 JSON 天然最快，或者某种格式是 Redis 唯一支持的格式。选择时同时考虑 CPU、载荷、兼容性、可观测性、依赖升级和上下游语言。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. 序列化契约要写到数字、时间和空值的语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "“能反序列化”只是第一步，“还原后表示同一业务含义”才是目标。至少要约定这些内容："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "数字：ID 是字符串还是数值；整数范围、精度、溢出处理；金额类十进制值的单位、scale 和舍入规则。Java long 的整个范围不能默认在所有以双精度浮点表示 JSON 数字的消费者里精确往返。跨语言 ID 可以约定为十进制字符串，再按显式范围解析；1、1.0 和 \"1\" 是否等价应由 schema 决定。",
+        "时间：是 UTC 时间点、带时区的本地时间，还是日期；时间戳单位是秒还是毫秒；精度是多少。不要把一个不带时区的文本交给各机器按默认时区解释。",
+        "空值：缓存键不存在、某个字段缺失、字段为 null、空字符串和空集合是不同状态。负缓存也应有专门标识与独立期限，不能把解码错误当成“数据库没有”。",
+        "演进：新字段是否可选、旧读者怎样处理未知字段、字段删除或改类型是否兼容。Protobuf 字段编号也属于长期契约，删除后不能把旧编号随意赋给另一个含义。",
+        "资源与安全：最大字节数、嵌套深度、集合元素数、字符串长度和允许的类型。JSON 不等于天然安全；任意多态类型、巨量字段或深层嵌套都需要限制。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "round-trip 应先检查业务语义，而不是机械比较任意 JSON 文本的每个字节：对象字段顺序和空白可能变化，但业务值不一定变化。若同一表示还要用于签名、内容身份或缓存键，则必须额外规定规范化字节形式，不能指望一般 serializer 默认稳定。反过来，身份字段若要求精确区分字符序列，也不能为了“统一 JSON”擅自折叠 Unicode 或大小写。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. Spring 的四处 serializer 要一起核对"
+    },
+    {
+      "type": "paragraph",
+      "text": "RedisTemplate 可以分别配置 key、value、hashKey、hashValue 的 serializer。理解这四个位置很重要：Hash 的字段名不等于 Redis 外层 Key，只改 value serializer，也不会把历史 Key 或 Hash 字段重新编码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以一个反例说明：旧客户端把 \"user:1\" 用 JDK 原生序列化写成键字节，新客户端按 UTF-8 发送同样可见文本，Redis 收到的其实是两个不同的键。它们可能表现为新程序查不到旧数据，或者排障工具看到不可读前缀。这里的根因是键 serializer 改变或读写端不一致。仅仅改变 value serializer、而 key serializer 保持不变，不会凭空让旧 Key 消失；更可能是在原键命中后按错误格式解码旧值。这两条失败路径要分清。"
+    },
+    {
+      "type": "paragraph",
+      "text": "StringRedisTemplate 适合字符串契约；字符串里是否再放 JSON，仍由应用约定。RedisTemplate 与 RedisCache 在框架默认配置下使用 Java 原生序列化，不代表所有 Spring Boot 项目实际如此。应检查依赖版本、实际注入的 Bean、RedisCacheManager 配置，以及四类 serializer 的最终设置。一个项目中不同缓存入口可能使用不同配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要把不可信字节直接恢复为任意 Java 类。Java 原生反序列化存在执行恶意对象行为的风险；优先考虑类型固定的 DTO 和受控格式，必要的过滤与大小限制也不能省。对于 JSON，同样不要为方便就无条件接受任意类型标签。生产排障应记录错误类别、schema 和受控资源标识，避免把完整敏感载荷打进日志。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三、版本升级怎样避免“新代码读旧字节”"
+    },
+    {
+      "type": "paragraph",
+      "text": "核心思路是先让读者认识新旧契约，再切换写者，并且在整个过渡期控制并发旧写入与回滚。单纯改一个 serializer 配置，不会替线上数据完成格式迁移。"
+    },
+    {
+      "type": "paragraph",
+      "text": "新格式可以使用新的 schema 或键格式版本。先部署同时识别旧格式和新格式的读者，暂时保留当前写格式；读者准备好以后，再灰度切换新写者，对照新旧解码得到的业务字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接下来通过受控读修复或后台迁移写入新格式，同时统计旧读、旧写和解码错误。只有确认旧写者已经退役，兼容窗口与回滚窗口都结束，才回收旧数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果新旧格式分用两套 Key，还要明确读优先级、回退规则和谁拥有写入权威。“兼容读旧写新”只是过渡安排，不会自动消除竞态，下一段就用一次迟到的读修复说明它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "典型竞态是：新读者先读到旧版业务数据，另一个请求已经写入更新数据，新读者随后把旧值转换为新格式并写回，覆盖了较新的内容。迁移应保留业务版本，依据版本条件提交；或者从权威系统重建，并确保过时构建者不能发布。无法证明旧格式内容仍然有效时，不能只因为新 Key 未命中就盲目回退旧 Key，否则已经失效的数据会被重新复活。双写还需要处理部分成功、重试与停止旧写者，不能只加两次 SET。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 属于写入协议，Key 中带一个时间数字不会自动过期。对于 String，需同时设置值和期限时可用单条 SET 携带 EX/PX，避免先写值后设期限之间崩溃留下永久键；其他多步结构更新则按目标 Redis 版本选择可保证所需原子性的操作。value 可包含 schema、businessVersion、sourceTime 或明确的软、硬截止时点，帮助读取策略判断，但这些元数据也不会自动代替 Redis 的过期设置或业务失效规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移不能无意延长业务寿命。例如权威快照的硬截止固定时，迁移旧内容后不能重新赋一整段 TTL；要按同一截止计算剩余有效期。回滚也不是简单把新字段删掉：旧程序是否能理解新写出的数据、旧键是否还足够新、旧密钥是否仍能解密，必须提前验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "解码失败、schema 不支持、认证标签错误和缓存未命中应分别计数与处理。可重建的缓存可以隔离坏值，再在限流、单飞等后端保护下从权威数据重建；不要把错误伪装成“对象不存在”，也不要盲目尝试一串不受控反序列化器。重要状态若没有可靠权威副本，不能当成普通缓存直接丢弃。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "部门人员树：Key 与 Value 应怎样对应"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果面试场景是“用 Redis 优化部门人员树的加载”，我会先问清页面访问方式与数据规模，再选择整树快照还是按需分块。先排查是否存在递归 N+1 查库、反复组装排序或一次返回全部人员；缓存不能替代有界查询和合理索引。"
+    },
+    {
+      "type": "paragraph",
+      "text": "小而读多写少的组织，可以把一份已构建完成的树快照存入 String。逻辑身份包括租户、root、viewSchema、数据 generation 和授权域，value 包含 schema、generation、构建时点、根节点、部门节点与必要的成员摘要。一次 GET 拿到同一份快照，理解和发布都简单；代价是相关变更可能触发整树重建，大租户容易形成大 Key，也不应把无关敏感人员信息一并缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "较大的组织可以分为部门摘要、parent 到 children 的有界页、department 到 personIds 的有界页，以及独立人员摘要。purpose 可区分 orgtree、department、children、members、person；entity 则是 root 或部门、排序条件与游标的无歧义复合身份。部门 ID 与人员 ID 即使数值相同，也不应混成同一命名空间。按读取与排序需求可以选择 String 分页快照、有界 Hash、List 或 ZSet 索引；同名或同序号要有稳定 ID 打破并列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有块与分页游标绑定同一 generation。构建者从一致的数据快照或明确水位读取，生成不可变块和 manifest，清单记录代际、块集合、计数与完整性检查；全部写成功后才以版本条件推进 current 指针。较旧构建者不能把指针回退。读者先固定已发布 generation，再只读取这一代的块；缺块、过期或校验失败就把该代视作不可用，受控回源或重建，不能悄悄拼入另一代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不可变只读块可以分散到不同槽，完整发布由应用协议负责，并不等于跨槽事务。若确需同槽操作，group 只覆盖有界的相关资源，不要把整租户都绑在一个 Tag 后又期待跨槽分担压力。manifest 与块的存活期要协调，旧代至少覆盖在途读取、分页及回滚窗口；缓存淘汰仍可能造成缺块，因此完整性检查与失败路径不能省。"
+    },
+    {
+      "type": "paragraph",
+      "text": "部门改名会影响包含它的视图；移动影响原、新父链、两边祖先子树和人员路径；离职与撤权还影响授权域。简单方案可先推进租户级组织 generation，随后按负载细化子树版本与依赖失效。共享结构可以只存非敏感内容，再由可信权限服务过滤；若缓存过滤结果，则键要纳入权限域及策略版本，命中也不能代替授权。撤权不能等普通展示 TTL 自然到期才生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这套设计假定部门构成有根森林、一个人有一个主部门。多个兼职部门需要单独关系模型。构建时还要验证重复 ID、缺失父节点、环和人员指向不存在部门等错误，按稳定规则排序，并限制总节点、人员、字段与响应字节数。深树宜用平面邻接表示和迭代遍历；即使构建时不递归，后续无深度限制地序列化成嵌套 JSON，仍可能重新引入栈与载荷风险。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四、序列化、TLS 与业务字段加密分别保护什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先回答：“序列化解决数据表示，TLS 保护传输链路，字段加密保护应用选择的明文内容；AUTH/ACL 解决身份和权限。它们可以同时使用，但不能互相替代。”如果被问到是否做过加密，应按实际负责过的配置、密钥管理和验证工作回答；能够解释一个方案，不等于已经落地过它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TLS 应校验证书链与服务端身份，不能为了连接成功关闭校验。按部署要求使用客户端证书；Redis 的 TLS 配置默认要求客户端证书时，也要与客户端一致。Redis 从 6 起提供 TLS 支持，但构建、监听端口和客户端连接参数都要正确启用。还应分别核对应用到 Redis、主从复制、Cluster bus 与 Sentinel 的链路，不能因为应用连接用了 TLS 就推断其余链路都已加密。只要求加密连接时，还要确认明文端口没有继续对目标网络开放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AUTH/ACL 不会把线路明文自动变成密文；TLS 也不会自动加密已有的 RDB/AOF、备份、磁盘快照和业务日志。静态数据保护要检查存储加密、备份访问、密钥管理及恢复路径。若威胁模型还要求 Redis 侧运维人员无法读取某些业务字段，可以考虑应用层字段加密，但拥有应用解密权限的一方仍在信任边界内，不能把“字段加密”说成任何人都看不到。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. 认证加密与密钥轮换是一整套协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用层可选择成熟库提供的 AEAD，例如按规范使用 AES-GCM。密文封装需要能够识别算法、密钥版本、nonce/IV、密文与认证标签，并规定每个字段的长度。附加认证数据可以绑定租户、用途、schema 等上下文，防止一段合法密文被搬到另一个业务位置后仍被接受；这些信息参与认证，但不因放进 AAD 而被隐藏。"
+    },
+    {
+      "type": "paragraph",
+      "text": "解密必须通过认证后才允许业务使用明文，认证失败不能“尽量读一点”继续处理。同一密钥下 IV/nonce 的唯一性必须符合算法要求；随机生成不代表理论上不会碰撞，还需按调用量、生成机制与密钥生命周期设计，不能在重启后复用同一计数区间。不要自创加密算法，也不要把裸密钥与密文一起放在 Redis。可以用受控 KMS 管理密钥与解密权限，限制应用能使用的算法和密钥标识。"
+    },
+    {
+      "type": "paragraph",
+      "text": "轮换需要同时考虑新写入使用新密钥、旧密文仍可解、逐步重加密、权限收敛和回滚。数据重写完成不一定意味着旧密钥可以马上删除，备份、回滚窗口和保留期限也可能仍需要它。密钥轮换、schema 升级和业务 generation 是三个独立版本维度，不应硬绑成一个数字。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 AEAD 提供保密和完整性，并不自动防止重放旧的合法密文。若业务要求拒绝旧状态，还需可信的业务版本或权威状态判断；只把一个可回滚的版本号和密文一起存放，不能独立证明它是最新状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. 加密后为什么不能照常做所有 Redis 计算"
+    },
+    {
+      "type": "paragraph",
+      "text": "Base64、压缩、SHA 摘要和 Java 序列化都不是保密加密。手机号等候选空间较小的值，即便只存无密钥摘要，也可能被枚举匹配。若业务需要受控的等值检索，可以考虑独立的 HMAC 索引与密文载荷：检索方用密钥生成同一标识，再定位密文。但这会暴露相等关系，也要保护 HMAC 密钥、限制查询能力，并单独设计轮换；HMAC 不是可解密的加密，也不是访问授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "将数字整体加密后，Redis 看到的是密文字节，无法再对业务明文执行有意义的 INCR；一般的完整密文也不能直接提供原来的全文匹配或任意范围查询。可能的设计是把需要服务器计算的非敏感派生状态与受保护字段分开，或在获授权的应用侧解密计算，但这会改变数据流、暴露面与性能成本。不要承诺“加密打开后，原命令原样工作且没有代价”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果一个标识既出现在密文里，又以完整明文出现在 Key、索引或日志中，字段加密的目标仍可能落空。Key、值、辅助索引、错误日志和备份应一起做威胁建模，而不是只检查某一段 serializer。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "五、怎样把验证讲成可执行的检查清单"
+    },
+    {
+      "type": "paragraph",
+      "text": "键契约先验证“同输入同输出、不同合法身份不合并、每个字段能恢复”，再检查非法输入是否在入口明确失败。值契约准备旧版写者到新版读者、新版写者到旧版读者的兼容矩阵；用中文、emoji、空值、缺字段、未知字段、大整数、极大对象、超深结构与错误字节检查语义和资源上限。跨语言时，尤其核对 long 精度、时间单位和默认值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移演练要注入旧写者未退出、读修复与新写并发、迁移中断、部分双写成功、旧快照回填、TTL 剩余不足和版本回滚。检查失败是否可观测、能否受控回源，以及是否会把无效数据误记成不存在。树快照则额外检查半成品发布、缺块、并发旧构建者推进指针和分页跨代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "安全验证包括证书链或主机身份不匹配、明文连接未关闭、错误密钥、密文或 AAD 被篡改、未知算法或密钥版本、nonce 管理、轮换前后读取、旧备份恢复及回滚。普通编码器的本地单元测试不能证明 TLS、KMS、Redis 集群或跨系统发布工作正常；这些需要在对应部署与依赖版本上独立集成验证，也不能用正确性测试推出吞吐量或延迟结论。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "六、结合自己的项目，怎样讲得具体又不越界"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以先从真实职责说起：“我的实习通知出口用 Redis Lua 令牌桶控速，同时为 P0 预留配额，并按积压做滞回降级。”这是一条适合引出 Key 粒度的主线。继续讨论时可明确进入设计推演：“如果按渠道和租户建桶，我会先确认配额是全局共享还是租户独立，是否还要区分优先级，再把这些真正影响配额身份的维度纳入键契约。若两个配额必须在同一脚本里判断，我会评估它们的最小同槽组，同时关注热点集中。”具体桶键、容量、补充速率、时间来源、Hash 或 String 存储形式和故障策略，应按实际实现说明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实习的可靠通知主链路使用 RabbitMQ、Transactional Outbox、数据库账本与处理轮次防重，渠道调用前持久化稳定请求号，超时先对账。这里的稳定请求号、告警轮次与缓存 generation 不能混为一谈：前者分别服务于外部副作用身份和业务处理周期，后者服务于缓存内容代际。Redis 的无碰撞 Key 或 Lua 原子执行，不能替代通知账本或让渠道端自动获得 exactly-once 保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave 把解析、切片、向量化与索引构建拆为 Kafka 异步任务，并通过任务幂等和失败恢复支持长链路；Java Host 与 Python Worker 分层承载编排、模型执行和版本管理。这个背景适合讨论跨语言契约：“如果缓存两端共享的任务视图，我会显式约定 ID、大整数、时间、空值和 schema 兼容，避免 Java 与 Python 对同一载荷解释不同。”这里讨论的是可迁移的设计，不据此断定项目已经使用某种 Redis codec、某种键格式或某个缓存用途。"
+    },
+    {
+      "type": "paragraph",
+      "text": "部门人员树则适合作为单独的系统设计例子，用“如果需要优化这类树加载，我会……”展开，不把组织树设计、MySQL 引擎或某套加密与 KMS 部署写成自己的既有经历。面试官追问“你实际用了什么”时，回到真实代码和配置；追问“换一个约束怎么办”时，再把假设、机制、取舍与验证方法说清楚。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可继续练习的追问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "多加一个租户字段为什么仍不能替代鉴权？权限变化后，旧缓存该怎样失效？",
+        "为什么先拼复合 entity 再编码，仍可能发生语义碰撞？怎样给过滤、排序和游标定义稳定身份？",
+        "键相同、Tag 相同、槽相同，各自意味着什么？将所有租户键放在同一 Tag 会带来什么取舍？",
+        "为什么只改 value serializer 与改 key serializer 的故障表现不同？怎样让旧数据可读，又不把旧内容复活？",
+        "schema、业务版本、generation 和加密密钥版本怎样分别演进？回滚应提前保留哪些能力？",
+        "TLS 已经开启，为何仍要检查备份、日志和明文索引？认证通过的旧密文为什么仍可能是过时数据？"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "这些追问的共同落点是：身份必须完整，表示必须明确，版本必须能判新旧，失败必须可识别，安全保证必须说清信任边界。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

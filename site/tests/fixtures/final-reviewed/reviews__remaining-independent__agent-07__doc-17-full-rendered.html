@@ -1,0 +1,253 @@
+
+    <aside>本专题不止解释“意图识别是什么”，还把 Agent 中意图识别的位置、实现方式、结构化输出、参数抽取、多意图、难点和评估方法串起来。</aside>
+    <div class="md sec"><h2 class="md-h md-h2">0. 脑图主干</h2>
+<p class="md-p">本专题讨论意图识别。</p>
+<p class="md-p">主要分支：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>为什么要做意图识别。</li>
+<li>意图识别的常见方式。</li>
+<li>其它手段：向量匹配、层次意图、RAG 筛选、微调。</li>
+<li>意图识别和 ReAct / TAO 的关系。</li>
+<li>Slot-filling 和结构化表达。</li>
+<li>意图识别的难点：多意图、反话、意图仲裁、准确率。</li>
+<li>Post-意图识别：参数完整性、合法性、权限检测。</li>
+</ul></div>
+<p class="md-p">核心观点：意图识别不是为了给用户输入贴一个标签，而是为了决定后续如何组织上下文、如何规划、如何选择工具、如何执行。</p>
+<h2 class="md-h md-h2">1. 为什么要做意图识别</h2>
+<p class="md-p">做意图识别有两个原因：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>影响后面的规划 / 执行部分。</li>
+<li>影响 context 的组织。</li>
+</ul></div>
+<p class="md-p">在 TAO / ReAct 里面，“思考”决定下一步做什么。意图识别就是把用户输入映射到某种可执行的方向，让 Prompt、上下文、工具和规划方式都围绕这个方向展开。</p>
+<p class="md-p">例如同一句“帮我看看这个项目”可能有不同意图：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>代码审查。</li>
+<li>项目总结。</li>
+<li>简历包装。</li>
+<li>架构分析。</li>
+<li>Bug 排查。</li>
+</ul></div>
+<p class="md-p">如果意图识别错了，后面的工具选择、上下文裁剪和回答风格都会错。</p>
+<h2 class="md-h md-h2">2. 最常见的意图识别方式</h2>
+
+<div class="md-list-wrap"><ul class="md-list"><li>字符串处理、正则匹配、关键字匹配。</li>
+<li>大模型调用。<div class="md-list-wrap"><ul class="md-list"><li>轻量级大模型。</li>
+<li>重量级大模型。</li>
+</ul></div>
+</li>
+</ul></div>
+<h3 class="md-h md-h3">2.1 规则和关键字</h3>
+<p class="md-p">规则方式不需要调用大模型，纯代码处理，优点是快、稳定、可控。</p>
+<p class="md-p">适用场景：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>意图数量少。</li>
+<li>表达方式固定。</li>
+<li>命令式输入明显。</li>
+<li>对延迟要求高。</li>
+</ul></div>
+<p class="md-p">例如：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>“导出 Excel”。</li>
+<li>“删除任务”。</li>
+<li>“创建提醒”。</li>
+<li>“查询订单”。</li>
+</ul></div>
+<p class="md-p">缺点是泛化能力弱，用户换一种说法就可能匹配不到。</p>
+<h3 class="md-h md-h3">2.2 轻量级大模型</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>轻量模型有机会降低推理开销，实际时延仍看输入长度、部署、排队与模型。</li>
+<li>返回结构化意图，同时返回置信度。</li>
+</ul></div>
+<p class="md-p">轻量模型可作为常规分类的候选基线。文末字段表示意 intent=export_excel 与 confidence=0.92；数值只演示接口语义。</p>
+
+<p class="md-p">confidence 可以作为待校准信号，不能把模型自报分数当成功概率或执行权限。文末 0.92 与 0.93 是教学字段值，不是已测准确率；只有独立验证过的阈值才可辅助澄清或拒识，敏感操作仍单独授权。</p>
+<h3 class="md-h md-h3">2.3 重量级大模型</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>较大模型通常需要更多资源，是否更慢或更准确需同条件比较。</li>
+<li>返回结构化的意图。</li>
+<li>合法意图。</li>
+<li>模糊意图，需要进一步求证。</li>
+<li>未知意图：尚未识别或不在标签集；与已识别但不合法的意图区分。</li>
+</ul></div>
+<p class="md-p">重量级模型适合复杂、多轮、领域知识强的意图判断。但不要把所有请求都交给大模型，因为成本和延迟都更高。</p>
+<p class="md-p">可以把输出分为三类：</p>
+<div class="md-list-wrap"><ul class="md-list"><li><strong>合法意图</strong>：进入参数、权限、状态与确认检查，通过后才可执行。</li>
+<li><strong>模糊意图</strong>：触发澄清。</li>
+<li><strong>非法或未知意图</strong>：拒识或转人工。</li>
+</ul></div>
+<h2 class="md-h md-h2">3. 其它意图识别手段</h2>
+<p class="md-p">意图识别还有多个扩展手段：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>向量匹配。</li>
+<li>迭代式意图识别 / ReAct 式意图识别。</li>
+<li>层次意图识别 / 决策树。</li>
+<li>RAG 初筛。</li>
+<li>微调。</li>
+</ul></div>
+<h3 class="md-h md-h3">3.1 向量匹配</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>在向量数据库里预存一大堆用户输入。</li>
+<li>拿当前用户输入做向量匹配。</li>
+<li>非常适合做特殊输入的意图识别。</li>
+</ul></div>
+<p class="md-p">向量匹配适合：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>近似表达很多。</li>
+<li>意图样例较多。</li>
+<li>需要从历史输入中找相似问法。</li>
+</ul></div>
+<p class="md-p">它可以作为大模型前的召回层，先找候选意图，再让模型做精排。</p>
+<h3 class="md-h md-h3">3.2 层次意图识别</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>大分类 + 小分类，加起来几百个意图。</li>
+<li>先识别第一层大意图。</li>
+<li>根据大意图加载子意图，再识别子意图。</li>
+<li>再根据子意图加载孙子意图。</li>
+<li>为什么不一次性识别孙子意图？</li>
+</ul></div>
+<p class="md-p">层次意图适合意图数量很多的系统。原因是一次性从几百个标签里分类，候选空间太大，容易混淆；分层后每一步只在小范围内判断，候选更少、路径更容易解释，但上层分错会屏蔽正确子类；应比较平铺、层次与候选召回方案的端到端错误率。</p>
+<p class="md-p">例如：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>一级：订单 / 用户 / 商品 / 报表。</li>
+<li>二级：查询 / 导出 / 修改 / 统计。</li>
+<li>三级：按时间、按状态、按店铺等具体操作。</li>
+</ul></div>
+<h3 class="md-h md-h3">3.3 RAG 初筛</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>很多意图时，用 RAG 进行初步筛选。</li>
+<li>RAG 可以筛选意图和 few-shot。</li>
+<li>有几百个意图时，先根据用户输入找候选意图，再让大模型筛选。</li>
+<li>反馈式演进：经人工或可靠结果验证、获得保留许可后，把去重样本与标签版本回流；不能让模型自己的预测自动成为真值。</li>
+</ul></div>
+<p class="md-p">这是一个比较实用的工程方案：</p>
+<div class="md-list-wrap"><ol class="md-list"><li>用户输入进入向量检索。</li>
+<li>找到 TopN 候选意图和示例。</li>
+<li>大模型基于候选集分类。</li>
+<li>成功样本回流，增强后续召回。</li>
+</ol></div>
+<p class="md-p">这有机会减少 Prompt 长度，但候选漏召回会限制后续分类，必须保留未知类别与澄清出口，并实测准确率。</p>
+<h3 class="md-h md-h3">3.4 微调</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>用线上数据做微调。</li>
+<li>也可以自己准备微调数据。</li>
+<li>微调一个专门做意图识别的大模型。</li>
+</ul></div>
+<p class="md-p">微调适合意图边界稳定、样本足够多的场景。不要一开始就微调，通常先用规则、RAG、Prompt 和 few-shot 跑起来，再用线上错误样本持续优化。</p>
+<h2 class="md-h md-h2">4. 意图识别与 ReAct / TAO 的关系</h2>
+<p class="md-p">意图识别可以安排在两种时机：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>先于 ReAct 执行，是 ReAct 循环之前的前置步骤。</li>
+<li>认为是 ReAct 循环的一部分。</li>
+</ul></div>
+<p class="md-p">如果意图很明确，可以先做一次分类，再进入 ReAct。比如“导出昨天订单 Excel”可以直接识别为导出任务。</p>
+<p class="md-p">如果意图依赖观察结果，可以在 ReAct 循环中动态识别。比如用户说“帮我优化一下”，需要先观察代码、文档或上下文，才能确定是性能优化、简历优化还是表达优化。</p>
+<p class="md-p">也可以注册名为 intention_classifier 的分类能力；文末保留其文字说明，运行时仍需具体 schema、权限和失败合同。</p>
+
+<p class="md-p">这说明意图识别也可以是 Agent 的一个工具，而不是固定前置模块。</p>
+<h2 class="md-h md-h2">5. Slot-filling 和结构化表达</h2>
+
+<div class="md-list-wrap"><ul class="md-list"><li>Slot-filling：意图识别之后，需要识别出来的参数。</li>
+<li>Prompt：A 意图有三个参数，你都要识别出来，参数一是 XX，含义是 XX。</li>
+<li>复杂参数可以推迟到 ReAct / TAO。</li>
+<li>依赖大模型检测 slot-filling 可能出错。</li>
+<li>意图至少有两个字段：intention 和参数。</li>
+<li>可以返回 JSON。</li>
+</ul></div>
+<h3 class="md-h md-h3">5.1 结构化输出</h3>
+<p class="md-p">纯分类器可以只输出标签；若承担执行前路由，可采用以下结构化字段合同：</p>
+<div class="md-list-wrap"><ul class="md-list"><li><code class="tok-inline">intent</code>：意图名称。</li>
+<li><code class="tok-inline">slots</code>：参数。</li>
+<li><code class="tok-inline">confidence</code>：置信度。</li>
+<li><code class="tok-inline">missing_slots</code>：缺失参数。</li>
+<li><code class="tok-inline">need_clarification</code>：是否需要澄清。</li>
+</ul></div>
+<p class="md-p">文末 export_order_report 字段表演示 date=yesterday、format=excel、missing_slots 为空与 confidence=0.93。空缺槽列表只是模型输出，仍要由业务必填规则复查。</p><h3 class="md-h md-h3">5.2 参数抽取时机</h3>
+<p class="md-p">简单参数可以在意图识别时顺手抽取；复杂参数可以推迟到后续 ReAct。</p>
+<p class="md-p">例如：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>简单：时间、格式、订单状态。</li>
+<li>复杂：筛选条件来自数据库查询、用户画像、历史对话或业务规则。</li>
+</ul></div>
+<p class="md-p">如果参数不足，应澄清，而不是填错。</p>
+<h2 class="md-h md-h2">6. 多意图问题</h2>
+<p class="md-p">多意图可以分为：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>假的多意图。</li>
+<li>真的多意图。</li>
+</ul></div>
+<h3 class="md-h md-h3">6.1 假的多意图</h3>
+
+<blockquote class="md-quote"><p class="md-p">帮我检索昨天的订单数据，并导出为 Excel。</p>
+</blockquote>
+<p class="md-p">看起来有“检索”和“导出”两个动作，但真正意图是“导出 Excel”。检索只是完成导出的中间步骤。</p>
+<p class="md-p">这类问题不要拆成两个并列意图，否则会让执行计划混乱。</p>
+<h3 class="md-h md-h3">6.2 真的多意图</h3>
+<p class="md-p">真的多意图是用户确实要求做 N 件事，例如：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>“查一下昨天订单，再给我生成日报，并发给团队。”</li>
+<li>“帮我改简历，然后生成面试话术。”</li>
+</ul></div>
+
+<div class="md-list-wrap"><ul class="md-list"><li>意图之间有没有依赖关系。</li>
+<li>是否考虑并行执行。</li>
+<li>会有资源竞争问题。</li>
+</ul></div>
+<p class="md-p">文末的 intentions 数组保留 query_orders、generate_report、send_message 三个教学目标；数组顺序不代替显式依赖与授权。</p>
+
+<p class="md-p">还要标注依赖关系：生成报告依赖查询订单，发送消息依赖报告生成。</p>
+<h2 class="md-h md-h2">7. 意图识别难点</h2>
+
+<div class="md-list-wrap"><ul class="md-list"><li>反话。</li>
+<li>意图仲裁。</li>
+<li>前言不搭后语。</li>
+<li>意图识别准确率。</li>
+</ul></div>
+<h3 class="md-h md-h3">7.1 反话</h3>
+<p class="md-p">社交类、聊天类、情感类 Agent 想做好，就要考虑反话。</p>
+<p class="md-p">例如“你可真聪明”可能是夸奖，也可能是讽刺。单靠字面情绪很容易错，需要结合上下文、语气、历史互动和用户画像。</p>
+<h3 class="md-h md-h3">7.2 意图仲裁</h3>
+<p class="md-p">意图仲裁用于处理：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>前文和后文冲突。</li>
+<li>多个意图候选都相似。</li>
+<li>用户表达自相矛盾。</li>
+<li>意图和权限、上下文冲突。</li>
+</ul></div>
+<p class="md-p">仲裁可以依赖：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>置信度排序。</li>
+<li>业务优先级。</li>
+<li>上下文最近性。</li>
+<li>用户显式确认。</li>
+<li>澄清问题。</li>
+</ul></div>
+<h3 class="md-h md-h3">7.3 准确率指标</h3>
+
+<div class="md-list-wrap"><ul class="md-list"><li>top1 之类的指标。</li>
+<li>离线：评测集。</li>
+<li>在线：LLM as Judge。</li>
+</ul></div>
+<p class="md-p">离线评估可以看：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>Top1 accuracy。</li>
+<li>Top3 recall。</li>
+<li>混淆矩阵。</li>
+<li>缺槽率。</li>
+<li>澄清触发准确率。</li>
+</ul></div>
+<p class="md-p">在线评估可以看：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>用户是否继续纠正。</li>
+<li>任务完成率。</li>
+<li>人工接管率。</li>
+<li>LLM as Judge 评估意图是否合理。</li>
+</ul></div>
+<h2 class="md-h md-h2">8. Post-意图识别</h2>
+<p class="md-p">意图识别之后还需要检查：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>检测该意图的参数是否完整、是否合法。</li>
+<li>是否是合法意图。</li>
+<li>用户对该意图是否有权限。</li>
+<li>最靠谱一定是代码检测，其次才是再次使用大模型。</li>
+<li>意图识别之后：<code class="tok-inline">handle(intention)</code>。</li>
+</ul></div>
+<p class="md-p">这一步很重要。意图识别成功不代表可以执行。</p>
+<p class="md-p">执行前必须检查：</p>
+<div class="md-list-wrap"><ul class="md-list"><li>参数是否完整。</li>
+<li>参数是否合法。</li>
+<li>用户是否有权限。</li>
+<li>当前状态是否允许执行。</li>
+<li>是否需要二次确认。</li>
+</ul></div>
+<p class="md-p">例如用户意图是“删除项目”，即使识别正确，也需要权限和确认。</p>
+<h2 class="md-h md-h2">9. 面试回答模板</h2>
+<p class="md-p">如果面试官问“Agent 怎么做意图识别”，可以这样回答：</p>
+<blockquote class="md-quote"><p class="md-p">我会把意图识别看成 Agent 规划和执行前的路由层。简单场景用规则和关键字，复杂场景用轻量模型或大模型输出结构化意图和置信度；意图很多时，用 RAG 或向量检索先筛候选，再让模型分类。输出不只是 intent，还包括 slots、置信度、缺失参数和是否需要澄清。对于多意图，要区分中间步骤和真正并列意图，并处理依赖关系。意图识别后还要做参数合法性、权限和状态检查，不能识别出来就直接执行。</p>
+</blockquote>
+<table><thead><tr><th>字段位置（数组按出现次序）</th><th>值或约束</th></tr></thead><tbody><tr><td>根对象</td><td>对象</td></tr><tr><td>根对象 / intent</td><td>字符串：export_excel</td></tr><tr><td>根对象 / confidence</td><td>数值：0.92</td></tr></tbody></table><p>intention_classifier:</p><p>用于意图识别，如果上下文中缺乏意图相关信息，则执行该工具。</p><table><thead><tr><th>字段位置（数组按出现次序）</th><th>值或约束</th></tr></thead><tbody><tr><td>根对象</td><td>对象</td></tr><tr><td>根对象 / intent</td><td>字符串：export_order_report</td></tr><tr><td>根对象 / slots</td><td>对象</td></tr><tr><td>根对象 / slots / date</td><td>字符串：yesterday</td></tr><tr><td>根对象 / slots / format</td><td>字符串：excel</td></tr><tr><td>根对象 / missing_slots</td><td>数组，共 0 项</td></tr><tr><td>根对象 / confidence</td><td>数值：0.93</td></tr></tbody></table><table><thead><tr><th>字段位置（数组按出现次序）</th><th>值或约束</th></tr></thead><tbody><tr><td>根对象</td><td>对象</td></tr><tr><td>根对象 / intentions</td><td>数组，共 3 项</td></tr><tr><td>根对象 / intentions / 第 1 项</td><td>对象</td></tr><tr><td>根对象 / intentions / 第 1 项 / intent</td><td>字符串：query_orders</td></tr><tr><td>根对象 / intentions / 第 2 项</td><td>对象</td></tr><tr><td>根对象 / intentions / 第 2 项 / intent</td><td>字符串：generate_report</td></tr><tr><td>根对象 / intentions / 第 3 项</td><td>对象</td></tr><tr><td>根对象 / intentions / 第 3 项 / intent</td><td>字符串：send_message</td></tr></tbody></table><p class="md-p">拒识与非法要分开：不在当前标签集的合法需求可以澄清或转人工，已知但无权执行的需求必须按权限拒绝。反话与否定也不能只按关键词命中；“不要删除任务”必须进入否定样本。多意图是否拆成独立任务取决于各自交付物与依赖，导出前查询可作为内部步骤，也可独立审计，不是固定语法规则。</p><p class="md-p">意图识别与参数抽取可以联合建模，纯分类器也可以只返回标签；上面的五个字段是一种工程合同，不是所有模型的必需输出。按 Guo 等 ICML 2017 对概率校准的定义，模型分数与真实正确率需要额外验证。Top1、Top3 候选覆盖、端到端槽位正确率和误执行成本应分别报告；线上 Judge 只能辅助抽样，不是标签真值。</p></div>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

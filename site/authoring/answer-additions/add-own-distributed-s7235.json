@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s7235",
+  "entryId": "own-java-io",
+  "expectedOriginalHash": "ad8db62b1d2c3c0656783dc435f996fa67c08cfc25202d66260b4d75176fa831",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "9.12 普通数据库加原生Java怎样导出千万行报表到OSS"
+    },
+    {
+      "type": "paragraph",
+      "text": "千万行导出应以一致数据版本、keyset分页、有界缓冲和分片上传推进，完整清单校验后再发布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：不用Spark怎样导出千万行；如何避免内存溢出；并行导出能否共享一致快照。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "使用普通数据库、JDBC与原生Java导出千万行，不依赖分布式计算框架；格式、行宽和快照一致性需先确定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先固定导出版本，再并行"
+    },
+    {
+      "type": "paragraph",
+      "text": "导出先固定数据版本，再谈并行。持久 job 保存 jobId、请求摘要、schema、过滤与排序、snapshotId、水位和分片计划。普通数据库没有可共享快照时，可以在一个一致性事务中，把导出投影物化到按 jobId 隔离的只读暂存表，提交成功后才允许 worker 读取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它多一次读写和暂存空间，却避免独立 RR 连接看到不同版本。也可以用固定只读快照副本，或单事务流式读取、并行格式化，只是后者的数据库读取不并行。单靠 maxId，解决不了旧行被修改的问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "物化过程的隔离、INSERT SELECT与DDL事务语义按数据库核验，需普通业务账号不能修改已冻结job的快照。生命周期清理只有在任务终止且不再续传后进行。Java测试建好表后从静止源物化，随后修改源表，导出仍读旧投影；它没有证明MySQL在并发写入下的物化语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "切片、顺序和有界并行"
+    },
+    {
+      "type": "paragraph",
+      "text": "按稳定唯一排序键划连续不重叠区间，再以WHERE key>last AND key<upper ORDER BY key LIMIT pageSize取页。每片独立顺序输出，按区间编号组织manifest而非完成先后。复合排序键要把唯一主键作为最后tie-breaker；稀疏主键会负载不均，可先采样规划边界，但计划冻结后不可在重试中悄悄重分片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内存要按工作者与页大小封顶，不要按总行数增长。固定 W 个 worker，每个一次只取 B 行并使用固定输出缓冲，待办只存区间元数据，不能把千万行装进 List，也不要每行建 Future。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内存约 W×(B×最大解码行宽+输出缓冲)+分片元数据；无界 LOB 会打破估算，需要流式字段或大小限制。JDBC setFetchSize 不保证所有驱动都流式，示例 SQL 显式 LIMIT256，即使驱动缓存整页，也只有这一页。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以一千万行、平均输出200字节作假设算例，纯内容约2GB，另计编码膨胀、索引、暂存、副本与重试。速度上限取源扫描、转换CPU、磁盘、网络/OSS中的瓶颈，增加W超过连接池/磁盘能力反而变慢；不要把本地小数据通过称为千万行压测。CSV可分片，若业务强制单个Excel工作表则须另核实格式行数上限并分表/文件，不能默认任意格式容纳千万行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "原生Java与OSS的接口边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "JDBC PreparedStatement负责范围查询，ExecutorService固定工作者，BufferedWriter/OutputStream流式编码，MessageDigest增量SHA-256，java.net.http.HttpClient可用BodyPublishers.ofFile流式发送文件。OSS接入走官方REST与合规签名器/短期预签名上传地址，生产凭证在受控服务管理，不硬编码到示例。HTTP状态、超时和响应体均应校验，取消任务还须停止读取和上传。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可将每个逻辑分片作为独立不可变对象，最终manifest定义有序报表；若必须单对象，InitiateMultipartUpload获得uploadId，各partNumber上传并保存ETag/校验，ListParts核验续传，按编号CompleteMultipartUpload。分片最小尺寸、最大个数、完成校验按当前API约束规划，逻辑行片可先组合成传输part，不能随意每页一part。ETag不普遍等于整文件MD5。"
+    },
+    {
+      "type": "paragraph",
+      "text": "上传超时先查，不要直接换 job 重做。完成或上传响应丢失时，核对对象版本、长度、应用摘要或 part 记录；对象已可靠存在，才提交该片检查点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有片通过同版本数据校验后，再发布不可变 manifest，消费者以最终 manifest 判断完成。临时文件、未完成 multipart 与过期快照另行回收，防报告泄露和长期占用费用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整可运行局部实现与验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "NativeExport是JDK+JDBC完整程序，使用H2普通关系表、冻结投影、固定工作者、256行keyset页、规范CSV、逐片摘要/检查点、最终manifest。每片成功后才记checkpoint，注入文件已写但checkpoint未写的失败，重开后重做同片；已登记片发现字节损坏则拒绝完成。为简化只允许一个进程协调同job，生产多实例须加job租约/epoch或唯一版本提交，不能并发覆盖同临时路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实测10001个候选ID去掉17的倍数后9413行，11片，含NULL、引号、换行、中文、键空洞；独立按原始值生成字节摘要，验证全局有序且不漏重，重试manifest完全相同、源表后来更新不改变快照、损坏检测有效。另实际执行空快照，maxId=0生成仅schema的manifest。本地原子rename不等于fsync与断电耐久保证；OSS签名、上传、千万行负载和MySQL一致性快照不在这个局部示例的实现范围内。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现包含独立边界测试，运行环境与保证范围按上述合同。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "022/NativeExport.java",
+      "value": "import java.io.*;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.security.*;\nimport java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n/** JDK+JDBC, immutable staging snapshot and local durable sink model, not OSS integration. */\npublic final class NativeExport {\n  record Part(int index,long rows,long bytes,String sha) {}\n  final String url; final Path dir; final int width=1000, page=256;\n  NativeExport(String path,Path dir)throws IOException {url=\"jdbc:h2:file:\"+path+\";LOCK_TIMEOUT=15000\";this.dir=dir;Files.createDirectories(dir);}\n  Connection connect()throws SQLException{return DriverManager.getConnection(url,\"sa\",\"\");}\n  void init()throws Exception{\n    try(var c=connect();var s=c.createStatement()){\n      s.execute(\"CREATE TABLE source(id BIGINT PRIMARY KEY,payload VARCHAR(4096))\");\n      s.execute(\"CREATE TABLE snapshot(id BIGINT PRIMARY KEY,payload VARCHAR(4096))\");\n      s.execute(\"CREATE TABLE job(id INT PRIMARY KEY,max_id BIGINT,width INT,page_size INT)\");\n      s.execute(\"CREATE TABLE checkpoint(part INT PRIMARY KEY,nrows BIGINT,nbytes BIGINT,sha VARCHAR(64))\");\n      c.setAutoCommit(false);\n      try(var p=c.prepareStatement(\"INSERT INTO source VALUES(?,?)\")){\n        for(int i=1;i<=10001;i++){if(i%17==0)continue;p.setLong(1,i);p.setString(2,value(i));p.addBatch();if(i%200==0)p.executeBatch();}p.executeBatch();\n      }\n      // Test selects snapshot while source is quiescent. Production needs a DB-consistent materialization transaction.\n      s.execute(\"INSERT INTO snapshot SELECT * FROM source\");\n      s.execute(\"INSERT INTO job SELECT 1,MAX(id),1000,256 FROM snapshot\");c.commit();\n      s.execute(\"UPDATE source SET payload='changed after snapshot' WHERE id=1\");\n      c.commit(); // Keep the post-snapshot mutation visible to independent connections.\n    }\n  }\n  static String value(int id){return id%11==0?null:(id%7==0?\"a,\\\"b\\\"\\n中文\":\"v\"+id);}\n  static String csv(long id,String value){return id+\",\"+(value==null?\"\\\\N\":\"\\\"\"+value.replace(\"\\\"\",\"\\\"\\\"\")+\"\\\"\")+\"\\n\";}\n  static MessageDigest digest(){try{return MessageDigest.getInstance(\"SHA-256\");}catch(Exception e){throw new AssertionError(e);}}\n  static String hash(Path path)throws IOException{\n    var d=digest();try(var in=new DigestInputStream(Files.newInputStream(path),d)){in.transferTo(OutputStream.nullOutputStream());}return HexFormat.of().formatHex(d.digest());\n  }\n  Path file(int i){return dir.resolve(String.format(\"part-%05d.csv\",i));}\n  Part saved(int i)throws Exception{\n    try(var c=connect();var p=c.prepareStatement(\"SELECT nrows,nbytes,sha FROM checkpoint WHERE part=?\")){\n      p.setInt(1,i);try(var r=p.executeQuery()){if(!r.next())return null;Part part=new Part(i,r.getLong(1),r.getLong(2),r.getString(3));\n        if(!Files.exists(file(i))||Files.size(file(i))!=part.bytes||!hash(file(i)).equals(part.sha))throw new IOException(\"checkpoint data mismatch\");return part;}\n    }\n  }\n  Part exportPart(int index,long max,boolean crashAfterData)throws Exception{\n    Part old=saved(index);if(old!=null)return old;\n    long lower=(long)index*width+1, upper=Math.min(max+1,lower+width), cursor=lower-1,n=0;\n    Path temp=dir.resolve(\"part-\"+index+\".tmp\");var md=digest();\n    try(var c=connect();var output=new BufferedWriter(new OutputStreamWriter(new DigestOutputStream(Files.newOutputStream(temp),md),StandardCharsets.UTF_8),8192);\n        var p=c.prepareStatement(\"SELECT id,payload FROM snapshot WHERE id>? AND id<? ORDER BY id LIMIT ?\")){\n      while(true){p.setLong(1,cursor);p.setLong(2,upper);p.setInt(3,page);int read=0;\n        try(var r=p.executeQuery()){while(r.next()){\n          long id=r.getLong(1);if(id<lower||id<=cursor)throw new AssertionError(\"order/range\");\n          output.write(csv(id,r.getString(2)));cursor=id;n++;read++;\n        }}if(read<page)break;\n      }\n    }\n    // This local model tests process restart, not OS/power-loss fsync durability.\n    Files.move(temp,file(index),StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);\n    Part part=new Part(index,n,Files.size(file(index)),HexFormat.of().formatHex(md.digest()));\n    if(crashAfterData)throw new IOException(\"injected after file commit before checkpoint\");\n    try(var c=connect();var p=c.prepareStatement(\"INSERT INTO checkpoint VALUES(?,?,?,?)\")){\n      p.setInt(1,index);p.setLong(2,n);p.setLong(3,part.bytes);p.setString(4,part.sha);p.executeUpdate();\n    }return part;\n  }\n  String run(int workers)throws Exception{\n    if(workers<=0||workers>16)throw new IllegalArgumentException();long max;\n    try(var c=connect();var s=c.createStatement();var r=s.executeQuery(\"SELECT max_id,width,page_size FROM job WHERE id=1\")){\n      r.next();max=r.getLong(1);if(r.getInt(2)!=width||r.getInt(3)!=page||max<0||max>Integer.MAX_VALUE)throw new IllegalStateException(\"job contract changed\");\n    }\n    int count=(int)((max+width-1)/width);Part[] parts=new Part[count];var index=new AtomicInteger();\n    try(var pool=Executors.newFixedThreadPool(workers)){\n      List<Future<?>> tasks=new ArrayList<>();\n      for(int t=0;t<workers;t++)tasks.add(pool.submit(()->{try{int i;while((i=index.getAndIncrement())<count)parts[i]=exportPart(i,max,false);}catch(Exception e){throw new RuntimeException(e);}}));\n      for(var task:tasks)task.get();\n    }\n    StringBuilder manifest=new StringBuilder(\"schema=id:integer,payload:quoted_utf8_or_unquoted_backslashN; snapshot=1\\n\");\n    long rows=0;for(var p:parts){rows+=p.rows;manifest.append(p.index).append(',').append(p.rows).append(',').append(p.bytes).append(',').append(p.sha).append('\\n');}\n    try(var c=connect();var s=c.createStatement();var r=s.executeQuery(\"SELECT COUNT(*) FROM snapshot\")){r.next();if(rows!=r.getLong(1))throw new IOException(\"count mismatch\");}\n    Path published=dir.resolve(\"manifest.txt\");String result=manifest.toString();\n    if(Files.exists(published)){if(!Files.readString(published).equals(result))throw new IOException(\"immutable manifest conflict\");}\n    else{Path temp=dir.resolve(\"manifest.tmp\");Files.writeString(temp,result);Files.move(temp,published,StandardCopyOption.ATOMIC_MOVE);}\n    return result;\n  }\n  static void check(boolean x){if(!x)throw new AssertionError();}\n  public static void main(String[] args)throws Exception{\n    var db=new NativeExport(args[0],Path.of(args[1]));db.init();\n    try(var c=db.connect();var st=c.createStatement();var rs=st.executeQuery(\"SELECT s.payload,p.payload FROM source s JOIN snapshot p ON s.id=p.id WHERE s.id=1\")){\n      check(rs.next());check(rs.getString(1).equals(\"changed after snapshot\"));check(rs.getString(2).equals(value(1)));\n    }\n    try{db.exportPart(0,10001,true);throw new AssertionError();}catch(IOException expected){check(db.saved(0)==null);}\n    var restart=new NativeExport(args[0],Path.of(args[1]));String first=restart.run(4);check(first.equals(restart.run(3)));\n    var actual=digest();for(int i=0;i<11;i++)try(var in=new DigestInputStream(Files.newInputStream(restart.file(i)),actual)){in.transferTo(OutputStream.nullOutputStream());}\n    var expected=digest();long rows=0;for(int i=1;i<=10001;i++)if(i%17!=0){expected.update(csv(i,value(i)).getBytes(StandardCharsets.UTF_8));rows++;}\n    check(Arrays.equals(actual.digest(),expected.digest()));\n    Path damaged=restart.file(2);byte[] intact=Files.readAllBytes(damaged);Files.writeString(damaged,\"corrupt\");\n    try{restart.saved(2);throw new AssertionError();}catch(IOException expectedFailure){}Files.write(damaged,intact);\n    check(first.equals(restart.run(2)));\n    var empty=new NativeExport(args[0]+\"-empty\",Path.of(args[1]+\"-empty\"));empty.init();\n    try(var c=empty.connect();var st=c.createStatement()){st.execute(\"DELETE FROM snapshot\");st.execute(\"UPDATE job SET max_id=0\");}\n    check(empty.run(1).lines().count()==1);\n    System.out.println(\"PASS \"+rows+\" rows/11 ordered parts; 256-row pages; 4 workers; null/quote/newline/Unicode/gaps; frozen snapshot; orphan data restart; idempotent manifest; corruption detection; empty snapshot\");\n  }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-java-file-export",
+  "targetOrigin": "authored"
+}

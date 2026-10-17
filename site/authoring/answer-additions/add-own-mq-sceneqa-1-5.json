@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-sceneqa-1-5",
+  "entryId": "sceneqa-1",
+  "expectedOriginalHash": "2a6df71c6270a4fc96fcf30fe7c07f3c7b4f48772a0ecda98d09ef0651cf386e",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis 预扣、领券与库存链路怎么接上可靠受理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "先明确谁有资格批准卖出，再讨论同步。若关系库是库存和订单权威，Redis 可用于入口预筛，最终库存条件更新、订单、预留和 Outbox 在同一事务裁决。Redis 预筛成功不等于订单或领券成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果接口告诉小李“领券成功”，实际券实例从未创建，确实是承诺与事实不一致，不能靠事后把成功改叫“排队中”消除问题。异步接口应在可靠记录后返回 ACCEPTED/PENDING 与查询身份，券实例和领取结果提交后才显示 ISSUED。同步等待超时也应返回结果待核实，HTTP 等待结束不会替系统判断是否发券。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若业务坚持由 Redis 权威预扣，可在同一执行域中保存预留和事件，例如同槽短 Lua 脚本保存 reservationId 并追加 Stream。转发者在外部 Broker 接收后再 XACK；Broker 已收而 XACK 丢失会重发，所以下游仍需稳定 eventId。XACK 只是消费组确认，不等于删除 Stream 记录，裁剪策略不能破坏未完成责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 的不可穿插执行不等于运行期错误自动回滚，更不包含外部 MQ。需先校验参数与 key 类型，保证脚本有界，并分析持久化、异步复制、切换丢写、内存淘汰和旧持有者恢复。WAIT 可以降低某些复制风险，但本身不把 Redis 变成强一致系统。不能在 Redis 切换后立即按落后的 MySQL 可售量继续卖出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "投递超时不要无条件把库存 INCR 回去。原消息可能已经创建了订单，释放必须依据权威预留状态做 HELD→RELEASED 的一次转换。初始化缓存时也不能 SELECT 总量后 SET 覆盖正在进行的扣减；需要一致快照与变更水位、版本化切换，或明确暂停受理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "另一个常见追问是“RocketMQ 发送成功就已经落盘吗”。以 4.x 接口为例，ASYNC_FLUSH 与 SYNC_FLUSH 的确认条件不同，SendResult 还区分 SEND_OK、FLUSH_DISK_TIMEOUT、FLUSH_SLAVE_TIMEOUT、SLAVE_NOT_AVAILABLE。不能只看有没有抛异常；刷盘超时也不证明消息没写入。本机刷盘与多副本复制是不同维度，5.x SDK、代理和复制部署要按实际版本重新核对。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ 事务消息可先存 half message，再执行本地事务并提交或回滚消息；二次报告丢失依赖本地持久事务证据回查。它解决指定生产端事务与消息可见性的协调，不自动原子化另一个服务的券库。消费者仍要幂等；若券与领取数据确实同库且延迟允许，也可以同步事务创建券，再异步通知。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "5"
+}

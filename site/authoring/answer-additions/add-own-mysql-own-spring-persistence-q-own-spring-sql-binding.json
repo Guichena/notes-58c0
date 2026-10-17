@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-own-spring-persistence-q-own-spring-sql-binding",
+  "entryId": "own-spring-persistence",
+  "expectedOriginalHash": "9213840c92e6a44a32340a4dfe8e981e5a5898c4c2d4ec27f0f4aaf8e73c62eb",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. SQL 注入：值绑定、结构白名单与授权是三件事"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQL 注入发生在不可信内容进入 SQL 语法的位置；正确参数化让输入保持为数据值，动态标识符仍要白名单，租户权限仍要单独校验。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如把用户名直接拼入 WHERE username='…'，引号及逻辑片段可能改变谓词结构。根因不是出现 OR 或 SELECT 这样的词，而是数据被当成代码。手工替换引号受字符集、转义和 SQL 模式影响；把合法 Unicode、引号删掉也会破坏业务数据。存储过程、ORM、先存数据库再被另一段代码拼接的二次使用，都不能天然免疫。"
+    },
+    {
+      "type": "paragraph",
+      "text": "PreparedStatement 使用固定结构 SELECT id FROM app_users WHERE tenant_id=? AND username=?，再 setLong/setString。参数中的引号或注释样式文本只应是一个值。Connector/J 可以选择客户端模拟或服务端 prepare；PreparedStatement API 不等于“一定预先在服务端编译”，也不保证每次都更快。安全性取决于正确绑定和驱动正确处理，性能要看参数、复用、缓存及配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "表名、列名、ASC/DESC、整段 WHERE 不是普通值参数。ORDER BY ? 不会把输入安全地变成列名；应由受控枚举映射为固定 SQL。动态 IN 先限制元素数，再生成相应数量的 ? 并逐个绑定；空集合要明确返回空结果还是拒绝，不能生成 IN ()。LIKE 中 % 和 _ 仍有模式语义，这不是注入；若要求字面匹配，还须按明确 ESCAPE 规则转义模式字符后绑定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "tenant_id 必须来自认证后的服务端上下文，不能让客户端任意挑租户。参数化不能拦住合法但超昂贵的查询，也不能防止账户权限过大。最小数据库权限、只读账户、结果上限、查询预算、关闭不需要的多语句能力和脱敏审计共同构成防线。日志保存模板和受控参数信息，不回显密码、SQL 内部错误或用户隐私。验证输入应包含引号、反斜杠、Unicode、注释样式文本、超长串和 NULL；允许的值应按原值匹配，不允许的值应明确拒绝，不能改变谓词结构或跨租户返回。只读失败重试也应有总期限和次数上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 SafeUserLookup.java 是完整查询组件，依赖 JDK 的 java.sql/java.util；无 main，不能单独启动。调用方拥有连接。trustedTenant 必须由已认证上下文传入；方法验证范围不会替你完成登录授权。查询数量限制是 1–100，排序只允许 ID 或 NAME，NAME 使用 id 消除同名顺序的不确定性。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/application/code/SafeUserLookup.java",
+      "value": "import java.sql.*;\nimport java.util.*;\n\npublic final class SafeUserLookup {\n    private SafeUserLookup() {}\n    public enum Order { ID, NAME }\n    public static List<Long> find(Connection c, long trustedTenant, String name,\n                                  Order order, int limit) throws SQLException {\n        Objects.requireNonNull(c, \"connection\");\n        Objects.requireNonNull(name, \"name\");\n        Objects.requireNonNull(order, \"order\");\n        if (trustedTenant <= 0 || limit < 1 || limit > 100)\n            throw new IllegalArgumentException(\"tenant > 0, limit 1..100\");\n        String sort = switch (order) { case ID -> \"id\"; case NAME -> \"username,id\"; };\n        String sql = \"SELECT id FROM app_users WHERE tenant_id=? AND username=? \"\n                   + \"ORDER BY \" + sort + \" LIMIT ?\";\n        try (PreparedStatement p = c.prepareStatement(sql)) {\n            p.setLong(1, trustedTenant); p.setString(2, name); p.setInt(3, limit);\n            p.setQueryTimeout(10);\n            try (ResultSet r = p.executeQuery()) {\n                List<Long> out = new ArrayList<>();\n                while (r.next()) out.add(r.getLong(1));\n                return List.copyOf(out);\n            }\n        }\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "配套表定义如下，用户名的比较规则采用大小写敏感排序规则；若产品希望大小写不敏感，需要明确采用另一规则，不能只改 Java equals。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch34/fence-143.sql",
+      "value": "CREATE TABLE app_users (\n  tenant_id BIGINT NOT NULL,\n  id BIGINT NOT NULL,\n  username VARCHAR(200) COLLATE utf8mb4_0900_as_cs NOT NULL,\n  PRIMARY KEY (tenant_id,id),\n  KEY ix_user_name (tenant_id,username,id)\n) ENGINE=InnoDB;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4. MyBatis 的 # 和 ?，不能偷换为 # 和 $"
+    },
+    {
+      "type": "paragraph",
+      "text": "#{name} 是 MyBatis 的取值与类型映射表达式，? 是 JDBC 层的位置占位符，它们通常处在同一条绑定链路的不同层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单独的 # 不是完整的 MyBatis 参数表达式。标准语言驱动把 #{tenant}/#{name} 转换为 SQL 中的两个 ?，同时创建按顺序排列的 ParameterMapping；ParameterHandler 根据属性名、附加参数和 TypeHandler 取值，调用 PreparedStatement.setXxx。裸 ? 只标出了位置，不包含“从方法的哪个参数取值”的规则，因此普通 Mapper 里只写 ?，即使方法恰好有一个参数，也不代表 MyBatis 自动为它生成映射。自定义 SqlSource/LanguageDriver 可另行建立映射，但那是额外实现。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果上下文真的是 MySQL SQL 文本里的 #，它也可能指行注释符，那是词法问题，必须看完整语句。正常 MyBatis 写 #{name} 时不要自己再包一层引号，否则生成的问号可能落入字符串字面量，参数计数和语义都变了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自然追问才是 #{value} 与 ${value}：后者是文本替换，把不可信值代入会进入 SQL 语法；前者是绑定值。动态排序列可以通过服务端白名单选择，不应把任意用户列名交给 ${}。Mapper 接口与 XML 通常通过 namespace 对应接口全限定名、statement id 对应方法名，参数由 @Param 或实际命名规则绑定；不是因为 Java 方法和 SQL 看起来相似就自动配对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "6. MyBatis 拦截提取的“实际 SQL”到底是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "BoundSql 是动态模板展开后带位置参数的 SQL 和绑定元数据，不是一条可以用字符串替换还原的可靠“最终 SQL”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "插件可拦截 Executor、StatementHandler、ParameterHandler、ResultSetHandler 的指定方法。Executor 更贴近 Mapper 请求，可拿 statement id，但缓存命中时未必访问 JDBC；StatementHandler.prepare 接近创建 JDBC Statement，可观察动态 SQL 展开结果，但 REUSE/BATCH 可能复用语句，因此 prepare 次数不是普遍意义上的执行次数或网络往返次数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "foreach 产生的参数可能在 additionalParameters；简单类型、Map、JavaBean、NULL、OUT 参数、自定义 TypeHandler 也需要对应取值规则。不要逐个 replaceFirst(\"?\", value.toString())：字符串字面量或注释里也能含问号，二进制、转义、时区和类型处理会失真，日志还可能泄露敏感值。安全观测应保留 SQL 模板、映射属性和受限的类型信息，参数值按业务白名单脱敏。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计时同样要分边界：prepare 不包含完整执行、锁等待、网络传输和结果映射；流式读取还可能把耗时推迟到迭代阶段。插件顺序会影响它看到租户/分页插件改写之前还是之后的 SQL，必须与真实插件链一起验证。示例使用有界采集器而非无限列表，采集只为了演示；生产还需采样、脱敏、背压和访问控制。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "q-own-spring-sql-binding",
+  "targetOrigin": "authored"
+}

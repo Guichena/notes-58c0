@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-dbqa-4-1",
+  "entryId": "dbqa-4",
+  "expectedOriginalHash": "12c43ec9de703349aaf021f4d73bf934c63859a8b5ca3eb1e2ee4a9fb8db3368",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "MVCC 版本与应用 version 列有什么区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用 version 列常用于条件更新：读到 v 后要求写入时仍等于 v，并把它递增。它检测业务相关修改是否发生，不负责重建历史行，也不知道其他事务在视图建立时是否活动。"
+    },
+    {
+      "type": "paragraph",
+      "text": "隐藏 DB_TRX_ID 由引擎管理，不是可直接拿来当业务版本条件的普通列；事务 ID 不是提交时间。应用 CAS 在实际执行 UPDATE 时仍然需要数据库写锁、日志和事务，不能称为“完全无锁”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使每行都有 version，两个事务各自更新不同的行仍可能破坏跨行不变量。相反，如果只要防止一个库存行减成负数，WHERE available>=quantity 的原子扣减就能表达该约束，不必为口号增加版本。但同一个逻辑请求重试是否再次扣减，要另用请求身份与幂等协议判断。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第24章 版本 CAS 热点行与并发状态机"
+    },
+    {
+      "type": "paragraph",
+      "text": "版本 CAS 把“我读到的前提仍成立”与修改合成一次数据库条件更新；它防止过期覆盖，却不会自动提供业务幂等、跨行不变量或外部系统原子性。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "两个线程编辑同一文档"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个人都读到 id=42、version=7、body=旧。A 带版本 7 写入“甲”并提交，版本变为 8；B 仍带 7 写“乙”，影响 0 行。这个失败是在提醒 B：原先判断的前提已经变了。B 应重新读“甲”并提示冲突，或按明确的字段、操作语义合并，再作为新的逻辑操作提交。只把 expectedVersion 换成 8，原样重放“乙”，仍然会覆盖 A 的修改。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再分别看失败发生在哪里。A 若回滚，就没有成功推进版本，B 之后可能成功；A 若只是丢了 COMMIT 应答，应沿原 request_id 查收据。文档删除后同 ID 重建还可能造成 ABA，应避免复用对象 ID，或让 generation 一起参与 CAS。引擎隐藏的 DB_TRX_ID、ReadView 都不能直接代替这个客户端业务版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "DocumentCas 把收据 INSERT、文档条件 UPDATE 和结果版本放在同一事务。重复请求要核验 tenant/doc/expected/body，同号不同内容报错。返回旧收据，只能证明那次提交所得版本，不能证明文档现在还停在那里；收据也要保留到允许重放窗口结束，否则清理后的重放可能再次生效。正文替换冲突不通过偷换版本自动重试；即使是数据库死锁重试，也保留原 expected，重新进行业务校验。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/transactions/code/locking/DocumentCas.java",
+      "value": "import java.sql.*;\n\n/** Body replacement never retries with a silently refreshed expected version. */\npublic final class DocumentCas {\n    private final Db.Source source;\n    public DocumentCas(Db.Source source) { this.source=source; }\n    public record Result(long committedVersion,boolean replayed) {}\n    public static final class Conflict extends SQLException {\n        private static final long serialVersionUID=1L;\n        public Conflict() { super(\"missing, inaccessible, deleted, or stale document\"); }\n    }\n    private static Result receipt(Connection c,long tenant,long id,long expected,String request,String body)\n            throws SQLException {\n        try (PreparedStatement p=Db.prepare(c,\n                \"SELECT doc_id,expected,body,result_version FROM doc_receipt WHERE tenant=? AND request_id=?\")) {\n            p.setLong(1,tenant); p.setString(2,request);\n            try(ResultSet r=p.executeQuery()) {\n                if(!r.next()) return null;\n                if(r.getLong(1)!=id || r.getLong(2)!=expected || !body.equals(r.getString(3)))\n                    throw new IllegalArgumentException(\"request ID reused for different operation\");\n                return new Result(r.getLong(4),true);\n            }\n        }\n    }\n    public Result save(long tenant,long id,long expected,String request,String body,boolean failBeforeCommit)\n            throws SQLException {\n        Db.key(request);\n        if(tenant<=0 || id<=0 || expected<0 || expected==Long.MAX_VALUE || body==null || body.length()>4000)\n            throw new IllegalArgumentException(\"invalid bounded input\");\n        return Db.transaction(source,c->{\n            Result old=receipt(c,tenant,id,expected,request,body);\n            if(old!=null) return old;\n            try(PreparedStatement p=Db.prepare(c,\n                    \"INSERT INTO doc_receipt(tenant,request_id,doc_id,expected,body,result_version) VALUES(?,?,?,?,?,?)\")) {\n                p.setLong(1,tenant);p.setString(2,request);p.setLong(3,id);\n                p.setLong(4,expected);p.setString(5,body);p.setLong(6,expected+1);\n                try { p.executeUpdate(); }\n                catch(SQLException e) {\n                    if(!Db.duplicate(e)) throw e;\n                    if (!Db.rollback(c, e)) throw e;\n                    Result replay=receipt(c,tenant,id,expected,request,body);\n                    if(replay==null) throw e;\n                    return replay;\n                }\n            }\n            try(PreparedStatement p=Db.prepare(c,\n                    \"UPDATE doc SET body=?,version=version+1 WHERE tenant=? AND id=? AND version=?\")) {\n                p.setString(1,body);p.setLong(2,tenant);p.setLong(3,id);p.setLong(4,expected);\n                if(p.executeUpdate()!=1) throw new Conflict();\n            }\n            if(failBeforeCommit) throw new SQLException(\"injected before commit\");\n            return new Result(expected+1,false);\n        });\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "若“文档”实际指 Elasticsearch，应另说产品契约。本章对照 Elasticsearch 8.15 系列：保存读取时的 _seq_no 与 _primary_term，更新时传 if_seq_no 和 if_primary_term；它们不是任意业务 version，也不能把普通 _version 当同一种令牌。索引写成功与 refresh 后 search 可见又是两个时点。MySQL 权威数据与 ES 投影各自做 CAS 也不会形成跨库事务，投影要另带事件身份、版本和可重建边界。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "1"
+}

@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s5102",
+  "entryId": "bg-分布式-4",
+  "expectedOriginalHash": "2eac296033ebdcf0775e4d8c44c31d741e7057dde30c85a6ecd9a860e2209809",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "7.2 XXL-JOB架构与3.3.1服务端源码链路怎样读"
+    },
+    {
+      "type": "paragraph",
+      "text": "XXL-JOB由调度中心确定触发和路由，执行器运行handler并回调，业务仍需为重复触发、超时未停和调度崩溃保存恢复责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：XXL-JOB服务端链路是什么；时间环会不会丢任务；执行超时是否真的停止业务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下机制固定在XXL-JOB 3.3.1，类路径与行为不推广到其他版本；本地示例不等于运行了真实XXL-JOB集群。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "调度中心、执行器和业务职责"
+    },
+    {
+      "type": "paragraph",
+      "text": "调度中心保存任务配置/调度记录，决定何时触发和路由到哪个执行器；执行器接收请求、装载handler并运行，回报结果。业务代码决定幂等、事务和效果，不应把调度成功日志当业务最终成功。集群部署提高可接管能力，但数据库、网络、任务时长及重复触发仍是设计边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "JobScheduleHelper：持久下次时间与内存时间环"
+    },
+    {
+      "type": "paragraph",
+      "text": "3.3.1的admin/scheduler/thread/JobScheduleHelper.start创建扫描线程与ring线程。扫描在事务中调用scheduleLock，再查询未来PRE_READ_MS=5000范围任务；严重错过触发时间时走misfire策略，近时逾期直接触发，未来任务按秒数模60进入ringData，并计算/更新下次时间。ring线程处理当前刻度与前两个刻度，再交触发线程池。"
+    },
+    {
+      "type": "paragraph",
+      "text": "XXL-JOB 这里最重要的边界，是数据库的 next trigger time 和 JVM 内存 ringData 并不属于同一个持久事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若下次时间已经前移，进程却在内存触发前硬崩溃，数据库锁和优雅停机等待都不能证明这些预读运行不丢。重要业务要保存自己的持久运行槽并对账，也不能把 misfire 说成会逐次补回全部历史触发。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "JobTrigger→ExecutorBizImpl→JobThread"
+    },
+    {
+      "type": "paragraph",
+      "text": "JobTrigger.trigger读取配置与执行器地址，处理分片广播或路由选择，processTrigger先存logId，再构造handler、参数、timeout、广播下标/总数等TriggerRequest，经ExecutorBiz.run远程提交并记录触发结果。分片参数需要业务handler按约定使用，广播本身不会自动分割数据库数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "core/openapi/impl/ExecutorBizImpl.run解析BEAN/GLUE/script handler及更新版本，处理串行、丢弃后续、覆盖先前等阻塞策略，再把请求放入对应JobThread。JobThread用logId集合避免队列内重复，但取出时即移除，且集合在内存，不能当业务永久去重。handler执行前建立上下文和日志路径。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "超时与回调的真实边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "XXL-JOB 执行超时，不等于业务真的停了。有超时配置时，JobThread 创建 FutureTask 线程并等待 get(timeout)，超时后记录状态、interrupt 执行线程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 中断是协作机制，忽略中断或不可中断的操作仍可能继续产生副作用。覆盖早期执行也不会自动回滚外部操作，业务仍需稳定 runId 和目的端条件提交，拦住迟到结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TriggerCallbackThread把回调加入内存队列批量上报，失败时写本地失败回调文件并由重试线程重试。该文件并不意味着所有回调从入队就持久化：内存尚未落盘时硬崩溃、重试文件读取删除后再次上报前失败等窗口都需分析。回调“失败/超时”和真实业务状态可暂时不一致，重跑前核对业务流水。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "阅读方法与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "从一个jobId沿nextTriggerTime、logId、执行器地址、队列、handler、回调查完整状态，分别定位未调度、未送达、排队、执行失败和回调失败。验证admin硬退出、执行器重启、长任务忽略中断、同logId重复与业务提交后回调丢失。本节AlarmSlots仅是局部事务教学模型，不实现XXL-JOB运行时；调度器与执行器的故障合同应在实际3.3.1部署上分别验证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "0"
+}

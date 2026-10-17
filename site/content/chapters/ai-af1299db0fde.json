@@ -1,0 +1,612 @@
+{
+  "entries": [
+    {
+      "id": "ai-模型与评测-1",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "模型基础与能力边界",
+      "number": "10 问",
+      "items": [
+        {
+          "q": "你对 Attention 机制有没有了解？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>相对 RNN</b>：RNN 的信息要沿时间步一层层传，长距离依赖容易衰减。Attention 让当前位置直接和整段序列建立关联，更容易抓住远距离关系。现在大模型基本都建立在 Transformer 和 Attention 之上。</li><li><b>Q、K、V</b>：每个 token 映射成 Query、Key、Value。当前 token 的 Query 和所有 token 的 Key 算相似度，得到一组权重，再用这些权重对所有 Value 加权求和，形成当前位置的新表示。</li><li><b>多头注意力</b>：别只学一种关注方式，在不同子空间里并行学习不同关系。有的头更关注局部语法，有的更关注实体对应，有的更关注长距离依赖。代价是序列越长，计算和显存开销涨得越快，长上下文才会做 FlashAttention、稀疏注意力和分块计算。</li><li><b>能力边界</b>：它解决的是“当前这一步该重点看哪里”，管理的是窗口内的信息分配，并不顺带给出稳定规划、长期记忆、事实校验、复杂任务状态管理或外部知识接入。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只停在公式，会把窗口内的信息分配说成模型自动具备长期记忆和外部知识能力。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>讲完 Attention，边界之外通常还接什么？</b></p><p class=\"md-p\">会接到 Transformer、长上下文瓶颈、KV Cache，以及为什么还需要 RAG 和 Agent。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Attention 的本质是处理一个位置时，动态关注序列里最相关的其他位置。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>相对 RNN / Q、K、V / 多头分关系 / 窗口内分配</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Transformer 怎么讲才比较完整？",
+          "a": "<p class=\"md-p\">它是现在大多数大语言模型的基础架构。它用自注意力同时建模序列里不同位置的关系，不像 RNN 那样按时间步一个个传，所以更擅长长距离依赖，也更适合并行训练。GPT、BERT 这类模型基本都建立在这条思路上。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>输入表示</b>：token 先做 embedding，再加位置编码。</li><li><b>核心计算</b>：靠 Multi-Head Self-Attention 决定“当前 token 该重点看谁”。</li><li><b>前馈与稳定传递</b>：前馈网络、残差连接和 LayerNorm，做更稳定的非线性变换和层间信息传递。</li><li><b>堆叠结构</b>：把这样的模块一层层堆起来，让模型不断抽象语义。</li></ol></div>\n<p class=\"md-p\">编码器更适合理解任务，解码器更适合生成任务。GPT 这种自回归大模型主要是解码器路线。强点是表达力和并行性，短板是长序列成本高，所以推理系统和注意力优化会成为工程重点。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>它为什么能把规模推上去，又留下什么工程问题？</b></p><p class=\"md-p\">大规模并行训练变得可行，才有后面参数规模爆发的基础。同时也埋下长上下文成本高、推理时 KV Cache 占显存、部署时更容易被 Memory Bound 卡住。它既是能力上限的起点，也是推理优化、长上下文和系统工程问题的起点。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Transformer 的本质是用自注意力同时建模各位置关系，从而并行训练并抓住长距离依赖。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>输入表示 / 多头自注意力 / 前馈残差归一化 / 堆叠抽象 / 编解码取舍</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "怎么利用 Transformer 架构上的特点设计提示词？",
+          "a": "<p class=\"md-p\">从架构讲，核心是顺着 Transformer 的注意力分配和位置敏感性组织信息。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>高优先级靠前</b>：任务目标、硬约束、输出格式放在更靠前的位置，模型对前部信息通常更稳定。</li><li><b>尽量结构化</b>：分成目标、约束、上下文、示例、输出要求几个块，减少自然语言堆叠导致的注意力稀释。</li><li><b>控制噪声</b>：少放和当前任务无关的背景，不然重要信息容易被冲淡。</li><li><b>Lost in the Middle</b>：关键信息很多时，不要把最重要的约束埋在中间长段里。前面明确一次，结尾必要时再重复一次关键要求。示例挑真正能约束输出风格和边界的少量高质量样本。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：关键约束更显眼，结构更清楚，噪声更少，比一味写长更有效。<i>适用场景</i>：约束多、上下文长，需要让模型稳定看到目标和格式。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>示例不是越多越好，堆无关背景会把重要信息冲淡。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>提示词设计的本质是顺着注意力分配和位置敏感性做信息排序，让关键约束显眼。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>高优先级靠前 / 分块结构化 / 控制噪声 / 避开中间埋点</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "Self-Attention 的计算过程、时间复杂度和瓶颈分别是什么？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>计算主线</b>：按 <code class=\"tok-inline\">Q × K^T -&gt; softmax -&gt; 加权 V</code>。输入先映射成 Query、Key、Value，用 Query 和 Key 算相似度，经过缩放和 softmax 变成注意力权重，再用这些权重加权 Value，得到当前位置的新表示。它回答的是：当前 token 该从哪些历史 token 那里吸收更多信息。</li><li><b>复杂度</b>：典型时间复杂度和显存复杂度都和序列长度平方相关，也就是 <code class=\"tok-inline\">O(n^2)</code>。上下文一长，注意力矩阵迅速变大，算力和显存都会被顶住。瓶颈在上下文变长，公式本身不难。</li><li><b>长上下文优化</b>：FlashAttention 更偏 IO-aware 的 exact attention，目标是减少显存读写；稀疏注意力、分块注意力更偏结构层面的近似或裁剪。</li><li><b>训练和推理</b>：训练要保留更多中间状态，长序列显存压力更大；推理不反传，但上下文一长，KV Cache 继续吃显存，瓶颈从单纯算 attention 扩展到整个推理链路。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span><code class=\"tok-inline\">O(n^2)</code> 不代表所有场景都会立刻不可用，线上效果还和 batch、head 数、hidden size、实现方式、显存带宽一起有关。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么还会追到长上下文相关优化？</b></p><p class=\"md-p\">注意力矩阵变大之后，优化会延伸到 FlashAttention、KV Cache、长上下文优化和 Memory Bound。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Self-Attention 的本质是当前 token 按权重从历史 token 吸收信息，复杂度是 O(n^2)。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>计算主线 / 平方复杂度 / 两类优化 / 训练推理分压</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Multi-Head Attention 和位置编码分别起什么作用？绝对位置编码和相对位置编码怎么比较？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>Multi-Head Attention</b>：别只用一种关注视角。一个头可能更关注局部语法，另一个头可能更关注实体对应，还有的头更擅长捕捉远距离依赖。多个头并行学习，最后再拼起来，表达能力比单头更强。</li><li><b>位置编码</b>：Attention 本身不带顺序感。没有位置编码，模型只知道有哪些 token，不知道谁在前谁在后。</li></ol></div>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>绝对位置编码</th><th>相对位置编码</th></tr></thead><tbody><tr><td>表示方式</td><td>直接给每个 token 一个位置编号</td><td>关注 token 之间相隔多远、方向在哪边</td></tr><tr><td>特点</td><td>直观、实现简单</td><td>对长文本和泛化通常更友好</td></tr><tr><td>适用场景</td><td>用位置编号就能表达顺序</td><td>语言现象更依赖相对距离而不是绝对序号</td></tr></tbody></table></div>\n<p class=\"md-p\">绝对位置更像给每个人发座位号，相对位置更像告诉模型谁和谁离得近、关系怎么摆。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多头注意力并行学习多种关注视角；位置编码补上 Attention 本身没有的顺序感。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>多头并行视角 / 补上顺序感 / 绝对位置编码 / 相对位置编码</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "大模型根据一段内容自动生成标题，底层原理是什么？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>概率预测</b>：输入一段文本并要求生成标题时，模型基于上下文分布，预测一段最像标题风格的 token 序列。</li><li><b>模式学习</b>：预训练和指令微调里见过大量“正文 -&gt; 标题”“摘要 -&gt; 标题”“章节内容 -&gt; 小结”这类模式，所以会往标题风格上靠。</li><li><b>自注意力</b>：Transformer 的自注意力能抓住段落里的主题词、实体、动作和关系。</li><li><b>指令约束</b>：再结合指令，把输出收敛到短文本摘要形式。通用语言建模能力落在这个任务上，就表现为标题生成。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>底层没有专门的“标题模块”，不要把它讲成独立组件。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会把概率预测、模式学习、指令约束这三层一起讲完。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>标题生成的本质是 next token prediction：按上下文分布，预测最像标题风格的 token 序列。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>概率预测 / 模式学习 / 自注意力 / 指令约束</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "大模型发展过程中，有哪些关键节点值得讲？",
+          "a": "<p class=\"md-p\">我按主线抓五个阶段：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>词向量与 RNN / LSTM</b>：解决了基础序列建模，但长依赖和并行训练都有限。</li><li><b>Transformer 成为主干</b>：把表达能力和训练效率一起往前推。</li><li><b>BERT、GPT 预训练范式</b>：形成“先大规模预训练，再做下游适配”的共识。</li><li><b>InstructGPT、ChatGPT</b>：把 SFT、RLHF、对话式交互和工具生态带到大众产品层。</li><li><b>工程化阶段</b>：长上下文、Function Calling、RAG、Agent、多模态、推理优化和治理体系一起成熟。</li></ol></div>\n<p class=\"md-p\">发展同时体现在训练范式、推理系统、评测方法和应用形态，参数变大只是其中一面。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>重要的节点是能力边界整体往前推了一步，而不是单个模型名字。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>大模型演进的本质是五级能力边界：序列建模、Transformer、预训练、指令对齐、工程化。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>词向量与RNN / Transformer主干 / 预训练范式 / SFT与RLHF / 工程化阶段</p>",
+          "leadType": "v9:叙述"
+        },
+        {
+          "q": "除了 RAG，还有哪些手段能增强大模型能力？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>类别</th><th>常见手段</th><th>解决什么</th></tr></thead><tbody><tr><td>Prompt 和工作流</td><td>few-shot、CoT、Plan-and-Execute、结构化输出约束、本地规则引擎</td><td>更稳定地把模型能力表现出来</td></tr><tr><td>工具增强</td><td>Function Calling、代码执行、搜索、数据库查询、业务 API</td><td>模型怎么接外部能力和实时信息</td></tr><tr><td>参数层</td><td>SFT、LoRA、QLoRA、偏好优化</td><td>把行为模式和领域能力更自然地写进模型</td></tr><tr><td>系统层</td><td>缓存、路由、多模型协同、Rerank、评测闭环、安全护栏</td><td>把概率系统做成可用系统</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>很多业务最后是 Prompt、工具、检索、微调、运行时治理组合解决的。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>增强大模型分四层：Prompt 与工作流、工具、参数、系统；RAG 只是其中一支。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Prompt与工作流 / 工具增强 / 参数层增强 / 系统层增强</p>",
+          "leadType": "v9:方案/对比"
+        },
+        {
+          "q": "为什么说大模型的爆发很大程度上得益于 Transformer 架构？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>RNN/LSTM</th><th>Transformer</th></tr></thead><tbody><tr><td>计算方式</td><td>序列按时间步一个个算</td><td>核心换成自注意力，序列内很多位置可并行</td></tr><tr><td>长依赖与扩展</td><td>长依赖难、并行度低、训练扩展有限</td><td>长距离建模更强，训练效率提升一个量级</td></tr><tr><td>算力形态</td><td>扩展性有限</td><td>更适合 GPU/TPU 的并行训练</td></tr></tbody></table></div>\n<p class=\"md-p\">我会补三样东西：更强的长距离建模能力、更适合 GPU/TPU 的并行方式、更统一的架构底座。有了这三点，后面堆更多数据、更多参数、更多算力才现实，预训练扩规模、指令微调、多模态扩展和推理系统优化才能走到今天。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>它既是能力爆发点，也是工程放大器。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Transformer 的本质是把大规模并行训练做顺，并给出长距离建模、并行算力和统一底座。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>对比RNN/LSTM / 并行训练 / 三样东西 / 能力与工程</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "Transformer 机制的优劣势一般怎么概括？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>侧</th><th>点</th><th>怎么理解</th></tr></thead><tbody><tr><td>优势</td><td>长距离依赖</td><td>token 之间不用像 RNN 那样一级级传递</td></tr><tr><td>优势</td><td>并行训练</td><td>适合大规模算力扩展</td></tr><tr><td>优势</td><td>表达能力</td><td>统一架构能同时支撑理解、生成、多模态</td></tr><tr><td>优势</td><td>生态成熟</td><td>训练、微调、推理优化和周边工具都围着它发展</td></tr><tr><td>劣势</td><td>长序列开销</td><td>自注意力计算和显存开销高，典型瓶颈是 O(n^2)</td></tr><tr><td>劣势</td><td>decode</td><td>推理尤其 decode 更容易 Memory Bound，KV Cache 会持续吃显存</td></tr><tr><td>劣势</td><td>窗口外能力</td><td>擅长窗口内信息关联，不天然解决长期记忆、事实校验和外部知识接入，所以后面需要 RAG、Memory、Tool Use 和 Agent</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把它讲成万能架构，要同时说明它为什么强，以及系统层为什么还要继续补。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Transformer 强在长距离、并行、统一表达和生态，弱在长序列开销与窗口外的记忆和知识。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>长距离依赖 / 并行与表达 / 生态成熟 / 长序列与KV / 窗口外要补</p>",
+          "leadType": "v9:对比"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-2",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "模型选型与评测方法",
+      "number": "8 问",
+      "items": [
+        {
+          "q": "模型选型时，为什么 Agent 岗经常会追问开源闭源、隐私和成本？",
+          "a": "<p class=\"md-p\">我至少会看效果、成本、延迟、稳定性、可控性、隐私合规、多模态能力、工具调用支持、上下文长度。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>闭源</th><th>开源</th></tr></thead><tbody><tr><td>效果与生态</td><td>效果上限通常更高，工具调用生态更成熟，整体稳定性更强</td><td>往往要自己补服务化、推理优化、评测和治理体系</td></tr><tr><td>成本与可控</td><td>成本更高，可控性更弱</td><td>成本可控，可定制性更好</td></tr><tr><td>部署与合规</td><td>数据出境和合规限制更多</td><td>优势在私有化部署</td></tr></tbody></table></div>\n<p class=\"md-p\">线上我不会只钉一个模型，而是按能力分层路由：高价值复杂任务走效果更强的主模型，成本敏感或高并发走轻量模型；Embedding 和 Rerank 用专门模型，不和对话模型混用。主模型超时要不要回退备模型、不同租户能不能绑定不同套餐，都属于模型治理。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>讲到这层，考虑的是平台如何长期管理模型。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>模型选型的本质是长期运营决策：看效果、成本、合规等维度，并按能力分层路由。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>多维选型 / 闭源与开源 / 分层路由 / 模型治理</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "怎么科学评估一个模型比另外一个模型更好？",
+          "a": "<p class=\"md-p\">我不会先跑 benchmark，而是先定义“好”，通常分四层：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>效果层</b>：正确率、稳定性、推理能力、遵循指令能力、工具调用成功率、格式合规率。</li><li><b>体验层</b>：时延、流式输出体验、多轮一致性、拒答策略是否合理。</li><li><b>成本层</b>：单次调用成本、吞吐、GPU 资源占用。</li><li><b>安全与治理层</b>：幻觉率、敏感信息泄露风险、权限越界和越狱抵抗能力。</li></ol></div>\n<p class=\"md-p\">工程化一定同时做离线和在线。离线要准备覆盖核心场景的数据集，包括标准答案、人工打分规则、异常样本和边界样本。在线更看真实用户采纳率、转人工率、复问率、投诉率、时延和成本。通用榜单更强，不代表在你的业务里一定更好。</p>\n<p class=\"md-p\"><i>适用场景</i>：任务要拆成问答、摘要、结构化输出、工具调用、多轮一致性，再看每个维度谁强谁弱。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>最容易把所有问题压成一个总分。线上决定体验的，往往不是平均分最高的模型，而是关键链路上最合适、最可控、最能承担成本约束的那个。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>通用榜更强就一定更好吗？</b></p><p class=\"md-p\">不一定。比如某个模型写作文很强，但业务更看重 JSON 稳定性、工具调用成功率和成本，它未必最优。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>评估模型的本质是先定义“好”，再按效果、体验、成本、治理做离线与在线对照。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定义好 / 四层指标 / 离线加在线 / 拆子维度</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "memory benchmark 如何设计？",
+          "a": "<p class=\"md-p\">评测对象是记忆能力时，我不会只看单轮问答对不对，而会拆成写入、存储、召回、更新、冲突处理和最终任务收益。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>写入</b>：用户显式说出的长期偏好能不能被正确写入。</li><li><b>召回</b>：多轮对话后关键事实能不能被稳定召回。</li><li><b>更新</b>：新信息来了以后，旧记忆能不能正确更新。</li><li><b>冲突</b>：冲突信息出现时，会不会把推断污染成事实。</li><li><b>任务收益</b>：这些操作最终有没有提升任务成功率，而不只是记住了一些句子。</li></ol></div>\n<p class=\"md-p\">工程化时同时做离线评测和线上观测。离线可以人工构造多轮样本、时间跨度样本、冲突样本和跨会话样本，检查不同阶段的记忆链路是否稳定。线上更关注真实用户里的记忆命中率、误召回率、人工纠错率、跨轮连续性，以及对最终完成率的影响。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>memory benchmark 要看这套记忆系统能不能在真实任务里稳定写对、取对、改对、用对。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>memory benchmark 要评完整链路：写入、存储、召回、更新、冲突处理和最终任务收益。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>完整记忆链路 / 五类场景 / 离线样本 / 线上观测</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "记忆主要用哪些量化指标评估？",
+          "a": "<p class=\"md-p\">我会把记忆链路拆段看，同时看链路指标和结果指标：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>召回层</b>：当前 query 下相关记忆有没有取回、无关内容有没有混进来。常见指标是 Recall@K、Precision@K、命中率、误召回率。</li><li><b>更新层</b>：写入延迟、更新延迟、覆盖成功率、版本冲突率。</li><li><b>质量层</b>：冲突率、过期率、跨轮一致性、事实污染率、用户纠错率。</li><li><b>业务层</b>：任务成功率、复问率下降、个性化采纳率、人工接管率。</li></ol></div>\n<p class=\"md-p\">有的系统写入没问题、召回错了；有的召回没错、冲突更新做坏了；也有各层都做对了，但对任务成功没有实际帮助。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只盯一个总分，容易出现离线命中很好看，线上体验却没有明显提升。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>记忆评估的本质是拆开看召回对不对、更新快不快、冲突多不多、最终值不值。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>召回层指标 / 更新层指标 / 质量层指标 / 业务结果指标</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "基座模型怎么选？应用开发里的评测集怎么确定？",
+          "a": "<p class=\"md-p\">我一般先定义业务目标，再反推样本和指标。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>基座选型</b>：同时看效果、成本、时延、格式稳定性、工具调用能力、隐私要求和部署方式。</li><li><b>评测集</b>：先覆盖核心业务场景，再补异常样本、边界样本、低频高风险样本和真实用户问题改写样本。</li><li><b>按任务定指标</b>：</li></ol></div>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>任务</th><th>更看什么</th></tr></thead><tbody><tr><td>问答</td><td>正确率、引用一致性、拒答质量</td></tr><tr><td>工具调用</td><td>参数正确率、成功率、异常回退</td></tr><tr><td>生成</td><td>结构稳定性、人工评分</td></tr></tbody></table></div>\n<p class=\"md-p\"><i>适用场景</i>：评测集要能代表真实业务分布，并把关心的 bad case 覆盖进去。评测集不是越大越好。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>选型与评测集的本质是先定业务目标，再反推模型约束、样本覆盖和分任务指标。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定业务目标 / 选型看多约束 / 样本分层覆盖 / 按任务定指标</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "意图识别一般怎么做？如果简历里写了这块，面试里常会追哪些指标？",
+          "a": "<p class=\"md-p\">我从定义、实现、职责三条线讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>意图体系与边界</b>：先看是单标签、多标签，还是主意图加槽位抽取。</li><li><b>实现方式</b>：规则、传统分类模型、Embedding 检索，或 LLM 分类。真实系统常是规则兜底 + 轻量模型高频路由 + LLM 处理模糊边界。</li><li><b>链路职责</b>：做路由分发、工具选择前置筛选，还是工作流入口判断。</li></ol></div>\n<p class=\"md-p\">指标至少四层：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>离线分类</b>：accuracy、precision、recall、F1；更关键的是混淆矩阵，看哪些意图最容易打混。</li><li><b>线上链路</b>：错误路由率、转人工率、复问率、工具误调率。</li><li><b>置信度治理</b>：低置信度时追问、回退默认流程，或交给更强模型复判。</li><li><b>口径设计</b>：命中率是 top1 还是 topK、是否按主意图算对、槽位缺失算不算错。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只讲 F1 不够，要把“分类正确”和“业务链路是否受益”分开。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>意图识别分三层：先定体系和边界，再选实现方式，最后明确它在链路上的职责。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>体系与边界 / 实现方式 / 链路职责 / 四层指标</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "单 Agent 和 Multi-Agent 系统一般分别怎么评测？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>单 Agent</th><th>Multi-Agent</th></tr></thead><tbody><tr><td>评什么</td><td>一个执行体围绕目标能否稳定做完事</td><td>在单 Agent 指标之外再评协作本身</td></tr><tr><td>核心指标</td><td>任务成功率、工具调用成功率、参数正确率、平均步数、超时率、单次成本、人工接管率</td><td>任务拆分是否合理、子任务路由正确率、跨 Agent 传递信息丢失率、冲突率、重复协作率、协商轮数、总 token 成本、端到端时延</td></tr><tr><td>链路拆分</td><td>有 RAG、Tool Use、结构化输出时，再看召回质量、引用一致性、格式合规率、失败恢复效果</td><td>协作指标叠在这些单体指标之上</td></tr><tr><td>系统收益</td><td>单体执行质量</td><td>拆开后任务成功率有没有涨，还是只是链路更长、成本更高、观测更复杂</td></tr><tr><td>适用场景</td><td>围绕单条任务链看闭环</td><td>要判断协作有没有创造净收益</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>单 Agent 更偏单体执行质量，Multi-Agent 还得评估协作本身有没有净收益。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>单 Agent 评测看一条任务链能否稳定做完，Multi-Agent 还要看协作有没有净收益。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单体执行质量 / 链路再拆分 / 协作层指标 / 系统级净收益</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "做 Agent 评测时，为什么不能只看最终答对率？",
+          "a": "<p class=\"md-p\">Agent 是长链路系统，最终答对率看不到过程好不好。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>为何不够</b>：答对了，可能是检索做得好，也可能只是碰巧猜对。失败了，也可能是工具超时、参数填错、路由错了、回退没做好，不一定是模型不行。只盯最终正确率，很难知道问题出在规划、检索、工具、状态管理还是运行时治理。</li><li><b>过程层</b>：步骤成功率、工具误调率、参数错误率、重复动作率、重试率、超时率、成本。</li><li><b>结果层</b>：任务完成率、用户采纳率、复问率、人工接管率。</li></ol></div>\n<p class=\"md-p\">两层一起看，评测才能指导优化，避免只在结果上做模糊归因。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>最终答对率只是结果层，Agent 长链路里对错都可能出在过程的不同环节。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>结果看不到过程 / 过程指标 / 结果指标 / 指导分层优化</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-3",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "推理、性能与部署",
+      "number": "8 问",
+      "items": [
+        {
+          "q": "为什么大模型推理通常是 Memory Bound，而不是 Compute Bound？GPU 显存主要被什么占住了？",
+          "a": "<p class=\"md-p\">大模型推理很多时候是数据搬不动。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>decode</b>：一次只生成很少几个 token，单步计算量不一定特别夸张，但每一步都要把模型参数、KV Cache 和中间结果从显存里读出来。GPU 算子还没完全跑满，显存带宽先成瓶颈，所以推理常说偏 Memory Bound。</li><li><b>显存四块</b>：模型参数，本体越大占得越多；KV Cache，上下文越长、并发越高涨得越快；激活值和临时 workspace，prefill 阶段尤其明显；框架和通信缓冲。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>模型虽然能放下，上下文一长、并发一上来，KV Cache 会把显存吃光，上线能力往往卡在这里。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>推理偏 Memory Bound 的本质是 decode 算量不大，却反复搬运参数和 KV Cache，带宽先成瓶颈。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>数据搬不动 / decode 带宽瓶颈 / 显存四块 / KV Cache 吃满</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "KV Cache 是什么？为什么它能提升推理效率？Prefix Cache 和 KV Cache 的区别是什么？",
+          "a": "<p class=\"md-p\">自回归生成时前面的 token 不会变。若每生成一个新 token 都把历史全部重算，代价很高。KV Cache 把历史 token 在每一层 Attention 里算出的 Key 和 Value 留下，后续只算新 token 对历史缓存的注意力。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>KV Cache</th><th>Prefix Cache</th></tr></thead><tbody><tr><td>层次</td><td>当前这次会话里，已算过的历史状态留着继续用</td><td>多个请求共享同一段前缀时，直接复用那段已算好的结果</td></tr><tr><td>复用范围</td><td>偏单请求内</td><td>偏跨请求</td></tr><tr><td>典型收益</td><td>推理速度明显提升</td><td>系统 Prompt、公共提示词、固定 few-shot 前缀相同时，把公共 prefill 成本摊掉</td></tr><tr><td>条件与代价</td><td>用显存换时间；上下文越长、并发越高、层数越多，缓存涨得越快，显存常先被顶满</td><td>不是所有请求都能命中；公共前缀稳定、模板复用高、Tokenizer 和模型版本一致时收益才明显</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>这层取舍会接到 prefill/decode、Memory Bound、连续批处理，以及缓存命中治理和会话管理。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>Prefix Cache 上线后难点在哪？</b></p><p class=\"md-p\">难点往往是保证复用安全且可控：不同租户、不同权限上下文、不同 Prompt 版本不能乱共用同一份缓存。命中率很低时，缓存管理本身还可能带来额外开销。它适合作为平台优化点，前提是模板稳定、命中可观、治理到位。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>KV Cache 的本质是用显存换时间：缓存每层历史 Key 和 Value，避免自回归时整段重算。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>缓存历史KV / 单请求复用 / 跨请求前缀 / 显存与命中条件</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "长上下文 KV Cache 碎片化怎么解决？",
+          "a": "<p class=\"md-p\">长上下文里 KV Cache 不只是占得大，还有分配和回收不连续，显存碎片越来越多。</p>\n<p class=\"md-p\">多请求并发、会话长度差异大、continuous batching 动态插入和结束时，如果缓存按连续大块申请，容易出现前面释放一小块、后面又申请不到合适连续空间：总显存还够，却放不下新请求。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>block / page 化</b>：不依赖一整段连续显存。Paged Attention 把缓存拆成固定大小的块，用块表映射逻辑序列和物理显存位置，分配、回收和复用更灵活。</li><li><b>配套治理</b>：prefix 复用、冷热分层、eviction、会话级回收，以及和连续批处理协同调度，减少碎片和无效占用。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：变长会话、高并发、动态插入结束的推理服务。关键是把缓存管理从连续内存思维，改成更接近虚拟内存和页式分配。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>解决碎片化不是单纯多买显存。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>长上下文 KV 碎片的本质是连续申请回收跟不上变长会话，总显存够也会放不下新请求。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>碎片从哪来 / block页式管理 / 块表映射 / 回收与协同</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "Continuous Batching 解决了什么问题？Batch 推理和单请求推理的吞吐、延迟怎么权衡？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方式</th><th>怎么跑</th><th>结果</th></tr></thead><tbody><tr><td>静态 batch</td><td>等一批请求凑齐再一起跑</td><td>吞吐高一些，新来的请求可能得排队</td></tr><tr><td>Continuous Batching</td><td>生成过程中动态把新请求插进来，把不同请求的 prefill 和 decode 更平滑地混在一起</td><td>GPU 更满、更不容易浪费</td></tr><tr><td>单请求推理</td><td>不做凑批</td><td>延迟低、体验好，吞吐会吃亏</td></tr></tbody></table></div>\n<p class=\"md-p\">batch 越大，GPU 利用率通常越高，单位时间能服务更多 token，但单个请求排队和等待的时间也更容易变长。线上我不会追一个固定答案，而是按业务目标调：实时对话更看首包和尾延迟，离线批处理更看吞吐和成本。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>吞吐和延迟是拉扯关系，按实时对话或离线批处理的目标来调。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Continuous Batching 的本质是请求不齐时不等凑批，生成中动态插入，让 GPU 更满。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>静态凑批排队 / 生成中动态插入 / 吞吐延迟拉扯 / 按业务目标调</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Prefill 和 Decode 两个阶段的性能瓶颈为什么不一样？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>阶段</th><th>计算形态</th><th>瓶颈</th></tr></thead><tbody><tr><td>Prefill</td><td>先把整段上下文吃进去，一次并行处理很多 token，矩阵乘法规模大</td><td>更偏 Compute Bound，GPU 计算单元更容易被打满；也占显存，主要压力还是大矩阵计算</td></tr><tr><td>Decode</td><td>每次通常只新增一个 token，计算粒度小</td><td>更偏 Memory Bound，每一步都要访问全层参数和历史 KV Cache，数据搬运非常频繁</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>prefill 更像大批量算一遍，decode 更像小步快跑，但每步都要反复翻历史账本。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Prefill 与 Decode 分两层瓶颈：前者并行吃上下文、偏 Compute Bound，后者逐步出 token、偏 Memory Bound。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Prefill 计算瓶颈 / Decode 访存瓶颈</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "模型参数量、上下文长度和并发数之间，显存占用大概是什么关系？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>总账三分</b>：总显存约等于参数显存 + KV Cache 显存 + 激活值与临时缓冲。</li><li><b>参数显存</b>：主要跟模型大小和精度有关，比如 7B、14B、70B，以及用的是 FP16、INT8 还是 INT4。</li><li><b>KV Cache</b>：和层数、hidden size、上下文长度、batch size 一起涨。</li><li><b>并发放大</b>：并发数本质上会把 KV Cache 和部分中间缓冲再放大一轮。</li><li><b>互相挤预算</b>：模型越大，留给上下文和并发的空间越少；上下文越长，单机能承载的并发往往越低；并发越高，支持的上下文长度通常就得收。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>这三者不是互不影响，部署时要在同一张显存预算里做平衡，不能单看某一个数。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>部署时在模型大小、上下文长度和并发数之间做平衡。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>显存占用的本质是参数、KV Cache、激活与临时缓冲一起抢同一张预算。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>总账三分 / 参数显存 / KV Cache / 并发放大 / 互相挤预算</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "张量并行、流水线并行、数据并行分别适合什么场景？单机多卡的主要通信开销来自哪里？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>策略</th><th>怎么切</th><th>适合什么</th></tr></thead><tbody><tr><td>TP 张量并行</td><td>把单层计算拆到多卡一起做</td><td>单卡放不下一个层；大模型推理里常见</td></tr><tr><td>PP 流水线并行</td><td>不同层切到不同卡</td><td>模型特别深、单卡装不下整网</td></tr><tr><td>DP 数据并行</td><td>每张卡一份完整模型，喂不同数据，再同步梯度</td><td>训练更常见；推理时模型单卡能放下，也可做多副本扩容</td></tr></tbody></table></div>\n<p class=\"md-p\">单机多卡的主要通信开销，来自张量并行里的 all-reduce、all-gather 这类张量同步，以及流水线并行里相邻 stage 之间传激活值。NVLink 带宽高、延迟低，更适合大模型多卡协同；PCIe 也能跑，但通信更容易成为瓶颈。同样的并行策略，在 NVLink 机器上和普通 PCIe 机器上的表现会差很多。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>TP拆单层、PP按层切卡、DP按数据复制整模；单机多卡通信主要来自张量同步和相邻stage传激活。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>TP拆单层 / PP按层切卡 / DP同步梯度 / 通信与互联</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "FP16、INT8、INT4 量化分别是什么关系？量化对效果一般有什么影响？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>位宽关系</b>：FP16 还是浮点，只是位宽比 FP32 小，兼顾精度和性能；INT8 和 INT4 是更激进的整数量化，目标主要是省显存、提吞吐、降成本。位宽越低，压缩越狠，信息损失风险也越大。</li><li><b>效果看三件事</b>：量化粒度、校准方式和任务敏感度。普通通用问答很多时候 INT8 损失不大；复杂推理、代码、数学、结构化输出这类对细节更敏感的任务，INT4 更容易掉点。</li><li><b>怎么权衡</b>：评估时要把延迟、吞吐、显存收益和业务效果一起看，在效果、成本和部署复杂度之间找平衡。有些场景只量化权重、不量化激活；训练和推理用的精度策略也可以不一样。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>量化不是越狠越好，也不能只看一句能不能跑。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>再往下通常会连到什么？</b></p><p class=\"md-p\">会连到 QLoRA、推理显存预算、Memory Bound，以及为什么很多线上系统按任务类型选择不同精度档位，而不是全平台统一压到 INT4。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>量化是用更少比特表示权重和激活：FP16仍是浮点，INT8、INT4整数量化更省显存，位宽越低损失风险越大。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>位宽关系 / 粒度校准敏感度 / 收益与效果一起看 / 精度策略可分开</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-4",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "训练、微调与对齐",
+      "number": "14 问",
+      "items": [
+        {
+          "q": "Base、Instruction、Chat 这三类模型本质上有什么区别？为什么 Base 模型还得做 SFT 才适合对话？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>类型</th><th>站在哪一层</th><th>更擅长什么</th></tr></thead><tbody><tr><td>Base</td><td>原始语言建模器</td><td>预测下一个 token，知道很多知识，不天然懂听指令</td></tr><tr><td>Instruction</td><td>Base 上做了指令微调</td><td>按要求回答、总结、抽取、改写</td></tr><tr><td>Chat</td><td>通常在 Instruction 之上再训</td><td>多轮对话、安全、角色一致性，更适合聊天产品</td></tr></tbody></table></div>\n<p class=\"md-p\">还要做 SFT，是因为会续写不等于会配合人类任务。Base 面对一句提问，可能更像补全互联网文本。SFT 是在告诉模型：看到这种输入格式时，应按指令完成任务、遵守输出风格、学会拒答和多轮协作。海量预训练给的是通用知识底座，SFT 给的是任务交互习惯。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Base是预测下一token的语言建模器，不天然听指令；Instruction学会按指令做事，Chat再补多轮、安全和角色一致。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Base续写 / Instruction指令 / Chat多轮安全 / SFT给交互习惯</p>",
+          "leadType": "v9:对比/原理"
+        },
+        {
+          "q": "数据配比、清洗、去重、污染控制为什么这么重要？什么是 Benchmark Contamination？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>数据配比</b>：会直接影响能力边界。代码、数学、通用对话、工具调用数据占比不同，模型最终擅长的事也不一样。训练效果很多时候先输在数据质量，而不是先输在模型结构。</li><li><b>清洗和去重</b>：避免模型把低质量、重复、脏噪声学得太多，浪费训练预算。</li><li><b>Benchmark Contamination</b>：测试集，或和测试集高度重合的内容，混进了训练集。模型分数看起来很高，那不是泛化能力，可能只是见过答案。</li><li><b>怎么识别</b>：去重、近似重复检测、时间切分、严格的 train/test 隔离，以及对公开 benchmark 的数据来源做审计。评测一旦被污染，后面的模型选型和微调决策都会被带偏。</li></ol></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>数据质量常先决定训练效果：配比划能力边界，清洗去重省预算；Benchmark Contamination是见过答案而非泛化。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>配比划边界 / 清洗与去重 / Contamination / 识别与隔离</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "SFT 和 RLHF 分别是什么？有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>SFT</th><th>RLHF</th></tr></thead><tbody><tr><td>是什么</td><td>监督微调：用高质量指令数据，教模型遇到这类输入时应该怎么回答</td><td>在 SFT 之后继续做偏好对齐</td></tr><tr><td>监督信号</td><td>标准答案或示范答案</td><td>偏好或奖励</td></tr><tr><td>目标</td><td>学一个明确的输入输出映射，尽量贴近示范分布</td><td>在多个可行答案里，更倾向于人类喜欢的那个</td></tr><tr><td>主要影响</td><td>会不会做、按不按格式做</td><td>答得像不像人、边界收得稳不稳；例如更安全、更有帮助、更符合对话习惯</td></tr></tbody></table></div>\n<p class=\"md-p\">工业界通常先有预训练，再有 SFT，需要时再做 RLHF 或 DPO 这类偏好优化。SFT 先把能力和格式教会，RLHF 在能力之上继续调风格、边界和偏好。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>线上回答不稳定不一定是没做 RLHF。根因若是检索证据差、工具调用链不稳、上下文拼装错，RLHF 只能改善回答风格，未必能补系统链路缺口。要把能力问题、偏好问题、系统问题分开看。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>后面通常还会追什么？</b></p><p class=\"md-p\">会继续追 RLHF 的具体流程、奖励模型做什么，以及为什么后来很多团队用 DPO 替代一部分经典 RLHF 链路。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>SFT用示范答案学输入到输出的映射，先教会能力和格式；RLHF用偏好或奖励，在多个可行答案里偏向人更喜欢的。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>SFT学映射 / RLHF学偏好 / 信号形式不同 / 先SFT再偏好</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "RLHF 的完整流程怎么讲？奖励模型在里面起什么作用？DPO 和 RLHF 的思路差别是什么？",
+          "a": "<p class=\"md-p\">我会按三步讲 RLHF：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先做 SFT</b>：让模型先学会基本对话和指令跟随。</li><li><b>收集偏好数据</b>：同一个问题的多个回答里，标出人更喜欢哪一个。</li><li><b>奖励模型加 RL</b>：训练奖励模型给回答打分，再用强化学习优化策略模型，让它更倾向于产出高奖励回答。奖励模型是把人类偏好变成可训练、可打分的近似函数。</li></ol></div>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>路线</th><th>怎么优化</th><th>链路</th></tr></thead><tbody><tr><td>RLHF</td><td>先学一个奖励，再用 RL 去追奖励</td><td>奖励模型 + 强化学习</td></tr><tr><td>DPO</td><td>被偏好的回答概率更高，没被偏好的更低</td><td>不显式跑一整套强化学习，直接拿偏好样本做目标函数，链路更短，工程上也更常见</td></tr></tbody></table></div>\n<p class=\"md-p\"><b>边界</b>：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>口径</b>：口语里常把 RLHF 泛称整套人类反馈对齐流程；狭义更偏奖励模型加强化学习这一步。</li><li><b>奖励模型只是近似</b>：它不是完美真相，设计不好会有 reward hacking 或偏差放大。</li><li><b>DPO 不全面替代 RLHF</b>：它更适合高质量离线偏好数据充足、希望工程链路更短更清晰的场景；若还有更复杂的在线奖励和探索需求，经典 RLHF 仍然有价值。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>口径要说清：广义 RLHF 常被用来指整套人类反馈对齐，狭义只指奖励模型加强化学习这一步。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>RLHF的本质是先SFT、再收偏好、再训奖励并用RL去追；DPO不跑整套RL，直接拿偏好对做目标。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先做SFT / 收集偏好数据 / 奖励模型加RL / 对比DPO / 三条边界</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "PPO、DPO、GRPO 在大模型对齐里分别怎么理解？它们的主要区别是什么？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方法</th><th>链路和信号</th><th>代价与场景</th></tr></thead><tbody><tr><td>PPO</td><td>经典 RLHF 里的强化学习更新器：先有 SFT 模型，再有奖励模型，在线采样回答，按奖励和 KL 约束更新策略</td><td>表达力强，能处理更复杂的奖励设计；链路长、工程成本高、超参数更敏感。适合愿意为复杂奖励和在线优化付成本的场景</td></tr><tr><td>DPO</td><td>不再显式训练奖励模型再跑一轮 PPO，直接用 chosen / rejected 偏好对，让模型更偏向人类喜欢的答案</td><td>工程更短、更直接。适合高质量离线偏好数据已经比较充足、想快速稳定落地</td></tr><tr><td>GRPO</td><td>在一组候选回答内部做相对比较，用组内相对优势更新策略</td><td>常见于 reasoning：同一个 prompt 可采样多条答案，比谁更好、谁更差，比单条绝对打分更自然。适合很难给单条打绝对分、但适合组内相对比较的推理任务</td></tr></tbody></table></div>\n<p class=\"md-p\">更直接的理解是：PPO 偏完整 RLHF，DPO 偏离线偏好优化，GRPO 偏组内相对强化。选哪条路，取决于有没有稳定奖励、有没有高质量偏好数据，以及能不能承担在线采样和强化学习成本。三者没有谁天然更高级，关键看训练目标和工程约束。PPO 更像重武器，DPO 更像轻量工程方案。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>这些方法优化的是更偏向哪类回答，不等于自动补齐基础知识和工具能力。基座本来就不会、评测集有污染、奖励信号本来就歪，再换 PPO、DPO 或 GRPO，也可能把偏差固化得更深。要对齐方法与数据质量、评测体系、系统链路一起看。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会把方法定义、数据形态、工程代价和适用场景一起讲。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>对齐三法差别在链路和信号：PPO靠奖励与KL在线更新，DPO直接优化偏好对，GRPO用组内相对优势。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>PPO在线RL / DPO离线偏好 / GRPO组内相对 / 看数据与成本 / 对齐不是补丁</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "蒸馏的任务目标一般怎么定义？它蒸的到底是什么能力？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>蒸的是行为分布</b>：把教师模型的某类行为分布迁移到学生模型上，让学生在更低成本下尽量复现教师的关键能力。</li><li><b>能力不固定成单一指标</b>：可以是答案质量、推理风格、工具调用习惯、角色扮演稳定性、指令遵循格式，甚至多步规划时的动作偏好。先看最想保住哪类行为。</li><li><b>落地先说清目标</b>：是为了压缩成本、提速部署，还是为了把某个复杂系统里的优质轨迹，沉淀成更稳定的基础能力。</li><li><b>覆盖边界</b>：教师如果本来只是在某个 workflow 里表现好，蒸馏出来的往往也是这个 workflow 下的行为模式，不会自动获得教师模型全部通用能力。迁的是可观测的输出行为，以及部分隐含决策模式。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把蒸馏理解成只是把大模型压成小模型。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>蒸馏的本质是把教师某类行为分布迁到学生，让学生以更低成本复现关键能力，并受数据覆盖和目标定义约束。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>迁移行为分布 / 先定保住哪类 / 目标要说清 / 受覆盖约束</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "直接蒸馏和直接做 RL 有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>蒸馏</th><th>RL</th></tr></thead><tbody><tr><td>能力路线</td><td>向老师学，依赖高质量教师输出或轨迹，让学生逼近这些已有行为</td><td>在环境里试，依赖奖励信号和探索，让模型在交互中学会什么行为更优</td></tr><tr><td>偏重</td><td>模仿和压缩，训练更像监督学习</td><td>搜索和优化</td></tr><tr><td>工程取舍</td><td>链路通常更稳定，样本形态更清楚；上限常受教师能力和蒸馏数据覆盖限制</td><td>潜在上限更高，尤其适合有明确环境反馈、需要超越示范答案的任务；训练更不稳定，更容易受奖励设计、探索噪声和 credit assignment 影响</td></tr><tr><td>适用场景</td><td>把已知好行为沉淀下来</td><td>在可交互环境里继续搜索更优策略；很多系统会先蒸馏打底，再用 RL 补 hard case</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>蒸馏适合沉淀已知好行为，RL 适合在可交互环境里继续找更优策略。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>蒸馏是向教师模仿并压缩已有行为，RL 是靠奖励和探索在环境里搜索更优策略。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>向老师学 / 在环境里试 / 稳定与上限 / 先蒸馏再补</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "reward hacking 是什么？为什么 RL 训练里容易出现？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>讨好奖励函数</b>：模型在利用奖励设计里的漏洞拿高分，真实任务并没有被完成。本来想奖励“答案正确且过程稳健”，它可能学会输出某种固定格式骗过判分器，或者靠重复某些模式刷高奖励。</li><li><b>奖励只是近似</b>：奖励函数只是目标的近似，不是目标本身。奖励定义不完整、judge 模型有偏差、环境反馈可被钻空子时，就容易被利用。</li><li><b>偏差被放大</b>：策略优化会把这些偏差继续放大，所以 RL 训练里更容易看见 reward hacking。</li><li><b>工程上缓解</b>：把奖励拆成多维信号，避免只看单一分数；增加规则校验和人工抽检；引入对抗样本和 hard case 回归；监控高分低质样本；限制策略漂移幅度。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>reward hacking 不是 RL 特有 bug，而是“代理目标偏离真实目标”在强化学习里被放大的典型现象。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>reward hacking的本质是模型学会讨好奖励函数、钻漏洞拿高分，真实任务目标并没有完成。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>讨好奖励函数 / 奖励只是近似 / 偏差被放大 / 工程上缓解</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "rollout 经常全对或全错、奖励特别稀疏时，一般怎么处理？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>拆细终局奖励</b>：尽量引入过程级反馈，比如步骤正确性、格式合法性、工具调用是否成功、阶段目标是否完成。模型不必只有最后一跳才知道自己做得对不对。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：梯度信号变密。<i>适用场景</i>：奖励特别稀疏、终局才有分。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>组内相对比较</b>：同一个 prompt 采多条 rollout，在组内比较优劣，减轻全对全错时单条样本信号太弱。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：不依赖绝对打分也能分出好坏。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>把探索成本先降下来</b>：配合课程学习、难度分层、拒绝采样、行为克隆 warm start，或先用 SFT/蒸馏把基本动作学稳，再进 RL。策略一开始完全不会，直接扔进稀疏奖励环境，探索成本会非常高。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>表面看是打分问题，实质上由奖励塑形、采样策略和初始策略能力一起决定。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>rollout 全对或全错，本质是奖励太稀、梯度太弱，要靠塑形、采样和初始策略一起补。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>过程级反馈 / 组内相对比较 / 课程与热启动 / 先打底再 RL</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "SFT 和 RL 阶段一般怎么联动？为什么很多团队会根据 RL 暴露的问题回补 SFT 数据？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>SFT 打基础</b>：先把格式、常见任务模式、工具调用习惯和基本能力学稳。</li><li><b>RL 找边界</b>：把模型放进更接近真实目标的环境，继续优化策略边界。两段在工业流程里通常不是完全断开的。</li><li><b>失败样本闭环</b>：RL 暴露的失败样本，适合回补进 SFT 或偏好数据。很多错误说明基础数据分布里某类 hard case 覆盖不够；回补往往能更低成本把底座行为先拉稳，再减少 RL 阶段的无效探索。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>SFT 和 RL 不是替代关系，前者负责把能力底盘铺平，后者负责在环境反馈下继续找边界。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>两者联动，通常比孤立做其中一段更有效。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>SFT 铺能力底盘，RL 在环境反馈下找策略边界；失败样本回补 SFT，比两段孤立做更有效。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>SFT 打基础 / RL 找边界 / 失败样本回补 / 降低无效探索</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "微调和高质量 Prompt + RAG/Agent 分别适合什么场景？垂直领域微调的收益曲线通常怎么看？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>问题主要在哪</th><th>我会优先做什么</th></tr></thead><tbody><tr><td>知识不够新、不够全</td><td>RAG</td></tr><tr><td>流程不会走、格式总不稳、工具总乱调</td><td>Prompt 约束、工作流和工具治理</td></tr><tr><td>某类任务上长期、稳定、批量的行为缺口，且靠 Prompt 和外部知识很难补</td><td>微调</td></tr></tbody></table></div>\n<p class=\"md-p\">垂直领域微调的收益通常不是一直线性增长：前期提升明显，后面逐步进入饱和区。数据质量一般时，样本越加越多，边际收益越来越低，甚至开始过拟合。所以我会问新增数据是不是在补 hard case、补分布缺口、补失败样本。</p>\n<p class=\"md-p\">做之前先分层：问题到底在知识、行为、流程，还是系统链路。根因若是检索差、工具差、Prompt 不稳、上下文拼装有问题，钱花在微调上，往往只是把系统问题误包装成模型问题。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>先把问题分层再决定要不要微调，这个判断比单纯背 LoRA / QLoRA 更有工程感。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>知识缺口优先 RAG，流程不稳优先 Prompt 与工具治理；行为缺口长期补不上，微调才更值。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按根因选型 / 微调触发条件 / 收益会饱和 / 先分层再花钱</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "大模型和传统机器学习模型有什么核心区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>传统机器学习</th><th>大模型</th></tr></thead><tbody><tr><td>怎么解决问题</td><td>更依赖人工特征、固定任务定义和明确标签，输入输出边界相对清晰</td><td>更像通用表示和生成底座，靠海量预训练学通用语言或多模态能力</td></tr><tr><td>典型任务</td><td>点击率预估、风险分类、销量预测</td><td>再通过 Prompt、工具、RAG 或微调适配具体任务</td></tr><tr><td>泛化</td><td>往往一个任务训一个模型</td><td>更擅长零样本、少样本、多任务迁移和自然语言交互</td></tr><tr><td>工程特点</td><td>可控、成本稳定、延迟低</td><td>成本、时延、不确定性和治理复杂度更高</td></tr><tr><td>适用场景</td><td>排序、推荐、风控分数、召回粗筛这类高吞吐确定性任务依然很强</td><td>复杂问答、内容生成、智能助手、自然语言交互价值更明显</td></tr></tbody></table></div>\n<p class=\"md-p\">上线时两者经常是协同关系。大模型把很多过去需要单独建模的能力抽成了统一接口。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>这样看比单纯讲 Transformer 更先进更贴近工程实际。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>核心差别是泛化方式：传统模型往往一任务一模型，大模型是通用底座再适配具体任务。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>任务定义不同 / 泛化方式不同 / 成本与可控 / 上线常协同</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "微调里常见的风险有哪些？过拟合、灾难性遗忘和分布偏移分别怎么理解？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>风险</th><th>怎么理解</th><th>容易出现在哪</th></tr></thead><tbody><tr><td>过拟合</td><td>训练集记太死，训练表现很好，上线后泛化变差</td><td>训练看 loss 很好看时</td></tr><tr><td>灾难性遗忘</td><td>新东西学会了，旧本事掉了</td><td>小数据、单领域、训练太猛</td></tr><tr><td>分布偏移</td><td>训练看到的分布和线上真实请求差太远，离线很好看，一落地就掉</td><td>训练分布盖不住线上请求</td></tr></tbody></table></div>\n<p class=\"md-p\">我会做验证集、留线上回放集、保住通用能力基线，并观察上线后是不是开始偏某一类表达、某一类任务、某一类输入格式。模型没学坏，不代表它还适合原来的业务分布。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>三个风险都在说微调不能只盯训练 loss：记住了、忘掉了、或练的分布和线上不一样。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>过拟合 / 灾难性遗忘 / 分布偏移 / 上线怎么看</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "CoT 数据为什么能提升推理能力？它的边界在哪里？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>为什么能提升推理</b>：中间路径被显式写出来，模型更容易学会“先拆步骤，再得结论”。数学、逻辑、规划、多步判断上，稳定性往往明显更好，因为给了中间台阶，而不是逼它一口气跳到答案。</li><li><b>边界</b>：会增加 token 成本和时延；简单任务也强行输出很长 CoT，反而容易引入无意义噪声；有些场景更关注最终结构化结果，不适合把完整推理链直接暴露出来。所以它更适合复杂推理和训练阶段能力塑形。</li><li><b>有效前提</b>：中间步骤本身得有信息量、逻辑要对，而且和目标任务匹配。低质量 CoT 会把模型带偏，让它学会一本正经地展开错误推理。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>关键不是把答案写长，而是高质量推理轨迹和任务适配度。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>线上是不是都要把完整思维链给用户？</b></p><p class=\"md-p\">不代表所有线上场景都要把完整思维链吐给用户；更关注最终结构化结果时，不适合直接暴露完整推理链。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>CoT 的本质是把中间推理显式化，让模型先拆步骤再得结论，靠的是有信息量的轨迹。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>显式中间台阶 / 复杂任务更稳 / 三条边界 / 质量重于长度</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-5",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "参数高效微调",
+      "number": "8 问",
+      "items": [
+        {
+          "q": "LoRA 是什么？为什么它能用比较低的成本完成微调？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>做法</b>：我不把原模型所有权重都改一遍，而是在部分线性层旁边挂小规模低秩矩阵，训练主要发生在这部分增量参数上。直接好处是显存更低、训练参数更少、切任务更灵活。</li><li><b>为什么有效</b>：很多任务适配并不需要把整个大矩阵都重写，有用变化可以被一个受控的低秩更新近似表达。用较小的参数代价，把任务相关能力叠到基座上，所以适合垂域适配、指令微调和资源有限的训练。</li><li><b>边界</b>：它更适合基座能力已经不错时做任务适配。基座本身能力差、任务跨度太大，单靠小规模 adapter 不一定够。</li><li><b>工程价值</b>：基座和任务适配器可以分离管理，于是能接到 QLoRA、adapter merge、多租户多任务切换，也会碰到垂域微调后的通用能力回退。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不宜把它讲成低成本万能解；基座差或任务跨度太大时，小规模 adapter 不一定够。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LoRA的本质是冻结大模型主体，只训练挂在部分线性层旁的低秩增量。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>冻结主体训增量 / 低秩近似任务变化 / 显存少且好切换 / 基座差时不够 / 适配器可分离</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "LoRA 里的两个低秩矩阵一般怎么初始化？",
+          "a": "<p class=\"md-p\">常见做法是把增量权重写成 <code class=\"tok-inline\">ΔW = B * A</code>。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>怎么初始化</b>：一个矩阵按小随机值初始化，另一个初始化为 0，这样一开始 <code class=\"tok-inline\">ΔW</code> 近似等于 0，不会在训练刚开始就把原模型行为大幅打乱。更常见的口径是 <code class=\"tok-inline\">A</code> 随机初始化、<code class=\"tok-inline\">B</code> 零初始化，训练再慢慢把增量学出来。</li><li><b>初始化目标</b>：一开始尽量不破坏基座模型，只让训练逐步学习一个受控的增量更新。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要死记哪个矩阵先置零，要记住初始化是为了先不破坏基座。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>初始化的目标是一开始不破坏基座，让增量从近似零慢慢学出来。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>ΔW=B*A / A随机B置零 / 开训不打乱基座</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "QLoRA 的核心思想是什么？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>做法</b>：把大模型主权重用更低比特表示，尽量把显存压下来；反向更新不直接改这些主权重，只训练 LoRA 那部分低秩增量。这样既保留大模型底座，又把训练门槛降了很多。</li><li><b>工程价值</b>：原本显存吃不下的微调，更容易在有限硬件上落地，适合资源受限团队做实验和垂域适配。</li><li><b>代价</b>：量化误差、训练稳定性，以及某些高精度任务上的效果折损要额外关注。上线前仍要看业务任务是不是对精度特别敏感，省下来的显存预算并不自动等于业务效果够用。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>QLoRA不是边量化边把所有权重都训一遍。量化权重主要负责省显存，真正可训练的还是 LoRA adapter，这是它和普通全量微调最大的区别。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>QLoRA的本质是量化基座省显存，可训练的仍是挂上去的LoRA增量。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>量化主权重 / 只训LoRA / 有限硬件可落地 / 误差与精度代价</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "逻辑推理任务做 LoRA 微调时，秩应该选大还是小？",
+          "a": "<p class=\"md-p\">没有一个放之四海而皆准的固定值，我一般不会一上来就把秩开很大。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>秩变大意味着什么</b>：参数容量更强，表达能力会上去，但过拟合风险、训练成本和对原模型行为的扰动也会更明显。</li><li><b>推理任务更该盯什么</b>：往往不是单纯把秩调大，而是数据质量、推理轨迹质量和评测集覆盖面。</li><li><b>怎么选</b>：秩要和任务复杂度、数据规模、预算一起平衡。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>秩不是越大越好。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>逻辑推理调秩没有固定值，一般不先开很大，要和复杂度、数据、预算一起平衡。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>不先开大秩 / 容量与过拟合 / 数据与评测更关键</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "推理阶段是否一定要做 LoRA 权重 Merge？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>选择</th><th>好处</th><th>适用场景</th></tr></thead><tbody><tr><td>Merge</td><td>部署路径更简单，推理不用再挂一层适配器，某些场景延迟也更稳定</td><td>单任务、长期稳定上线，往往更省事</td></tr><tr><td>不 Merge</td><td>一套基座挂多套 LoRA，切换租户、切换任务或做灰度更方便</td><td>多任务、多租户、频繁切换，保留 adapter 更灵活</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>要不要 Merge 是部署决策，不是算法正确性问题。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>是否Merge是部署决策：单任务长期上线更省事，多租户频繁切换宜保留适配器。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Merge路径更简单 / 不Merge更好切换 / 看单任务或多租户</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "垂域微调导致通用能力下降，通常怎么缓解？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>别让分布过窄</b>：垂域数据之外，保留一部分通用指令数据、通用对话数据或原任务回放样本做混合训练，避免模型被单一领域语气和模式过度拉偏。</li><li><b>控制训练强度</b>：学习率别太猛、轮次别太多、LoRA 容量别一下开太大。</li><li><b>评测两边都看</b>：同时看垂域指标和通用基线，别只盯一个领域分数。</li><li><b>回归集</b>：把通用能力退化样本单独拉出来做回归集，这样能被持续观测和及时回退。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能只靠“感觉模型变窄了”，退化要能被回归集持续观测。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>缓解通用能力下降，先别让训练分布过窄，再控强度，并同时盯通用基线。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>混合通用数据 / 控制训练强度 / 垂域加通用评测 / 退化样本回归集</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "DPO 为什么不需要在线采样？DPO 的数据格式一般是什么样的？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>为什么不在线采样</b>：DPO 直接利用现成的偏好对去优化目标，不需要像经典 RLHF 那样先训练奖励模型，再在线采样、再跑一套强化学习更新。它把“偏好更高的答案概率应该更大”直接写进优化目标，训练链路更短，工程上也更直接。</li><li><b>数据格式</b>：最核心是三元组 <code class=\"tok-inline\">prompt</code>、<code class=\"tok-inline\">chosen</code>、<code class=\"tok-inline\">rejected</code>。同一个输入下两份候选回答，一份是人类更偏好的，另一份相对不那么好。训练目标是提高 <code class=\"tok-inline\">chosen</code> 的相对概率，压低 <code class=\"tok-inline\">rejected</code> 的相对概率。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>DPO 的关键不是字段多复杂，而是偏好标注质量是否稳定。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>DPO不需要在线采样，是因为直接用偏好对优化，不必先训奖励模型再跑强化学习。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>跳过在线RL / 三元组偏好对 / 抬chosen压rejected / 标注质量是关键</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "SFT 的核心流程是什么？SFT 之后常见的 Post-Training 还有哪些？",
+          "a": "<p class=\"md-p\">我按四步讲 SFT：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>定任务边界</b>：先明确要提升对话跟随、结构化输出、工具调用，还是某个垂域能力。</li><li><b>准备高质量指令数据</b>：把 <code class=\"tok-inline\">instruction / input / output</code> 或多轮 <code class=\"tok-inline\">messages</code> 统一成稳定格式。</li><li><b>监督学习</b>：优化 next-token 预测，让模型更像示范答案分布。</li><li><b>验证集和回归集</b>：一定要评测，不然很容易只看到训练 loss 漂亮，却不知道模型是不是学偏了。</li></ol></div>\n<p class=\"md-p\">SFT 之后常见的 Post-Training，往往会继续做偏好对齐，比如 RLHF、DPO，让模型在多个可行回答里更贴近人类偏好；也可能做安全对齐、推理强化、工具调用专项调优或蒸馏压缩。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只看训练 loss 漂亮，不知道模型是不是学偏了。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>SFT 先把“会不会做”教会，后面的阶段继续调做成什么风格、做得多稳、边界怎么收。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>SFT分四步：定边界、做数据、监督训练、做回归；之后再用对齐把风格和稳定性收住。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>定任务边界 / 稳定指令格式 / 监督next-token / 验证与回归 / 后续Post-Training</p>",
+          "leadType": "v9:原理/方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-6",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "AI Infra、评测与治理",
+      "number": "6 问",
+      "items": [
+        {
+          "q": "AI Infra 和普通后端基础设施最大的区别是什么？为什么会需要 Feature Store、Prompt Store、Eval Store？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>普通后端基础设施</th><th>AI Infra</th></tr></thead><tbody><tr><td>管什么</td><td>确定性服务，输入差不多，输出应相对稳定</td><td>概率系统，输入、模型版本、Prompt、工具、检索结果一变，输出就可能变</td></tr><tr><td>怎么看</td><td>接口能不能通</td><td>实验、评测、回放和版本治理</td></tr></tbody></table></div>\n<p class=\"md-p\">这三层存储我理解成三本账：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>Feature Store</b>：管输入特征，以及线上线下一致性。</li><li><b>Prompt Store</b>：管提示词版本、适用范围和回滚。</li><li><b>Eval Store</b>：管评测集、评分结果、指标历史和回归对比。</li></ol></div>\n<p class=\"md-p\">没有这些存储层，谁改了什么、为什么变好或变差、能不能回退，都说不清。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>AI Infra 管的是概率系统：输入、模型版本、Prompt、工具、检索一变，输出就可能变。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>确定性 vs 概率 / 实验与版本治理 / 三本账</p>",
+          "leadType": "v9:对比/原理"
+        },
+        {
+          "q": "为什么 AI 应用里经常要做两级缓存？",
+          "a": "<p class=\"md-p\">AI 应用热点更重、成本也更重。请求里既有高频公共数据，也有用户级、会话级局部热点。所有请求都直接打模型、向量库、外部工具，时延和成本都会很高。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>高频公共数据</b>：系统 Prompt、公共知识片段、热门检索结果、公共工具结果。</li><li><b>局部热点</b>：用户级、会话级数据。</li><li><b>本地缓存</b>：离实例最近，适合极高频、低延迟、可容忍短暂不一致的数据。</li><li><b>分布式缓存</b>：如 Redis，跨实例共享热点，避免每台机器各算各的。</li></ol></div>\n<p class=\"md-p\">常缓存的不只是普通接口结果，还包括 embedding、检索结果、rerank 结果、Prompt 模板、Prefix Cache 元信息，甚至工具调用结果。命中条件比传统 CRUD 更复杂：输入里有自然语言、上下文、模型版本、Prompt 版本、权限范围和用户隔离，不能简单按 URL 或参数哈希。这样做是在成本、时延和一致性之间做更细的分层治理。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>两级缓存是按热点和成本分层：本地扛极高频低延迟，分布式缓存跨实例共享热点。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>两类热点 / 本地缓存 / 分布式缓存 / 命中条件更复杂</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "为什么模型发布要区分离线评测、灰度发布、线上回滚和多版本 AB？",
+          "a": "<p class=\"md-p\">我会把发布分成几步，而不是功能过测就一把切全量：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>离线评测</b>：先筛掉明显退化。</li><li><b>灰度发布</b>：看真实流量下的时延、采纳率、投诉率、成本和异常，再决定要不要全量。</li><li><b>线上回滚</b>：底线。模型、Prompt、路由、工具链任何一环出问题，线上质量都可能快速下滑。</li><li><b>多版本 AB</b>：两个版本同时在真实流量下跑，看出谁在某些场景更一致、谁更贵、谁更容易翻车，别靠拍脑袋选模型。</li></ol></div>\n<p class=\"md-p\">AI 发布体系更像实验平台。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>离线分高不等于线上一定好。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>大模型升级不是普通 jar 包替换：离线分高不等于线上好，要评测、灰度、回滚和 AB。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>离线评测 / 灰度看真实流量 / 回滚是底线 / 多版本 AB</p>",
+          "leadType": "v9:方案/对比"
+        },
+        {
+          "q": "什么是 Data Drift 和 Concept Drift？Shadow Traffic 的价值是什么？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>Data Drift</th><th>Concept Drift</th></tr></thead><tbody><tr><td>变的是什么</td><td>输入分布变了：问题类型、文本长度、语言风格、文档来源和历史训练时不一样</td><td>输入看起来差不多，但标签或业务规则变了，比如以前这个词代表 A，现在业务上改成 B</td></tr><tr><td>直观理解</td><td>喂进来的东西变了</td><td>世界本身变了</td></tr><tr><td>治理</td><td>样本监控、特征分布监控、采样复标和再训练</td><td>业务规则更新、标注更新和评测集重建</td></tr></tbody></table></div>\n<p class=\"md-p\"><b>Shadow Traffic</b>：新模型先吃真实流量，但不真正影响用户，把输出、时延、调用成本和老模型对比，更早发现模型没坏、但环境已经变了。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>漂移分两层：Data Drift 是输入分布变了，Concept Drift 是标签或业务规则变了。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Data Drift / Concept Drift / 治理手段不同 / Shadow Traffic</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "LLM as a Judge 有什么优缺点？生成类评测集和人工标注的一致性为什么难做？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>做法</th></tr></thead><tbody><tr><td>优点</td><td>快、便宜、可扩展，适合大规模初筛、pairwise 对比和格式检查</td></tr><tr><td>缺点</td><td>自己也有偏见、波动和位置偏差，有时被表面文风骗过去</td></tr></tbody></table></div>\n<p class=\"md-p\">生成类评测难，是因为很多题没有唯一标准答案。人工标注会碰到一致性、可操作性、成本三难：规则太细，成本高、推进慢；规则太粗，不同标注员理解会飘；全靠资深标注，质量高但太贵。更现实的是规则模板、关键维度拆分、双标抽检、争议回标。</p>\n<p class=\"md-p\">Judge 本身也要校准和回归。主模型、Prompt、评审维度一换，分数不能默认可比。工程上把 LLM Judge 放在自动初筛和大规模对比，人工兜住高风险样本、争议样本和最终上线决策，并接到 Eval Store 和评测版本治理。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>看到人工评测贵就想用 LLM Judge 完全替代人工，评测体系容易做偏。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>成本和可靠性怎么兼顾？</b></p><p class=\"md-p\">样本分层：高频低风险让 Judge 大规模跑；关键链路、投诉样本、争议样本和上线门禁样本继续保留人工。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LLM as a Judge 适合当评测的一层做初筛，不适合当唯一裁判。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Judge 优缺点 / 生成类难评 / 标注三难 / 样本分层</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "AI 系统里的审计日志一般要记录什么？为什么模型平台需要统一的注册、版本和发布体系？",
+          "a": "<p class=\"md-p\">审计日志至少要能回答五件事：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>谁何时发起了什么请求</b>。</li><li><b>用了哪套资产</b>：哪个模型版本、哪版 Prompt、哪组工具、哪份知识。</li><li><b>系统返回了什么结果</b>。</li><li><b>过程中调用了哪些外部接口</b>。</li><li><b>有没有触发安全拦截、降级、回滚或人工接管</b>。</li></ol></div>\n<p class=\"md-p\">没有这些，出问题后很难追责，也很难复盘是模型、提示词、数据还是工具链出了偏差。</p>\n<p class=\"md-p\">模型平台要统一注册、版本和发布，是同一个道理。传统微服务发版，版本主要对应代码；模型平台发版，版本往往同时包含模型权重、Tokenizer、Prompt、路由策略、工具 schema 和评测记录。统一注册和发布，是给这些资产建资产台账和变更闭环，不然线上会越来越不可控。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>审计要还原一次请求的人、版本、结果、外部调用和拦截；发版是给多类资产建台账。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>审计五件事 / 追责与复盘 / 版本不止代码 / 资产台账</p>",
+          "leadType": "v9:原理/方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-7",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "模型结构、多模态与平台工程",
+      "number": "7 问",
+      "items": [
+        {
+          "q": "MoE 是什么？为什么它能在控制推理成本的同时提升容量？",
+          "a": "<p class=\"md-p\">MoE 也就是专家混合：总参数可以很大、容量更强，但单次前向真正参与计算的参数没那么多，推理成本不会随总参数线性暴涨。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>稠密模型</th><th>MoE</th></tr></thead><tbody><tr><td>计算</td><td>每一层大多数参数都参与计算</td><td>先经路由器，决定当前 token 交给哪些专家</td></tr><tr><td>路由</td><td>无这层选择</td><td>常见 top-k routing，每个 token 只挑少数几个专家</td></tr><tr><td>效果</td><td>容量和单次算力绑在一起</td><td>总容量和单次激活算力部分解耦</td></tr></tbody></table></div>\n<p class=\"md-p\">它省的是单 token 激活成本，系统侧不一定更便宜：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>系统成本</b>：路由、专家负载均衡、跨卡通信、显存占用和部署复杂度都会上来。</li><li><b>路由不稳</b>：有的专家特别忙，有的长期吃不到样本，也就是负载不均和专家塌缩。</li><li><b>多机多卡</b>：通信问题会被放大，难的常常是专家分布、路由稳定性和集群通信。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把它讲成免费变强。单 token 激活更省，不代表整系统一定更便宜。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么很多团队不会只为参数规模上 MoE？</b></p><p class=\"md-p\">选型要看路由、负载均衡、跨卡通信、显存和部署复杂度；推理集群里专家分布和路由稳定性往往比算子本身更难。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MoE 是很多专家里每次只激活一小部分，把总容量和单次激活算力解耦。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>专家混合 / top-k routing / 对比稠密模型 / 三笔额外成本</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "图像理解、OCR、文档解析这些能力一般怎么和 LLM 协同？端到端语音对话系统的关键延迟点在哪？",
+          "a": "<p class=\"md-p\">多模态协同我从两条路讲。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>路径</th><th>做法</th><th>优点</th><th>缺点</th></tr></thead><tbody><tr><td>前置工具</td><td>OCR、版面分析、表格解析、目标检测先把图像和文档变成结构化文本或布局信息，再交给 LLM</td><td>可解释、可替换，可针对 OCR、表格、版面分别优化；工程上更好控</td><td>链路更长，前一个模块出错会把后面一起带偏</td></tr><tr><td>端到端多模态</td><td>图像特征和文本一起编码</td><td>信息损失可能更少，复杂图文理解更自然</td><td>对模型能力、成本、部署和评测要求更高</td></tr></tbody></table></div>\n<p class=\"md-p\">适用场景上，很多系统是原子工具加文本大模型：普通文档走 OCR 加结构化解析，复杂版式、图表或截图理解再交给更强的多模态模型兜底。</p>\n<p class=\"md-p\">端到端语音对话的延迟通常卡在四段：语音采集和分帧、ASR 识别、LLM 推理、TTS 合成。体验最敏感的通常是首包时延，也就是用户说完后多久开始回。中间再夹 RAG、工具调用、网络往返和安全检查，延迟会继续放大。优化要整条链路一起压。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>语音体验经常先坏在首包慢、打断不自然、停顿太多，用户已经觉得不行，尾部答案质量还没先出问题。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多模态协同分两路：前置工具更可控，端到端上限更高；语音延迟卡在四段链路。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>两条协同路径 / 模块化取舍 / 混合兜底 / 语音四段延迟</p>",
+          "leadType": "v9:方案/对比"
+        },
+        {
+          "q": "实时语音 Agent 和文本问答 Agent，在架构设计上最大的差别是什么？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>实时语音 Agent</th><th>文本问答 Agent</th></tr></thead><tbody><tr><td>延迟目标</td><td>首包速度和连续交互感；链路一长，用户会觉得它没在听</td><td>还能接受较长思考链路</td></tr><tr><td>链路形态</td><td>流式分段处理、打断控制、ASR 和 TTS 并行化、状态机更细、短链路优先</td><td>query rewrite、RAG、多次工具调用再整合；深检索、长上下文、多步规划</td></tr><tr><td>系统形态</td><td>低延迟实时系统</td><td>高质量异步推理系统</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>最大差别不在“一个输入是语音、一个输入是文字”，而在延迟目标完全不同。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>差别的本质是延迟目标：语音 Agent 是低延迟实时系统，文本 Agent 是高质量异步推理系统。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>延迟目标不同 / 语音短链路优先 / 文本可做深推理</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "如果要同时支持函数调用、文档检索、联网搜索和多模态输入，统一协议层一般怎么设计？",
+          "a": "<p class=\"md-p\">上层先看到能力元数据：能力类型、输入 schema、权限要求、超时预算、是否可流式。运行时再映射到函数调用、RAG 检索、搜索服务或多模态解析器。</p>\n<p class=\"md-p\">协议层至少四样：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>统一的请求上下文</b>：用户身份、租户、traceId、会话 ID。</li><li><b>统一的能力注册表</b>：描述每个能力能做什么。</li><li><b>统一的结果事件模型</b>：文本片段、工具结果、引用、错误、状态更新。</li><li><b>统一的权限和审计钩子</b>。</li></ol></div>\n<p class=\"md-p\">新增能力时改注册和适配层，主流程不用推倒重来。失败语义也要统一，避免有的超时、有的空结果、有的直接抛异常，上层很难稳定降级。函数调用、检索、搜索、多模态解析的时延、权限和幂等特征不同，抽象要统一，不能假装完全一样。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只统一调用入口不够，失败语义不统一时，编排层很难做稳定降级。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么平台侧通常要单独做能力注册和治理中心？</b></p><p class=\"md-p\">新增能力改的是注册和适配层。协议层统一抽象，同时保留各能力不同的时延、权限和幂等特征，所以注册和治理要单独做。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>统一协议层的本质是能力描述、调用契约和返回事件，新增能力只改注册和适配层。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>能力元数据 / 四件套 / 失败语义 / 保留差异</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "一次用户问题如果要并发调用多个模型和工具，编排层怎么做超时控制和结果合并？",
+          "a": "<p class=\"md-p\">我不会把所有子任务绑成一荣俱荣、一损俱损。先按依赖拆开，没有依赖的并发跑；每个子调用单独设超时、重试和熔断；主流程再定总预算，超过就降级或提前收口。局部超时和整条链路的全局 deadline 都要有。</p>\n<p class=\"md-p\">结果合并分三类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>强依赖结果</b>：缺了就不能答。</li><li><b>增强结果</b>：拿不到也能答，质量会降。</li><li><b>冲突结果</b>：加置信度、来源或仲裁逻辑。</li></ol></div>\n<p class=\"md-p\">这样次要工具变慢，不会把整个请求拖死。搜索慢了，要决定继续等、先流式返回一版，还是降级到已有证据；工具超时了，要决定只丢这个分支，还是整题不能继续。除了 timeout，还要有业务优先级。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>真正难的不是会不会并发，而是在不确定性里做预算管理。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>这和语音、文本以及统一协议层怎么接上？</b></p><p class=\"md-p\">语音 Agent 和文本 Agent 的时延目标不同，统一协议层还要统一错误语义。平台编排通常把 deadline、降级和结果融合独立成一层。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>编排层的本质是预算管理：无依赖并发，局部超时加全局 deadline，超预算就降级或收口。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按依赖拆任务 / 局部与全局超时 / 三类结果合并 / 业务优先级</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "设计一个模型使用量计费系统时，计费维度、对账和防刷机制一般怎么做？",
+          "a": "<p class=\"md-p\">基础维度四类：输入 token、输出 token、模型档位、调用类型。上面还可以叠加图片张数、语音时长、工具调用次数、联网搜索次数、RAG 检索条数和缓存命中。看的是这次请求消耗了哪些平台资源。</p>\n<p class=\"md-p\">对账要对上两套账：平台内部请求账，以及上游模型供应商账单。中间记录 requestId、模型版本、token 用量、重试次数、缓存命中和最终结算金额。</p>\n<p class=\"md-p\">防刷靠租户配额、速率限制、异常模式检测、签名校验、设备或账号画像；可疑请求做验证码、延迟放行或人工审核。</p>\n<p class=\"md-p\">三个边界：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>计费口径和产品口径分开</b>：供应商按 token 计，不代表对客户只能按 token 卖；套餐、赠额、封顶和缓存优惠都会改外部账单。</li><li><b>对账不能只看成功请求</b>：重试、超时、流式中断、部分成功的工具调用都会造成账务歧义，审计字段要细。</li><li><b>防刷也要防程序误用</b>：循环重试、异常客户端不断拉流不消费、批量脚本误打高价模型。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>计费本质上是资源账本加风控系统。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>计费系统的本质是资源账本加风控：按这次请求真实消耗的平台资源记账，不是只乘单价。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>基础四维度 / 叠加资源项 / 两套账对账 / 防刷与三边界</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如果要做一个统一 AI 开放平台，提供模型、知识库、Agent、评测这些服务，功能模块一般怎么拆？",
+          "a": "<p class=\"md-p\">我从七层讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>接入层</b>：API 网关、鉴权、租户和流量治理。</li><li><b>模型服务层</b>：统一封装不同模型和多模态能力。</li><li><b>知识与检索层</b>：文档入库、索引、召回、重排和权限过滤。</li><li><b>Agent 编排层</b>：工作流、工具调用、状态管理和任务执行。</li><li><b>评测治理层</b>：评测集、回放、AB、回归和模型版本对比。</li><li><b>计费与运营层</b>：配额、账单、套餐和风控。</li><li><b>观测与安全层</b>：日志、trace、审计、告警和安全策略。</li></ol></div>\n<p class=\"md-p\">边界清楚之后，模型升级不必重写知识库，Agent 编排不直接侵入计费，对外开放也能按模块授权。</p>\n<p class=\"md-p\">七层是逻辑职责。小团队早期可以一个服务同时做模型路由、知识库检索和简单编排，但要知道先膨胀的是模型治理、知识权限、Agent 编排、评测回放和计费风控。设计关键是先把注册、调用、观测、评测、发布这些横切能力抽稳。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>平台最后拼的不只是模型能力，而是治理能力。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>是不是一开始就要拆成七个独立服务？</b></p><p class=\"md-p\">不要求物理上拆成七个服务，逻辑职责要分清。先膨胀的地方最容易随业务增长耦合和失控。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>统一 AI 开放平台按七层分逻辑职责，越往后越像多能力操作系统，关键是先抽稳横切能力。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>七层职责 / 边界清楚 / 逻辑不必物理拆 / 横切先抽稳</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    },
+    {
+      "id": "ai-模型与评测-8",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · 模型与评测",
+      "title": "Java AI 工程",
+      "number": "3 问",
+      "items": [
+        {
+          "q": "Java 在 AI 平台开发里，相比 Python 的优势和短板分别是什么？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>Java</th><th>Python</th></tr></thead><tbody><tr><td>强项</td><td>并发模型成熟，线程池和连接池好治理，类型系统更清晰，服务化和中间件生态完整</td><td>训练框架、推理优化、数据处理工具、研究代码和新模型 SDK 更早成熟</td></tr><tr><td>适合承接</td><td>网关、编排、计费、审计、任务调度和平台型服务；现有后端已是 Java 时，监控、鉴权、配置中心、灰度更自然</td><td>模型训练和底层推理；推理服务、向量化、数据处理</td></tr><tr><td>适用场景</td><td>把 AI 能力产品化、平台化、服务化</td><td>贴近模型和算法快速迭代</td></tr></tbody></table></div>\n<p class=\"md-p\">常见分工是模型训练和底层推理偏 Python，平台接入、业务编排和治理层偏 Java。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>这是分层协作题。成熟团队把边界切清，不争全用哪种语言。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>后面通常还会追什么？</b></p><p class=\"md-p\">Java 调 Python 服务怎么通信，以及流式响应、背压和取消怎么落地。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Java 与 Python 是分层协作：Java 把 AI 能力产品化、平台化、服务化，Python 贴近模型和算法迭代。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Java 工程化优势 / Python 模型侧生态 / 职责切边界</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Java 调 Python 模型服务时，HTTP、gRPC、消息队列三种方式怎么取舍？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方式</th><th>适合场景</th><th>取舍</th></tr></thead><tbody><tr><td>HTTP</td><td>同步问答、文本生成、RAG 查询等标准请求响应</td><td>最简单，调试和网关接入方便；长流式、双向通信和强约束时通常让给 gRPC</td></tr><tr><td>gRPC</td><td>低延迟流式推理、长连接传输、内部服务高频调用</td><td>性能、双向流和强 schema 更好</td></tr><tr><td>消息队列</td><td>批量 embedding、离线评测、文档解析、长任务编排</td><td>解耦、削峰和异步补偿，避免长任务和不稳定下游绑死在主请求里</td></tr></tbody></table></div>\n<p class=\"md-p\">判断看四点：要不要同步拿结果、要不要流式、是否跨团队跨语言、失败后能不能异步补偿。线上往往组合：用户实时问答走 HTTP 或 gRPC，离线 embedding、评测、文档解析走 MQ，内部高频服务再看是否统一成 gRPC。平台因此经常同时维护同步链路和异步链路。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>取舍不是哪种协议更高级。MQ 也不是低性能替代品，它解决的是别把长任务绑死在主请求里。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>选完协议之后通常还要落到什么？</b></p><p class=\"md-p\">流式响应、背压和取消请求，以及为什么同步链路和异步链路要一起维护。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>三种方式的本质是链路目标不同：同步交互优先 HTTP 或 gRPC，离线和削峰优先消息队列。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>HTTP 同步简单 / gRPC 流与schema / MQ 解耦削峰 / 线上常组合</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "在 Java 里封装模型客户端时，流式响应、背压和取消请求一般怎么处理？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>流式响应</b>：模型一边生成，客户端一边消费，做成事件流，避免等整段拼完再返回。Java 里常用 Reactor、WebFlux、SSE 或 gRPC streaming，把 token、阶段事件、工具状态统一成可订阅流。前端能及时消费，后端也能中途取消。</li><li><b>背压</b>：下游消费跟不上时，不能让上游无限推。靠响应式流控制、缓冲区上限、丢弃策略或节流策略兜底。</li><li><b>取消</b>：不能只停前端展示，还要把 cancel 信号往下游传，让模型调用、检索和工具执行尽快停止。否则用户看不到了，后端还在烧钱。</li><li><b>资源回收和异常传播</b>：前端断开要不要立即 cancel；模型停了之后，检索线程、工具线程、连接池对象和临时缓存有没有一起释放；子工具失败时，是插入错误事件、降级继续，还是整流中断。这些决定是 demo 级流式，还是线上可用的流式。</li></ol></div>\n<p class=\"md-p\">没有背压、取消传播和统一错误事件，用户已经离开，后端仍会长时间占模型连接和线程。这也接到超时预算、统一事件模型和平台编排治理。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>流式体验看起来是前端交互，底层考的是后端资源治理。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>流式不是把结果拆碎发出去，而是一条端到端可中断、可限流、可观测的调用链。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>流式客户端的本质是端到端可中断、可限流、可观测的调用链，要能接流、控流、停流并回收资源。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>事件流边生成边消费 / 背压限制上游 / cancel 向下游传 / 异常与资源回收</p>",
+          "leadType": "v9:原理/方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/模型与评测"
+    }
+  ]
+}

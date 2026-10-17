@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-theory-kernels",
+  "kind": "qa",
+  "module": "ai",
+  "part": "AI 模型与训练原理",
+  "category": "GPU 执行与算子",
+  "title": "GPU 执行与算子",
+  "tags": [
+    "AI 原理",
+    "面试推导"
+  ],
+  "questions": [
+    {
+      "id": "q-own-theory-cuda-gemm",
+      "order": 181,
+      "question": "CUDA GEMM 怎样做 tile 复用并避免同步错误？",
+      "shortAnswer": "先算 shared/register 预算和正确数据依赖，再测访存与计算流水；装得下不等于最快，屏障不能替代完整写入。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "9 CUDA 执行与 GEMM 优化"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法： CUDA 的 grid/block/warp 是什么？GEMM 如何做 shared memory 分块？tile 占多少 shared memory？"
+        },
+        {
+          "type": "paragraph",
+          "text": "核心回答：GEMM 优化围绕复用、合并访存、片上资源与计算流水展开。 CPU launch grid，grid 由 block 组成，block 的线程在 SM 上以 warp 执行；寄存器偏线程局部，shared memory 服务 block 内复用，global memory 容量大但访问成本不同。"
+        },
+        {
+          "type": "paragraph",
+          "text": "从一个输出 tile 看 GEMM：对 C=A×B，先将输出切成 BM×BN tile；沿 K 维每次取 BK，把 A 的 BM×BK 与 B 的 BK×BN 协作搬入 shared memory，再在寄存器中累加 C。这样同一个从 global memory 载入的 A/B 元素，就能被多个乘加复用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "复用之后还要检查数据怎么摆放：global 访问应合并，shared layout 应避免 bank conflict；边界 tile 使用有效位或补零，防止越界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先算 tile 装不装得下：一次缓冲的 shared 预算约 (BM·BK+BK·BN)·元素字节，双缓冲约乘 2，还要加对齐与其他数据。随后检查每 block/SM 的 shared 上限、寄存器、线程数、Tensor Core tile、occupancy 和目标 GPU，才能判断这个 tile 是否合适。"
+        },
+        {
+          "type": "paragraph",
+          "text": "练习时先改变 BK 或缓冲次数，指出内存预算哪一项随之改变，再解释为什么“装得下”仍不能推出“最快”。没有 GPU 型号，就不能报唯一最优 KB 值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "使用矩阵乘加硬件、向量化载入、异步拷贝、计算访存重叠和融合 epilogue 可提升效率，但寄存器/shared 过多可能减少并驻 block。occupancy 高不保证吞吐高，极小矩阵可能受 launch/调度限制。以正确性对照、Nsight 时间线和实际形状基准验证，不拿理论 FLOPs 当结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同步陷阱。 先检查谁需要参与屏障。对 block 屏障，尚未退出且应参与的线程必须按合法、一致的顺序参与同一屏障；非一致分支跳过屏障，或出现相互等待依赖，可能导致错误或死锁。PTX 语义区分 non-exited threads，不能笼统断言某线程 return 就必然卡住其他线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再检查谁负责写数据。提前退出的线程可能漏掉后续计算依赖的 shared-memory 写入；即使屏障完成，也不能证明所需数据已由正确线程生成。普通 block 之间不能靠自旋假定同时驻留，跨 block reduction 应使用多个 kernel、原子方案或合法 cooperative 机制。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-theory-inference-guide",
+          "label": "来源使用与验证边界"
+        },
+        {
+          "entryId": "own-theory-inference-code",
+          "label": "完整 CUDA 与 NumPy：归一化、采样与分页参照"
+        }
+      ],
+      "tags": [
+        "AI 原理"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

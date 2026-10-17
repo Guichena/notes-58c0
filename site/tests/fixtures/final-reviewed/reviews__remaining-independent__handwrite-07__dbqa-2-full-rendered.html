@@ -1,0 +1,40 @@
+
+    
+    <div class="qa-toolbar"><span class="lb">答案显示</span><div class="seg" id="qa-mode">
+      <button type="button" data-m="q" class="" title="只看题目，自测后再翻答案">只看题目</button>
+      <button type="button" data-m="lead" class="" title="先看答题提纲：本质一句 + 要点骨架">先答一句</button>
+      <button type="button" data-m="full" class="on">全部展开</button></div>
+      <button type="button" class="btn ghost" data-act="qa-random">抽一题</button>
+      <span class="grow"></span><span class="stat" id="qa-stat"></span></div>
+    <div class="qa-list" data-mode="full"><div class="qa s0" id="q-1" data-key="dbqa-2:0">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">1</span><div class="qa-q">InnoDB 里每页 10 条，怎么查第 50 万页？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>大偏移分页慢在先扫描并跳过大量记录；线上优先游标，延迟关联只是折中。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>大 offset 先跳过 / 游标 seek / 覆盖索引再回表 / 业务避免深翻页</p></div><div class="qa-rest"><p class="md-p">不能直接写 <code class="tok-inline">limit 4999990, 10</code> 就结束。<code class="tok-inline">limit offset, size</code> 在 offset 很大时，即使走索引，也可能先扫描并跳过前面大量记录；再回表成本更高。问题是这么写为什么不适合线上大表。</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>游标分页</b>：基于主键或唯一有序列的 seek method，拿上一页最后一条 <code class="tok-inline">id</code>，继续 <code class="tok-inline">where id &gt; ? order by id limit 10</code>。连续翻页最友好，复杂度稳定。</li></ol></div>
+<p class="md-p"><i>优点</i>：复杂度稳定。<i>适用场景</i>：连续翻页。</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>覆盖索引定位主键，再回表拿详情</b>。</li><li><b>业务层避免深翻页</b>：限制页数、改成时间游标、搜索后下钻，或者导出走异步任务。</li></ol></div>
+<p class="md-p">现场可以写延迟关联：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="file-label">query.sql</span></div><button class="copy-button md-copy" type="button">复制</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">select o.*
+from orders o
+join (
+    select id
+    from orders
+    order by create_time, id   -- 候选二级覆盖索引 (create_time, id)；实际计划与MVCC可见性访问需验证
+    limit 4999990, 10
+) t on o.id = t.id
+order by o.create_time, o.id;</pre></div></section>
+<p class="md-p">若实际计划使用二级覆盖索引 <code class="tok-inline">(create_time, id)</code>，子查询可减少被丢弃行的完整数据读取；外层按至多10个主键取详情。MVCC可见性检查仍可能访问聚簇记录，不能承诺总共只回表10次或必然更快，须核对实际计划。排序字段就是主键 <code class="tok-inline">id</code> 时，聚簇索引叶子本身就是整行，延迟关联几乎没有收益，应直接用 <code class="tok-inline">where id &gt; ? order by id limit 10</code>。</p><div class="qa-end"><p class="md-p qa-sum"><span class="sx-tag sum">口径</span>更优的方案通常还是游标分页，而不是硬顶超大 offset。</p></div><p class="md-p">页码从1开始，所以第500000页offset=(500000−1)×10=4999990；游标需要上一页真实末行，不能直接把页码/offset当id。原排序为(create_time,id)，若改按id必须业务同意；保持原排序的后续页用 WHERE create_time>? OR (create_time=? AND id>?) ORDER BY create_time,id LIMIT 10，并复用筛选条件。时间假定非NULL且排序键稳定；并发更新/回填需快照或物化结果解决。外层必须显式ORDER BY，JOIN不继承子查询顺序。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-2" data-key="dbqa-2:1">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">2</span><div class="qa-q">深分页为什么慢，核心瓶颈到底是什么？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>深分页贵在跳过：为拿到 10 条，前面可能已扫描并丢弃几百万条候选。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>贵在跳过 / 回表排序再放大 / 改交互往往更合理</p></div><div class="qa-rest"><p class="md-p">核心瓶颈不是返回那 10 条慢，而是为了拿到这 10 条，前面可能已经扫描并丢弃了几百万条候选。贵的是跳过，不是取到。</p>
+<p class="md-p">查询还要回表、排序或者临时表时，成本会继续放大。深分页很多时候也要追问业务：用户是否真的需要自由跳到第 50 万页。很多场景下，改交互比强压数据库更合理。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div></div>
+    
+    <section><h2>同专题其它小节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

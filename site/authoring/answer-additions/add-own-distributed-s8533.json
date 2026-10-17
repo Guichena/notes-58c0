@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s8533",
+  "entryId": "own-mq-tasks",
+  "expectedOriginalHash": "61ff85520eed6dea5df533409231ba2c04fac460bde01aad96b3ab7a7619541e",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.3 单次最多50万件商品的目录上传怎样异步、幂等和可恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "大目录导入应先持久保存输入与任务，再分批幂等处理、保存检查点，完整版本校验后统一激活。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：50万商品一次上传怎么做；失败后从哪里继续；半个目录导入成功能否对外可见。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "单次最多50万件商品，先明确文件格式、逐行更新或全目录替换、读流量与一致性窗口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "受理与上传分离"
+    },
+    {
+      "type": "paragraph",
+      "text": "50万行导入要先受理任务，再异步处理。创建importTask时，记录租户、操作者、导入模式、schemaVersion、requestId和文件声明，返回taskId及受限上传凭证/地址。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件直传对象存储。服务核验大小、校验和、格式和所有权后，才把任务置为READY。一个HTTP请求不应等待50万行全部入库；上传完成只说明输入已受理，不能报告导入成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件不可变版本化，任务引用确切对象版本而非会被覆盖的同名路径；限制单文件字节数、行数、字段长度、压缩膨胀比和解析资源。CSV需处理引号内换行、编码和公式风险；XLSX/PDF等格式使用流式/安全解析，不把恶意文件当可信。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "流式解析、校验和分批提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "解析和入库都要分批，不能把50万商品一次载入内存。解析器顺序读取固定大小buffer，用有限chunk完成校验、转换和入库。校验覆盖必填、类型、SKU唯一范围、枚举、价格单位和关联资源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要审计和重试时，可先写staging表，保存(taskId,rowNo,sku,payloadHash,status,error)。每批业务写入与该批检查点放进同一事务；失败后，只重做没有提交的批次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务主键如(tenantId,sku)，但更新规则仍需版本控制：不允许迟到导入覆盖后来人工修改，可要求expectedVersion、导入生效时间或明确“导入优先”。批内重复SKU先检测并给出确定策略，不能依赖数据库批处理顺序偶然决定最终值。批量大小根据事务日志、锁时长、包大小和内存压测，不背固定1000最佳。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "部分成功和全量原子替换两种契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "若允许逐行/逐批成功，接口暴露total/processed/succeeded/failed与分页错误报告；重试失败行沿用原行身份，成功行不再重复产生副作用。进度已解析不等于已提交，百分比需要按阶段定义；恢复检查点必须指向可安全重新解析的位置，压缩文件随机seek不一定可用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若要求整个目录同时可见，重点是一次切换可见版本，而非让50万行长期占着一个事务。可以先写新catalogVersion，完成全部校验和索引，再用短事务切换activeVersion指针，旧版本延迟回收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查询全过程要绑定同一版本；涉及多个存储的索引，也必须在切换前确认可服务。这样省掉了长事务，却增加了存储和构建时间，不能把它当成免费的全局事务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "调度、取消与选型"
+    },
+    {
+      "type": "paragraph",
+      "text": "以租户/商家公平调度，限制总解析并发和数据库写入速率，在线交易优先。取消停止新的chunk，已提交部分按已声明契约保留或另做补偿；不能承诺任意外部副作用回滚。任务心跳、nextRetryAt、失败原因与文件保留期用于恢复；重复完成通知和worker接管都按版本去重。"
+    },
+    {
+      "type": "paragraph",
+      "text": "高频点查与事务更新可能选关系库/KV，复杂全文检索可以派生搜索索引，分析型OLAP另建投影。选型应基于读写比例、更新冲突、查询形态和恢复要求，不以“50万很大”直接推NoSQL。测试空文件、恰50万/超上限、末行损坏、重复SKU、事务提交后崩溃、对象被替换、并发修改和失败行重试。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mq-bulk-import-atomicity",
+  "targetOrigin": "authored"
+}

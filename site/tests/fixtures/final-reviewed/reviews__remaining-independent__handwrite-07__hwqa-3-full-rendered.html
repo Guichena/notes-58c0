@@ -1,0 +1,125 @@
+
+    
+    <div class="qa-toolbar"><span class="lb">答案显示</span><div class="seg" id="qa-mode">
+      <button type="button" data-m="q" class="" title="只看题目，自测后再翻答案">只看题目</button>
+      <button type="button" data-m="lead" class="" title="先看答题提纲：本质一句 + 要点骨架">先答一句</button>
+      <button type="button" data-m="full" class="on">全部展开</button></div>
+      <button type="button" class="btn ghost" data-act="qa-random">抽一题</button>
+      <span class="grow"></span><span class="stat" id="qa-stat"></span></div>
+    <div class="qa-list" data-mode="full"><div class="qa s0" id="q-1" data-key="hwqa-3:0">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">1</span><div class="qa-q">设计一个线程安全的“批量删除 Map 中某类 value”的功能，怎么做？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>批量删某类 value 用 ConcurrentHashMap 的条件删除：单条安全、遍历弱一致，整批没有大事务原子性。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>不用 HashMap / 条件删除 / 弱一致遍历 / 强一致再加锁</p></div><div class="qa-rest"><p class="md-p"><code class="tok-inline">HashMap</code> 本身不是线程安全的，我不会在它上面硬做批量删除。</p>
+<p class="md-p">语义是：并发下安全地批量删除满足条件的键值对。我优先用 <code class="tok-inline">ConcurrentHashMap</code>，删除用 <code class="tok-inline">remove(key, expectedValue)</code>。remove按equals比较；只有新值不等于观察值才会拒绝删除，equals相等的新一代仍可能被删，防代际ABA需显式版本。</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>单条安全</b>：单次 <code class="tok-inline">remove(key, value)</code> 是线程安全的。</li><li><b>弱一致遍历</b>：允许弱一致遍历，适合高并发下的批量清理。</li><li><b>没有整批原子</b>：它不提供“整批删除像一个大事务那样瞬间生效”的全局原子语义。题目要求强一致批处理时，让所有读写共同遵守外层锁；分段锁须按固定顺序覆盖整批涉及的所有分段才能满足整批原子性。工程上更常见的是优先保证高并发和单条删除语义正确。</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="file-label">Main.java</span></div><button class="copy-button md-copy" type="button">复制</button></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class ConcurrentValueRemover&lt;K, V&gt; {
+    private final ConcurrentHashMap&lt;K, V&gt; map = new ConcurrentHashMap&lt;&gt;();
+
+    public long removeValues(Set&lt;V&gt; valuesToDelete) {
+        Set&lt;V&gt; targets = Set.copyOf(valuesToDelete); // immutable selection; rejects null elements
+        AtomicLong removed = new AtomicLong();
+        map.forEach((key, value) -&gt; {
+            if (targets.contains(value) &amp;&amp; map.remove(key, value)) {
+                removed.incrementAndGet();
+            }
+        });
+        return removed.get();
+    }
+
+    public void put(K key, V value) {
+        map.put(key, value);
+    }
+}</pre></div></section><div class="qa-end"><p class="md-p sx-pit"><span class="sx-tag pit">易错</span>单次条件删除线程安全，不等于整批删除具备大事务那样的全局原子语义。</p></div><div class="sx-fu"><p class="md-p"><span class="sx-tag fu">追问</span><b>如果题目要求强一致批处理呢？</b></p><p class="md-p">让所有读写共同遵守外层锁；分段锁须按固定顺序覆盖整批涉及的所有分段才能满足整批原子性。工程上更常见的仍是优先保证高并发和单条删除语义正确。</p></div><h2 class="md-h md-h2" id="add-own-juc-1512">整批原子删除、异常回滚与代际条件</h2><p class="md-p">原题的 CHM 条件删除按 equals 匹配，只保证单条原子与弱一致遍历。下文增加整批可见性、比较失败不改原表及显式版本条件；分段锁只有覆盖全部相关访问和分片时才可能达到整批契约。</p><h3 class="md-h md-h3">按 value 批量删除和一致快照</h3><p class="md-p">要让“找出所有匹配 value 的条目并一次性删除”对其他访问者呈现原子效果，所有访问必须遵守同一锁或整版快照替换协议。对并发 Map 逐条 remove 只保证每条操作，其他线程仍可能观察到中间状态。</p><p class="md-p">若筛选回调可能失败，而契约要求失败时原表不变，应先在受控范围内计算待提交结果，再一次提交；不能删到一半才发现错误却宣称回滚。返回内部可变 Map 也会让调用者绕过保护。需要复制时成本为 O(n)，不能为了口述简短省略这项代价。</p><p class="md-p">下面完整实现按 value 的整体提交删除、按版本的条件删除以及插入序/访问序快照。值的 equals 若依赖可变外部对象，锁不能冻结那些外部对象；示例要求键和值的比较语义稳定，且拒绝比较回调重新进入同一模块。CHM.remove(key, observedValue) 按相等性匹配，换成 equals 相等的新一代仍可能被删除，真正防代际 ABA 需显式版本。</p><p class="md-p">code/CollectionsLab.java</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">code/CollectionsLab.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.util.*;
+import java.util.concurrent.*;
+
+public final class CollectionsLab {
+    /** All methods share one monitor; batch comparison happens on a private candidate map. */
+    static final class ValueMap&lt;K, V&gt; {
+        private Map&lt;K, V&gt; data = new HashMap&lt;&gt;();
+        private boolean inOperation;
+        private void enter() {
+            if (inOperation) throw new IllegalStateException(&quot;reentrant key/value callback&quot;);
+            inOperation = true;
+        }
+        synchronized void put(K key, V value) {
+            enter(); try { data.put(key, value); } finally { inOperation = false; }
+        }
+        synchronized V get(K key) {
+            enter(); try { return data.get(key); } finally { inOperation = false; }
+        }
+        synchronized int removeValue(V target) {
+            enter();
+            try {
+                Map&lt;K, V&gt; candidate = new HashMap&lt;&gt;(data);
+                int before = candidate.size();
+                candidate.entrySet().removeIf(entry -&gt; Objects.equals(entry.getValue(), target));
+                data = candidate; // Commit only after every comparison succeeded.
+                return before - candidate.size();
+            } finally { inOperation = false; }
+        }
+        synchronized int size() { enter(); try { return data.size(); } finally { inOperation = false; } }
+    }
+    static final class OrderedMap&lt;K, V&gt; {
+        private final LinkedHashMap&lt;K, V&gt; data;
+        OrderedMap(boolean accessOrder) { data = new LinkedHashMap&lt;&gt;(16, 0.75f, accessOrder); }
+        synchronized V get(K key) { return data.get(key); }
+        synchronized void put(K key, V value) { data.put(key, value); }
+        synchronized Map&lt;K, V&gt; snapshot() {
+            return Collections.unmodifiableMap(new LinkedHashMap&lt;&gt;(data));
+        }
+    }
+    record Versioned(long version, String value) {}
+    public static void main(String[] args) {
+        ValueMap&lt;String, String&gt; map = new ValueMap&lt;&gt;();
+        map.put(&quot;a&quot;, &quot;delete&quot;); map.put(&quot;b&quot;, &quot;keep&quot;); map.put(&quot;c&quot;, &quot;delete&quot;);
+        Checks.that(map.removeValue(&quot;delete&quot;) == 2 &amp;&amp; map.size() == 1 &amp;&amp; map.get(&quot;b&quot;).equals(&quot;keep&quot;), &quot;whole-batch deletion by value&quot;);
+        ValueMap&lt;String, Object&gt; throwing = new ValueMap&lt;&gt;();
+        Object broken = new Object() { public boolean equals(Object other) { throw new IllegalStateException(&quot;comparison failed&quot;); } };
+        throwing.put(&quot;a&quot;, &quot;target&quot;); throwing.put(&quot;b&quot;, broken);
+        try { throwing.removeValue(&quot;target&quot;); throw new AssertionError(&quot;expected comparison failure&quot;); }
+        catch (IllegalStateException expected) { }
+        Checks.that(throwing.size() == 2, &quot;failed batch did not commit partial deletion&quot;);
+        ValueMap&lt;String, Object&gt; recursive = new ValueMap&lt;&gt;();
+        recursive.put(&quot;a&quot;, new Object() { public boolean equals(Object other) { recursive.put(&quot;x&quot;, &quot;x&quot;); return true; } });
+        try { recursive.removeValue(&quot;target&quot;); throw new AssertionError(&quot;reentry accepted&quot;); }
+        catch (IllegalStateException expected) { }
+        Checks.that(recursive.size() == 1, &quot;reentrant mutation rejected&quot;);
+        ConcurrentHashMap&lt;String, Versioned&gt; versions = new ConcurrentHashMap&lt;&gt;();
+        Versioned observed = new Versioned(1, &quot;delete&quot;); versions.put(&quot;k&quot;, observed);
+        versions.put(&quot;k&quot;, new Versioned(2, &quot;delete&quot;));
+        Checks.that(!versions.remove(&quot;k&quot;, observed), &quot;version prevents deleting an equal-payload replacement&quot;);
+        for (var entry : versions.entrySet())
+            if (entry.getValue().value().equals(&quot;delete&quot;)) versions.remove(entry.getKey(), entry.getValue());
+        Checks.that(versions.isEmpty(), &quot;weak per-entry deletion example&quot;);
+        OrderedMap&lt;String, Integer&gt; insertion = new OrderedMap&lt;&gt;(false), access = new OrderedMap&lt;&gt;(true);
+        for (OrderedMap&lt;String, Integer&gt; ordered : List.of(insertion, access)) {
+            ordered.put(&quot;a&quot;, 1); ordered.put(&quot;b&quot;, 2); ordered.get(&quot;a&quot;);
+        }
+        Checks.that(new ArrayList&lt;&gt;(insertion.snapshot().keySet()).equals(List.of(&quot;a&quot;, &quot;b&quot;)), &quot;insertion order&quot;);
+        Checks.that(new ArrayList&lt;&gt;(access.snapshot().keySet()).equals(List.of(&quot;b&quot;, &quot;a&quot;)), &quot;access order&quot;);
+        CopyOnWriteArrayList&lt;Integer&gt; cow = new CopyOnWriteArrayList&lt;&gt;(List.of(1, 2));
+        Iterator&lt;Integer&gt; snapshot = cow.iterator(); cow.add(3);
+        List&lt;Integer&gt; old = new ArrayList&lt;&gt;(); snapshot.forEachRemaining(old::add);
+        Checks.that(old.equals(List.of(1, 2)) &amp;&amp; cow.size() == 3, &quot;COW snapshot&quot;);
+        System.out.println(&quot;CollectionsLab OK&quot;);
+    }
+}
+</pre></div></div><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-java-collections/q-own-java-atomic-value-removal">Java 基础：整批删除与回滚契约</a></li></ul><p class="md-p">主例返回long避免计数int回绕；入参集合先作不可变副本，调用方不得在复制期间并发修改，元素比较必须稳定且无副作用。完整CollectionsLab依赖 <a href="#/e/handwrite-56">并发工具专题的Checks.java</a>，与该类放同一默认包。OrderedMap快照仅复制映射结构，不深拷贝键值；稳定非重入的hashCode/equals仍是调用者合同。没有保证OOM等VM错误后的可恢复事务性。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-2" data-key="hwqa-3:1">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">2</span><div class="qa-q">为什么这里不用先遍历 key，再统一删？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>并发下判断和删除的本质，是收成一次原子条件动作，避免时间窗里按旧值误删。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>时间窗会变值 / 原子条件删除 / 条件 remove</p></div><div class="qa-rest"><p class="md-p">并发里先把 key 和 value 读出来、再晚点删，中间有时间窗。刚读到的 value，下一瞬间可能已被别的线程改掉；这时还按旧判断直接删，就会误删本来不该删的新值。</p>
+<p class="md-p">所以判断和删除最好尽量绑成一个原子条件动作。<code class="tok-inline">remove(key, expectedValue)</code> 的价值就在这里：它不是简单少写一行代码，而是并发语义上更可靠。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div></div>
+    
+    <section><h2>同专题其它小节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

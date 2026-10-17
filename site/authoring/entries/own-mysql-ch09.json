@@ -1,0 +1,530 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch09",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 会话 工单 任务和资产的持久化模型",
+  "title": "会话 工单 任务和资产的持久化模型",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s9074",
+      "order": 9074,
+      "question": "预警定位的历史工单文档怎样设计数据库，是结构化还是非结构化？",
+      "shortAnswer": "工单适合用结构化字段承载身份与生命周期，用不可变原文和证据引用保留细节，候选根因与已确认事实分开。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "预警定位的历史工单文档怎样设计数据库，是结构化还是非结构化？"
+        },
+        {
+          "type": "paragraph",
+          "text": "工单适合用结构化字段承载身份与生命周期，用不可变原文和证据引用保留细节，候选根因与已确认事实分开。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：预警定位的历史工单文档怎样设计数据库，是结构化还是非结构化？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "采用结构化骨架加原文证据"
+        },
+        {
+          "type": "paragraph",
+          "text": "结构化incident存tenant、incident_id、service/resource、环境、severity、opened_at/closed_at、status、owner与版本；ticket存工单ID、关联incident、摘要、生命周期及来源；event记录报警/状态变化/操作的发生时间与采集时间。长描述、日志片段、附件保留不可变原文/对象引用与内容hash。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不是只能在“全结构化SQL”和“一大段向量”之间二选一。固定字段支持精确筛选/统计/权限，原文保持细节与取证；结论/root_cause另保存状态、证据引用、确认人/确认时间，候选原因与已确认根因必须分开，不让LLM猜测覆盖工单事实。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "关系与索引服务定位查询"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个事故可有多报警/日志/工单，使用incident_alert、ticket_evidence等关联表；trace_id/log_id、service、资源ID及时间窗帮助关联。时间接近只是候选相关性，不能据此判定因果；依赖拓扑、错误先后与反事实证据进一步验证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常用索引(tenant,service,opened_at,id)、(tenant,status,severity,opened_at)、唯一(tenant,source,source_ticket_id)，证据按incident/trace查询建索引；不为每个字段建一棵树。跨系统ID带namespace，时间存统一标准并保留源偏差，避免不同服务同名资源误合并。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "RAG层与更新"
+        },
+        {
+          "type": "paragraph",
+          "text": "按故障现象、诊断过程、解决方案、复盘段落切块，保留工单版本和段落位置，metadata存service/环境/时间/权限/确认状态；关键词与向量混合找相似历史，先过滤兼容环境与版本再重排。召回旧系统版本的方案只能作为候选，不能自动应用生产。"
+        },
+        {
+          "type": "paragraph",
+          "text": "工单状态/结论更新通过版本事件更新派生索引；附件删除/撤权同步原文、chunk、向量和缓存。正文可重建，结构化主记录和审计事件要满足恢复要求；大日志不直接塞每条checkpoint。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可验证性和代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "验收用已确认case对照原工单/证据，测同名资源隔离、跨tenant拒绝、时间窗边界、重复通知、迟到日志、错误根因更正和撤权；分别衡量候选召回、根因正确性和引用可定位。JOIN/多路索引增加一致性与运维成本，分阶段引入而非全量堆组件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "工单的实际字段、关联键和数据规模未给出，以下按租户隔离的结构化模型举例。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 workorder_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/workorder_schema.sql",
+          "value": "-- Independent incident/ticket evidence model; immutable evidence and explicit verified conclusions.\nCREATE TABLE incident(\n tenant_id BIGINT NOT NULL,incident_id BIGINT NOT NULL,service_name VARCHAR(100) NOT NULL,\n environment VARCHAR(30) NOT NULL,severity INT NOT NULL,opened_at DATETIME NOT NULL,\n status VARCHAR(20) NOT NULL,version BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,incident_id));\nCREATE INDEX ix_incident_service ON incident(tenant_id,service_name,opened_at,incident_id);\nCREATE TABLE ticket(\n tenant_id BIGINT NOT NULL,ticket_id BIGINT NOT NULL,incident_id BIGINT NOT NULL,\n source_name VARCHAR(50) NOT NULL,source_ticket_id VARCHAR(100) NOT NULL,\n description_ref VARCHAR(500) NOT NULL,revision BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,ticket_id),UNIQUE(tenant_id,source_name,source_ticket_id),\n FOREIGN KEY(tenant_id,incident_id) REFERENCES incident(tenant_id,incident_id));\nCREATE TABLE evidence(\n tenant_id BIGINT NOT NULL,evidence_id BIGINT NOT NULL,source_ref VARCHAR(500) NOT NULL,\n source_hash VARCHAR(64) NOT NULL,observed_at DATETIME NOT NULL,collected_at DATETIME NOT NULL,\n PRIMARY KEY(tenant_id,evidence_id));\nCREATE TABLE ticket_evidence(\n tenant_id BIGINT NOT NULL,ticket_id BIGINT NOT NULL,evidence_id BIGINT NOT NULL,\n role_name VARCHAR(30) NOT NULL,\n PRIMARY KEY(tenant_id,ticket_id,evidence_id),\n FOREIGN KEY(tenant_id,ticket_id) REFERENCES ticket(tenant_id,ticket_id),\n FOREIGN KEY(tenant_id,evidence_id) REFERENCES evidence(tenant_id,evidence_id));\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "工单模型应拒绝来源工单身份重复、引用不存在的证据以及跨租户关联；合法外键只能证明关联存在，不能证明候选根因成立。根因的确认仍需要人工或受控规则审查相应证据。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-rag-workflow",
+          "label": "制造业为何把 SOP 和历史案例分路检索？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9138",
+      "order": 9138,
+      "question": "船舶管理系统的数据库怎样建模，轨迹、最新位置和地图聚合怎样关联？",
+      "shortAnswer": "船舶资料、不可变位置事件和最新位置投影应分开，轨迹按观测时间排序，迟到事件不能回退当前位置。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "船舶管理系统的数据库怎样建模，轨迹、最新位置和地图聚合怎样关联？"
+        },
+        {
+          "type": "paragraph",
+          "text": "船舶资料、不可变位置事件和最新位置投影应分开，轨迹按观测时间排序，迟到事件不能回退当前位置。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：船舶管理系统的数据库怎样建模，轨迹、最新位置和地图聚合怎样关联？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "静态主体与不可变位置事件分开"
+        },
+        {
+          "type": "paragraph",
+          "text": "vessel存租户、内部船舶ID、登记标识、名称等低频资料；position_event存来源、来源序号、船ID、观测时间、接收时间、经纬度及可选速度/航向、质量。稳定来源事件唯一键用于重复上报去重；MMSI/登记号的重用/变更应按来源规则建历史映射，不假设任何外部编号永久唯一。"
+        },
+        {
+          "type": "paragraph",
+          "text": "轨迹查询按(tenant,vessel,observed_at,event_id)稳定排序，迟到上报用observed_at落历史，不按received_at改写发生顺序；保留接收时间衡量延迟。经纬度必须声明坐标系/单位，范围校验只能拒绝非法范围，不能证明定位正确。空间查询可比较MySQL SRID明确的POINT/SPATIAL索引，不能认为普通经纬度联合B树等价二维空间索引。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "最新位置与地图热读是派生视图"
+        },
+        {
+          "type": "paragraph",
+          "text": "vessel_latest是每船一个最新有效event指针，用明确事件时间/来源优先级/序号规则条件更新，旧数据可以进入轨迹但不得把当前位置倒退；相同时间位置冲突应按业务可信度处理，不能随机最后写胜出。参考DDL的两个FK只证明事件和船各存在，服务还要验证该event确实属于这艘船。"
+        },
+        {
+          "type": "paragraph",
+          "text": "WebSocket推送携带船ID、版本/序号与事件时间，客户端拒绝旧版；断线补快照/游标而不是以连接活着证明数据新鲜。高频地图视口可建有界网格/地理读模型，网格分辨率随缩放与需求，跨格移动先从旧格移除再加入新格并按事件版本防乱序；不能把分组数误当真实船数。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "轨迹增长与已测约束"
+        },
+        {
+          "type": "paragraph",
+          "text": "历史位置通常远多于船资料，可按时间分区/归档冷层，按船hash分片利于单船轨迹；区域跨船查询则可能扇出，需要独立空间读模型。MySQL分区表对唯一键/外键有约束，示例DDL并未宣称可原样转换为任意分区方案，生产需结合8.4限制重新设计。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 vessel_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/vessel_schema.sql",
+          "value": "CREATE TABLE vessel(\n tenant_id BIGINT NOT NULL,vessel_id BIGINT NOT NULL,registry_id VARCHAR(64) NOT NULL,\n name VARCHAR(128) NOT NULL,PRIMARY KEY(tenant_id,vessel_id),UNIQUE(tenant_id,registry_id));\nCREATE TABLE position_event(\n tenant_id BIGINT NOT NULL,event_id VARCHAR(64) NOT NULL,vessel_id BIGINT NOT NULL,\n source_id VARCHAR(64) NOT NULL,source_seq BIGINT NOT NULL,observed_at BIGINT NOT NULL,\n received_at BIGINT NOT NULL,longitude DECIMAL(9,6) NOT NULL CHECK(longitude BETWEEN -180 AND 180),\n latitude DECIMAL(8,6) NOT NULL CHECK(latitude BETWEEN -90 AND 90),\n PRIMARY KEY(tenant_id,event_id),UNIQUE(tenant_id,source_id,source_seq),\n FOREIGN KEY(tenant_id,vessel_id) REFERENCES vessel(tenant_id,vessel_id));\nCREATE INDEX ix_track ON position_event(tenant_id,vessel_id,observed_at,event_id);\nCREATE TABLE vessel_latest(\n tenant_id BIGINT NOT NULL,vessel_id BIGINT NOT NULL,event_id VARCHAR(64) NOT NULL,\n PRIMARY KEY(tenant_id,vessel_id),\n FOREIGN KEY(tenant_id,vessel_id) REFERENCES vessel(tenant_id,vessel_id),\n FOREIGN KEY(tenant_id,event_id) REFERENCES position_event(tenant_id,event_id));\n-- Application additionally verifies latest event belongs to this vessel and\n-- wins the declared (observed_at, source precedence, source_seq) ordering.\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "船舶事件要检查重复来源序号、跨租户引用、越界经纬度和迟到事件。轨迹按观测时间与稳定事件键排序，实时网格聚合和 WebSocket 推送是另两个派生过程，不能从位置表合法推出它们已经正确。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mq-contracts",
+          "label": "直播埋点与船舶断线重连，怎样逐跳持久 ACK、补缺口并区分上下行？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9261",
+      "order": 9261,
+      "question": "帖子业务计数怎样读取，正文放MySQL、缓存还是对象存储？",
+      "shortAnswer": "帖子计数是有口径和水位的派生值，正文则按版本保存于数据库或对象存储；列表读取要批量、有界并区分缺值和零。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "帖子业务计数怎样读取，正文放MySQL、缓存还是对象存储？"
+        },
+        {
+          "type": "paragraph",
+          "text": "帖子计数是有口径和水位的派生值，正文则按版本保存于数据库或对象存储；列表读取要批量、有界并区分缺值和零。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：帖子业务计数怎样读取，正文放MySQL、缓存还是对象存储？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先定计数语义与权威来源"
+        },
+        {
+          "type": "paragraph",
+          "text": "点赞数、评论数、浏览次数不是同一种数据。点赞数可由有效关系集合推导，评论数需定义是否包括审核中/已删评论；PV按事件数，UV按身份去重及时间窗口。先确定是否允许短暂旧值、回滚、去重及反作弊，不能把Redis INCR的结果默认当所有业务的精准事实。"
+        },
+        {
+          "type": "paragraph",
+          "text": "中小规模可在关系状态变更的同一事务维护统计行，唯一业务键/状态迁移保证重复点赞不多加、重复取消不多减；高热点可用可靠事件+幂等消费者投影/分桶，按版本防乱序并定期与权威状态核对。不能仅对每个重复事件做delta++，也不能靠定时任务掩盖未定义的丢失窗口。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "页面读取要有界且避免N+1"
+        },
+        {
+          "type": "paragraph",
+          "text": "列表先获得授权帖子ID，再批量读缓存计数；未命中项批量回源统计表并异步/受控填充，热点加请求合并、TTL抖动与有界回源。缓存key含租户、计数类型/版本，计数附as_of或投影水位；旧缓存与异步统计的延迟要如实呈现，关键结算不读展示缓存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单实例可MGET，Redis Cluster跨槽多key需按客户端/命令支持分组或pipeline，不能假设任意MGET跨槽可执行。缓存缺值与真实0不同：参考SQL LEFT JOIN得到NULL表示统计尚不可用，不无条件COALESCE成权威零。每次页面全表COUNT会随数据量增大，预计算要承担写与对账成本。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "正文与列表元数据拆分生命周期"
+        },
+        {
+          "type": "paragraph",
+          "text": "post保存作者、标题、状态、body_version、时间；普通大小正文可独立post_body.TEXT以便事务更新和关系鉴权，大文件/富文本附件可放对象存储，库保存不可变object_key、内容hash/长度/版本。列表只读摘要避免搬大字段；全文/向量库保存可重建检索投影，不自动成为正文唯一权威。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对象存储和MySQL不是一笔原子事务：先上传并校验新不可变版本，再事务发布body_version/manifest，失败保留可清理孤儿；读者绑定已发布版本，禁止指向未完成对象。权限收紧/删除覆盖缓存、检索、CDN/对象访问与保留策略；私有内容不能只靠难猜URL。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 post_schema.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/data/code/post_schema.sql",
+          "value": "CREATE TABLE post(tenant_id BIGINT NOT NULL,post_id BIGINT NOT NULL,author_id BIGINT NOT NULL,title VARCHAR(200) NOT NULL,\n status VARCHAR(12) NOT NULL CHECK(status IN('DRAFT','PUBLISHED','DELETED')),body_version BIGINT NOT NULL CHECK(body_version>0),updated_at BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,post_id));\nCREATE TABLE post_body(tenant_id BIGINT NOT NULL,post_id BIGINT NOT NULL,body_version BIGINT NOT NULL,\n body_text TEXT,object_key TEXT,content_hash VARCHAR(64) NOT NULL,\n PRIMARY KEY(tenant_id,post_id,body_version),FOREIGN KEY(tenant_id,post_id) REFERENCES post(tenant_id,post_id),\n CHECK((body_text IS NOT NULL AND object_key IS NULL) OR (body_text IS NULL AND object_key IS NOT NULL)));\nCREATE TABLE post_count(tenant_id BIGINT NOT NULL,post_id BIGINT NOT NULL,likes BIGINT NOT NULL CHECK(likes>=0),comments BIGINT NOT NULL CHECK(comments>=0),\n projection_version BIGINT NOT NULL CHECK(projection_version>=0),as_of BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,post_id),FOREIGN KEY(tenant_id,post_id) REFERENCES post(tenant_id,post_id));\n-- One query can batch several post IDs, with authenticated tenant and access checks.\nSELECT p.post_id,p.title,b.body_text,b.object_key,c.likes,c.comments,c.projection_version,c.as_of\n FROM post p JOIN post_body b ON b.tenant_id=p.tenant_id AND b.post_id=p.post_id AND b.body_version=p.body_version\n LEFT JOIN post_count c ON c.tenant_id=p.tenant_id AND c.post_id=p.post_id\n WHERE p.tenant_id=? AND p.post_id IN (?,?) AND p.status='PUBLISHED';\n-- NULL counters mean unavailable/not built, NOT necessarily authoritative zero.\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "正文版本查询应核对租户、删除状态、版本 JOIN 以及正文文本或对象定位二选一，计数返回明确 watermark。Redis 或对象存储失效时的恢复与对账，必须按各自成功边界处理。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "scenario-feed-system",
+          "label": "Feed 流设计（朋友圈 / 微博时间线）"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9312",
+      "order": 9312,
+      "question": "用户关系的“一主多从”可能指什么，复制副本与多种关系读模型如何区分？",
+      "shortAnswer": "“一主多从”可能指数据库副本，也可能指一份权威关系和多个读模型，必须先明确含义再谈同步与一致性。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "用户关系的“一主多从”可能指什么，复制副本与多种关系读模型如何区分？"
+        },
+        {
+          "type": "paragraph",
+          "text": "“一主多从”可能指数据库副本，也可能指一份权威关系和多个读模型，必须先明确含义再谈同步与一致性。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：用户关系的“一主多从”可能指什么，复制副本与多种关系读模型如何区分？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果没有架构图或明确节点含义，先询问“一主多从”是部署拓扑、关系读模型还是从属账号关系。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "若指数据库部署的一主多副本"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个source承接权威写，多个replica消费binlog维护同一逻辑数据副本，可承载允许旧值的读与故障冗余；关注、取消等冲突在权威写路径处理。多副本并没有把业务数据按用户自动拆成多片，也不是每个副本有不同关系语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "复制接收/持久化/应用有不同位点，异步存在延迟；半同步ACK不代表可SELECT最新。刚关注后需要立刻看到，可读主或等待明确GTID并在等待后建立快照；提升副本需进度校验与旧主隔离。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "若指一份权威边和多个派生查询视图"
+        },
+        {
+          "type": "paragraph",
+          "text": "关注是有向边(follower,followee,state,version)，以唯一边为权威；按follower查关注列表、按followee查粉丝、计数、共同关注/推荐等可以是多种投影，各自有访问索引或分片方式。这里“从”可能表示派生关系视图，而非MySQL复制进程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同事务写边状态与outbox，投影按更大version覆盖并幂等处理，取消用墓碑抵挡迟到关注；不同视图可能暂时不一致，查询要选适用水位/回源策略。严格同时一致则把不变量共置或引入协调，成本不能由一个名词抹掉。关注列表和粉丝列表的正反向分片仍要保持同一有向边身份。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "如何在面试中澄清并作答"
+        },
+        {
+          "type": "paragraph",
+          "text": "先问“一主多从是数据库读写副本，还是关注关系的一份事实源和多个查询模型？”随后画权威写、同步方式、读路径与允许延迟。若原意是一个用户关联多个从属账号/组织，则又是具体实体基数，需另给身份/外键与业务规则；不能把关注关系天然画成单父树。两种架构应分别按各自的写权、进度和可见性协议验收。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-91",
+          "label": "主从复制与读写分离"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s9594",
+      "order": 9594,
+      "question": "任务表怎样表达包含关系、稳定展示顺序和依赖图，并发改顺序与加依赖如何保证正确？",
+      "shortAnswer": "任务包含关系、展示顺序和有向依赖图必须分别建模，重排和防环检查还需在同一并发守卫下完成。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "任务表怎样表达包含关系、稳定展示顺序和依赖图，并发改顺序与加依赖如何保证正确？"
+        },
+        {
+          "type": "paragraph",
+          "text": "任务包含关系、展示顺序和有向依赖图必须分别建模，重排和防环检查还需在同一并发守卫下完成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：任务表怎样表达包含关系、稳定展示顺序和依赖图，并发改顺序与加依赖如何保证正确？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意与假设"
+        },
+        {
+          "type": "paragraph",
+          "text": "问题包含表间包含关系、position 排序和任务依赖。示例限同租户、同容器的有界任务图，不负责真实调度器。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "包含、展示顺序和依赖不能混成一列"
+        },
+        {
+          "type": "paragraph",
+          "text": "task_board是父容器，board_task用(tenant,board,id)主键和同tenant的复合外键指回父容器；一父多子不用给board外键加唯一。删除父容器要明确RESTRICT/逻辑删除/级联政策，外键只保证引用存在，不替代用户权限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "position是业务排序值，SELECT ... ORDER BY position,id给明确全序，id是并列时稳定tie-break。关系表物理存放顺序没有查询合同，即使按自增主键写入也必须ORDER BY。列表展示顺序不表示任务可以按这个顺序执行，更不表达依赖完成条件。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "position如何修改与并发控制"
+        },
+        {
+          "type": "paragraph",
+          "text": "小列表可事务内重排完整排列为0..N-1；验证输入恰好包含该容器全部任务且无重复、无外租户/外容器ID。示例不对position设唯一，允许旧同位置并以id破并列，避免交换两个唯一位置时产生中间冲突。若必须唯一，可事务内用安全临时位置/两阶段重编号，仍需处理整数上界。"
+        },
+        {
+          "type": "paragraph",
+          "text": "大列表可用稀疏整数或有序rank降低搬动范围，但间隔耗尽需重平衡，浮点中点反复插入会耗精度；rank冲突/长度与稳定并列仍需协议。所有重排/任务新增删除先锁同一预先存在board守卫行，检查expected version，再更新和递增；单条position写不能防两人互相覆盖整个顺序。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "关联表存有向边，外键不能阻止多步环"
+        },
+        {
+          "type": "paragraph",
+          "text": "先看一条边的含义：task_dependency(tenant,board,task,prerequisite) 表示 task 依赖 prerequisite。两端复合外键约束同一容器，组合主键防重复，CHECK 防自环，反向索引用来找依赖者。它们仍不能阻止多步环。新增 A→B 前，要沿 B 的已有依赖查能否到达 A；能到就拒绝。深度、节点或边预算超限也应 fail closed，不能把没查完当成没环。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再加入两个并发请求，才能看见为什么校验需要锁：T1 尚看不到 B→A，准备插 A→B；T2 尚看不到 A→B，准备插 B→A。两次无锁检查都通过，合在一起却成环。示例让所有图修改先锁预先存在的 board 守卫，在 RC 下读取完整当前已提交图并检查，把这些修改排成顺序。任何入口绕过守卫，证明就失效。若图跨容器或大到无法承受这个锁域，需要重新设计锁域或可串行化冲突检测，不能宣称一个容器锁可以无限扩展。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java实现及它没有包含的调度器"
+        },
+        {
+          "type": "paragraph",
+          "text": "TaskBoard.java自带完整DDL、排序查询、reorder和depend，每次独占并关闭连接，PreparedStatement绑定，失败回滚，board版本检查避免陈旧意图；新边搜索复杂度O(V+E)，整列表重排O(V)条写，教学上限1000任务/10000边。存在边在当前版本下返回no-op，不重新加版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "version是并发令牌，不是完整业务请求幂等账本；COMMIT应答丢失需读回状态/版本核对，不能盲目把旧expected改新值再重做。代码不实现用户ACL、任务新增删除API、全局request收据、队列分发、状态执行、跨板依赖或外部副作用。真正调度还需在事务中判断所有前置已成功、原子抢占ready任务、租约/fencing及重试幂等；有拓扑边不等于任务已经被正确执行。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整代码示例"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 TaskBoard.java。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/data/code/TaskBoard.java",
+          "value": "import java.sql.Connection;\nimport java.sql.DriverManager;\nimport java.sql.PreparedStatement;\nimport java.sql.ResultSet;\nimport java.sql.SQLException;\nimport java.sql.Statement;\nimport java.util.ArrayDeque;\nimport java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Set;\n\n/** Independent JDBC example. Every graph/order writer MUST lock the same board guard. */\npublic final class TaskBoard {\n    private TaskBoard() {}\n    private static void closeConnection(Connection c,Exception primary) throws SQLException {\n        try {c.close();}\n        catch(SQLException | RuntimeException close) {\n            if(primary==null)throw close;\n            if(primary!=close)primary.addSuppressed(close);\n        }\n    }\n    public static final int MAX_TASKS=1000, MAX_EDGES=10000;\n    public static final class Conflict extends Exception {\n        private static final long serialVersionUID=1L;\n        Conflict(String message) { super(message); }\n    }\n    public static void init(String url) throws SQLException {\n        try (Connection c=DriverManager.getConnection(url); Statement s=c.createStatement()) {\n            s.execute(\"CREATE TABLE task_board(tenant BIGINT NOT NULL,id BIGINT NOT NULL,version BIGINT NOT NULL CHECK(version>=0),PRIMARY KEY(tenant,id))\");\n            s.execute(\"CREATE TABLE board_task(tenant BIGINT NOT NULL,board BIGINT NOT NULL,id BIGINT NOT NULL,position BIGINT NOT NULL CHECK(position>=0),PRIMARY KEY(tenant,board,id),FOREIGN KEY(tenant,board) REFERENCES task_board(tenant,id))\");\n            s.execute(\"CREATE INDEX ix_task_order ON board_task(tenant,board,position,id)\");\n            s.execute(\"CREATE TABLE task_dependency(tenant BIGINT NOT NULL,board BIGINT NOT NULL,task BIGINT NOT NULL,prerequisite BIGINT NOT NULL,PRIMARY KEY(tenant,board,task,prerequisite),CHECK(task<>prerequisite),FOREIGN KEY(tenant,board,task) REFERENCES board_task(tenant,board,id),FOREIGN KEY(tenant,board,prerequisite) REFERENCES board_task(tenant,board,id))\");\n            s.execute(\"CREATE INDEX ix_dependents ON task_dependency(tenant,board,prerequisite,task)\");\n        }\n    }\n    private static void guard(Connection c,long tenant,long board,long expected) throws SQLException,Conflict {\n        if (tenant<=0 || board<=0 || expected<0 || expected==Long.MAX_VALUE) throw new IllegalArgumentException();\n        try (PreparedStatement p=c.prepareStatement(\"SELECT version FROM task_board WHERE tenant=? AND id=? FOR UPDATE\")) {\n            p.setLong(1,tenant);p.setLong(2,board);p.setQueryTimeout(5);\n            try (ResultSet r=p.executeQuery()) {\n                if (!r.next() || r.getLong(1)!=expected) throw new Conflict(\"missing board or stale version\");\n            }\n        }\n    }\n    private static Set<Long> tasks(Connection c,long tenant,long board) throws SQLException {\n        Set<Long> ids=new HashSet<>();\n        try (PreparedStatement p=c.prepareStatement(\"SELECT id FROM board_task WHERE tenant=? AND board=?\")) {\n            p.setLong(1,tenant);p.setLong(2,board);\n            try (ResultSet r=p.executeQuery()) {\n                while (r.next()) { if(ids.size()==MAX_TASKS) throw new IllegalStateException(\"board too large\"); ids.add(r.getLong(1)); }\n            }\n        }\n        return ids;\n    }\n    private static void increment(Connection c,long tenant,long board,long expected) throws SQLException {\n        try (PreparedStatement p=c.prepareStatement(\"UPDATE task_board SET version=version+1 WHERE tenant=? AND id=? AND version=?\")) {\n            p.setLong(1,tenant);p.setLong(2,board);p.setLong(3,expected);\n            if(p.executeUpdate()!=1) throw new SQLException(\"lost guarded version\");\n        }\n    }\n    private static void rollback(Connection c,Exception original) {\n        try { c.rollback(); } catch(SQLException e) { if(original!=e)original.addSuppressed(e); }\n    }\n    /** Complete permutation, not a partially supplied order. Ties in old positions are harmless. */\n    public static long reorder(String url,long tenant,long board,long expected,List<Long> requested,boolean fail)\n            throws SQLException,Conflict {\n        List<Long> order=List.copyOf(requested);\n        if(order.size()>MAX_TASKS || new HashSet<>(order).size()!=order.size()) throw new IllegalArgumentException(\"duplicate/oversized order\");\n        Connection c=DriverManager.getConnection(url);\n        Exception primary=null;\n        try {\n            c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);c.setAutoCommit(false);\n            try {\n                guard(c,tenant,board,expected);\n                if(!tasks(c,tenant,board).equals(new HashSet<>(order))) throw new IllegalArgumentException(\"not a full same-board permutation\");\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE board_task SET position=? WHERE tenant=? AND board=? AND id=?\")) {\n                    for(int i=0;i<order.size();i++) {\n                        p.setInt(1,i);p.setLong(2,tenant);p.setLong(3,board);p.setLong(4,order.get(i));\n                        if(p.executeUpdate()!=1) throw new SQLException(\"task vanished\");\n                    }\n                }\n                increment(c,tenant,board,expected);\n                if(fail) throw new SQLException(\"injected before commit\");\n                c.commit();return expected+1;\n            } catch(SQLException|Conflict|RuntimeException e) {rollback(c,e);throw e;}\n        } catch(SQLException|Conflict|RuntimeException e) {primary=e;throw e;}\n        finally {closeConnection(c,primary);}\n    }\n    /** task depends on prerequisite; true inserts a new edge, false is an existing-edge no-op. */\n    public static boolean depend(String url,long tenant,long board,long expected,long task,long prerequisite,boolean fail)\n            throws SQLException,Conflict {\n        if(task==prerequisite) throw new IllegalArgumentException(\"self cycle\");\n        Connection c=DriverManager.getConnection(url);\n        Exception primary=null;\n        try {\n            c.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);c.setAutoCommit(false);\n            try {\n                guard(c,tenant,board,expected);\n                Set<Long> ids=tasks(c,tenant,board);\n                if(!ids.contains(task)||!ids.contains(prerequisite)) throw new IllegalArgumentException(\"unknown same-board task\");\n                Map<Long,List<Long>> edges=new HashMap<>();int count=0;boolean exists=false;\n                try(PreparedStatement p=c.prepareStatement(\"SELECT task,prerequisite FROM task_dependency WHERE tenant=? AND board=?\")) {\n                    p.setLong(1,tenant);p.setLong(2,board);\n                    try(ResultSet r=p.executeQuery()) {\n                        while(r.next()) {\n                            if(++count>MAX_EDGES) throw new IllegalStateException(\"graph too large\");\n                            long a=r.getLong(1),b=r.getLong(2);\n                            edges.computeIfAbsent(a,key->new ArrayList<>()).add(b);\n                            if(a==task&&b==prerequisite) exists=true;\n                        }\n                    }\n                }\n                if(exists) {c.rollback();return false;}\n                if(count==MAX_EDGES) throw new IllegalStateException(\"edge limit\");\n                Set<Long> seen=new HashSet<>();ArrayDeque<Long> queue=new ArrayDeque<>();queue.add(prerequisite);\n                while(!queue.isEmpty()) {\n                    long current=queue.removeFirst();\n                    if(current==task) throw new IllegalArgumentException(\"dependency cycle\");\n                    if(seen.add(current)) queue.addAll(edges.getOrDefault(current,List.of()));\n                }\n                try(PreparedStatement p=c.prepareStatement(\"INSERT INTO task_dependency VALUES(?,?,?,?)\")) {\n                    p.setLong(1,tenant);p.setLong(2,board);p.setLong(3,task);p.setLong(4,prerequisite);p.executeUpdate();\n                }\n                increment(c,tenant,board,expected);\n                if(fail) throw new SQLException(\"injected before commit\");\n                c.commit();return true;\n            } catch(SQLException|Conflict|RuntimeException e) {rollback(c,e);throw e;}\n        } catch(SQLException|Conflict|RuntimeException e) {primary=e;throw e;}\n        finally {closeConnection(c,primary);}\n    }\n    public static List<Long> ordered(String url,long tenant,long board) throws SQLException {\n        try(Connection c=DriverManager.getConnection(url);PreparedStatement p=c.prepareStatement(\"SELECT id FROM board_task WHERE tenant=? AND board=? ORDER BY position,id\")) {\n            p.setLong(1,tenant);p.setLong(2,board);List<Long> result=new ArrayList<>();\n            try(ResultSet r=p.executeQuery()) {while(r.next()) result.add(r.getLong(1));}\n            return List.copyOf(result);\n        }\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "防环不能只测自环，还应覆盖长环、缺失任务、复合外键、跨租户、完整重排、陈旧版本、空列表、1001 个节点和提交前失败。两个反向加边请求若共享同一守卫和 expectedVersion=0，只能一个先成功，另一个看到版本冲突；重读新版本后，反向边应因构成环而被拒绝。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mq-tasks",
+          "label": "长任务何时可以提交唤醒 offset，阶段检查点怎样与后继责任原子交接？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

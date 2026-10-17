@@ -1,0 +1,442 @@
+{
+  "schemaVersion": 1,
+  "id": "own-os-design",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "操作系统与 Linux",
+  "category": "系统设计与生命周期",
+  "title": "系统设计与生命周期",
+  "source": "操作系统与 Linux 面试复习手册",
+  "tags": [
+    "Java后端",
+    "Linux",
+    "版本与边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-os-configuration-notifications",
+      "order": 4714,
+      "question": "配置中心通知怎样选IPC 消费消息一定要死循环查询吗？",
+      "shortAnswer": "配置中心通常是独立服务，跨主机时可用长轮询、SSE/流式RPC/WebSocket等网络socket传输；不能用普通本机共享内存指针跨主机访问。",
+      "commonPhrasings": [
+        "配置中心通知怎样选IPC 消费消息一定要死循环查询吗？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "配置中心通知怎样选IPC 消费消息一定要死循环查询吗"
+        },
+        {
+          "type": "paragraph",
+          "text": "配置中心通常是独立服务，跨主机时可用长轮询、SSE/流式RPC/WebSocket等网络socket传输；不能用普通本机共享内存指针跨主机访问。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先确定双方是否在同一台机器"
+        },
+        {
+          "type": "paragraph",
+          "text": "配置中心通常是独立服务，跨主机时可用长轮询、SSE/流式RPC/WebSocket等网络socket传输；不能用普通本机共享内存指针跨主机访问。客户端主动建立并认证连接，服务端在已有连接上发变化通知，“主动推送”不表示服务端可以任意连接客户端内存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同机独立进程可考虑AF_UNIX、管道/FIFO或明确布局的共享内存；同进程线程之间可直接持有同一个线程安全队列或不可变快照引用。若选服务型MQ，生产者发布配置事件，客户端SDK订阅/长拉取；要明确各订阅者都收到的广播/订阅语义，不能误用多个消费者竞争同一条事件，使部分配置客户端漏更新。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "循环处理不等于忙等轮询"
+        },
+        {
+          "type": "paragraph",
+          "text": "消费者一直循环，不等于一直占着 CPU 空转。空队列时可以阻塞在 take/recv，也可以在非阻塞 socket 上注册 epoll/Selector，由调度机制等待就绪。"
+        },
+        {
+          "type": "paragraph",
+          "text": "客户端库的 push 回调，内部也可能依赖线程和网络等待，并不代表没有循环。高成本的是短间隔反复查空队列；长轮询则让服务端挂起请求，直到有更新或超时再返回。"
+        },
+        {
+          "type": "paragraph",
+          "text": "取消时必须让阻塞等待有退出途径，如关闭自己的通道、可中断等待、超时或协议停止消息；单独写一个布尔标志不会自动唤醒阻塞read。通知回调不要长期占用IO循环，业务更新可转受控执行器，同时约束队列大小和重连频率。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "线程怎样取得所谓地址里的数据"
+        },
+        {
+          "type": "paragraph",
+          "text": "若指同进程对象地址：创建者把队列/快照引用作为构造参数或通过安全发布交给线程，接收方以锁/原子/队列的同步关系读取，不是线程凭空寻找某个裸地址。Java引用是运行时对象访问，不应靠猜物理地址。若是另一个进程的虚拟地址，即使数字相同也不表示同一数据，需共享映射及偏移，或者通过IPC传值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若指配置服务器地址：配置客户端解析端点并连接，经协议认证后接收字节、分帧/反序列化、校验，再把新配置放到本地状态。这里的socket FD或URL与服务器内存地址不是一回事。题目没有进一步定义“这个地址”，因此不能断定面试官唯一预期了哪个底层函数。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整更新链要处理断线与乱序"
+        },
+        {
+          "type": "paragraph",
+          "text": "事件带配置key、单调版本和必要校验信息；可只通知版本，让客户端按权限拉取权威快照，也可推完整小配置。客户端验证结构和业务约束后整体发布不可变快照，拒绝旧版本覆盖新版本。若通知到达与首次读取有竞态，用带版本的订阅/快照协议或订阅后重查避免漏掉中间更新。"
+        },
+        {
+          "type": "paragraph",
+          "text": "断线重连带最后版本或游标，不能重放则全量重拉，辅以低频校验；重复事件幂等，慢客户端要有缓冲上限与重新同步路径。生效失败保留上一可用版本并报告，不能收到MQ消息就算配置已正确生效。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-expiry-correctness",
+      "order": 4744,
+      "question": "后台解封线程失败 扫描器也失败 怎样保证最终解除过期限制？",
+      "shortAnswer": "把封禁状态和到期时间放在可靠存储中，并让“是否仍有效”的判断直接依赖到期条件，后台线程只负责及时清理与派生状态修复，不能成为正确性的唯一支点。",
+      "commonPhrasings": [
+        "后台解封线程失败 扫描器也失败 怎样保证最终解除过期限制？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "后台解封线程失败 扫描器也失败 怎样保证最终解除过期限制"
+        },
+        {
+          "type": "paragraph",
+          "text": "把封禁状态和到期时间放在可靠存储中，并让“是否仍有效”的判断直接依赖到期条件，后台线程只负责及时清理与派生状态修复，不能成为正确性的唯一支点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如持久记录userId、banVersion、expiresAt和状态，访问检查在可信时间与业务时区规则下判断当前版本是否仍被封禁。内存sleep、单个定时线程和本地队列都可能随进程崩溃丢失；如果到期后仍仅因物理记录存在而拒绝访问，后台故障会变成无限延长封禁。对于必须依赖外部系统真正执行解封的业务，则要承认到期判断不能替代外部副作用，并设计持久任务与对账。"
+        },
+        {
+          "type": "paragraph",
+          "text": "扫描器按到期索引分批读取，以条件更新领取任务，写入owner、leaseUntil、attempt及fencing代次。worker崩溃后租约过期可由其他实例重新领取；扫描器自身崩溃后由进程管理与多副本调度恢复，重启从持久游标或到期索引继续，不依赖上次内存位置。游标设计不能跳过租约过期或暂时失败的记录，可按到期分段重扫并保留重试状态。"
+        },
+        {
+          "type": "paragraph",
+          "text": "重复执行应是幂等的状态赋值或条件转换，而不是每执行一次就累加一项不可逆副作用。例如仅当banVersion仍为v且expiresAt已到期时，把该版本改为已失效；旧任务不能解除之后新增的v+1封禁。外部解封API使用稳定任务幂等键并记录请求与结果，超时产生的是结果未知，应先查询或安全重试。一个数据库事务不能自动覆盖另一个服务，必要时用outbox和消费者去重连接两端。"
+        },
+        {
+          "type": "paragraph",
+          "text": "监控最老到期未处理时长、领取与完成速率、重试积压、租约回收、错误率及扫描器心跳，告警目标是用户可观察的过期延迟。退避、并发和每批量都有上限，永久失败进入可追踪的人工处理流程，避免失败任务占满所有线程。测试worker领取后崩溃、外部成功但确认前崩溃、scanner停止、重复与乱序执行、再次封禁及时间偏移；单次定时执行成功不足以证明恢复闭环。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-java-go-orchestration",
+      "order": 4924,
+      "question": "Agent编排服务选Java还是Go 应怎样说明选择理由？",
+      "shortAnswer": "Agent编排通常有长时间外部模型/工具等待、会话状态、SSE流、重试/限流与取消；CPU重任务、向量计算或不可信代码执行可能属于另一层。",
+      "commonPhrasings": [
+        "Agent编排服务选Java还是Go 应怎样说明选择理由？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Agent编排服务选Java还是Go 应怎样说明选择理由"
+        },
+        {
+          "type": "paragraph",
+          "text": "Agent编排通常有长时间外部模型/工具等待、会话状态、SSE流、重试/限流与取消；CPU重任务、向量计算或不可信代码执行可能属于另一层。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "技术选型：Agent 编排服务用 Java 还是 Go？各自优缺点，你的选择理由。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先拆编排与执行的工作负载"
+        },
+        {
+          "type": "paragraph",
+          "text": "Agent编排通常有长时间外部模型/工具等待、会话状态、SSE流、重试/限流与取消；CPU重任务、向量计算或不可信代码执行可能属于另一层。先列吞吐/尾延迟、活跃任务数、内存/CPU预算、依赖SDK、事务/鉴权、可观测性和团队已有基础设施，再比较语言。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若主要瓶颈是模型延迟、费用或下游容量，换语言不能直接消除它。两种语言都需要有界任务/队列、全局和单次deadline、幂等状态机、跨实例恢复与资源收尾，不能说选Go就不必锁或选Java就只能每请求重线程。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Java和Go各有什么工程优势与成本"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java在既有JVM/Spring、数据库/事务、监控与组织代码资产成熟时集成成本较低，静态类型及成熟分析工具有利于大型后端。可选平台线程、有界池、响应式或JDK21虚拟线程等模型；JIT/GC、启动预热、内存预算与库阻塞行为需按实际版本测量，不能把某个旧版pinning限制永久泛化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Go的goroutine、channel/context与网络运行时有利于清晰编排大量IO等待，部署产物常较直接，团队熟悉CloudWeGo等生态时也有优势。代价包括错误/取消传播需明确设计，泛型/库生态适配、GC与内存保留、CGO及外部依赖部署仍要考虑；goroutine不是免费线程，context取消不自动停止不合作函数。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "给条件明确的选择而不是凭空站队"
+        },
+        {
+          "type": "paragraph",
+          "text": "对于Java为主的技术栈，若团队、服务治理和数据层都已成熟，可优先Java编排，隔离执行层按需要采用其他语言或沙箱；理由是降低迁移与故障成本，而非宣称Java必更快。若是Go经验扎实的新服务、依赖适配齐全且实测资源预算更合适，可选Go，并给出取消、状态与调试方案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "对同一正确性契约做小型原型，比较稳态/突发、失败恢复、尾延迟、RSS、冷启动与维护成本，选择需要可回滚的迁移边界。C++ Java Python和Go的并发与运行时差异怎样比较 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn29M1jcynO3hIoeqM9TbW5d)和解释执行和编译执行怎样区分 为什么可能选择Go (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn3qj3ka6dP4hJAHlT9wexVh)已有多语言运行时与AOT/JIT完整说明。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-startup-cache-cleanup",
+      "order": 4950,
+      "question": "客户端启动被清理缓存阻塞 怎样拆掉关键路径又避免删错新数据？",
+      "shortAnswer": "首屏必须读取的索引/版本兼容校验与可延后的过期文件扫描分开；若不清理会读错安全敏感数据，就不能简单把整个步骤丢后台。",
+      "commonPhrasings": [
+        "客户端启动被清理缓存阻塞 怎样拆掉关键路径又避免删错新数据？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "客户端启动被清理缓存阻塞 怎样拆掉关键路径又避免删错新数据"
+        },
+        {
+          "type": "paragraph",
+          "text": "首屏必须读取的索引/版本兼容校验与可延后的过期文件扫描分开；若不清理会读错安全敏感数据，就不能简单把整个步骤丢后台。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "6.客户端启动有一个清理无效缓存的重任务，直接启动阻塞流程，怎么办。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先确认清理是不是启动的必要前置"
+        },
+        {
+          "type": "paragraph",
+          "text": "启动优化先分“必须现在做”和“可以晚点做”。首屏需要的索引、版本兼容校验不能随便推迟；如果不清理会读到错误的安全敏感数据，更不能直接把整个步骤扔后台。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可行时，先按版本或命名空间让旧条目逻辑失效，再在容量预算内异步回收物理文件。逻辑失效本身也要定义清楚规则和回退方式。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测启动时间线，确认慢在目录遍历、元数据stat、解压/校验、数据库事务、同步删除还是锁竞争。首帧、可交互和完整数据就绪是不同指标；只把任务移出计时区并没有减少实际工作。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "后台线程 有界分片和平台生命周期"
+        },
+        {
+          "type": "paragraph",
+          "text": "短期IO清理可放有界后台执行器，CPU校验可分片或CPU池；不要在UI线程启动异步任务后立刻join/get等待。RN的JS线程与原生UI线程各有阻塞风险，Promise包装同步长循环仍阻塞原线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要跨进程重启继续的Android任务可按适用条件选择WorkManager等持久调度，普通内存线程在进程退出后不会可靠继续。持久调度也不承诺立即运行或满足启动强依赖，平台配额/约束需查版本。优先确保首屏必要工作完成，再安排可延后的批次。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "并发清理必须防旧任务删掉新缓存"
+        },
+        {
+          "type": "paragraph",
+          "text": "为缓存条目设置generation/版本和唯一文件名，清理按扫描时见到的旧版本执行，真正删除前核对所有权与版本；写入先写新临时文件再原子发布，不能看到同路径就假定仍是旧文件。可将已确认旧条目原子移入本缓存私有回收区，再由单拥有者清理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "扫描和删除有TOCTOU窗口，路径规范化、禁止越出私有缓存根、符号链接策略及并发打开文件语义要纳入设计；不要递归跟随不可信链接。索引事务/文件写入/删除失败需可重试和幂等，清理日志不记录敏感内容。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "容量 熔断与可验证效果"
+        },
+        {
+          "type": "paragraph",
+          "text": "限制每批文件数/字节/时间，达到启动压力或前台繁忙时让出，磁盘接近耗尽时允许更高优先级但仍保留正确性。维护恢复游标、失败次数与过期判定版本，避免每次启动重扫全部历史；过期缓存空间也要有总上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试空目录、巨量小文件、大文件、写入与清理竞争、重启中断、权限/磁盘错误及版本升级回滚；比较首屏与后台资源/错误率，而非只看主线程耗时。"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    },
+    {
+      "id": "q-own-os-event-loop-ownership",
+      "order": 4984,
+      "question": "为什么不能跨事件循环随意复用数据库池或HTTP连接？",
+      "shortAnswer": "事件循环拥有就绪队列、计时器、任务/Future、transport/protocol及IO注册；异步连接或池可在创建/第一次使用时保存对应loop、锁和Future。",
+      "commonPhrasings": [
+        "为什么不能跨事件循环随意复用数据库池或HTTP连接？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "为什么不能跨事件循环随意复用数据库池或HTTP连接"
+        },
+        {
+          "type": "paragraph",
+          "text": "事件循环拥有就绪队列、计时器、任务/Future、transport/protocol及IO注册；异步连接或池可在创建/第一次使用时保存对应loop、锁和Future。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "事件循环底层陷阱：什么是事件循环（Event Loop）？为什么跨事件循环复用数据库连接池或 HTTP 连接会报错？底层本质是什么？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "资源绑定的不只是一个socket整数"
+        },
+        {
+          "type": "paragraph",
+          "text": "异步连接绑定的不只是 socket，还可能绑定整条等待链。事件循环管理就绪队列、计时器、任务/Future、transport/protocol 与 I/O 注册；连接或池可能在创建或第一次使用时保存对应 loop、锁和 Future。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所以把对象传给另一个 loop，不会自动迁移未完成请求、回调、selector 注册和等待关系。"
+        },
+        {
+          "type": "paragraph",
+          "text": "典型错误是Future attached to a different loop、Event loop is closed，或者请求永远不恢复。不是数据库服务器拒绝“第二个线程”这么简单；普通同步连接也有自己的线程安全契约，但与异步loop亲和性不能混为一谈。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "生命周期和拥有者如何设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "同一应用生命周期在对应loop内创建池/ClientSession，在请求间复用它，在loop关闭前await关闭和收尾。避免模块导入时构造长期异步资源，然后多次asyncio.run生成不同loop；测试框架每例换loop但复用全局池也是常见诱因。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多个loop/线程时各自创建自己的池，或把操作投递到资源拥有者loop并只传普通参数/结果。run_coroutine_threadsafe等跨线程桥接也需要那个loop实际运行，不能在拥有者loop线程用阻塞result等自己。对象是否延迟绑定或已完成Future暂时可读依API，不能据一次未报错宣称任意共享安全。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "官方库实例与修复选择"
+        },
+        {
+          "type": "paragraph",
+          "text": "SQLAlchemy asyncio文档说明默认池的同一AsyncEngine不应跨loop共享；若确需转移应在重用前dispose，或按契约使用NullPool避免复用跨loop连接。NullPool不等于任意正在使用的连接可并发跨loop，它也改变连接复用和性能。"
+        },
+        {
+          "type": "paragraph",
+          "text": "aiohttp说明异步资源生命期应短于loop，Session/connector应在正确loop内创建并在关闭前清理。给对象随便补一个全局Lock不能迁移Future归属；更不该关闭错误检测或重新设置loop属性来绕过一致性。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "示例契约与边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "每轮关闭自有loop并取消原pending Future，不遗留后台任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "生产定位仍要记录库版本、创建点、loop/线程标识、启动关闭钩子和异常栈，在自有测试环境复现；不能把一个SDK的限制推广到所有语言所有连接池。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "loop_ownership.py 完整实现"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "loop_ownership.py",
+          "value": "\"\"\"Demonstrate loop-bound pending Future, not a fake DB/HTTP integration test.\"\"\"\nimport asyncio\n\nasync def wait_foreign(future):\n    try:\n        await future\n    except RuntimeError as exc:\n        assert 'different loop' in str(exc)\n        return 'foreign pending Future rejected'\n    raise AssertionError('foreign pending Future unexpectedly accepted')\n\nasync def local_session():\n    loop = asyncio.get_running_loop()\n    future = loop.create_future()\n    loop.call_soon(future.set_result, 42)\n    assert await future == 42\n\nif __name__ == '__main__':\n    for _ in range(100):\n        owner = asyncio.new_event_loop()\n        try:\n            pending = owner.create_future()\n            assert asyncio.run(wait_foreign(pending)) == 'foreign pending Future rejected'\n            pending.cancel()\n        finally:\n            owner.close()\n        asyncio.run(local_session())\n    print('PASS 100 foreign-pending failures and 100 same-loop successes')\n\n"
+        }
+      ],
+      "tags": [
+        "Linux",
+        "Java后端",
+        "保留原始条件"
+      ],
+      "related": [
+        {
+          "entryId": "own-os-study-guide",
+          "label": "适用范围、复习路线与代码运行边界"
+        }
+      ]
+    }
+  ]
+}

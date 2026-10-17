@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2375",
+  "entryId": "own-mq-tasks",
+  "expectedOriginalHash": "2096c6d3b8465acd81fc997d352b0abe6acb3a81919dce895f1e6531e7eac72f",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.14 信审多轮问答的幂等键怎样同时防重复和串错任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "回复幂等键要绑定具体任务和问题版本，重复回复重放结果，旧问题回复或同键不同内容则拒绝或显式修订。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：多轮信审问答如何幂等；回复怎样对应正确问题；用户两个任务同时进行怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "多轮问答同时存在租户、业务申请、会话、问题版本与回复身份，不能仅用userId加时间戳。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关性身份与操作去重分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个客户可有多个assessmentTask，一项任务可多轮、多问题和重开版本。服务端创建taskId、questionId、questionVersion或turnId，把发送记录及允许回复状态持久关联到已认证tenant/subject；客户回复携带replyToken/消息关联ID，服务端验证它属于当前主体、任务和可回答版本。不能只按最近一条未回答问题猜归属。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等键可采用(tenantId, taskId, questionId, questionVersion, clientReplyId)标识一次回复提交意图，或用服务端签发的submitOperationId映射这些字段。重传相同回复沿用原键；用户真正修改答案生成新操作并按业务版本更新，不把同一userId永久禁止再次回答。具体字段应依据通道稳定messageId能力，不能机械把所有输入hash后失去“新意图”区别。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "提交点和冲突处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一键登记、payload hash/规范化语义、回复持久化、任务状态CAS与下一步outbox同事务。同键同payload返回原结果；同键不同答案拒绝冲突，不覆盖已提交回复。若问题已撤回、版本已变或任务终态，按明确规则拒绝/进入人工复核，不将迟到答案送给另一个问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回复关联、权限校验和防重复，需要分别证明。消费者推进 Agent 时携带 taskId/turnVersion/attempt，用 inbox 去重，旧 attempt 不能覆盖新轮结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型生成的问题文本不能当唯一 ID，两个任务可能问同一句话；每次重试都变化的 traceId，也不能替代业务幂等键。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "恢复与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户点提交后超时，按原operationId查询已保存结果；对方消息送达但ACK丢失时复用消息ID。保留幂等记录至少覆盖渠道最长重投/业务追溯窗口，清理前确保不会把旧回复当新操作；避免把原始敏感回答放进URL/普通日志或可枚举幂等键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试同人两个任务、相同问题文本不同轮、回复乱序、重复webhook、payload冲突、跨租户复用ID、问题改版后旧回复、事务提交回包丢及两实例同时推进。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "12.9 UUID标识用户还是会话，多模块Agent如何传数据并控制开销"
+    },
+    {
+      "type": "paragraph",
+      "text": "UUID只提供标识值，用户、会话与任务由业务键和生命周期区分，模块间传稳定引用能减少上下文复制开销。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：UUID代表用户还是会话；多模块怎样传数据；怎样控制协商开销。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "多模块Agent不必是多Agent；userId、sessionId、taskId和traceId的身份语义必须区分。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ID算法与业务维度是两个问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "UUID只解决标识怎样生成、长什么样，不决定它代表用户还是会话。业务维度要分别命名："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "userId：同一用户跨会话的身份。",
+        "conversationId/sessionId：隔离一段会话上下文。",
+        "taskId：标识一次任务执行。",
+        "messageId：标识一条消息记录。",
+        "operationId：标识业务操作，供重试使用。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "租户维度还要进入唯一范围和授权检查，不能只靠这些ID本身隔离租户。"
+    },
+    {
+      "type": "paragraph",
+      "text": "UUIDv4、UUIDv7等方案的碰撞风险与排序边界应分别评估；随机ID不能替代鉴权，知道sessionId不应就能读取别人的会话。新开会话生成新sessionId不意味着新用户；网络重试应复用原operationId，不能每次生成UUID导致重复副作用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "多模块和多Agent怎样取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果步骤固定、共享目标和权限边界一致，可用单进程/服务中的多个模块，以显式函数接口、DTO和状态机协作。好处是少网络/序列化/调度开销、调用链清楚；代价是运行时耦合、资源隔离和独立扩缩能力较弱。把模块起名Agent并不会改变这些成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多Agent只有在独立能力、并行工作或隔离/部署需求确实有益时才拆。拆分会增加消息、协调、重复上下文和结果汇总等待；串行关键路径上的协商无法靠增加并发抵消。衡量总调用数、每步延迟和p95，避免把所有步骤都变成多轮往返。并行还需明确共享状态、版本和终止预算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不使用Spring AI仍可有明确通信契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "同进程可传不可变DTO/对象引用，通过有界Executor和Future组合；跨进程可HTTP/gRPC或持久MQ，以taskId、schemaVersion、artifactVersion和业务幂等键标识。框架提供封装，不是通信能力的必要前提。共享可变对象需线程安全与所有权，跨进程序列化不能直接传Java内存指针。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大上下文放持久对象版本，消息传引用和必要摘要；参数/结果校验与权限在边界执行。异常、超时、取消和结果未知按契约传播，不把Future.cancel当远端已停止。测试同用户多会话隔离、跨租户同ID、重复请求、并发结果、对象被修改和模块切远程后的失败语义。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mq-task-identity",
+  "targetOrigin": "authored"
+}

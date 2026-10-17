@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-7-7",
+  "entryId": "ai-agent-7",
+  "questionId": "7",
+  "expectedOriginalHash": "ae7ed588141f7157e57f79c355c06a82876ee571db3dd286f1e2263d3f13f9ce",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "15 SSE 流式输出 AG UI 和断线恢复怎样设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： SSE 是服务端到客户端的事件流传输，运行状态必须独立持久化。每个 Run 的事件有单调序号，先保存再发布；客户端按序应用，重复去重、缺口补读，重连提交游标。AG UI 定义面向界面的事件语义，不替代数据库、权限或 Agent 调度。断开连接和取消任务分别处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "SSE 的线格式和边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "SSE 使用 text/event-stream、UTF-8 文本、以空行结束一个事件，支持 event、data、id、retry 等字段；多条 data 行属于同一事件。网络 chunk 不等于一个事件，UTF-8 字符也可能跨 chunk；解析器应增量解码后按事件帧处理。"
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "label": "SSE 的线格式和边界",
+      "value": "id: 42\nevent: tool_status\ndata: {\"runId\":\"run-8\",\"callId\":\"call-3\",\"status\":\"waiting_approval\"}\n\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "浏览器原生 EventSource 常用于 GET，认证能力和自定义 header 需求要按客户端选择 cookie 会话或 fetch 流。不要把长期敏感 token 随手放在 URL。Spring MVC 可用 SseEmitter，异步请求仍需处理超时、错误、断连、执行器和容器限制；每条连接一个无限增长缓冲队列会拖垮堆内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一致的事件恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "断线恢复要回答“哪条事件已经被客户端应用”。事件键可以用 (run_id, sequence)，客户端保存最后已应用序号，而不是收到的字节数；重连通过 Last-Event-ID 提交游标，服务端先鉴权，再读取后续事件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复事件还要核对内容：同 ID 同内容可以忽略，同 ID 不同内容应报警。如果游标对应的事件已超过保留期，就明确返回游标过期和当前快照，让客户端从快照水位继续。不能装作重连成功，却静默漏掉审批或最终结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实时发布可用 Redis Streams 或其他 broker，持久 Run 与事件真源另行存储。慢消费者采用有限队列、合并纯文本增量或断连重放策略；不可丢关键状态事件。存储大时按 Run 分段、归档已完成流、压缩文本和设置与业务相符的保留策略，但审计、审批和操作 receipt 不能因流缓存过期一并丢失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "AG UI 和 Provider 流不是同一种事件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Provider 流描述模型输出增量、工具参数和结束原因；Runtime 事件描述规划、执行、审批、产物与状态；UI 投影描述文本、工具展示、状态快照/增量。AG UI 提供此类前后端交互事件约定。适配时校验 run、message 和 tool-call ID，对 state delta 要验证基线版本；不要让 UI patch 直接修改权威审批状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工具参数在流中可能交错到达。按 call ID 分别缓存，只在明确完成事件、完整 JSON、schema、业务校验和授权通过后执行。文本流结束不等于任务成功，模型 finish reason、工具结果和全局验收都可能尚未完成。第 30 节提供无网络的 typed-event 投影与重复/缺口测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "基础事件如何落到前端状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试中先说三组：RunStarted/RunFinished/RunError 表示运行边界；TextMessageStart/Content/End 按 message ID 组装文本；ToolCallStart/Args/End/Result 按 call ID 区分参数与结果。StateSnapshot 替换状态，StateDelta 使用 JSON Patch，MessagesSnapshot 同步消息；还有 Step、Activity、Custom/Raw 等事件。实际接入固定 SDK/协议版本，未知可选展示事件可保留诊断，未知控制语义不能默认批准或成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下是本书应用侧的设计，不是给所有 AG-UI 实现增加强制规范：外层封装租户、Run、序号与 schema 版本；每个 Run 单调应用；错误帧不推进游标；收到重置快照后明确建立新水位。文中 AgentEventState 展示基本消息、工具及状态生命周期，状态 patch 刻意限定为平面字符串字段，不冒充完整 RFC 6902；嵌套对象、数组、JSON Pointer 转义需要经过验证的标准实现。完整协议中的便利 chunk 先展开，扩展事件由已注册 handler 处理，不能直接传入教学枚举。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "流式 response 什么时候合并和存储"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型 delta 可先进入有界缓冲，以消息结束、大小阈值或短时间窗口批量持久化，并记录最后连续序号；高价值状态、审批、工具意图与 receipt 及时事务提交。前端展示文本与最终规范化消息分表或分类型存储：message(id, conversation_id, run_id, role, status, content, last_sequence) 和 run_event(run_id, sequence, type, payload, created_at) 是一组可行模型，不是唯一表设计。工具关联另外保留 call/operation ID。保存半截回复标为 interrupted，不能覆盖成 complete。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：对话和工具日志按什么维度分库分表？ 从访问模式决定，而不是先指定固定分片数。在线主要按租户＋conversation/run 读连续消息、顺序事件与调用链，可让同一会话的消息与 Run 关联数据落在一致的路由分片，并以稳定 ID 或目录定位；超大租户按 conversation/run 再散列，避免只按 tenant_id 形成热点。所有键、索引与查询仍带租户边界，分片路由不代替鉴权。工具日志保留 task/attempt/call/operation 与父 Run 关联，不能按 tool_name 分片后让一次任务散落成无法核对的碎片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时间分区适合历史日志归档和保留期清理，可与逻辑分片组合；按用户列会话、跨 Run 运维检索和评测统计可建立受控索引/异步分析视图，不在在线链路逐库扫描。迁移时保持稳定路由目录、校验复制与切换水位，避免双写丢失/覆盖；要求同一事务提交的 Operation、receipt 与关键状态应共置或显式重新设计事务边界，不能分表后继续宣称原有原子性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "选型上，MySQL/其他事务库适合权限、会话和运行真源；对象存储放大文本/产物；Redis 可作短期流和投影缓存。存储每个 token 还是批量 delta，要根据审计粒度、写放大和可恢复窗口选择。节点级纠错记录新的输入或修正事件，从可验证 checkpoint 派生新执行分支；已提交外部效果不能靠编辑历史 state 消失。意图识别用受限标签、结构化输出、歧义阈值及澄清，并在每个节点按错误成本选择模型；“用了 LangGraph”本身不保证准确率。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "A2UI 与 AG-UI 不要混为一个缩写"
+    },
+    {
+      "type": "paragraph",
+      "text": "A2UI 关注由 Agent 发出声明式界面描述，再由客户端受信组件目录渲染；表单只是一个用途。AG-UI 关注 Agent 与界面的事件交互。两者可在一个产品中配合，但不是自动互相兼容。协议/组件目录/renderer 版本应绑定，不直接执行模型生成的任意前端脚本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "工程上为 Skill 定义结构化输出，例如字段、候选项、错误与待批准动作；UI adapter 将其映射到允许的组件，提交事件回到授权 API，再绑定 run/action/输入版本校验。最难的是状态一致性、未知组件、流式局部更新、重复提交、可访问性与诱导界面。按钮文案写“已批准”不构成授权，客户端给出的金额/资源也不能跳过服务器校验。具体版本的完整 A2UI catalog/schema 与前端 renderer 实现是单独的前端/Tools 合同，本节不把教学 AgentEventState 冒称 A2UI 实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- A2UI 主要是让 Agent 返回表单供用户填写吗？你认为实践中最难的地方是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 通信协议：了解 SSE 与 WebSocket 吗？展开介绍两者区别与适用场景"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 怎么考虑优化系统的端到端请求耗时？请求耗时还能做得更快吗（流式传输 Streaming, 异步并发 Tool Call, 提示词缓存 Prompt Cache）？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 和 WebSocket 之间的区别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 中间断开了怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 说一下你这个 Agent 项目怎么开发的？（前端 SSE 流对话到后端 Agent 执行完成的核心链路，前端 EventSource 和后端 Emitter 实现的单向长连接 SSE 推送）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 的流式响应是怎么实现的，为什么用 SSE？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 能介绍一下 SSE 是什么吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 流式解析是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 和 WebSocket 的区别是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 流式输出，Java 后端怎么实现？SSE 连接断开、重连怎么处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 协议，用户断网了怎么重连？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- AI 对话通过 SSE 进行 Token 流式输出，如果每收到一个 Token 都执行一次 setState，会有什么影响？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 主要是在对话框那一部分的，包括这种 SSE 对话处理是吧？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 就是 SSE 对话续传虚拟列表这部分是吧？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目使用了 SSE，说说 SSE 是什么，与 WebSocket 有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 项目中你是怎么使用 SSE 实现流式打字机效果的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- FastAPI + SSE 在高并发下的性能瓶颈在哪里？如果并发大幅上升如何重新设计？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 经典问题：用户在浏览器中输入网址并按下回车后，从 DNS、TCP、TLS 到 HTTP/SSE 整个过程都发生了什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 多模型架构是如何设计的；新模型接入是否需要大改；SSE流式输出如何实现的，是否有连接稳定性保障"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE和http有什么区别；"
+    },
+    {
+      "type": "paragraph",
+      "text": "- WebSocket与SSE两种通信协议，各自适用场景及选型依据是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE流式输出怎么维护连接和推送Agent事件？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 1） sse 和 streamable-http 的区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 2） 如何适配 stdio、HTTP、SSE、Streamable HTTP 的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 是啥？有什么场景下能用到？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 在 AI 对话流式输出（SSE/Chunked）过程中，如果返回的 Markdown 语法标签被截断（如代码块 \\ 未闭合、行内公式残缺），前端如何安全优雅地处理动态渲染？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE 和 WebSocket 区别？项目中 SSE 使用场景？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 多协议网关抹平：网关适配 OpenAI、Anthropic、DeepSeek 三家协议时，为什么不能只替换请求地址？流式输出（SSE）和普通响应在各协议中的 Token 统计有哪些差异？额外做了哪些兼容处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 任务执行时间比较长时，后端一般怎么处理这种长连接请求？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 说一说对 AG-UI 协议的理解，这个协议的初衷是什么，具体是怎么实现的，有哪些基础的事件类型；"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 产生的流式 response 是如何进行存储的？合并的时机是什么？选择什么样的数据库？"
+    },
+    {
+      "type": "paragraph",
+      "text": "13. 如果让你编写一个 Skill，应该怎么写？如何让它与A2UI 兼容？"
+    },
+    {
+      "type": "paragraph",
+      "text": "14. 你做的Skill 社区平台最重要的功能是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何让大模型的响应时间变小（stream 响应）？第一个 token 时间变小，总体时间如何？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 非阻塞式响应是怎么实现的，需要引入什么依赖？"
+    },
+    {
+      "type": "paragraph",
+      "text": "8.整个项目是基于什么协议？和https有什么区别？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 为什么现在主流都是流式输出，有什么好处，非流式有什么问题"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 这一步模型推理无法直接向用户流式输出答案，是否会导致用户等待答案的时间过长？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- SSE和WebSocket的本质区别是啥？"
+    },
+    {
+      "type": "paragraph",
+      "text": "9.追问，那你为什么在对接deepseek的时候选择了SSE？实时聊天的时候选择了WebSocket？\n10.追问，我还是有点奇怪，用WebSocket去处理聊天，会不会造成很大的浪费？如果长时间不发信息。\n11.回答也许可以在长时间没有发送信息的时候，进行一个断开，重新发送信息的时候再连接。面试官追问，当时做这个立项的时候就没有考虑短连接么？这里有没有什么调研，或者参考吗？\n12.你这里提到WebSocket实现心跳保活和指数退避指南机制，那什么叫做指数退避呢？\n13.为什么要使用指数退避，而不是固定时间呢？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 给了个场景：大模型在 100 毫秒内它吐了 1000 次，吐太快会导致前端界面卡顿，这种情况怎么去优化？用什么方式？什么数据结构？（面试官举例：思路是上游输出太快，相当于大坝上游的供给端供水过多，下游界面消费能力有限）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- MySQL 存对话记录和工具调用日志时，分库分表按什么维度拆？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    },
+    {
+      "entryId": "own-runtime-stream-code",
+      "label": "流事件与前端状态完整源码"
+    }
+  ]
+}

@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch35",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · Spring 事务、ORM 与代理边界",
+  "title": "Spring 事务、ORM 与代理边界",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s6473",
+      "order": 6473,
+      "question": "afterCommit 与事务事件监听为什么不能替代 Outbox？",
+      "shortAnswer": "afterCommit 只说明数据库已提交，回调失败不能回滚原业务，提交后回调前崩溃也会漏执行。同步回调可能占提交线程，异步队列又可能拒绝或丢进程内任务，因此可靠依据应是同事务持久化的 Outbox，回调只做加速唤醒。回调中再写数据库需新的明确事务，AFTER_COMMIT 监听也不是持久消息队列。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "4. 提交后回调为何只能做加速，不能替代 Outbox"
+        },
+        {
+          "type": "paragraph",
+          "text": "afterCommit 说明数据库已经提交，不能再把回调失败当作原业务可以回滚；内存回调也不能保证进程崩溃后仍会发生。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在常规同步事务路径，TransactionSynchronization.afterCommit 在提交线程运行。把慢 HTTP、阻塞发布或数据库长操作放进去，会拖长请求并扰乱异常含义。可把已落库的 eventId 投到有界队列做快路径，被拒绝就让扫描器恢复，不丢掉持久 Outbox。CallerRunsPolicy 可能把工作退回提交线程，选择策略要考虑这个后果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "@TransactionalEventListener 默认在事务相关阶段触发，AFTER_COMMIT 仍不是持久队列。没有事务时监听是否执行取决于 fallbackExecution；@Async 又改变线程和上下文。afterCommit 时旧资源可能仍可访问，但事务已经结束，不能指望再写入就被原事务“顺便提交”；需要新的明确事务。事务提交后、回调前崩溃，唯一可靠的依据仍是数据库里已经提交的事件意图。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-spring-transactions",
+          "label": "声明式与编程式事务如何管理真实连接？"
+        },
+        {
+          "entryId": "database-93",
+          "label": "消息 Outbox 表与幂等消费表设计"
+        },
+        {
+          "entryId": "own-mq-reliability",
+          "label": "轮询、CDC、Outbox 与 XA、TCC、Saga 分别协调什么？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s6481",
+      "order": 6481,
+      "question": "DDD 的应用服务、领域模型和 Repository 如何与数据库约束配合？",
+      "shortAnswer": "应用服务组织用例和事务，领域模型表达不变量，Repository 实现 SQL 与映射；这些分层不替代跨进程的唯一约束、CAS、锁和事务。聚合是强不变量边界，不等于一张表或微服务，也不禁止 JOIN 与同库多表事务。查询侧按需要用 DTO 或读模型避免巨大对象图，外部调用与慢决策不要放在持锁事务里。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "5. DDD 模型怎样经过接口和 Repository 访问数据库"
+        },
+        {
+          "type": "paragraph",
+          "text": "接口适配器处理协议与可信身份，应用服务组织用例和事务，领域模型表达规则，Repository 的基础设施实现负责行映射与 SQL；这些边界帮助表达业务，并不取消数据库并发约束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如设备维修审批：接口接收草稿 ID、已看到的版本和命令 ID；应用服务读取当前权限和草稿；领域行为检查能否从 PENDING_REVIEW 到 APPROVED；仓储用版本、状态、摘要和截止条件持久化；执行意图与审批审计一起提交。只在 Java 对象里 if(status==PENDING_REVIEW) 再无条件保存，挡不住另一实例同时批准。"
+        },
+        {
+          "type": "paragraph",
+          "text": "聚合是强不变量的建模单位，不等于一个类、一张表或一个微服务。聚合根封装可阻止进程内随意改字段，跨进程仍需唯一约束、条件更新、锁和事务。多个聚合能否同事务，取决于业务和物理部署；DDD 不禁止 JOIN，也不禁止同库多表事务。三层或简单 CRUD 已足够时，不必为了四层目录引入大量空接口。充血模型把行为和不变量放近数据，贫血模型集中于服务也能工作，关键是规则不散落和并发保护不遗漏。"
+        },
+        {
+          "type": "paragraph",
+          "text": "网关/CMMS 调用属于外部适配，领域模型不应依赖某个 HTTP 客户端。需要外部数据才能决策时，先明确能否基于快照判断、输入是否会过期，再安排短事务；不要在持锁期间等待不可控服务。领域事件可以在本地事务里存为 Outbox，提交后传播。CQRS 是命令与查询职责分离，可以从同库不同查询对象开始，并不必须立即上两套数据库和消息队列；派生读模型如果异步，必须说明其滞后。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ORM 读聚合要防 N+1、意外懒加载、事务外读取失败和巨大对象图。报表可用直接 DTO 投影、批量取数或专门读模型，不必把几十万行全部转领域对象再过滤。单元测试内存仓储能证明领域规则，证明不了数据库锁、事务代理或映射精度。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "database-73",
+          "label": "第三范式 3NF 判断与反范式设计"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s6633",
+      "order": 6633,
+      "question": "逐条 add 最后 commit 为什么不等于批量 INSERT，长采集如何发布完整结果？",
+      "shortAnswer": "多条 INSERT 共用一次提交、JDBC 批处理和单条多行 INSERT 是三件事，ORM 的 flush、生成键和驱动重写都会影响实际 SQL 与往返。短有界业务可整批事务，长采集应先分批持久化，再核对序号连续、数量和摘要，用短事务发布 COMPLETE。读者只看已发布结果，确认水位在持久化后推进，模型测试不能代替真实数据库和 ORM 集成证据。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "8. 逐条 add，最后 commit，就是批量 INSERT 吗"
+        },
+        {
+          "type": "paragraph",
+          "text": "N 次 INSERT 共用一次事务、JDBC addBatch/executeBatch、一次多行 INSERT 是三个不同概念，统一 commit 不能证明后两者发生。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ORM 的 add/persist 可能只登记待写对象，也可能因为 flush、查询、主键获取或框架策略触发 SQL。合并事务可能减少提交和日志同步次数，unit of work 可能延迟 flush，但不能凭 API 名称断言只有一次网络往返。Connector/J 的批处理重写受 rewriteBatchedStatements 等配置和语句类型影响；MyBatis BATCH 也需要检查 flushStatements、执行时机、批次失败和受影响行数。生成键、包大小与数据库参数限制都可能让一批再分段。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如 Django 5.2.0 的 bulk_create 是专门批插入口，但不会逐个调用模型 save，也不发送对应的 pre_save/post_save 信号，不能照搬依赖这些钩子的逐对象逻辑；多表继承、多对多关系和生成键返回也有后端限制。它会先把传入对象序列转为列表，需要外部控制批次，不能把无限生成器当作自然流式入库。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ORM 的价值是对象映射、类型转换、组合查询、关系管理和减少样板。数据库仍执行 SQL、维护约束和事务。代价是 N+1、宽 SELECT、隐式 flush/懒加载和大量对象构建。对象转类型明确的 DTO/dict，或使用显式投影，比拼一个有序字符串可靠；否则 NULL、单位、字段名、分隔符和精度都可能丢失。正常绑定路径有助防注入，raw SQL、动态标识符拼接和文本替换仍危险。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用一次物联网测试判断批量边界：每件待测件属于一个 run，样本按 tenant、run、seq 唯一，保存传感器、值、采样时间、单位、质量和工艺/校准版本。若一次测试短且有界，可以整件放进一个事务；若运行很久，把所有 ORM 对象留到最后，既会涨内存，也会在崩溃时丢掉整段未提交采集。"
+        },
+        {
+          "type": "paragraph",
+          "text": "后一种可先按小批持久化 staging。结束时核对 0..N−1 连续、数量和摘要，再用短事务发布 COMPLETE；读取者只看完整发布的 run，设备确认水位也只在对应数据持久化后推进。这样降低了每批资源占用，但是否完整仍由最后的发布检查裁决。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的 iot_batch.py 是独立 Python DB-API 教学模型：每批最多 256，seq 小于 1000000，传感器名 1–80 字符，有限数值绝对值不超过 1e9；同序号同载荷可重放，矛盾使整批回滚，最后才发布。它用 SQLite 说明关系协议，不能证明 MySQL 行锁、ORM 自动批量或网络吞吐，也不声称最小字段已覆盖全部工业采集数据。"
+        },
+        {
+          "type": "code",
+          "language": "python",
+          "label": "components/application/code/iot_batch.py",
+          "value": "\"\"\"Python DB-API reference, NOT an ORM integration or a MySQL wire benchmark.\"\"\"\nimport math\nimport sqlite3\n\nMAX_BATCH = 256\n\ndef init(c):\n    c.executescript('''\n      CREATE TABLE specimen(tenant INTEGER NOT NULL,id TEXT NOT NULL,state TEXT NOT NULL,\n        expected INTEGER,PRIMARY KEY(tenant,id),CHECK(state IN ('OPEN','COMPLETE')));\n      CREATE TABLE measurement(tenant INTEGER NOT NULL,specimen_id TEXT NOT NULL,\n        seq INTEGER NOT NULL CHECK(seq>=0),sensor TEXT NOT NULL,value REAL NOT NULL,\n        PRIMARY KEY(tenant,specimen_id,seq),\n        FOREIGN KEY(tenant,specimen_id) REFERENCES specimen(tenant,id));\n    ''')\n\ndef batch(c, tenant, specimen, samples, inject_failure=False):\n    # Python 3.12 autocommit=True makes the connection context manager a no-op.\n    if c.autocommit != sqlite3.LEGACY_TRANSACTION_CONTROL:\n        raise ValueError('requires LEGACY_TRANSACTION_CONTROL')\n    # Materialize at most a caller-bounded batch, never an entire long experiment.\n    if not isinstance(samples, (list, tuple)) or len(samples)>MAX_BATCH:\n        raise ValueError('bounded list/tuple required')\n    for seq, sensor, value in samples:\n        if type(seq) is not int or not 0<=seq<1000000 or not isinstance(sensor,str) or not 1<=len(sensor)<=80:\n            raise ValueError('bad sample identity')\n        if type(value) not in (int,float) or not math.isfinite(value) or abs(value)>1e9:\n            raise ValueError('bad finite measurement')\n    if c.in_transaction:\n        raise ValueError('requires dedicated idle connection')\n    with c:\n        c.execute('BEGIN IMMEDIATE')\n        state=c.execute('SELECT state FROM specimen WHERE tenant=? AND id=?',(tenant,specimen)).fetchone()\n        if not state or state[0]!='OPEN': raise ValueError('unknown or closed specimen')\n        # In sqlite3 executemany runs the statement repeatedly. It is not proof of\n        # one multi-row INSERT, one network roundtrip, or an ORM flush strategy.\n        c.executemany('INSERT INTO measurement VALUES(?,?,?,?,?) ON CONFLICT(tenant,specimen_id,seq) DO NOTHING',\n                      [(tenant,specimen,*row) for row in samples])\n        for seq,sensor,value in samples:\n            actual=c.execute('SELECT sensor,value FROM measurement WHERE tenant=? AND specimen_id=? AND seq=?',\n                             (tenant,specimen,seq)).fetchone()\n            if actual!=(sensor,value): raise ValueError('same sample sequence has different payload')\n        if inject_failure: raise RuntimeError('injected before commit')\n\ndef publish(c, tenant, specimen, expected):\n    # Python 3.12 autocommit=True makes the connection context manager a no-op.\n    if c.autocommit != sqlite3.LEGACY_TRANSACTION_CONTROL:\n        raise ValueError('requires LEGACY_TRANSACTION_CONTROL')\n    if type(expected) is not int or not 0<=expected<=1000000 or c.in_transaction:\n        raise ValueError('bad count or connection')\n    with c:\n        c.execute('BEGIN IMMEDIATE')\n        old=c.execute('SELECT state,expected FROM specimen WHERE tenant=? AND id=?',(tenant,specimen)).fetchone()\n        if not old: raise ValueError('unknown specimen')\n        if old[0]=='COMPLETE':\n            if old[1]!=expected: raise ValueError('conflicting manifest')\n            return\n        n,low,high=c.execute('SELECT COUNT(*),MIN(seq),MAX(seq) FROM measurement WHERE tenant=? AND specimen_id=?',\n                            (tenant,specimen)).fetchone()\n        if n!=expected or (n and (low!=0 or high!=n-1)): raise ValueError('incomplete contiguous samples')\n        c.execute(\"UPDATE specimen SET state='COMPLETE',expected=? WHERE tenant=? AND id=?\",(expected,tenant,specimen))\n\ndef read_complete(c, tenant, specimen):\n    # Bound the reader externally or iterate the cursor; no fetchall for a giant run.\n    return c.execute('''SELECT m.seq,m.sensor,m.value FROM measurement m JOIN specimen s\n      ON m.tenant=s.tenant AND m.specimen_id=s.id\n      WHERE s.tenant=? AND s.id=? AND s.state='COMPLETE' ORDER BY m.seq''',(tenant,specimen))\n\n\n\ndef main():\n    c = sqlite3.connect(':memory:', autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL)\n    try:\n        c.execute('PRAGMA foreign_keys=ON')\n        init(c)\n        with c:\n            c.execute(\"INSERT INTO specimen VALUES(1,'sample','OPEN',NULL)\")\n        batch(c, 1, 'sample', [(0, 'temperature', 20.0), (1, 'pressure', 1.0)])\n        batch(c, 1, 'sample', [(0, 'temperature', 20.0)])\n        try:\n            batch(c, 1, 'sample', [(2, 'flow', 2.0)], inject_failure=True)\n            raise AssertionError('injected failure missing')\n        except RuntimeError:\n            pass\n        assert c.execute('SELECT COUNT(*) FROM measurement').fetchone()[0] == 2\n        publish(c, 1, 'sample', 2)\n        assert list(read_complete(c, 1, 'sample')) == [(0, 'temperature', 20.0), (1, 'pressure', 1.0)]\n        print('PASS SQLite teaching protocol; no ORM or MySQL connection')\n    finally:\n        c.close()\n\nif __name__ == '__main__':\n    main()\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "将其保存为 iot_batch.py，在 CPython 3.12.0 执行 python iot_batch.py。它只创建进程内 SQLite 内存库。init 仅用于空库；batch/publish 要求专用、空闲、LEGACY_TRANSACTION_CONTROL 连接，拒绝 autocommit=True/False 的另一套事务模式和调用方已有事务，避免把别人的事务提交掉。executemany 在这个驱动里重复执行语句，不是“只有一条多值 SQL”的证据。完整集成验证还应分批处理 1,000 个样本，检查三次 INSERT 共用一次 COMMIT 的 SQL trace、同序号矛盾、缺口、跨租户、NaN、超大批次、COMPLETE 后拒写、重开进程后的已提交数据，以及拒绝错误事务模式时连接仍空闲；这些条件不能用两条样本的演示 main 代替。生产批处理仍应记录 SQL 条数、提交次数、实际延迟和错误，而不是套用不存在的性能提升数字。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-mq-tasks",
+          "label": "50 万商品导入允许部分成功还是整批替换，怎样防旧分片覆盖新编辑？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s6761",
+      "order": 6761,
+      "question": "Spring 中的设计模式如何沿一次事务调用链讲清楚？",
+      "shortAnswer": "按创建、注入、初始化、代理调用、事务结束和资源清理来定位模式：工厂负责装配，代理执行拦截，模板回调封装稳定流程，策略和适配器隔离变化，事件发布解耦通知。单例不自动线程安全，FactoryBean 不等于 BeanFactory，多次 JdbcTemplate 调用仍要外层事务。普通容器事件没有持久重放保证，背模式名不能证明事务或消息正确。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "10. 设计模式要沿调用链讲"
+        },
+        {
+          "type": "paragraph",
+          "text": "Spring 中的工厂、代理、模板/回调、策略、适配与观察者都有具体职责，背名词不能证明事务正确。"
+        },
+        {
+          "type": "paragraph",
+          "text": "BeanFactory/ApplicationContext 负责按定义创建和装配；FactoryBean 是一个用于生产另一对象的扩展接口，二者不能倒置。singleton 是每容器、每 bean 定义共享实例，不是进程里某类永远只能有一个对象，也不自动线程安全。AOP 代理把调用交给拦截器链，解释时要指出被代理方法、代理类型、自调用和异常传播。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JdbcTemplate 抽取获取/释放连接、执行和异常翻译的稳定流程，让回调、RowMapper 提供变化部分；多次模板调用仍需要外层事务组织。HandlerAdapter 适配不同 handler 的调用约定，业务策略接口则能替换具体算法。BeanPostProcessor 可增强或替换 bean，不是每次都生成代理，也不能全部硬叫装饰器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "ApplicationEventPublisher 体现发布订阅，但普通容器事件不是可靠 MQ。同步/异步、事务阶段和异常策略决定它对发布方的影响，进程崩溃没有自动重放保证。能沿“创建→注入→初始化→暴露代理→调用→提交/回滚→资源清理”解释这些模式，才能回答为什么应用能启动却仍可能漏掉事务和消息。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "own-spring-transactions",
+          "label": "声明式与编程式事务如何管理真实连接？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

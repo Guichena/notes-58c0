@@ -1,0 +1,398 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-distributed-ch04",
+  "kind": "qa",
+  "module": "design",
+  "part": "分布式系统工程",
+  "category": "事务与资源协调",
+  "title": "事务与资源协调",
+  "tags": [
+    "分布式系统",
+    "故障边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-distributed-cqrs",
+      "order": 0,
+      "question": "CQRS是什么，怎样落地并说明它实际解决的问题",
+      "shortAnswer": "CQRS让写模型守住业务不变量、读模型贴合查询形态，以额外投影维护成本换取独立优化空间。",
+      "commonPhrasings": [
+        "CQRS是什么，怎样落地并说明它实际解决的问题",
+        "CQRS是什么",
+        "一定要读写分库吗",
+        "CQRS与事件溯源是什么关系"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "4.2 CQRS是什么，怎样落地并说明它实际解决的问题"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：CQRS是什么；一定要读写分库吗；CQRS与事件溯源是什么关系。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "CQRS讨论读写模型职责分离，不预设必须拆数据库、加MQ或把所有对象做事件溯源。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "CQRS不是自动等于两套数据库"
+        },
+        {
+          "type": "paragraph",
+          "text": "CQRS 先拆读写职责，不要求一开始就上两套数据库。Command 表达业务意图，写模型检查不变量、权限和状态转换；Query 走只读模型，按界面需要返回 DTO 或投影，可以反规范化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最小版本完全可以在同一进程、同一数据库中分开逻辑，不强制 MQ、微服务或事件溯源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Event Sourcing把事件序列作为事实源，CQRS不要求这样存储；数据库主从读写分离是部署/路由优化，也不自动等于读写领域模型已分离。不能仅把Mapper分成读写两个类就证明复杂业务问题被解决。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "订单例子与一致性"
+        },
+        {
+          "type": "paragraph",
+          "text": "写侧AcceptOrder验证活动、用户资格与库存，事务保存订单/预留/outbox，返回orderId和已提交版本。读侧OrderSummary可预先组合商品名、状态、配送摘要等供列表查询，避免每页跨多个服务实时join。投影消费者按eventId去重、按聚合版本处理事件，独立扩容读负载。"
+        },
+        {
+          "type": "paragraph",
+          "text": "读投影异步更新，下单成功后不保证所有读副本立刻可见。可以直接返回写侧保存的稳定结果，也可以带 minVersion 等投影追平，做有界回源，或明确显示处理中。"
+        },
+        {
+          "type": "paragraph",
+          "text": "处理投影事件还要区分快照和增量：完整快照可以用高版本替换，增量却不能因为先看见高版本，就跳过中间缺失事件。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "重建、演进与代价"
+        },
+        {
+          "type": "paragraph",
+          "text": "新读模型从一致事实基线+后续变更重建，记录重放水位，追平后切换读版本；业务写入仍继续时不允许全量扫描完直接覆盖最新投影。重放会触发很多历史事件，须隔离副作用消费者，不能重建列表时再发一次历史邮件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "CQRS可缓解读写模型冲突、复杂查询join、读扩展和权限模型混杂，代价是重复存储、投影延迟、同步/重放运维、schema演进和调试成本。简单CRUD、读写差异不明显时可能得不偿失。业务不变量仍在写侧权威校验，用户看见读侧还有库存不构成一定可下单。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "项目问答如何有证据"
+        },
+        {
+          "type": "paragraph",
+          "text": "要说解决了什么，应拿出原慢查询/锁竞争或复杂度问题、读写访问比例、分离前后模型和指标、引入的新一致性需求以及故障恢复。可以用此例解释方案如何解决问题；讲个人项目时，再说明自己实际负责的部分与可核验结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验收投影消费重启、重复/乱序/缺口、历史重建与在线更新、读己之写、权限收紧、事件版本升级和投影永久失败告警。持久权威不能依赖读投影一定可用，故障时应明确哪些查询降级、哪些写操作仍可安全进行。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-seata-contract",
+      "order": 1,
+      "question": "分布式事务有哪些方案，Seata的TM、RM、TC做什么",
+      "shortAnswer": "分布式事务选型取决于隔离和可用性要求，Seata由TM发起全局事务、RM管理分支、TC协调全局状态。",
+      "commonPhrasings": [
+        "分布式事务有哪些方案，Seata的TM、RM、TC做什么",
+        "分布式事务有哪些方案",
+        "Seata的TM RM TC做什么",
+        "两阶段提交和Saga怎样选择",
+        "Seata AT与Kafka加本地消息表有什么本质差别",
+        "Seata AT和Kafka加本地消息表怎么选",
+        "AT读隔离有什么边界",
+        "Kafka事务能否原子修改MySQL"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "4.3 分布式事务有哪些方案，Seata的TM、RM、TC做什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：分布式事务有哪些方案；Seata的TM RM TC做什么；两阶段提交和Saga怎样选择。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "只有一致性要求跨多个独立提交域时才需要协调协议；Seata必须按AT、TCC、Saga或XA等具体模式讨论。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先缩小事务边界，再选择协议"
+        },
+        {
+          "type": "paragraph",
+          "text": "把强不变量放同一数据库事务往往最简单：订单、库存预留若可同分片，先用本地ACID。真正跨资源时，确定要原子提交、隔离级别、允许中间状态、补偿能力和故障恢复目标；吞吐高低不能脱离参与者、锁冲突和网络延迟比较。"
+        },
+        {
+          "type": "paragraph",
+          "text": "两阶段提交先形成持久承诺，再执行统一决定。XA 中协调器让参与者 prepare 并保存承诺，然后统一 commit 或 rollback，从而形成跨参与者的提交决定。"
+        },
+        {
+          "type": "paragraph",
+          "text": "代价是准备期间占资源，协调器或网络故障时可能等待恢复；参与者不能自己一超时，就违背已作出的全局决定。数据库、驱动、事务管理器还必须支持 XA，任意业务 API 并不能直接加入。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "TCC、Saga、消息方案的取舍"
+        },
+        {
+          "type": "paragraph",
+          "text": "TCC：业务提供Try预留、Confirm确认、Cancel释放，适合有明确可预留资源、需要避免超卖的业务；开发侵入大，必须保证幂等、空回滚和悬挂防护。Cancel先到要留下终态证据，迟到Try不能再次冻结资源。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Saga 把长流程拆成已经各自提交的本地事务，后续失败再补偿已成功步骤。它适合可补偿动作，但中间状态可能被看见，补偿也可能失败或不完全可逆，因此需要持久状态、重试和人工异常处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可靠消息或 outbox 则把业务状态与待发事件同事务提交，下游幂等消费、持续对账，让状态异步收敛。它不保证接口返回时所有服务已经完成同一笔 ACID 事务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Seata的角色和模式"
+        },
+        {
+          "type": "paragraph",
+          "text": "Seata是分布式事务协调框架。TM发起和决定全局事务，TC保存全局/分支状态并协调提交或回滚，RM管理参与资源和分支注册/执行。XID关联跨服务调用与分支，传播丢失会让下游脱离原全局事务。TC自身的持久化、高可用和恢复也必须部署验证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "AT通过数据源代理处理受支持SQL，一阶段将业务数据与undo log同本地事务提交并申请全局锁，二阶段提交清理日志或回滚补偿；XA模式使用参与数据库XA能力，TCC和Saga模式则按各自协议运行。不能把“用了Seata”统一说成全部长期持数据库锁或全部天然强隔离。AT细节和outbox对比见第4.4节。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "正确性与选型验收"
+        },
+        {
+          "type": "paragraph",
+          "text": "强约束优先看能否本地化；支持XA且短事务、参与者可控时评估XA；资源可预留且愿意实现业务协议时评估TCC；长流程可补偿时评估Saga；允许异步传播时用outbox。两个库各加@Transactional不是全局事务。CAP中分区时的可用性取舍仍存在，共识/事务产品不会消除网络不确定性。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试协调器崩溃、prepare后网络隔离、重复提交/回滚、分支超时、XID漏传、TCC乱序和补偿失败。观察悬而未决事务、全局锁等待、undo日志积压、补偿年龄和人工修复。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "4.4 Seata AT与Kafka加本地消息表有什么本质差别"
+        },
+        {
+          "type": "paragraph",
+          "text": "Seata AT通过分支提交、undo和全局协调管理事务结果，Outbox以本地提交及异步传播形成可恢复的最终一致流程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：Seata AT和Kafka加本地消息表怎么选；AT读隔离有什么边界；Kafka事务能否原子修改MySQL。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "本地消息表指transactional outbox；Seata AT机制固定按2.6语义讨论，Kafka事务不会把外部MySQL自动纳入同一ACID事务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "AT的两阶段机制"
+        },
+        {
+          "type": "paragraph",
+          "text": "一阶段RM代理受支持SQL，取before image，执行业务SQL，再取after image并写undo log；业务数据和undo log在同一本地事务提交。提交前须取得TC管理的全局锁，不能获得则按超时策略回滚本地事务；提交后释放本地数据库锁，但全局锁在全局事务结束前用于隔离受协议管理的竞争写。"
+        },
+        {
+          "type": "paragraph",
+          "text": "全局提交后通常异步清理undo日志；全局回滚时RM读取undo，对比当前数据与after image，符合条件才按before image补偿并提交。若绕过代理的写入已改变数据，可能发生脏数据冲突，不能无条件覆盖成旧值。AT需要SQL/数据库支持、代理接入、XID传播、TC可用性和undo存储，不能包含任意第三方HTTP副作用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "AT隔离不能背成“所有查询看不到中间结果”"
+        },
+        {
+          "type": "paragraph",
+          "text": "Seata AT 不能概括成“所有查询都看不见中间结果”。一阶段本地事务已经提交，普通 SELECT 可能读到全局事务尚未结束的状态，官方机制也不会自动把普通查询变成全局读提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "需要走相应全局锁检查、SELECT FOR UPDATE 等协议路径，才有对应读隔离，其他写入者也必须遵守协议。MySQL 本地 RR，不能直接推成跨服务全局 RR。"
+        },
+        {
+          "type": "paragraph",
+          "text": "AT降低长期占用本地锁的代价，但多了before/after image、undo、TC往返和全局锁竞争。热点库存行依然可能形成串行瓶颈，失败回滚还要重新拿本地资源。协调器异常时依赖可靠事务状态与恢复，不是自动立即把所有服务回到最初状态。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Outbox的数据与故障路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "订单本地事务保存订单变更和outbox；relay/CDC发布到Kafka，确认后标记。消息已发但标记前崩溃会重发，所以消费者以eventId去重并把inbox与本地业务更新同事务提交；offset最后推进。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它保证本地已提交事实对应的传播义务可恢复，接收方完成时间是异步的。订单服务成功不能直接承诺库存服务已经成功；若下游最终失败，需要业务补偿、取消或待人工处理。Kafka事务可覆盖特定Kafka读-写-位移链路，不会自动回滚MySQL或外部支付。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "怎样选择与比较"
+        },
+        {
+          "type": "paragraph",
+          "text": "AT适合受支持关系库、短流程、希望由框架协调全局提交/回滚且可承担全局锁成本的场景；outbox适合独立服务松耦合、事件传播、吞吐/可用性与异步中间态可以协调的场景。前者常有同步全局完成语义与数据补偿，后者是可靠传播和业务状态收敛，不是同一种保证仅换了中间件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "比较必须写出故障：AT一个分支失败，TC驱动其他已提交分支按undo回滚，期间读隔离受上述限制；outbox下订单已提交、库存事件失败，订单保持PENDING/REJECTED等业务状态并执行补偿。对账两者都需要。不可只用“AT性能差，MQ性能好”概括，实际取决于热点、事务长度、消息量、同步延迟和运维成本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "验收AT全局锁冲突、普通SELECT可见性、代理外写入、回滚失败；outbox发布确认丢失、消费者本地提交后崩溃、重放超保留期与永久业务失败。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-resource-reconcile",
+      "order": 2,
+      "question": "数据库记录与集群资源操作怎样保持可恢复一致",
+      "shortAnswer": "先持久记录期望资源状态和操作身份，再由协调器幂等地使集群实际状态向期望状态收敛。",
+      "commonPhrasings": [
+        "数据库记录与集群资源操作怎样保持可恢复一致",
+        "数据库记录与集群操作怎样一致",
+        "创建成功但回包丢失怎么办",
+        "怎样避免孤儿资源"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "4.6 数据库记录与集群资源操作怎样保持可恢复一致"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：数据库记录与集群操作怎样一致；创建成功但回包丢失怎么办；怎样避免孤儿资源。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下以创建集群工作负载为例，本地数据库事务不包含远程控制面API。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "用期望状态和协调器代替无保护双写"
+        },
+        {
+          "type": "paragraph",
+          "text": "事务内保存resourceId、operationId、desiredSpec、generation、状态PENDING以及outbox。协调器收到事件或从未完成记录扫描到任务后，读取最新期望状态并查询集群实际资源，计算创建/修改/删除的差异；操作结果写回observedGeneration与实际资源UID。只有观测到本代期望已满足才标READY。"
+        },
+        {
+          "type": "paragraph",
+          "text": "创建集群资源时，要让失败后仍然找得到这次操作。先提交 DB 再调用集群，退出后有待执行记录可以恢复；先建资源再落库，若没有稳定身份和回查，就可能留下孤儿。"
+        },
+        {
+          "type": "paragraph",
+          "text": "用资源名称或标签关联 operationId 和所有者。超时后先 GET，核对身份与 spec，不能每次换新名字 CREATE；AlreadyExists 也不等于成功，可能是别人的资源或旧代内容。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "并发更新、删除和部分成功"
+        },
+        {
+          "type": "paragraph",
+          "text": "新需求从generation=4变5，旧协调器的结果不得覆盖5的状态。DB使用条件更新，集群端利用resourceVersion等条件写以及对象UID，区分同名资源被删除重建；只在DB拦旧结果仍不能阻止旧远程调用，因此还要设计资源端版本/归属与重读协调。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多个子资源只成功一部分时，要记住每个真实 ID，再按产品约定继续补齐，或生成补偿删除待办。不能让成功的部分丢掉责任人。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除也要有 DELETING 状态与清理进度，确认外部资源和依赖释放后才结束，不能先删唯一跟踪记录。删除 API 已受理，不代表底层已经消失；结果未知就保留 UNKNOWN 并回查。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "收敛条件、代价与测试"
+        },
+        {
+          "type": "paragraph",
+          "text": "事件用于及时唤醒，持久全量/增量对账负责发现丢通知、人工修改和孤儿；限速、退避及有界并发保护API server。需要明确多久收敛和超过预算时的失败/人工状态，永久配额不足无法“最终必成功”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试DB提交后退出、API成功响应丢失、两个generation交错、旧对象同名重建、部分资源失败和协调器全停后恢复。观察期望/观测代际差、最老PENDING和孤儿资源数量。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

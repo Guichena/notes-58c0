@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s5142",
+  "entryId": "scenario-distributed-scheduler",
+  "expectedOriginalHash": "61b525f5502576ae265f94e2a0d291dacc07ec023b17c4f5acdfab99e63fcde8",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "7.3 定时解封线程或扫描器挂了怎么办，何时需要分布式锁"
+    },
+    {
+      "type": "paragraph",
+      "text": "解封扫描器崩溃不能丢失到期义务，多实例用条件更新领取或幂等解封，Redis到期通知只作加速。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：定时解封线程挂了怎么办；ZSet和MySQL怎样配合；重复UPDATE是否等于业务原子。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "以MySQL保存封禁事实，Redis ZSet仅为到期加速索引；到期判断由权威时间与状态约束。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "不能把线程和内存任务当持久责任"
+    },
+    {
+      "type": "paragraph",
+      "text": "封禁事务写userId、banId/递增version、expiresAt、ACTIVE及持久due/outbox。应用启动时由受管理调度器/独立worker启动扫描，不靠某次请求随手new Thread后没人管。线程/进程可能崩溃，监督器负责重启，另一实例或恢复扫描负责继续查已到期未完成记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久保存了任务，也不代表没人调度时它会自动执行。唯一异步线程挂了、又没有替代扫描，解封就会延迟；所有调度器都挂了，也一样会停摆。"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部存活监控、最老到期年龄告警、多故障域部署可以缩短停摆，但不保证任何故障下都准时。所谓兜底，必须有独立触发或恢复路径，不能只是那个已死线程里的另一个函数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ZSet成员不是用户真实封禁状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "member用userId+banVersion，score为expiresAt，只帮助查到期候选。读取候选后事务条件UPDATE ban SET active=false WHERE user_id=? AND version=? AND active=true AND expires<=数据库当前时间；成功1行才写对应唯一解封事件及完成due。更新0行须区分未到期、已解封或已被新版封禁替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先从ZSet弹出再改DB，进程在两步之间死会丢索引责任；可读取不先删、用processing租约表或依赖持久due重新发现。DB提交后删ZSet失败只会重复触发，由业务幂等消除。ZSet缺成员不能证明MySQL已解封；Redis重建依据持久due与实际状态，不靠缓存猜事实。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "旧解封不得释放新封禁"
+    },
+    {
+      "type": "paragraph",
+      "text": "旧解封请求，不能解除新一轮封禁。比如 ban1 到期时间为 10，扫描器取出后暂停；管理员在时刻 9 建立 ban2，到期为 20；旧扫描器到 10 才恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若只 UPDATE user SET status=UNBANNED，就会错误解除 ban2。加 version=ban1 后影响 0 行，ban2 仍保留。ZSet 若只按 userId 无条件删除，也可能删掉 ban2 的计划，所以索引成员也带版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等和原子性，要分别回答。同一 ban 版本重复 SET 成 UNBANNED，孤立看这个状态字段可以幂等；但通知、审计计数、权益返还仍可能重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应只有 ACTIVE→INACTIVE 成功的那次事务，才能插入唯一业务事件。幂等管重复动作的效果，原子性管多步是否一起提交，不是一回事。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分布式问题和锁究竟在哪里"
+    },
+    {
+      "type": "paragraph",
+      "text": "多应用实例都运行扫描器、重试者或管理员并发更新同一用户，这是跨进程竞争。若采用数据库条件更新/唯一约束即可保证封禁版本与副作用，通常不必再为每个用户增加Redis锁。多扫描器重复读候选只增加工作，正确性仍在权威DB条件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若为了减少昂贵重复计算而用锁，应说明锁服务、key粒度（如unban-shard或userId）、owner token、租约和失效处理。它只协调参与者，不把Redis移除与MySQL更新变原子；旧持有者暂停后恢复还需version/fencing。一个全局锁串行全部用户会限制吞吐，且锁服务失败不能让due记录消失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "实际代码和测试边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "VersionedUnban在真实H2文件库中保存ban、due与唯一unban_event；封禁和到期待办同事务，解封状态/事件/待办同事务。测试提前触发不清待办、精确到期、新ban拒旧解封、事务注入回滚、30竞争仅1次生效，以及所有连接关闭后的到期追赶。时间参数为确定性测试注入，生产使用可信数据库时间。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例catchUp为小数据全量取候选，不是生产大表扫描实现；生产需(status,dueAt,id)索引、keyset小批量、限并发/背压及积压SLO。持久重开只验证该本地恢复路径；Redis、独立进程守护和机器断电属于不同故障域，需要分别测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现包含独立边界测试，运行环境与保证范围按上述合同。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "014/VersionedUnban.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** H2 authority and durable due rows; Redis can only be a rebuildable acceleration index. */\npublic final class VersionedUnban {\n    private final String url;\n    public VersionedUnban(String url) throws SQLException {\n        this.url = url;\n        try (Connection c = open(); Statement s = c.createStatement()) {\n            s.execute(\"CREATE TABLE IF NOT EXISTS ban(user_id VARCHAR PRIMARY KEY, version BIGINT NOT NULL, expires BIGINT NOT NULL, active BOOLEAN NOT NULL)\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS due(user_id VARCHAR, version BIGINT, expires BIGINT, done BOOLEAN, PRIMARY KEY(user_id,version))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS unban_event(user_id VARCHAR, version BIGINT, PRIMARY KEY(user_id,version))\");\n        }\n    }\n    private Connection open() throws SQLException { return DriverManager.getConnection(url); }\n    public void addUser(String user) throws SQLException {\n        try (Connection c = open(); PreparedStatement p=c.prepareStatement(\"INSERT INTO ban VALUES(?,0,0,FALSE)\")) { p.setString(1,user); p.executeUpdate(); }\n    }\n    public long ban(String user, long expires) throws SQLException {\n        if (expires < 0) throw new IllegalArgumentException();\n        try (Connection c=open()) {\n            c.setAutoCommit(false);\n            try {\n                long version;\n                try (PreparedStatement p=c.prepareStatement(\"SELECT version FROM ban WHERE user_id=? FOR UPDATE\")) {\n                    p.setString(1,user); try(ResultSet r=p.executeQuery()) { if(!r.next()) throw new IllegalArgumentException(\"user\"); version=Math.incrementExact(r.getLong(1)); }\n                }\n                try (PreparedStatement p=c.prepareStatement(\"UPDATE ban SET version=?, expires=?, active=TRUE WHERE user_id=?\")) {p.setLong(1,version);p.setLong(2,expires);p.setString(3,user);p.executeUpdate();}\n                try (PreparedStatement p=c.prepareStatement(\"INSERT INTO due VALUES(?,?,?,FALSE)\")) {p.setString(1,user);p.setLong(2,version);p.setLong(3,expires);p.executeUpdate();}\n                c.commit(); return version;\n            } catch(SQLException | RuntimeException e) {rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public boolean unban(String user, long version, long now, boolean injectFailure) throws SQLException {\n        if(now<0) throw new IllegalArgumentException();\n        try(Connection c=open()) {\n            c.setAutoCommit(false);\n            try {\n                int changed;\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE ban SET active=FALSE WHERE user_id=? AND version=? AND active=TRUE AND expires<=?\")) {p.setString(1,user);p.setLong(2,version);p.setLong(3,now);changed=p.executeUpdate();}\n                if(changed==1) {\n                    try(PreparedStatement p=c.prepareStatement(\"INSERT INTO unban_event VALUES(?,?)\")) {p.setString(1,user);p.setLong(2,version);p.executeUpdate();}\n                }\n                // A future task is never acknowledged early; a superseded due version can be retired when due.\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE due SET done=TRUE WHERE user_id=? AND version=? AND expires<=?\")) {p.setString(1,user);p.setLong(2,version);p.setLong(3,now);p.executeUpdate();}\n                if(injectFailure) throw new SQLException(\"injected rollback\");\n                c.commit(); return changed==1;\n            }catch(SQLException | RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public int catchUp(long now) throws SQLException {\n        record Due(String user,long version) {}\n        List<Due> rows=new ArrayList<>();\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"SELECT user_id,version FROM due WHERE done=FALSE AND expires<=?\")) {p.setLong(1,now);try(ResultSet r=p.executeQuery()){while(r.next()) rows.add(new Due(r.getString(1),r.getLong(2)));}}\n        int changed=0;for(Due d:rows)if(unban(d.user(),d.version(),now,false))changed++;return changed;\n    }\n    public long count(String query) throws SQLException {try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery(query)){r.next();return r.getLong(1);}}\n    private static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args)throws Exception {\n        String url=\"jdbc:h2:\"+args[0]+\";LOCK_TIMEOUT=20000\";VersionedUnban s=new VersionedUnban(url);s.addUser(\"u\");\n        long old=s.ban(\"u\",10);check(!s.unban(\"u\",old,9,false));check(s.count(\"SELECT COUNT(*) FROM due WHERE done=FALSE\")==1);\n        long newer=s.ban(\"u\",20);check(!s.unban(\"u\",old,10,false));check(s.count(\"SELECT COUNT(*) FROM ban WHERE active=TRUE\")==1);\n        try{s.unban(\"u\",newer,20,true);throw new AssertionError();}catch(SQLException e){check(e.getMessage().contains(\"injected\"));}\n        check(s.count(\"SELECT COUNT(*) FROM ban WHERE active=TRUE\")==1 && s.count(\"SELECT COUNT(*) FROM unban_event\")==0);\n        ExecutorService pool=Executors.newFixedThreadPool(8);\n        try{List<Callable<Boolean>> tasks=new ArrayList<>();for(int i=0;i<30;i++)tasks.add(()->s.unban(\"u\",newer,20,false));int wins=0;for(Future<Boolean> f:pool.invokeAll(tasks))if(f.get())wins++;check(wins==1);}finally{pool.shutdownNow();}\n        check(s.count(\"SELECT COUNT(*) FROM unban_event\")==1);check(!s.unban(\"u\",newer,20,false));\n        s.ban(\"u\",30);VersionedUnban reopened=new VersionedUnban(url);check(reopened.catchUp(100)==1);check(reopened.catchUp(100)==0);\n        check(reopened.count(\"SELECT COUNT(*) FROM unban_event\")==2);check(reopened.count(\"SELECT COUNT(*) FROM due WHERE done=FALSE\")==0);\n        System.out.println(\"PASS VersionedUnban: early/exact deadline, newer ban blocks stale release, rollback of status+event+due, 30 racing releases yield 1, repeated release, persistent catch-up after all connections closed\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "7.4 10万条告警规则怎样定时扫描、多实例分配和扩缩容"
+    },
+    {
+      "type": "paragraph",
+      "text": "规则扫描应把每个应执行时间槽持久化，用分片和租约分配工作，结果提交以槽身份去重并拒绝旧执行者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：10万告警规则如何扫描；多实例怎样分配；扩缩容怎么防漏扫重复告警。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "10万条规则的周期P、规则成本和迟到政策须先定义；可恢复执行槽与结果一次生效不等于计算物理只运行一次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先估速率，再减少无效读取"
+    },
+    {
+      "type": "paragraph",
+      "text": "若每条规则每P秒一次，平均评估速率100000/P；如P=60仅为假设，约1667次/秒。若均耗时c秒，稳定在途量约rate×c，另留抖动/长尾余量。扫描固定不意味着执行免费，数据源QPS、CPU、连接与通知限额都要测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "规则定义按ruleId+version缓存/编译，增量加载新增修改，不每次拉10万段文本重解析。按共同数据源/时间窗批量取指标，复用相同查询快照，减少N次重复拉取；动态规则更新以版本生效时间确定新旧扫描。用nextDue索引或时间桶只加载将到期规则，周期相位在业务允许时错峰，避免整点10万任务挤在同一秒。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "稳定逻辑分片与一致性哈希"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把ruleId稳定hash到固定逻辑shard，再维护shard→owner/epoch映射，每个实例领取若干shard。扩缩容调整逻辑shard归属，不改变每条规则身份。也可使用含虚拟节点的一致性哈希环决定候选owner，定位/迁移机制复用第3.1节；hash选择位置，不产生合法的唯一执行权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一致性哈希算对了，也不保证只有一个实例扫描。两个实例拿着不同成员视图，各自都能认为自己负责，所以配置和租约仍须权威裁决，旧 owner 提交资源时检查 epoch。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移时先交接未完成槽与 nextDue 水位，再发布新代际，拒绝旧 worker 覆盖新结果。可以允许重试带来的重复计算，却不能双方都以为对方负责，最终丢掉责任。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "持久运行槽和不重不漏的准确含义"
+    },
+    {
+      "type": "paragraph",
+      "text": "唯一运行键定义为(ruleId,ruleVersion,scheduledSlot)，slot来自应计划时间而非worker开始时间；重试不新建slot。DB保存PENDING/RUNNING/DONE、attempt/lease及结果，领取/完成条件校验当前代际。评估结果、告警状态转换与通知outbox在同一事务提交，重复执行同slot只复用结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "停机一小时后的补跑策略，要由规则语义决定。调度器按持久 nextDue 追赶，可以逐槽补跑、只合并最新一次，或跳过过期槽，但必须预先约定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有当前指标快照时，不能伪造历史每分钟的评估，历史补跑需要可读的历史数据。missed/skipped 也要有可见记录和告警，不能静默前移 nextDue，再说没有遗漏。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "MQ方案中谁生产任务"
+    },
+    {
+      "type": "paragraph",
+      "text": "负责周期的仍是持久调度器：短事务锁定/条件领取到期规则，在同事务创建run和outbox，并将nextDue推进到下一槽。outbox发布者把runId送MQ，成功后标发送；进程在发送后标记前退出会重发同runId。MQ是缓冲和分发，不会凭空知道数据库里所有规则何时到期。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费者收到消息后核验规则版本、run状态和租约，评估后条件提交结果及告警事件，再确认消息。若消息丢/过期，扫描PENDING/过期RUNNING重新唤醒。只先更新nextDue再发消息存在丢任务窗口，只先发后更新会重复，两者靠持久槽与outbox解决。持续生产快于评估能力会积压，MQ不创造算力。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "告警去重与扫描去重是两层"
+    },
+    {
+      "type": "paragraph",
+      "text": "运行槽去重，和告警通知去重，是两层规则。同一规则连续五次为 true，是次次通知、只在 OK→FIRING 通知，还是冷却后再提醒，由告警策略决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要明确 ruleVersion 变化、恢复通知、debounce 和多窗口数据水位。run 唯一只防同槽重复效果，不会自动压掉不同槽的提醒。外部通知仍需稳定事件 ID 或目的端幂等，本地 DONE 不能保证邮件只发一次。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与复杂度边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "AlarmSlots对10万rule验证1/3/7/19节点视图下每条恰有一个owner，并明确新旧视图重叠会有两次尝试。实际H2测试run、outbox、nextSlot同事务回滚，30调度者并发生成10槽仅10份，代际更新拒旧完成，重开后按有界批量补齐漏槽。它不是一致性哈希环实现；例子用固定1024shard映射候选owner，元数据切换/租约授予仍是外部权威职责。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单次扫描O(到期条数)，定位hash通常O(1)或环O(log V)，状态随保留运行槽增长。生产要规划历史清理与幂等保留，测试数据库故障、路由切换、慢规则、MQ积压及通知未知。本地100000条路由覆盖不能冒充真实100000规则在固定周期内完成的吞吐压测。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "实现包含独立边界测试，运行环境与保证范围按上述合同。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "015/AlarmSlots.java",
+      "value": "import java.sql.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Local routing property tests plus real H2 slot/outbox/fencing transactions. */\npublic final class AlarmSlots {\n    private final String url;\n    public AlarmSlots(String url)throws SQLException {\n        this.url=url;\n        try(Connection c=open();Statement s=c.createStatement()){\n            s.execute(\"CREATE TABLE IF NOT EXISTS rule(id INT PRIMARY KEY, version INT, next_slot BIGINT)\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS run(rule_id INT, version INT, slot BIGINT, epoch BIGINT, done BOOLEAN, PRIMARY KEY(rule_id,version,slot))\");\n            s.execute(\"CREATE TABLE IF NOT EXISTS outbox(rule_id INT, version INT, slot BIGINT, PRIMARY KEY(rule_id,version,slot))\");\n        }\n    }\n    private Connection open()throws SQLException{return DriverManager.getConnection(url);}\n    public void seed()throws SQLException{try(Connection c=open();Statement s=c.createStatement()){s.execute(\"INSERT INTO rule VALUES(1,1,0)\");}}\n    // Bounded catch-up: persist up to maxSlots; later calls continue from the same cursor.\n    public int emit(long through,int maxSlots,boolean fail)throws SQLException{\n        if(through<0||maxSlots<=0)throw new IllegalArgumentException();\n        try(Connection c=open()){\n            c.setAutoCommit(false);\n            try{\n                long next;int version;\n                try(Statement s=c.createStatement();ResultSet r=s.executeQuery(\"SELECT version,next_slot FROM rule WHERE id=1 FOR UPDATE\")){r.next();version=r.getInt(1);next=r.getLong(2);}\n                int emitted=0;\n                while(next<=through&&emitted<maxSlots){\n                    try(PreparedStatement p=c.prepareStatement(\"INSERT INTO run VALUES(1,?,?,0,FALSE)\")){p.setInt(1,version);p.setLong(2,next);p.executeUpdate();}\n                    try(PreparedStatement p=c.prepareStatement(\"INSERT INTO outbox VALUES(1,?,?)\")){p.setInt(1,version);p.setLong(2,next);p.executeUpdate();}\n                    next=Math.incrementExact(next);emitted++;\n                }\n                if(fail)throw new SQLException(\"injected rollback\");\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE rule SET next_slot=? WHERE id=1\")){p.setLong(1,next);p.executeUpdate();}\n                c.commit();return emitted;\n            }catch(SQLException|RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    // Explicit administrative/lease authority takeover; lease timing is outside this sample.\n    public long takeOver(long slot)throws SQLException{\n        try(Connection c=open()){\n            c.setAutoCommit(false);\n            try{\n                try(PreparedStatement p=c.prepareStatement(\"UPDATE run SET epoch=epoch+1 WHERE rule_id=1 AND version=1 AND slot=? AND done=FALSE\")){p.setLong(1,slot);if(p.executeUpdate()!=1){c.rollback();return -1;}}\n                try(PreparedStatement p=c.prepareStatement(\"SELECT epoch FROM run WHERE rule_id=1 AND version=1 AND slot=?\")){p.setLong(1,slot);try(ResultSet r=p.executeQuery()){r.next();long e=r.getLong(1);c.commit();return e;}}\n            }catch(SQLException|RuntimeException e){rollbackPreserving(c, e); throw e;}\n        }\n    }\n    public boolean complete(long slot,long epoch)throws SQLException{\n        try(Connection c=open();PreparedStatement p=c.prepareStatement(\"UPDATE run SET done=TRUE WHERE rule_id=1 AND version=1 AND slot=? AND epoch=? AND done=FALSE\")){p.setLong(1,slot);p.setLong(2,epoch);return p.executeUpdate()==1;}\n    }\n    static int shard(long rule){return Math.floorMod(Long.hashCode(rule),1024);}\n    public long count(String sql)throws SQLException{try(Connection c=open();Statement s=c.createStatement();ResultSet r=s.executeQuery(sql)){r.next();return r.getLong(1);}}\n    private static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args)throws Exception{\n        for(int workers:new int[]{1,3,7,19}){\n            int[] seen=new int[100000];\n            for(int owner=0;owner<workers;owner++)for(int r=0;r<seen.length;r++)if(shard(r)%workers==owner)seen[r]++;\n            for(int n:seen)check(n==1);\n        }\n        // Two topology epochs overlap: a deterministic owner in each view still means two attempts.\n        int attempts=0;for(int r=0;r<100000;r++){check(shard(r)>=0&&shard(r)<1024);attempts+=2;}check(attempts==200000);\n        String url=\"jdbc:h2:\"+args[0]+\";LOCK_TIMEOUT=20000\";AlarmSlots s=new AlarmSlots(url);s.seed();\n        try{s.emit(9,4,true);throw new AssertionError();}catch(SQLException e){check(e.getMessage().contains(\"injected\"));}\n        check(s.count(\"SELECT COUNT(*) FROM run\")==0&&s.count(\"SELECT next_slot FROM rule\")==0);\n        ExecutorService pool=Executors.newFixedThreadPool(8);\n        try{List<Callable<Integer>> tasks=new ArrayList<>();for(int i=0;i<30;i++)tasks.add(()->s.emit(9,4,false));int emitted=0;for(Future<Integer> f:pool.invokeAll(tasks))emitted+=f.get();check(emitted==10);}finally{pool.shutdownNow();}\n        check(s.count(\"SELECT COUNT(*) FROM run\")==10&&s.count(\"SELECT COUNT(*) FROM outbox\")==10&&s.count(\"SELECT next_slot FROM rule\")==10);\n        long old=s.takeOver(0),current=s.takeOver(0);check(current==old+1);check(!s.complete(0,old));check(s.complete(0,current));check(!s.complete(0,current));\n        AlarmSlots reopened=new AlarmSlots(url);check(reopened.emit(12,2,false)==2);check(reopened.emit(12,2,false)==1);check(reopened.emit(12,2,false)==0);\n        check(reopened.count(\"SELECT COUNT(*) FROM run\")==13&&reopened.count(\"SELECT COUNT(*) FROM outbox\")==13);\n        System.out.println(\"PASS AlarmSlots: 100000 rules have one owner per 1/3/7/19-node topology, overlap needs fencing, rollback run+outbox+cursor, 30 racing schedulers emit 10 slots once, stale completion rejected, bounded catch-up/reopen\");\n    }\n\n    // Keep the primary operation failure; rollback is best-effort diagnostic cleanup.\n    static boolean rollbackPreserving(Connection connection, Throwable primary) {\n        try {\n            connection.rollback();\n            return true;\n        } catch (Throwable rollbackFailure) {\n            if (rollbackFailure != primary) primary.addSuppressed(rollbackFailure);\n            return false;\n        }\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

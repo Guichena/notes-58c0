@@ -1,0 +1,240 @@
+{
+  "entries": [
+    {
+      "id": "bg-分布式-1",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "CAP、一致性与持久化",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "CAP 理论是什么？CP 和 AP 系统分别怎么理解？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>一致性 C</b>：不同节点对同一份数据尽量看到同样结果。</li><li><b>可用性 A</b>：请求来了尽量都能返回，不一定保证拿到的是最新值。</li><li><b>分区容错 P</b>：网络断开后系统还能继续运行。</li></ol></div>\n<p class=\"md-p\">工程里更准确的说法是：分布式系统几乎都得接受 P，关键在于分区来了以后偏 CP 还是偏 AP。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>偏向</th><th>典型场景</th><th>取舍</th></tr></thead><tbody><tr><td>CP</td><td>ZooKeeper、etcd；配置中心、注册中心、选主协调</td><td>更怕脑裂，宁可牺牲一部分可用性，也要保证一致性</td></tr><tr><td>AP</td><td>缓存、DNS、部分 NoSQL；推荐、缓存、搜索</td><td>更怕完全不可用，优先保证请求能回来，可接受短时间旧数据，再靠副本同步和最终一致性慢慢收敛</td></tr></tbody></table></div>\n<p class=\"md-p\">不同系统不是天然写着 CP 或 AP，而是按核心目标做取舍。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>CAP 讨论的是分区发生时怎么取舍，平时没分区并不等于永远只能三选二。这里的 C 更接近线性一致性这类强一致语义，不要和最终一致、业务一致混成一句话。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分区一来不可能什么都要：怕脑裂偏 CP，怕完全不可用偏 AP。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>继续展开通常会落到哪里？</b></p><p class=\"md-p\">通常会落到 BASE 和最终一致性的实现方式。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>CAP 的本质是：分区一出现，就在一致性 C 和可用性 A 之间取舍，分布式系统几乎都接受 P。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>一致性 C / 可用性 A / 分区容错 P / CP 与 AP</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "WAL 是什么？为什么要引入 WAL？",
+          "a": "<p class=\"md-p\">WAL 就是 Write-Ahead Logging，预写日志。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>核心做法</b>：把数据页改到主存储之前，先把这次修改意图顺序写进日志。目的是把随机改数据页变成先顺序写日志、再慢慢刷数据页，同时给崩溃恢复留证据。</li><li><b>持久性</b>：改到一半宕机后，重启可根据日志把已提交、还没刷进数据页的修改补回来。</li><li><b>性能</b>：每次同步刷数据页成本高；顺序写日志通常更快，也更适合批量刷盘。数据库 redo log、本地存储引擎的预写日志都是这一类思路。</li><li><b>运行与恢复</b>：正常时先 append 日志，再异步刷脏页；崩溃后根据日志和 checkpoint 决定哪些修改需要 redo。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>WAL 单独存在并不万无一失，还要配合 checkpoint、刷盘策略和恢复流程。它是先记账再慢慢落正本，不能完全替代最终数据文件。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>它把随机写尽量收敛成顺序写，所以既用来防丢数据，也是高性能存储引擎的核心基础设施。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>WAL 的本质是改数据页前先顺序写日志，把随机写变成顺序写，并给崩溃恢复留证据。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先日志后数据页 / 持久性 / 性能 / 配合恢复流程</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    {
+      "id": "bg-分布式-2",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "一致性与分布式限流",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "分布式系统里常说的数据一致性，一般是怎么保证的？",
+          "a": "<p class=\"md-p\">我会先分层，不会一上来就上分布式事务。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先定义要求</b>：必须强一致，还是最终一致就够。</li><li><b>主数据</b>：账户余额、库存最终扣减、支付状态这类高敏感数据，最终真相收口在数据库事务、唯一约束、状态机和条件更新上。</li><li><b>派生数据</b>：缓存、搜索索引、推荐结果、分析数据这类副本，更多追求最终一致。</li><li><b>落地组合</b>：本地事务保证单库原子性；幂等键和唯一约束防重复；消息 / outbox 把状态变更可靠发出去；消费端再靠重试、补偿和对账把异常路径收回来。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>一致性不是靠某一个中间件自动送的，而是先分清主数据和派生数据，再按敏感度走强校验，或走最终一致加补偿。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>一致性先分清要强一致还是最终一致，再按主数据和派生数据组合事务、幂等、消息与补偿。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定要求 / 主数据收口 / 派生副本 / 组合手段</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "多机房多集群部署，每个机房都有自己的 Redis，怎么做整体限流？",
+          "a": "<p class=\"md-p\">先看要的是全局严格限流，还是总体接近全局、但优先可用。</p>\n<p class=\"md-p\">全平台今天只能发 100 万张券、一个账号全局每分钟只能成功 10 次这类要求，单靠每个机房各自的本地 Redis 计数很难对齐：跨机房同步有延迟，网络分区时还会出现双边都放行。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方案</th><th>做法</th><th>取舍</th></tr></thead><tbody><tr><td>中心化全局配额</td><td>关键限流判断收口到统一网关、统一配额服务，或少数强一致协调节点</td><td>全局口径最稳；可用性和跨机房 RT 压力更高</td></tr><tr><td>配额切分</td><td>总额度按机房预分桶，本地 Redis 快速限流，额度快耗尽再异步申请新配额</td><td>可用性更好、RT 更低；接受少量误差，配额回收更复杂</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会先说清严格性要求，再说明愿意拿多少一致性去换可用性和时延。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多机房限流先定全局严格还是总体接近全局但优先可用，再在中心配额和按机房切分里选。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定严格性 / 本地 Redis 的坑 / 中心化配额 / 配额切分</p>",
+          "leadType": "v9:方案/对比"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    {
+      "id": "bg-分布式-3",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分布式锁与选主",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "如果只有 MySQL，怎么实现分布式锁？<code class=\"tok-inline\">UNIQUE KEY</code> 和 <code class=\"tok-inline\">select ... for update</code> 这两类方案怎么比较？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>唯一约束抢锁</th><th>select ... for update</th></tr></thead><tbody><tr><td>做法</td><td>锁表里 lock_name 做唯一键，谁先 insert 成功谁拿到锁；释放时删行，或配合过期时间和版本号做租约</td><td>基于事务的排他锁，占住某一行</td></tr><tr><td>优点</td><td>简单直观，也比较容易跨进程</td><td>适合本来就在一个短事务里顺手串一下互斥</td></tr><tr><td>缺点</td><td>要处理持锁方宕机、锁过期、误删别人锁，表里通常再带 owner、expire_at、version</td><td>连接断了、事务拖长、锁没及时释放，影响比较大，不适合长时间分布式锁</td></tr><tr><td>适用</td><td>需要租约语义和跨进程互斥时，更偏向唯一键或条件更新</td><td>短事务里保护同一行资源</td></tr></tbody></table></div>\n<p class=\"md-p\">无论哪种，都别把慢业务逻辑长时间包在数据库锁里。</p>\n<p class=\"md-p\">MySQL 可以拿来做锁，但它不是专门的协调组件。高并发下数据库锁会直接占连接、拖事务、放大热点竞争，死锁、超时、主从延迟也会把锁语义搞得更脆弱。临时方案、低频任务互斥、部署规模不大还能接受；锁已经变成系统核心协调机制时，通常 Redis、ZooKeeper、etcd 更合适。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>抢锁成功不保证业务结果天然正确，后面仍要靠幂等键、状态机、版本号或唯一约束兜最终正确性。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么还会追到幂等、防重和 fencing token？</b></p><p class=\"md-p\">锁只是互斥入口。即使用 MySQL 抢锁成功，后面仍要靠幂等键、状态机、版本号或唯一约束兜最终正确性，所以会自然追到幂等、防重和 fencing token。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>只有 MySQL 时，分布式锁就是唯一约束抢锁或事务行锁占行；锁只管互斥，业务正确性仍要幂等兜底。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>唯一键抢锁 / 行锁占锁 / 何时能用 MySQL / 锁后仍要幂等</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "如果只有 MySQL，怎么在多个进程之间做 Leader Election？",
+          "a": "<p class=\"md-p\">我会做成基于租约的抢主，避免把某一行永久锁死。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单行主控表</b>：字段放 <code class=\"tok-inline\">leader_id</code>、<code class=\"tok-inline\">lease_until</code>、<code class=\"tok-inline\">version</code> 或 fencing token。</li><li><b>定时抢租约</b>：条件更新 <code class=\"tok-inline\">where lease_until &lt; now()</code>，把自己写成新 leader；也可以用唯一键插入抢占。</li><li><b>续约与让位</b>：抢到后持续续约，续不上视为主动让位。进程挂了，租约过期后别的实例还能接管。</li><li><b>fencing token</b>：每次成功当选拿到单调递增版本，后续业务动作带上它，避免旧 leader 网络恢复后继续误操作。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：规模不大、依赖少。若对一致性、自动恢复和可观测性要求更高，通常 ZooKeeper 或 etcd 更顺手。</p>\n<p class=\"md-p\"><i>不适合的做法</i>：用长事务或永久 <code class=\"tok-inline\">select for update</code> 当选主。连接异常或事务没释放时，恢复会很难看。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>选主成功不等于安全。旧 leader 失联但没死透时会脑裂双写；线上很多时候更怕双写。不能只停在谁把 leader_id 更新成功，还要带上租约续期、失效检测和 fencing。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MySQL 选主的本质是租约抢主：到期条件更新或唯一键抢占，续约失败就让位。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单行主控表 / 条件更新抢租约 / 续约失败让位 / fencing token / 防脑裂双写</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    {
+      "id": "bg-分布式-4",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分布式调度",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "XXL-JOB 是什么？它大概有哪些功能？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>调度中心</b>：负责任务配置、触发、路由、监控和告警。</li><li><b>执行器</b>：部署在业务服务侧，真正执行任务逻辑，并把结果回传。</li><li><b>常见功能</b>：定时调度、失败重试、任务分片广播、路由策略、日志查看、执行历史、告警通知、手动触发、动态上下线执行器。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>它要解决的是把分布式环境下的任务调度做成可管理、可观测、可运维的系统。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>XXL-JOB 的本质是分布式任务调度框架，把何时执行、在哪执行、结果怎么管理统一起来。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>调度中心 / 执行器 / 常见功能 / 可运维调度</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "XXL-JOB 在 CAP 里大致偏什么？",
+          "a": "<p class=\"md-p\">XXL-JOB 是分布式调度框架，不是严格套 CAP 的 KV 存储。我不会硬说它是 AP 还是 CP。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>层面</th><th>更在意什么</th><th>怎么权衡</th></tr></thead><tbody><tr><td>控制面</td><td>任务别乱调、别漏调太多，也更怕脑裂和重复调度</td><td>偏向一致性：中心状态一致，任务只被有限地正确触发</td></tr><tr><td>执行面</td><td>个别执行器异常不能让整个系统不可用</td><td>保留可用性：关注节点存活、失败转移和重试补偿</td></tr></tbody></table></div>\n<p class=\"md-p\">我会把重点放在任务注册、心跳、故障转移、路由和失败重试。不同层面对一致性和可用性的权衡不一样，分布式任务的防重和幂等也要放在这个前提下看。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>XXL-JOB 难直接套 CAP：控制面更怕乱调和脑裂，执行面要在节点异常时仍保持可用。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>不是 KV 存储 / 控制面偏一致 / 执行面保可用 / 注册心跳重试</p>",
+          "leadType": "v9:原理/对比"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    {
+      "id": "bg-分布式-5",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分布式事务与工程取舍",
+      "number": "1 问",
+      "items": [
+        {
+          "q": "生产环境里要删除五个订单，这种场景能不能做成事务？一般怎么判断？",
+          "a": "<p class=\"md-p\">我从边界和落地方案两层讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>同一 MySQL 实例</b>：只删五条订单记录，用本地事务，一次提交或回滚就够。</li><li><b>跨服务</b>：还要联动库存、支付、优惠券、搜索索引、消息通知，就超出单库事务。我不会第一反应上强分布式事务。更现实的是先把订单改成“待删除”或“已作废”，再用本地消息表、事务消息、Saga 补偿、幂等任务把下游逐步收口。删订单牵涉审计、回滚、幂等和历史查询，做成跨服务强事务后链路很重，锁持有时间也会被放大。</li><li><b>怎么判断</b>：单库动作用本地事务；跨服务优先状态机加补偿；只有确实要求强一致、且链路短可控时，才评估 TCC 或更强事务方案。</li><li><b>先问是不是物理删除</b>：很多生产系统订单不是直接 delete，而是逻辑删除、状态流转、归档清理。只要涉及审计、对账、纠纷处理、消息重放，物理删除都会让后续排障很被动。要先把业务语义、审计要求和跨服务边界一起说清楚。</li></ol></div>\n<p class=\"md-p\"><i>取舍</i>：本地事务解决单库原子性，分布式事务解决跨系统一致提交；工程上更常见的是状态机 + 消息 + 补偿 + 幂等，拿最终一致。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>再往下怎么选事务方案？</b></p><p class=\"md-p\">继续展开通常会落到 TCC、Saga、消息事务和幂等到底怎么选。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>删五个订单先分清边界：同库本地事务一次提交，跨服务用状态机加补偿，强一致且链路短才看 TCC。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先看删到哪层 / 单库本地事务 / 状态机加补偿 / 逻辑删除优先 / 最终一致组合</p>",
+          "leadType": "v9:方案/场景"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    {
+      "id": "bg-分布式-6",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分库分表基础",
+      "number": "9 问",
+      "items": [
+        {
+          "q": "什么情况下会考虑分库分表？",
+          "a": "<p class=\"md-p\">我会把它当成单机数据库快扛不住时才上的扩展手段。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单表信号</b>：单表数据量太大，索引膨胀明显。</li><li><b>性能信号</b>：写入和查询 RT 持续变差，热点太集中。</li><li><b>资源信号</b>：单库 CPU、IO、连接数已经接近瓶颈。</li></ol></div>\n<p class=\"md-p\">这时候再继续只靠加索引、读写分离、缓存和归档，收益会越来越有限，才会考虑拆。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表不是默认方案，而是单机库在数据量、RT 和资源上快扛不住时的扩展手段。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单表与索引 / RT 与热点 / 资源近瓶颈 / 其他手段有限</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "分库和分表分别解决什么问题？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>分表</th><th>分库</th></tr></thead><tbody><tr><td>主要解决</td><td>单表过大：索引太深、查询和写入变慢、归档困难</td><td>单实例容量、并发和资源瓶颈，比如单机 CPU、磁盘、连接数扛不住</td></tr><tr><td>常见顺序</td><td>很多时候先分表</td><td>单库已经成为瓶颈，再继续分库</td></tr></tbody></table></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分表解决单表过大带来的慢和归档难，分库解决单实例的容量、并发和资源瓶颈。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>分表对单表 / 分库对实例 / 先表后库</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "分片键怎么选？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>优先字段</b>：查询里最常带、分布比较均匀、未来不容易改的字段，比如 <code class=\"tok-inline\">userId</code>、<code class=\"tok-inline\">tenantId</code>、订单主键。</li><li><b>选得好</b>：路由比较稳定，大部分请求都能落到单分片。</li><li><b>选得不好</b>：容易出现热点、跨分片查询，后面迁移也困难。</li><li><b>业务归属</b>：如果天然有强实体归属，通常就围绕这个归属去选。</li></ol></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分片键选查询最常带、分布均匀、以后难改的字段，让路由稳定、请求尽量落单分片。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>常查且均匀 / 以后不易改 / 强实体归属 / 避开热点跨片</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "分库分表之后最麻烦的问题是什么？",
+          "a": "<p class=\"md-p\">拆完之后，很多以前默认成立的能力都没了，麻烦点不在取模本身。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>变复杂的能力</b>：跨分片查询、跨分片排序分页、聚合统计、全局唯一 ID、分布式事务、扩容迁移、热点倾斜。</li><li><b>要补的一整套</b>：路由、中间件、全局 ID、数据迁移和监控治理。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分库分表是用业务复杂度换数据库扩展性，拆完并没有结束。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表的本质是用业务复杂度换扩展性，拆完要另补路由、全局 ID、迁移和治理。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>跨片查询排序 / 聚合与全局 ID / 事务与迁移 / 热点与治理</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "分库分表怎么设计？到底是怎么分库、怎么分表的？",
+          "a": "<p class=\"md-p\">我会先分两层，而不是一上来就 hash。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>垂直拆分</b>：按业务域分库，用户、订单、支付、库存各管各的。</li><li><b>水平拆分</b>：同一类数据按分片键拆成多份。</li></ol></div>\n<p class=\"md-p\">落地顺序一般是：先做业务垂直分库，再对增长最快的热点表做水平分表，必要时继续分库，把流量和容量一起摊开。先判断瓶颈在单表、单库，还是业务边界混乱，再决定先拆业务还是先拆数据量。</p>\n<p class=\"md-p\"><i>适用场景</i>：业务边界混乱先垂直拆；单表或单库容量、流量顶不住再水平拆。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>直接说分 64 张表，说不清先判断瓶颈、再决定拆业务还是拆数据量。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表分两层：先按业务域垂直分库，再按分片键水平拆表，先看瓶颈再决定拆哪一层。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先判断瓶颈 / 垂直按业务分库 / 水平按分片键 / 热点表再摊开</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "分片键如何选择？到底对什么做哈希？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>hash 对象</b>：一般就是分片键本身，比如 <code class=\"tok-inline\">userId</code>、<code class=\"tok-inline\">tenantId</code>、订单号里的某一段稳定标识。</li><li><b>怎么选</b>：不是哪个字段最随机，而是既分布相对均匀，又能支撑主要查询路由。最常按用户查订单历史，拿 <code class=\"tok-inline\">userId</code> 做 hash 比拿状态位合理；主要按订单号查详情，订单号本身或其编码规则更关键。</li><li><b>失衡代价</b>：只为均匀选一个业务上不常带的字段，后面跨分片查询会很痛苦。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只追求均匀、忽略主查询能不能路由，后面跨分片会很痛苦。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分片键选择永远是均匀性和路由能力的平衡。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分片键的本质是均匀性和路由能力的平衡，真正做 hash 的是分片键本身。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>hash 分片键本身 / 均匀且能路由 / 对齐主查询</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "分库分表后跨库、跨表查询怎么做？",
+          "a": "<p class=\"md-p\">能查，代价会高。常见三类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>中间件层路由聚合</b>：把多个分片结果拉回来再合并。</li><li><b>业务侧归并</b>：业务自己做多次查询，再把结果合并。</li><li><b>旁路查询</b>：为高频跨分片单独做宽表、搜索索引、汇总表或离线数仓。</li></ol></div>\n<p class=\"md-p\"><i>缺点</i>：不能再用单库单表时随手一条 SQL 全搞定。<i>适用场景</i>：偶发可以接受；若这类查询是核心主路径，多半是分片策略和访问模式没对齐，或者要额外建设旁路查询体系。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>跨分片不是完全做不到，而是不能再用单库单表那种随手一条 SQL 的心态。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>跨分片查询能做但代价高；它若是核心主路径，说明分片策略和访问模式没对齐。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>中间件路由聚合 / 业务多次归并 / 旁路宽表索引</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "用分表解决大 offset 会带来什么问题？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单表侧</b>：分表可能让单表上的 offset 压力下降一些，但不会自动把深分页消灭。</li><li><b>跨分片</b>：分页请求一旦跨多个分片，每个分片都要先各自分页或扫描，再把结果拉回来做全局合并排序。查询逻辑更复杂，网络和内存开销也会上来，全局页码更难稳定。</li><li><b>常见做法</b>：游标翻页、书签法、限制深翻页，或者给跨分片场景单独做搜索索引和汇总层。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分表解决的是容量问题，不是万能分页优化器。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分表只减轻单表 offset 压力，跨分片深分页仍要各片扫描再全局合并。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单表压力下降 / 跨片全局合并 / 游标书签限翻 / 搜索索引汇总</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "订单数据如果按订单号分片了，想快速查询某个用户的所有订单，一般怎么做？",
+          "a": "<p class=\"md-p\">分片键是订单号、高频条件是 <code class=\"tok-inline\">userId</code> 时，核心主路径不能每次把所有分片扫一遍再聚合。偶发离线可以这么干。常见三类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>映射表或全局二级索引</b>：按 <code class=\"tok-inline\">userId</code> 先查出订单 ID 和所在分片，再回源拿详情。</li><li><b>查询侧存储</b>：用户订单查询单独做成宽表、ES 索引或查询侧存储，写链路异步同步过去。</li><li><b>分片键对齐主查询</b>：如果业务上允许，一开始就让分片键和主查询路径对齐，比如按 <code class=\"tok-inline\">userId</code> 或带用户归属的复合键拆。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：前两类补在“已按订单号分片、又要按用户查列表”；第三类要业务允许从头对齐。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>按用户查列表不补查询索引，scatter-gather 成本迟早会成为瓶颈。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>订单号分片只解决按订单查详情；按 userId 查列表必须另补可路由的查询索引。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>映射或二级索引 / 宽表与查询存储 / 分片键对齐主查询</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 分库分表"
+    },
+    {
+      "id": "bg-分布式-7",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "元数据与血缘补充",
+      "number": "1 问",
+      "items": [
+        {
+          "q": "什么是元数据？怎么理解数据资产和血缘？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>元数据</th><th>血缘</th></tr></thead><tbody><tr><td>回答</td><td>这是什么</td><td>从哪来、怎么变成现在这样</td></tr><tr><td>内容</td><td>表名、字段含义、口径、来源系统、更新频率、负责人、权限边界</td><td>指标、宽表、报表字段的来源，中间的加工、聚合、同步、口径转换，以及最后被谁消费</td></tr><tr><td>价值</td><td>从有人存着但没人敢用，变成知道是什么、能不能信、出问题找谁</td><td>可追溯</td></tr></tbody></table></div>\n<p class=\"md-p\">数据资产建设的第一步，往往不是先做大屏，而是先把元数据补齐。两者一起做，数据资产才可管理、可追责、可复用。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>某个指标突然不准，血缘怎么帮上忙？</b></p><p class=\"md-p\">往上游定位是源表变了、同步链路断了，还是某个 ETL 逻辑改坏了。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>元数据回答这是什么，血缘回答从哪来、怎么变成现在这样，一起才可管理、可追责、可复用。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>描述数据的数据 / 资产先补元数据 / 血缘看来龙去脉 / 可追溯可追责</p>",
+          "leadType": "v9:原理/对比"
+        }
+      ],
+      "source": "八股面经整理 · 数据同步"
+    }
+  ]
+}

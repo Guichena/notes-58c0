@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-83fb55cf1da3ab",
+  "entryId": "own-java-modern",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "9c1a97eac31e40a56c0781107cad9bbe696d2f7ae3c5ab7785e9c474336f5c0d",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Java与C++怎样管理内存 JVM堆外和原生指针如何落到OS进程"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java GC管理可达性，C++主要依靠所有权和RAII管理生命周期；二者最终都由OS映射和计量进程资源。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "语言差异对比：Python 和 Java 有哪些比较典型的深层机制差异？（不要只回答括号、缩进等表层语法差异）。",
+        "一个进程中的多个线程是否共享堆空间？什么是 JVM 堆外内存？Java 程序和 JVM 是如何运行在操作系统中的？"
+      ]
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "4.那你说一下C++和JAVA相比的区别在哪里？",
+        "5.你说了VM，那你说一下JAVA是怎么做内存管理的，C++怎么做内存管理的",
+        "6.C++指针了解吗？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "JVM本身也是用户态程序"
+    },
+    {
+      "type": "paragraph",
+      "text": "JVM 自己就是 OS 进程里的用户态程序，不是 Java 代码之外必然再开一个独立进程。java 启动器建立 JVM，装载类，再通过解释器、JIT 等执行 Java 语义；应用线程、GC/JIT 线程和原生库都在这个进程中工作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "平台线程通常映射 OS 线程，虚拟线程则由 JVM 调度到载体线程。内核不会直接把每条 Java 虚拟线程都当成独立调度项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同JVM线程共享Java堆，仍需JMM规定的同步保证可见性和复合操作正确性；每线程的栈/执行现场不意味着引用到的对象也私有。OS只管理进程地址映射与页，不直接知道哪个对象已经成为Java垃圾。类加载/JIT完整链见Java怎样编译运行 与C构建和装载有什么区别 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcny9D5f7btX74F5jkAU7iFVg)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "GC管理对象生命 堆外仍占进程预算"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java对象通常由运行时分配并按根可达性管理，收集器可使用复制、标记清除/整理和并发/分代策略；具体取决于所选JVM和收集器，不是每次失去引用立即归还OS。局部引用可在栈或寄存器等位置，优化可能标量替换，不能机械地把每次new都等同一次系统调用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "堆外内存仍然是进程资源，不能用来绕过容器上限。通常说的堆外包括直接缓冲和 JNI/原生分配；更广义的进程非堆还包括元空间、代码缓存和线程栈。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 ByteBuffer.allocateDirect 为例，缓冲内容可在普通 Java 堆之外，但描述它的 Java 对象仍由 GC 管理。直接缓冲的分配、清理成本通常更高，额度也能耗尽，并不保证用完立即释放。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C++以存储期 对象生命和所有权配合管理"
+    },
+    {
+      "type": "paragraph",
+      "text": "自动对象通常随作用域析构，静态/线程局部对象有不同存储期，动态对象则须由明确拥有者释放。优先用vector、string和unique_ptr等RAII对象，让正常返回和异常展开都执行资源释放；确需共享所有权才用shared_ptr，循环强引用需weak_ptr或改所有权图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "new表达式获得存储并初始化对象，delete调用析构再释放；malloc/free处理原始存储，不代替任意C++对象构造析构。分配器可复用空闲块，只有需要时才向OS申请；free后RSS不降不自动等于泄漏。完整malloc/arena/brk/mmap与配对边界见动态分配 first-fit best-fit TLSF malloc与brk如何分层 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn1UqxH4lGOwAAnqnOeuDjyc)，完整智能指针实现见C++智能指针与控制块 怎样手写shared_ptr和weak_ptr (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn3Er6eDztxV5ERD8WDdzhjh)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "裸指针不是自动拥有者"
+    },
+    {
+      "type": "paragraph",
+      "text": "T*表示指向对象/函数等的指针值，&对象取地址，*指针访问所指对象，前提是地址、类型、对齐与生命周期合法。可以有空指针、悬空指针、越界或释放后使用；复制一个裸指针只复制地址语义，不复制对象、不增加标准库共享计数，更不自动延长生命。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数组内的合法指针运算按元素尺寸进行，one-past可用于边界比较但不可解引用；不能任意把整数当地址后保证有效。const T*限制经该指针修改T，T* const限制指针值改变，二者不是同一约束。把局部自动对象地址返回给调用者会悬空；指向仍存活堆对象的局部指针则可安全返回所有权包装。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取舍和失败不能只背手动对自动"
+    },
+    {
+      "type": "paragraph",
+      "text": "C++可以确定性释放文件/锁等资源，但所有权和数据竞争错误可导致未定义行为；Java GC降低部分悬空/重复释放风险，仍会因无界缓存、任务引用或未关闭资源泄漏。两者都要限制对象/线程/直接缓冲与在途队列，并处理分配失败。Java文件连接用try-with-resources，不能等GC承担业务释放期限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java堆占用不高而进程仍然OOM时，应结合Linux怎么查内存占用 free top RSS PSS与容器指标怎样对齐 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnJ3z1CtaiaEQ5suq0N4o6Of)区分堆、非堆、RSS与cgroup计费。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-java-cross-language-contracts",
+  "targetOrigin": "authored"
+}

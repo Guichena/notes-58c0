@@ -1,0 +1,1532 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-handwrite-46",
+  "entryId": "handwrite-46",
+  "expectedOriginalHash": "6e9354d8b4335cfd84554633144da6e5f642457e344a28584f67e514d0201873",
+  "title": "算法练习补充：外存算法与超大文件处理",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "外存算法与超大文件处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "大文件题要保证“从读入到输出，每一步都装得下”，而不只是分块读取。先确认比较、计数和输出口径，再把全局计算拆成有界内存下的顺序处理，选择外排序、分区或多遍扫描。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个常见漏洞是：输入已经分块，后面却用全局 Set、全部分块指针或完整结果列表，把内存重新撑满。本章分别讲数值排序、精确中位数、加权前十、URL 交集、去重在线峰值和全量 ID 去重，并给出可一起编译的 Java 源码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的代码是有明确输入契约的单机教学实现。它确实创建磁盘有序段并进行多轮有限路归并，不把磁盘算法伪装成一次内存排序。加权题另外给出 Map 和 Reduce 的纯 Java 语义；这些函数没有部署到 Hadoop 集群。所有规模都属于题目条件，不代表已经处理过同等规模的真实业务数据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先辨别最终要什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "看到 Top10，先问“按什么排”。数值最大的十个元素，可以单遍只保留十个数；出现次数最多的十个字符串，以及按 count 字段求和最大的十个用户，都要先把同一个键的贡献汇总，不能照搬前一种方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重也要问“最终保留谁”。全量去重要求每个不同 ID 都导出一次，包括只出现一次的 ID；只导出出现次数大于一的 ID，会漏掉它们。两份文件求交还必须知道记录来自哪一边，把两边合起来去重，得到的并不是交集。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“人数”也不是天然等于“会话条数”。同一 userid 的两个重叠登录区间，只贡献一个在线用户。数值中位数依赖全局顺序，不能把每块的中位数再求一次中位数。面试时先把这一层说清，后面的数据结构才有意义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "有界外归并排序是本章的共同基础"
+    },
+    {
+      "type": "paragraph",
+      "text": "外排序可以分成两步记：先做内存装得下的小有序段，再分批把它们归并大。输入有 N 条，每批最多 C 条，会得到 R=ceil(N/C) 个初始段；每批读满后排序、落盘，然后清空批次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次最多归并 F 个段，F 至少为 2。每个输入段只拿当前一条记录放进最小堆，取出最小值输出后，再补入该段下一条。段数超过 F，就分批生成下一层，重复到只剩一个段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "归并堆的正确性来自一个简单事实：某个段中还没输出的记录，都不小于这个段的当前记录；因此所有当前记录的最小者，就是所有未输出记录中的最小者。每次输出后，只需从同一个段补一条。批内排序建立第一层不变式，多轮归并保持它，所以最后整个文件有序。相等记录是否去重，应由具体业务的最终扫描决定；数值排序默认保留重复项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分块内容放不下，分块的“名单”也可能放不下，所以不能把全部 run 路径塞进 List，更不能一次打开所有 run。EMExternalSort 根据阶段号和顺序号计算文件名，只保存本次至多 F 个路径与两个计数器；初始段再多，也不用一次保存全部路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "清理同样有先后顺序：本批输出完整关闭之后，才删除本批旧段；失败时只清理本次创建的专用目录。整个方案不需要全量唯一键 Map，也不依赖键分布均匀。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在有界大小记录的模型下，内存是 O(C·L + F·L + F·B)，L 表示单条记录的最大驻留大小，B 是每个流的缓冲区大小；还要加上批次引用数组及排序临时引用空间。运行时同一个输入 Source 可能保持打开，所以本章实现的排序阶段最多需要 F+2 个数据文件句柄：F 个段输入、1 个段输出和1个原始输入。这里不包括 JVM 自身、日志以及进程其他业务占用的句柄。F 的代码上限是 128，实际仍必须根据系统可用句柄和内存预算选得更小。"
+    },
+    {
+      "type": "paragraph",
+      "text": "批内比较次数是 O(N log C)，归并比较次数是 O(N log F·ceil(log_F R))。当 N、M、B 按定长记录数计量，且归并缓冲区占用满足内存限制时，标准外排序 I/O 量可写为 O((N/B)·(1+ceil(log_F R)))。对变长 UTF-8 字符串，还要把比较最长扫描键长的代价算进去；“一次字符串比较 O(1)”只是定长键模型的简化。原始文本、内部二进制段和最终文本的字节量也不必相等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "临时磁盘空间是 O(输入转换后的数据量)，另加最终结果及原始输入。某批新段写完、旧段删除前，两者会暂时并存；多个阶段交替也需要余量，不能只预留一个最终文件那么大的空间。压缩、磁盘配额、文件数量上限、读写带宽和故障恢复方式都应在实际部署时单独评估。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "记录数上限不等于精确的 JVM 字节上限"
+    },
+    {
+      "type": "paragraph",
+      "text": "本章 Limits 同时限制批记录数和归并扇入，EMIO 把单行有效 UTF-8 负载限制为 32768 字节。固定的单行上限阻止一条恶意长行就吃掉整个堆；固定的批记录数让空间不会随 N 增长。但 Java String、Long 装箱、ArrayList 的容量增长、排序临时数组、解码时新旧对象共存和垃圾回收，都需要额外内存。不能说“读满 1GB 文本恰好用了 1GB 堆”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可用预算应至少满足：批数据的最坏驻留量、排序辅助空间、F 个输入缓冲区和当前记录、输出缓冲区、解析器、运行时安全余量的总和，小于分给算法的内存。若只能拿到整个进程 1GB，堆外内存、线程栈、类元数据等也属于这 1GB。数值题可以改用 long[] 来降低装箱成本；本章保留通用引擎以复用并展示资源边界，严格内存环境下应先用保守的 C，再测量和校准。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单行 32768 字节和任意大的 C 组合起来仍然可能 OOM，这不是自动内存配额管理器。给算法一个无界用户参数，再声称“有限内存必然不超限”，是不成立的。资源回归可以从 C=4096、F=3 等保守参数开始，再结合最长记录和实际运行时开销校准；任何一次受控测试都只说明给定配置和输入的可行性，不能外推成所有 1GB 环境都安全的默认值。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入与输出契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "各示例读取 UTF-8 文本。LF 或 CRLF 分隔记录，文件最后一行可以没有换行。解码失败、超长行、孤立 CR 和 NUL 均报错；不悄悄替换非法字节。ID、URL 和 userid 是完整字符串，不能为空，不执行 trim、大小写折叠或 Unicode 规范化。因而 001 和 1、é 与由两个码点组成的 é，都是不同标识；前后空格也是标识的一部分。若业务不允许空格，应增加明确的校验，而不是悄悄改键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "字符串排序采用 Java String.compareTo 的 UTF-16 字典顺序，目的是获得一致的全序，不声称是中文拼音、自然语言或 URL 语义排序。精确相等用完整字符串比较，绝不只比较哈希值。数字输入是可选正负号加 ASCII 十进制数字，必须处于 signed long 范围；空行、小数、空白包装和溢出均拒绝。数字输出规范化为十进制文本，因此 +01 和 1 在数值排序中是同一个数值的两次出现，而在字符串去重中可以是两个不同 ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读取的数据在任务期间必须保持不变，多遍基数选择尤其需要一致快照。只检查文件大小或条数，并不能识别“条数不变、内容被改”的并发更新。上传场景应使用已经接收完成并封存的临时输入，或者其他可证明一致的快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内部段用记录标记和定长或有界长度编码，可以发现非法标记、非法长度和记录中途截断，但没有校验和或段内条数校验。因此，恰好在完整记录边界截断，或者改变数值而仍保持合法格式的损坏，可能无法被发现。Stats 是运行统计，不是段文件完整性证明。若任务需要检测这类损坏，应在写段时保存预期条数与校验和，并在完整读回后核对；这些校验也不能代替一致快照、原子提交和断电耐久性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输出先写目标目录中的暂存文件，关闭成功后要求同文件系统的原子移动来发布。目标不能与任一输入文件相同，代码还检查已经存在的硬链接别名。算法、解析或写暂存失败时，已有目标保持原样。文件系统不支持原子移动时直接报错，不退回可能暴露半个结果的复制。在 Java 的 ATOMIC_MOVE 语义下，其他移动选项被忽略，已有目标能否被替换由文件系统 provider 决定；本地测试支持该替换，但不能承诺所有 provider 都相同。这里没有实现 fsync、断电耐久性、并发写者协调或崩溃后的自动恢复；原子发布也不能替代这些机制。运行目录应由应用控制，不能让不可信进程在检查后替换路径或符号链接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "try-with-resources 关闭输入、输出和归并流；清理失败作为 suppressed exception 保留在主要错误上。进程被强杀、磁盘损坏或清理权限被撤回时仍可能留下临时文件，生产系统应按任务所有权和保留策略处理遗留目录，不能递归删除共享工作目录。已经成功发布结果后若清理失败，调用可能报错，但结果文件可能完整存在；重试前应检查任务状态，不能仅凭异常就断言未产出结果。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "无序数值大文件怎样排序"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个文件装着大量无序数，全部装入内存会 OOM，可靠的通用答案是外归并排序：把数据读成可容纳的批次，按数值排好写成有序段，再用有界路数的多轮归并生成最终有序文件。整个过程保留每一次数值出现，只让有限数量的记录同时驻留内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试时怎样直接回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以这样说：“我会先明确数字类型、排序方向以及是否保留重复值。以 signed long 升序为例，我按内存预算生成若干有序段，然后每轮最多打开 F 个段，用最小堆做 F 路归并。若段数超过 F，就再做几轮；不会为每个初始段都常驻一个文件流。最终顺序写结果，临时文件成功关闭后再发布。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个问题没有给出具体 GB 数、整数范围或要求稳定排序，因此这些应作为待确认的契约，不能自行把题目缩成“十亿个 int”或“范围很小的正整数”。本节的可运行实现选择 signed long。若原始数据是有限小数，可约定比例转定点整数，或者以 BigDecimal 做精确比较；若是浮点数，还必须约定 NaN、正负零与无穷大的顺序。改变这些条件意味着解析器、比较器和磁盘编码都要对应改变。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么不能直接按文本排序"
+    },
+    {
+      "type": "paragraph",
+      "text": "文本的 10 会排在 2 之前，而数值 10 大于 2；负号和位数还会让顺序更加混乱。代码在读入时就把一行转成 long，内部段用二进制 long 存储，归并使用 Long.compare。比较器不能写成强转后的 a-b，两个极值相减可能溢出，结果不再满足排序要求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如输入 2、10、-11、1、-2，结果必须是 -11、-2、1、2、10。输入 5、5、3，结果必须有两个 5。单纯复用“字符串计数后导出键”会同时犯数值顺序和重复项语义两种错误。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "归并如何落到 Java"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMNumeric.sortFile 负责输入契约和结果发布，EMExternalSort 负责真正的分批及归并。调用时传入输入路径、输出路径、可写临时目录和 Limits(C,F)。C 控制批内记录数，F 控制归并扇入；它们都不是输入规模。结果返回 Stats，包含读取记录数、初始段数、归并轮数、实际最大批大小和最大归并输入数，便于验证参数确实生效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "归并堆里存放“数值及其来源段”。弹出最小值后，向结果写一个数，再从来源段补一条。某个段结束后，不再向堆里补记录；本轮归并结束时统一关闭所有输入流和输出流。空文件会产生一个合法的空结果，单条数据不需要归并。相等值用来源段编号作为确定性的次序；纯数值题并不要求区分相等项的先后。如果记录还带其他字段、需要稳定排序，应把全局输入序号纳入契约，避免只说“有相等值所以自然稳定”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "共享引擎的 I/O 和内存推导适用于这里。若有 N 个数、每批 C 个、F 路归并，R=ceil(N/C)，归并轮数是 ceil(log_F R)，R≤1 时为零。批内排序 O(N log C)，归并 O(N log F·ceil(log_F R))，空间与 C、F 有关，不与总 N 成正比。顺序读写通常比在磁盘文件中直接模拟内存快排的随机交换更容易控制 I/O。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "有条件才成立的替代方案"
+    },
+    {
+      "type": "paragraph",
+      "text": "若数字取值域很小，可以在内存中放计数数组，扫描后按值输出相应次数。它的空间由值域大小决定，并非由出现的记录数决定；64 位任意整数不能直接开完整值域数组。只有最终需要“出现过哪些数”时，位图的一位才足够；需要保留重复项的排序要记录计数，不能只记录存在性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若分布比较明确，可以按数值范围分桶，桶间顺序天然成立，桶内再排序。哈希分桶不提供数值范围顺序，直接拼接哈希桶不等于排序。极端数据倾斜可能把所有数字放进一个桶，所以必须有桶超预算的回退策略，不能凭平均桶大小承诺内存安全。外归并排序不需要分布假设，是本题最稳妥的基线。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "追问与核验"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果问能否只输出最小的一百个，就不再需要完整排序，可以一遍扫描维护大小一百的大顶堆。若仍要求全部有序输出，完整外排序无法被这个堆替代。若问能否中途返回结果，最终归并可以流式产生有序数，但发布完整下载文件仍应避免把失败后的半成品当成功结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "正确性测试可以用独立的 long[] 排序作为小样本参考，覆盖负数、极值、重复值、空文件、单条、数值与字典序不同的反例，以及强制多轮归并。资源测试应让输入和结果文件大于受限堆，同时约束归并扇入与进程文件描述符；逐项检查完整结果等于预期序列，并核对 Stats 中的批大小和归并路数。这类受控测试不能替代 TB 级容量评估或文件系统故障恢复测试。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10G 数据和 1G 内存怎样求精确中位数"
+    },
+    {
+      "type": "paragraph",
+      "text": "通用解法是外排序后按排名取中间元素；若已经确认数据是固定宽度整数，还可以用按值域或按位计数的多遍选择，省掉完整排序。两个堆维护精确中位数仍需保存大量历史元素，不能因为叫“流式算法”就把它当成 1G 内存能解决 10G 数据的办法。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据规模与需要确认的条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目的表达是“10G 的数据找中位数，内存只有 1G”，并在归并思路之外提到过“另一个二进制的方法”，没有给出那个方法的完整说明。通常会口头写成 10GB 和 1GB，但严格实现前还应确认 GB 还是 GiB、文本还是二进制、数字类型、记录数以及内存是堆配额还是整个进程的上限。不能把 10G 文件大小直接除以某个臆定的元素宽度得到 N，也不能认定恰好分十块就一定安全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面把“精确中位数”定义为：N 为奇数时取排序后下标 N/2；N 为偶数时取下标 N/2-1 与 N/2 两个值的算术平均。题目如果要求较小中位数、较大中位数或某个离散分位定义，应单独改排名规则，不能把它们混用。空集没有中位数，代码明确报错。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "第一种回答是外归并排序"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以说：“我先在预算内分块排序落盘，用有限路数归并。记录总条数后，只需找到第 (N-1)/2 和 N/2 两个零基下标，再做精确平均。最后一轮归并可以在到达后一个排名时停止，所以不一定需要输出完整有序文件。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "这段回答的核心是全局归并，不是对每块中位数再求中位数。例子中一块是 1、2、100，另一块是 3、4、5；块中位数分别为 2 和 4，平均是 3，但全体中位数是 (3+4)/2=3.5。即使每块一样大，局部中位数也不包含足够的全局排名信息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMNumeric.median 为了复用同一归并引擎，先形成一个完整磁盘有序段，再顺序读到目标排名。它没有实现“最终归并提前终止”的优化，因此实际 I/O 仍包含完整外排序，不能把优化后的性能归功于当前代码。若将最后一轮输出接到排名选择器并在到达 upperRank 后停止，就能节省最后一部分读写；所有打开的归并流仍要可靠关闭。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件记录数使用 long。下标写成 (N-1)/2 和 N/2，避免用 N+1 造成边界溢出。偶数中位数也不能先用 long 求 a+b；当 a、b 接近极值时会溢出。返回值保存 lower 与 upper，再使用 BigInteger 求和、BigDecimal 除以 2，能准确表达 -0.5 等结果，不用 double 引入舍入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设一批实际容纳 C 条，F 路归并、R=ceil(N/C)，内存和 I/O 采用共同章节中的有界外排序成本。1G 并不意味着 C 能取“1G / 8”：Java 装箱、引用、排序辅助空间和其他运行时开销也要预留。本章通用版以明确的批记录上限实现，实际部署可以替换为 primitive long[] 版本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "第二种回答是固定整数的基数选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "“二进制方法”可理解为利用有限整数值域逐位缩小目标范围；仍需先确认具体整数类型与返回秩。这里明确采用 64 位整数方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "signed long 的有符号升序可转换成无符号位模式的升序：把每个数异或 Long.MIN_VALUE，翻转符号位。这样最小的负数映射到 0，最大的正数映射到全 1。若不翻转符号位，按原始最高字节排序会先处理非负数，顺序就错了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "精确中位数不一定要把候选桶装进内存，也可以一遍确定一个字节。从最高字节开始，统计 256 个桶；找第 k 小，就从小桶往大桶累加，选中覆盖 k 的桶，并把更小桶的总数从 k 中扣掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下一遍仍扫描输入，但只统计符合已选前缀的记录，再确定下一个字节。处理完八个字节，完整整数就确定了。即使所有记录完全相同，每轮也会多确定一个字节，八轮后结束，不会陷入“大桶没变小，所以无限分桶”的问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "偶数 N 要追踪两个排名。EMNumeric.radixMedian 为下、上中位数各保留一个 256 项 long 计数数组；两个目标前缀还相同的时候共用统计结果，分叉后在同一次文件扫描中各自计数。计算完条数之后，固定再扫描八遍文件，总共九遍扫描。每遍仍读完整文件，只是不匹配的记录不进入当前直方图；后续扫描仍要读取未被选中前缀的记录。辅助计数空间为两个 256 项 long 数组，另加固定大小的行读取和解析缓冲区。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若总输入字节数为 D，这个实现读取约 9D 的文本数据并做八轮固定宽度位处理；CPU 还包括每遍十进制解析的成本。它不生成排序临时段，但结果依赖输入在九遍之间保持同一快照。代码检查每遍条数是否变化，可发现一部分更新，却无法发现等条数替换，快照约束不能被这一检查替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可以按值域二分，统计小于等于某个中点的数量，逐步定位第 k 小，最多按值宽度扫描相应轮数；要处理负数和中点溢出。在已知小整数值域时，一次计数直方图就够。如果是任意精度整数、十进制数或自定义比较对象，则不能直接套用八字节版本，外排序通常更通用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么两个堆和近似分位不能偷换本题"
+    },
+    {
+      "type": "paragraph",
+      "text": "标准双堆精确流中位数把较小一半留在大顶堆、较大一半留在小顶堆，总存储量仍然是 O(N)，不是每个堆只有一个元素。只保留一半也可能远大于 1G，且还有对象开销。把堆放到磁盘上又变成新的外存数据结构设计，不能只写 PriorityQueue 就认为问题解决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "抽样、分位摘要可以得到近似中位数，但题目没有给误差容忍度。必须明确说这是改变精度要求后的选择，不能把估计值包装成精确答案。验证本节两个实现时，测试参考直接排序完整的小数组，同时比较两个目标下标，覆盖奇偶长度、所有值相等、负数、正负极值以及两个排名落入不同前缀的情况。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1TB 日志怎样按 count 选前十用户"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按 user 把 count 求和，再对用户总和取前十。Map 输出的是 (user,count)，Reduce 汇总同一个 user 的所有 count；不是把每条日志记为 1，也不是比较单条日志里的最大 count。数据量是 1TB，日志字段是 user、action、timestamp、count，受欢迎程度已经明确定义为总 count。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Map 和 Reduce 应当怎样写"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以直接回答：“Map 解析一条日志，发出 user 和 count。Shuffle 把同一 user 的值送到同一个 Reduce，Reduce 流式相加得到这个用户的总权重。每个 Reducer 对它已经算完整的用户保留本地前十；再把这些候选送到最终阶段，取全局前十。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "用函数记号写就是 map(user,action,timestamp,count)→(user,count)，reduce(user,[c1,c2,…])→(user,Σci)。题目没有要求特定 action、时间窗口或按日志去重，不能擅自加过滤。若业务后来增加条件，过滤必须在聚合前统一执行；如果输入里重复投递的日志需要幂等去重，还要有事件身份，不能单凭 user、action 相同就认为是重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMWeightedTop 中的 map(Log) 和 reduce(String, Iterable<Long>) 是可以编译和测试的纯 Java 函数。前者保留输入权重；后者流式遍历同一个用户的权重并以 BigInteger 求和，不把 Iterable 收进 List。这个 Iterable 对应框架已经分组好的 values，不是包含所有用户的全量集合。代码默认每条 count 是非负 long，timestamp 非负；题目若未说明负权重或撤销事件，需要先确认；如果允许负值，应改输入契约，并始终用精确整数累加，不能未经说明就丢弃负数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "为什么用 BigInteger？每条 count 都合法不代表总和不会超过 long。两个 Long.MAX_VALUE 相加就已溢出。另一个可接受的契约是“确认总和不超 long，使用 Math.addExact 越界即失败”，但直接 sum+=count 后无声回绕会把排名算错。BigInteger 的空间与总和的位数有关，并不需要保存每一条历史日志。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "如何得到全局前十"
+    },
+    {
+      "type": "paragraph",
+      "text": "当某个 Reducer 已经得到一个用户的完整总和时，把 (user,total) 交给大小为十的小顶堆。堆顶是当前候选中最差者，新用户更好时替换堆顶。为了使“第十名”可确定，代码约定总和降序、user 字符串升序。少于十个不同用户就返回全部，空文件返回空结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "R 个 Reducer 每个最多输出十个候选，最终阶段顺序读这些候选，再保留十个即可。候选总量最多 10R 条，但最终阶段不需要一次装进内存。其正确性是：如果用户 x 连它所属 Reducer 的本地前十都进不了，就已有至少十个完整用户在统一排序规则下优于 x；这些用户也存在于全局集合，因此 x 不可能进入全局前十。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个证明依赖两个条件：同一用户的总和在参与本地前十前已经完整；本地与全局采用同一并列规则。如果 user 的贡献被拆到不同 Reducer，还没有二次合并，就不成立。如果需求是“第十名相同分数的全部用户都要输出”，结果可能远超过十条，不能再用只保留十个候选的上述协议，必须另求阈值并保留或回扫所有达到阈值的用户。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能在每个 Mapper 上先选十个“局部最受欢迎用户”然后丢掉其余用户。用前一名举反例：分片一为 A=6、B=5，分片二为 C=6、B=5。各分片只留第一名会留下 A 和 C，真正全局第一 B=10 却被删掉。局部贡献不是完整用户总和，是这个错误的根源。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Combiner 和数据倾斜"
+    },
+    {
+      "type": "paragraph",
+      "text": "求和具有结合性和交换性，可以在 Mapper 输出后使用同样语义的局部求和 Combiner，减少 shuffle 体积。计算的正确性不能依赖 Combiner 必须执行一次；不执行、多次执行、在不同局部分组执行，结果都应相同。若用自定义精确大整数作为中间结果，序列化格式和框架的键值类型也要一起实现；本章没有把标准库 BigInteger 假装成 Hadoop Writable。若真正启用该 Combiner，Map 也必须发出同一种可序列化大整数中间值，Combiner 的输入输出类型要闭合，不能把 LongWritable 的 Map 输出直接接成另一类型的中间输出。本章单机代码没有运行 Combiner，原始 long 权重在最终用户聚合时才转成 BigInteger。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把热点用户交给一个 Reducer 虽然能流式求和、不一定造成内存爆炸，却可能造成该任务极慢。可对热点用户增加有限盐值，先按 (user,salt) 求局部和，再按 user 合并所有盐值的总和。盐值应由稳定的事件标识或输入位置等规则产生，便于重跑；最后去盐汇总前不能做会丢用户的 Top10 剪枝。若各用户分布均匀而单条记录特别大，则需要处理记录大小和解析成本，不能把一切长尾都称为 key 倾斜。"
+    },
+    {
+      "type": "paragraph",
+      "text": "框架重试与业务重复日志也是两回事。使用框架正常的任务输出提交机制，避免 Reducer 自行追加到某个全局共享文件；对外部系统写副作用还需要幂等和提交协议。本章没有运行分布式重试，因此不会声称经过 exactly-once 验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "单机 Java 实现怎样对应 MapReduce"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMWeightedTop.top 读取一份 TSV 文件，逐行映射为 Weight(user,count)，使用外排序把相同用户放到一起，再流式求和并进入 TopK。它是 Map、分组、Reduce 和最终选择的可执行单机对应物，不依赖 Redis、Hadoop 或第三方库。action 与 timestamp 会按输入契约校验，但聚合键只有 user。"
+    },
+    {
+      "type": "paragraph",
+      "text": "除了有界外排序的内存，流式 Reduce 只需当前 user、当前 BigInteger 总和，以及十个最终候选。所有不同用户的总和从不同时保存在生产算法的 Map 中。用通用排序版本时，磁盘中间记录按 user 排序，时间和 I/O 由前文外排序公式给出；用户聚合扫描 O(N)，候选维护 O(U log 10)，U 为不同用户数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在分布式流程中，所有记录都至少读取一次，shuffle 量取决于 Combiner 能合并多少局部重复以及编码大小。只有“1TB”不足以确定节点数或耗时，应明确每任务内存预算、分区策略、热点处理、计数范围和最终候选量，再量测吞吐。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样验证没有把加权题写成频率题"
+    },
+    {
+      "type": "paragraph",
+      "text": "最小反例是 A 只有一条 count=100，B 有两条 count=1。结果第一必须是 A。测试还比较完整小样本 Map<String, BigInteger> 聚合后排序的结果，覆盖并列、零权重、空输入、用户数小于十以及总和超过 long。另把完整用户总和分给多个模拟 Reducer，验证本地前十候选再合并与全局排序一致。此模拟验证数学选择逻辑，不等于部署并验证 Hadoop 的调度、容错和网络流程。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "两个各含 10 亿 URL 的文件怎样求交集"
+    },
+    {
+      "type": "paragraph",
+      "text": "在内存非常小的机器上，可以分别对两个文件做外排序，再用双指针顺序扫描求精确交集。另一个常见方案是用相同规则把两份文件分到对应桶，再处理每对桶；但桶倾斜和哈希碰撞必须有精确处理方法，不能假设桶天然都能放进内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先问相等和输出次数"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目是“两份文件，每份 10 亿个 URL，找出两个文件中相等的 URL”，没有给具体内存字节数、URL 长度上限或重复值输出规则。默认可按集合交集回答：只要一个完整 URL 在两份文件里都出现过，就输出一次。若要求多重集交集，应输出 min(countA,countB) 次；若要求联结所有匹配日志记录，则数量可能是 countA×countB。三种结果的大小差异非常大，不能在实现时默默替换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "URL 相等也有两个层面。按原始字符串相等就比较完整输入；若业务要把默认端口、域名大小写、转义、路径规范化后的地址视为相同，应先定义和实现一致的标准化规则。不能直接把整个 URL 转小写，因为路径、查询参数等内容的语义不由这道题保证。本章实现选择完整 Unicode 字符串相等，保留大小写和前后空格，输入一行一个 URL。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "外排序与双指针方案"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以这样回答：“我先分别分块排序两份文件，用多轮有限路归并得到两个有序流。比较当前 URL，较小者向后走；相等就输出一次，并跳过两边这个 URL 的所有重复。任何一边结束就停止。大文件和交集结果都放磁盘，不在内存维护全量集合。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "设当前值是 x 和 y。如果 x<y，右边当前值之后的全部值都不小于 y，因此 x 不可能再在右侧匹配，丢弃 x 是安全的。y<x 时对称。相等时已经确认成员资格，集合语义下两侧的其余同值记录可以一起跳过。这个不变式证明了不会漏掉共同值，也不会把只在一侧的值输出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMStrings.intersection 依次创建两个磁盘排序结果，随后同时打开两个游标并流式写出。它不把第一个文件的所有 URL 放进 HashSet，也不把最终交集收进 List。两个排序结果存活时主要消耗磁盘；第二份文件排序时第一份结果没有保持成百上千个输入流。最后求交只需两个当前字符串和固定的读写缓冲区。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若输入记录数为 NA、NB，两份外排序成本分别为 Sort(NA)、Sort(NB)，合并扫描最多推进 NA+NB 次，写出交集大小 I。空间是外排序工作集与少数当前键；磁盘空间要同时容纳两份已排序结果和正在产生的输出。URL 为变长字符串，比较成本还受键长影响，不能仅把十亿条乘一个拍脑袋的固定长度就宣称磁盘够用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "哈希分桶为什么可行"
+    },
+    {
+      "type": "paragraph",
+      "text": "两边使用同一规范化规则、同一哈希函数和同一个桶数 P，按 bucket=hash(url) mod P 写入对应文件。若完整 URL 相等，它们一定落到同号桶，所以只需要处理 A_i 与 B_i。不同 URL 哈希碰撞只会让它们进入同一个候选桶；桶内仍保留原始 URL 并做完整比较，就不会损失精确性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若桶中较小的一边确实可装进内存，可将它建成 Set，扫描另一边判断；集合结果还需要“已输出”控制，例如命中后从 Set 移除。不能仅估计平均桶大小便省略超预算处理。极端情况下所有 URL 相同，一个桶仍有几十 GB；它的不同键很少，但读取、分区写入和计数仍需按流处理。如果不同 URL 很多却撞到一个桶，则内存 Set 也会爆掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大桶继续分区之前，先检查它有没有真的变小。换分区位或种子可以递归拆分，但全相同键、恶意分布不能靠无限递归解决；这时应对该桶外排序再精确归并，也可以一开始就选外排序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要给写端设预算。P 很大时不能同时开 P 个带缓冲的输出流，可以用有界写流缓存，按需重新打开并追加。记录分桶了，不代表文件句柄和缓冲区也自动有界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么不能只存 URL 哈希"
+    },
+    {
+      "type": "paragraph",
+      "text": "有限位宽哈希总可能碰撞。即便概率很低，只把哈希相同视为 URL 相等，也把精确题换成了概率题。测试特意使用 Java hashCode 相同的 Aa 和 BB，要求把它们当成不同键。扩展为两个不同完整 URL 的碰撞同样不能忽略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom Filter 可以做前置过滤：对一侧建立正确的静态过滤器，筛掉另一侧确定不存在的值；仍需对可能存在的候选做完整键匹配。它有假阳性，不能直接输出所有被它接受的值。若允许删除、过滤器未完成构建或实现使用了不满足条件的变体，“不会漏报”的前提也要重新核实。只输出集合基数估计的算法无法导出完整 URL 清单。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "资源和测试边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "两份输入若其实指向同一个文件，集合交集就是它的全量去重，通用实现也能处理；输出仍不能覆盖输入。任一输入格式错误、第二份排序失败或输出提交失败时，已创建的临时排序结果会关闭并清理。进程强杀恢复、磁盘故障以及来源文件被并发修改，仍需生产任务层解决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "小规模独立参考用两个 TreeSet 取 retainAll，生产实现不使用这两个全集。测试强制 C=7、F=3，让重复键跨批次、跨多轮归并，覆盖两边空、只一边有键、同值重复多次、Unicode、哈希碰撞、缺少末尾换行以及输出与输入别名的拒绝。测试没有创建两份各 10 亿行的实际文件，也没有测出该规模的完成时间。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "海量用户登录区间怎样求在线峰值和持续时间"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按 userid 合并该用户重叠的在线区间，再对所有合并后的区间做时间事件扫描。这样得到的是去重用户人数；直接把每条登录区间都记一次 +1 和 -1，算出来的是会话数，同一用户多端登录或重连重叠时会被重复计算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把持续时间说清楚"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目给出 (userid,login_time,logout_time)，数据“很大”，要求“高峰期的人数和持续时间”。没有明确峰值是用户数还是会话数、区间端点是否包含、同一用户是否可能有重叠会话，以及多个并列峰值要返回哪一段。本章按去重用户理解，采用半开区间 [login,logout)，输出所有达到全局峰值的最大连续时间段，并同时给出这些时间段的总长度和最长单段长度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些口径需要先与面试官确认。如果面试官只要一个最长峰值时段，可以从同样的结果中取最长者；若需要最早的一段，再增加并列规则。总持续时间、最长连续持续时间、峰值用户乘持续时间、每个用户累计在线时长，都不是同一指标。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时间戳按统一时区和单位转换成非负 long tick。输出持续时间的单位与输入一致；如果输入是毫秒，结果就是毫秒。用绝对时间计算时长，不靠本地时钟显示字符串相减，尤其不能忽略夏令时和时区转换。代码不猜测输入单位，也不解析日期格式。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么先合并同一用户的区间"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如用户 A 有 [0,10)、[2,8) 两段，用户 B 有 [5,15)。真正峰值是 2 人、持续 [5,10) 的 5 个单位；按会话条数扫描会把 [5,8) 算成 3。完全重复的会话记录也应该被同用户区间并集吸收，而不是为人数再贡献一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "计算同一用户的在线区间并集，不需要保存这个用户的全部会话。先按 userid、login_time、logout_time 外排序，顺序读时只留一个当前合并段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下一段 start≤当前 end，就把 end 扩到两者最大值；否则先输出当前段，再开始新段。换用户时结束上一用户的合并。关键是起点已经有序，所以即使某个用户有极多会话，一个待合并段也够用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在 [a,b) 语义下，[0,3) 与 [3,6) 没有任何正长度的离线间隙，可以合成 [0,6)。零长度 [t,t) 没有在线时长，代码忽略。end<start 属于错误数据，直接拒绝。没有 logout 的开区间、跨统计窗口会话以及乱序原始登录/登出事件，需要业务另行给出补齐或截断规则；本实现只接收完整区间，不能拿“缺失登出”冒充正常的零长度区间。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "时间扫描怎样计算峰值"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个合并后的用户区间 [a,b) 产生两个事件：(a,+1)、(b,-1)。再按 timestamp 外排序。扫描时，把同一 timestamp 的全部增量先聚合；处理完 t 的增量后，active 就是 [t,下一个事件时间) 的在线用户数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能在同一时刻的每条事件之间更新峰值，否则“先登录后登出”可能产生没有持续时间的虚假高峰。例如 A 在 3 时下线，B 在 3 时上线，人数始终为 1，不应出现 2 人高峰。聚合同时间增量从根本上避免依赖内部事件排列；如果选择逐条处理方式，半开区间一般要求离开先于进入，但计算持续时间时仍应按两个不同时间点之间的区间统计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMPeakOnline 用第一次扫描找全局 peak，第二次扫描输出所有 active=peak 的正长度片段。相邻片段即使人员构成变化，只要人数一直等于 peak，就合并成一个最大连续峰值段。举例 A 在线 [0,3)、B 在线 [3,6)，最高人数为 1，连续高峰是 [0,6)，不是两个必须分开的时段。如果业务要求“同一批人”的持续时间，那是另一个指标，人数扫描本身不保存成员集合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两遍扫描避免把全部候选峰值区间存进内存，也避免早期低峰值的输出污染最终结果。结果文件每行写 start、end。Peak 返回峰值人数、所有峰值段总时长、最长单段时长和段数；即使峰值段很多，输出仍然是流式的。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与异常"
+    },
+    {
+      "type": "paragraph",
+      "text": "设原始区间数为 N，按用户并集合并后为 U，U≤N，产生 2U 个时间事件。总工作为 Sort(N)+Sort(2U)+O(N+U)，两次 Sort 都采用有限批大小和有限扇入。内存是排序工作集及常数个当前区间、事件和计数器，绝不建立“所有在线用户”的全局 Set。临时磁盘还包括合并区间产生的事件文件，代码在进入下一大阶段前关闭并清理不再需要的排序段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "人数、记录数和段数使用 long 并做精确溢出检查；超出声明范围会失败，不无声回绕。持续时间使用 BigInteger 累加。输入时间非负、终点不小于起点，因此单段相减可解释为非负值；使用大整数还让返回结构不依赖总量范围的额外假设。"
+    },
+    {
+      "type": "paragraph",
+      "text": "没有任何正长度区间时，本章返回人数 0、时长 0、空时段文件。没有给观察窗口就不能把“所有时间上 0 人”解释为无限长峰值。如果题目给了 [windowStart,windowEnd) 统计窗口，应先将区间裁剪到窗口，并约定全窗口无人时是否输出该窗口；这会改变空输入的结果契约。"
+    },
+    {
+      "type": "paragraph",
+      "text": "异常关闭和原子发布采用共用设施。清理、磁盘空间和一致快照边界同样适用。为了防止同一用户的大量区间导致堆膨胀，代码按排序后的单用户记录逐条合并，没有先收集某个用户的全部区间。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样做独立验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立参考不复用事件增量算法，而是对小样本的所有不同端点分段，在每个相邻端点区间内，逐条检查原始会话是否覆盖左端点，并用 Set 计算不同 userid 数。再从这些人数序列直接找峰值和连续段，与外存实现逐项比较。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试包含同用户嵌套、重复会话、多用户同刻交接、连续峰值中成员更换、多个不相连的峰值、零长度区间、空输入、极大时间戳、随机乱序和非法终点。这里处理的是完整区间的离线精确结果；实时事件迟到、水位线、未关闭会话与跨机时钟误差，需要另外定义处理规则。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "不用中间件怎样导出去重后的几十 GB ID 文件"
+    },
+    {
+      "type": "paragraph",
+      "text": "使用本地磁盘上的外排序，最后顺序扫描相邻相等 ID，只输出每个不同 ID 的第一次出现。这个方案可以处理几十 GB 文件，不需要 Redis、Kafka 或其他中间件，也不会把全部 ID 或全部结果装进 JVM。出现一次的 ID 必须保留；“只输出重复 ID”并不是题目要求的全量去重。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从上传到下载的一条完整流程"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以这样回答：“上传流先按大小配额接收并封存，随后流式解析 ID，按内存预算生成排序段。用有限路数多轮归并后，相邻相等 ID 只写一次到结果暂存文件，完整写入并校验成功后再发布下载。任务状态、错误记录和临时文件清理都由本地任务层控制，不借助题目禁止的中间件。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果核心需求是解析内容而非长期保存原始文件，就没有必要把原文件作为永久业务资产存入数据库或对象存储。但外排序仍需要可回收的临时磁盘，且失败重试可能需要封存输入。可以把原始上传临时文件保留到解析和结果提交成功，再按约定删除；也可以在接收过程中边解析边生成排序段，前提是处理好上传失败的回滚、边界校验以及重试语义。代码覆盖解析已完成上传的本地文件，不包含 HTTP 上传服务器、身份鉴权和下载授权层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读取本身可以用缓冲字节流，但不能把“按 8MB 分块”理解成每块都恰好结束在一个 ID 边界。UTF-8 多字节字符和一条记录可能横跨两块。正确解析器需要携带未完成记录，或使用支持流式解析的格式解码器，并限制单条记录大小。代码按 LF/CRLF 识别完整行，明确限制行长。若文件是 CSV、JSON 数组或电子表格，必须使用对应格式的流式解析，不能把引号内换行、逗号和编码片段当成普通行拆开。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么局部 Set 还不够"
+    },
+    {
+      "type": "paragraph",
+      "text": "第一块有 A、B，第二块有 A、C。分别在块内 Set 去重后直接输出，会得到 A、B、A、C，A 仍重复。每块 Set 只解决局部重复；全局去重还需要后续归并，或保证相同 ID 一定进入同一分区后再精确处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库唯一索引之所以能做去重，是它在既定比较规则下拒绝重复键，或者在插入冲突时采用指定动作。但这不等于任何约束都可以忽略：NULL、多列键、数据库排序规则、大小写等价、事务与失败处理，都可能改变结果。数十 GB 上传直接逐条写数据库还会带来索引维护、日志、事务和资源压力。题目进一步限制不使用中间件时，本地外排序就是独立可行的方案，不应绕回 Redis Set 或 Kafka 分流。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java Set 的作用是按 equals 判定成员唯一；HashSet 用 hashCode 定位候选位置，再用 equals 区分碰撞。完整集合放得进内存时它很方便，但“文件分块读”不会让一个不断增长的全局 Set 自动有界。也不能只把 ID 的哈希值存进 Set，以为保留了精确去重语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "外排序怎样保证每个 ID 恰好输出一次"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有原始 ID 经过统一比较规则的全局排序后，相同 ID 连成一个相邻区间。最终扫描只保留 previous：若当前值与 previous 不同，就输出；否则跳过。每个不同 ID 的区间一定有一个首元素，所以至少输出一次；其余相等元素全部跳过，所以至多输出一次。这同时覆盖出现一次的 ID 和出现许多次的 ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMStrings.distinct 返回写出的不同 ID 数量，结果文件包含完整 ID。输入 A、A、B、C、C，输出必须为 A、B、C。任何只在 count>1 时输出的实现都会漏掉 B；仅返回基数 3 也没有完成“导出文件”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代码默认 ID 是精确字符串，所以 001 和 1 不合并，两个 Java 哈希碰撞的字符串也不合并。如果业务 ID 本质是 64 位整数，应明确是否允许前导零和正号，并在解析后用统一数值表示比较。UUID、超长十进制 ID 和大小写不敏感业务键也需要自己的标准化契约。规范化是业务规则，不能在通用去重代码里暗中加入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "结果按字符串字典序输出，不保留首次出现的输入顺序。题目若未给定输出顺序，需要先确认。若要求“保留第一次出现的顺序”，应给每条记录一个输入序号，先按 ID 聚合保留最小序号，再按序号做第二次外排序。一个 Set 加一个结果 List 在几十 GB 场景下仍会超内存，不能借“稳定”要求回到全量内存方案。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "还有哪些选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "哈希分桶可保证相同完整 ID 进入同一桶，再对每桶去重并拼接结果。若不要求输出顺序，桶间不必排序。但桶大小必须实测并有限额，热点桶、恶意碰撞和不均匀分布需要外排序等回退；桶文件写流数量也要有界。若桶内只做局部 Set 后再一次分块输出，重复问题仍然存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若 ID 值域已知而且很小，可以用位图表示存在性，再扫描置位位置导出 ID。空间取决于整个值域，不取决于实际出现多少个 ID；任意字符串不能直接套用。Bloom Filter、HyperLogLog 等分别适合概率成员过滤或基数估计，不能单独精确导出全体不同 ID。这里的要求是完整精确集合，不允许把误判带来的丢 ID 隐藏为“工程上差不多”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "大文件任务还需要哪些边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "输入要有总字节数、单记录大小、编码、格式和临时磁盘配额。压缩上传还要限制解压后的总量，不能只看压缩包大小。失败时返回哪一行或哪条记录不合法、是整批失败还是隔离坏记录，都应在产品层约定；本实现选择一旦非法就失败，不静默跳过。若允许跳过，导出结果就不再覆盖整个原始输入，必须同时给出可核对的错误清单。"
+    },
+    {
+      "type": "paragraph",
+      "text": "生成结果是顺序写入，不把 ID 汇总成字符串数组后一次返回。任务完成标识只能在结果完整关闭并成功发布后写入；暂存写入失败时保留原有结果，不暴露部分新内容；发布阶段的原子替换支持按文件系统核实。对一次上传中断、任务取消、应用重启和过期临时文件，需要在任务层设计恢复或清理，本章的 try-with-resources 只处理进程仍在正常执行的异常路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若记录数为 N、不同 ID 数为 U，外排序加最终扫描的成本为 Sort(N)+O(N)，输出大小是 O(U) 条。算法内存与批大小、扇入和最大键长有关，不随 U 增长；磁盘输出本身不可消失，因为题目要求导出 U 个 ID。测试使用完整 TreeSet 作为小样本独立参考，明确包含 singleton ID、跨多批重复、Unicode、哈希碰撞、非法编码、超长行和原文件不被修改等场景。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Java 源码和验证方法"
+    },
+    {
+      "type": "paragraph",
+      "text": "本章配套九个 Java 文件，不依赖第三方库。EMExternalSort 是有界归并引擎，EMIO 是有界 UTF-8 读取和输出暂存工具；EMNumeric、EMStrings、EMWeightedTop、EMPeakOnline 分别完成具体算法；EMTool 提供命令行入口；EMAlgorithmsTest 和 EMBoundedStress 是小样本独立参考测试和有界进程回归。代码使用默认包，放在同一个源码目录一起编译。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "数值文件每行一个 signed long，例如："
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "label": "原文代码（本次未执行）",
+      "value": "10\n-2\n10\n1\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "ID 和 URL 文件也是每行一个完整键。例如 A、A、B 的全量去重必须导出 A、B，保留只出现一次的 B。这里没有给字符串键做 URL 解析或数值转换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "加权日志是四列 TSV。先在新建的演示目录中运行以下命令：printf 会把 \\t 写成一个真实 tab，把 \\n 写成换行，生成 logs.tsv。不要把反斜杠和字母 t 当作输入文件中的分隔符。"
+    },
+    {
+      "type": "code",
+      "language": "shell",
+      "label": "原文代码（本次未执行）",
+      "value": "set -eu\nmkdir tsv-example\ncd tsv-example\nprintf 'alice\\tlike\\t1000\\t90\\nbob\\tshare\\t1001\\t2\\nalice\\tview\\t1002\\t10\\n' > logs.tsv\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这三行给 alice 的总权重 100，给 bob 的总权重 2。action 和 timestamp 存在于输入中，不参与用户总权重的排序键。不要拿空格分隔的日志直接喂给这个 TSV 解析器。"
+    },
+    {
+      "type": "paragraph",
+      "text": "登录区间是三列 TSV。在同一演示目录中生成 sessions.tsv："
+    },
+    {
+      "type": "code",
+      "language": "shell",
+      "label": "原文代码（本次未执行）",
+      "value": "printf 'alice\\t0\\t10\\nalice\\t2\\t8\\nbob\\t5\\t15\\n' > sessions.tsv\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "峰值结果为 2 人，峰值区间为 5 到 10，总时长和最长连续时长都是 5 个输入时间单位。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "编译与运行"
+    },
+    {
+      "type": "paragraph",
+      "text": "准备完整 JDK 17，并先用 java -version 和 javac -version 核对运行时与编译器版本。在源码目录中编译全部文件，然后运行小样本测试："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "原文代码（本次未执行）",
+      "value": "javac --release 17 -encoding UTF-8 -Xlint:all -d classes EM*.java\njava -Xmx64m -cp classes EMAlgorithmsTest\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可以使用支持 --release 17 的较新完整 JDK 编译，但最终应在目标运行时执行测试。--release 17 同时约束语言、class 目标版本与可用 API；只设置 -source 17 -target 17 不能替代目标 API 检查，也不能证明程序已在 Java 17 上运行。如果编译器不支持该 release，应换用支持的工具链，不能把降级编译参数后的成功当成等价验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有输入和工作目录都要先存在。下面展示命令形式，chunkRecords 与 fanIn 应按自己的内存和句柄预算设置："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "原文代码（本次未执行）",
+      "value": "java -cp classes EMTool sort numbers.txt sorted.txt work 4096 3\njava -cp classes EMTool median numbers.txt work 4096 3\njava -cp classes EMTool radix-median numbers.txt\njava -cp classes EMTool distinct ids.txt distinct-ids.txt work 4096 3\njava -cp classes EMTool intersect a.txt b.txt common.txt work 4096 3\njava -cp classes EMTool weighted-top10 logs.tsv work 4096 3\njava -cp classes EMTool peak sessions.tsv peak-spans.tsv work 4096 3\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "peak 的文件输出是所有最大连续峰值区间，标准输出显示人数和两种时长；weighted-top10 的标准输出按总权重降序显示最多十个用户。命令不会自动创建输入父目录或工作目录，也不会把输入作为输出覆盖。需要处理更长记录或其他格式时，应同时修改解析契约、内存估算和对应测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样设计正确性测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "用可放进内存的小样本建立独立参考，再与外存实现逐项比较。数值参考可以用 long[] 排序；去重和交集参考可以用完整小集合；加权参考先在 Map 中以 BigInteger 累加全部用户，再按总权重和 user 排序。在线人数参考应在所有相邻端点区间内重新检查原始会话，用 Set 计算不同 userid 数，避免把生产事件扫描复制一遍后当作独立验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定随机种子便于复现，但不能只依赖随机输入。还应明确列出空文件、单条、负数和数值极值、奇偶中位数、两中间值求和溢出、加权与频率相反的例子、第十名并列、跨批重复、只出现一次的 ID、哈希碰撞和 Unicode 键。同用户嵌套/重复会话、零长度会话、同刻上下线、多段并列峰值及成员更换但人数不变，要同时检查人数、全部最大连续区间、总时长和最长单段时长。"
+    },
+    {
+      "type": "paragraph",
+      "text": "校验应覆盖完整结果：排序不仅要单调，还要保留每次出现且没有多出或漏掉记录；集合结果必须逐键相等；中位数要核对两个目标秩而不是只看一个近似均值。运行前后比较输入内容或摘要，确认没有修改原文件。测试参考中的全量数组和集合只适用于小样本，不能带入生产路径。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样验证内存和句柄确实有界"
+    },
+    {
+      "type": "paragraph",
+      "text": "先减小 C、F，强制生成多批和多轮归并，再核对 Stats 的记录数、初始段数、归并轮数、最大批记录数和最大归并输入数。输入与结果文件应大于受限 Java 堆，避免一个实际上全部入内存的实现也轻易通过。变长键还要单独覆盖最长允许的 UTF-8 记录，不能用短数字通过测试就推断长字符串也安全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "EMBoundedStress 会流式生成倒序数据，并逐排名核对完整升序结果。它固定 C=4096、F=3；可用以下命令限制堆。支持 ulimit 的系统还可在子 shell 中约束文件描述符，不把限制遗留到当前交互 shell："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "原文代码（本次未执行）",
+      "value": "java -Xmx24m -cp classes EMBoundedStress 2000000\n(ulimit -n 32; java -Xmx24m -cp classes EMBoundedStress 2000000)\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是一组可重复的资源检查参数，不是任何机器上的安全默认值。Java 堆上限不等于整个进程的物理内存上限；32 个描述符也包含 JVM 和标准输入输出等开销。应结合实际输入格式、文件系统、JVM 和进程预算调整参数，并检查任务结束后没有遗留属于该任务的临时段。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样测试失败路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "分别在解析、初始段写入、归并读取/写入、结果暂存、关闭和发布阶段注入失败。检查原始输入不变、旧目标不被半成品替换、已打开的流得到关闭、只清理当前任务拥有的目录。已有主要异常时，清理错误应保留在其 suppressed 链上；同一个异常对象被反复抛出时，附加前必须检查引用是否相同，避免自抑制又制造新的异常。目录遍历的 I/O 错误可能包装成 DirectoryIteratorException，也要纳入处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "格式测试包括超长行、非法 UTF-8、孤立 CR/NUL、数字越界、字段缺失与非法区间。内部段中途截断和非法标记应报错；完整记录边界截断或合法格式的位翻转还需要额外条数/校验和机制才能可靠检测。原子发布只能避免读者看到半个新结果，不能替代 fsync、掉电耐久性、崩溃恢复、并发写者协调或一致输入快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最后应把小样本正确性、受限进程资源测试和生产容量/故障恢复测试分开。真实 10G、1TB、两个各 10 亿 URL 文件的耗时、磁盘空间和恢复能力，需要在相应环境中另外验证；通过前两类测试不能推出生产规模与所有故障场景都已得到保证。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "完整 Java 源码"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下文件按文件名分别保存到同一个目录，即可按前文命令一起编译。公共设施只保留一份，六个具体题目共享相同的资源边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMExternalSort"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMExternalSort.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Dependency-free, record-bounded, fan-in-bounded external merge sort.\n * The caller owns input; Sorted owns only its newly created work directory.\n * Records must be immutable, of bounded size, and independent of a reused decoder buffer.\n */\npublic final class EMExternalSort {\n    private EMExternalSort() {}\n    public static final int BUFFER_BYTES = 8192;\n    public record Limits(int chunkRecords, int fanIn) {\n        public Limits {\n            if (chunkRecords < 1 || fanIn < 2 || fanIn > 128)\n                throw new IllegalArgumentException(\"chunkRecords >= 1; 2 <= fanIn <= 128\");\n        }\n    }\n    @FunctionalInterface public interface Source<T> { T next() throws IOException; }\n    public interface Codec<T> {\n        void write(DataOutputStream out, T value) throws IOException;\n        T read(DataInputStream in) throws IOException;\n    }\n    public record Stats(long records, long initialRuns, int mergePasses,\n                        int maxChunkRecords, int maxMergeReaders) {}\n    private static final class Counters {\n        long records, initialRuns;\n        int mergePasses, maxChunkRecords, maxMergeReaders;\n        Stats freeze() { return new Stats(records, initialRuns, mergePasses,\n                maxChunkRecords, maxMergeReaders); }\n    }\n    public static final class Cursor<T> implements AutoCloseable, Source<T> {\n        private final DataInputStream in;\n        private final Codec<T> codec;\n        public Cursor(Path path, Codec<T> codec) throws IOException {\n            this.codec = Objects.requireNonNull(codec);\n            this.in = new DataInputStream(new BufferedInputStream(\n                    Files.newInputStream(path), BUFFER_BYTES));\n        }\n        public T next() throws IOException {\n            int marker = in.read();\n            if (marker == -1) return null;\n            if (marker != 1) throw new IOException(\"invalid run record marker\");\n            T value = codec.read(in); // Truncation after marker must throw, never look like EOF.\n            if (value == null) throw new IOException(\"null run record\");\n            return value;\n        }\n        public void close() throws IOException { in.close(); }\n    }\n    public static final class Sink<T> implements AutoCloseable {\n        private final DataOutputStream out;\n        private final Codec<T> codec;\n        public Sink(Path path, Codec<T> codec) throws IOException {\n            this.codec = Objects.requireNonNull(codec);\n            this.out = new DataOutputStream(new BufferedOutputStream(\n                    Files.newOutputStream(path, StandardOpenOption.CREATE_NEW), BUFFER_BYTES));\n        }\n        public void add(T value) throws IOException {\n            out.writeByte(1);\n            codec.write(out, Objects.requireNonNull(value));\n        }\n        public void close() throws IOException { out.close(); }\n    }\n    public static final class Sorted<T> implements AutoCloseable {\n        private final Path directory, file;\n        private final Codec<T> codec;\n        private final Stats stats;\n        private boolean closed;\n        private Sorted(Path directory, Path file, Codec<T> codec, Stats stats) {\n            this.directory = directory; this.file = file; this.codec = codec; this.stats = stats;\n        }\n        public Stats stats() { return stats; }\n        public Cursor<T> open() throws IOException {\n            if (closed) throw new IOException(\"sorted result already closed\");\n            return new Cursor<>(file, codec);\n        }\n        public void close() throws IOException {\n            if (!closed) { deleteOwnedDirectory(directory); closed = true; }\n        }\n    }\n    /** Flat owned directory only; never follows directories/symlinks recursively. */\n    public static void deleteOwnedDirectory(Path directory) throws IOException {\n        IOException failure = null;\n        try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory)) {\n            for (Path p : entries) {\n                try { Files.deleteIfExists(p); }\n                catch (IOException e) { if (failure == null) failure = e; else if (failure != e) failure.addSuppressed(e); }\n            }\n        } catch (DirectoryIteratorException e) {\n            // Directory iteration wraps I/O failures in an unchecked exception.\n            // Keep the wrapper too: try-with-resources may have attached close failures to it.\n            IOException iterationFailure = new IOException(\"cannot iterate owned work directory\", e);\n            if (failure == null) failure = iterationFailure; else failure.addSuppressed(iterationFailure);\n        } catch (IOException e) { if (failure == null) failure = e; else if (failure != e) failure.addSuppressed(e); }\n        try { Files.deleteIfExists(directory); }\n        catch (IOException e) { if (failure == null) failure = e; else if (failure != e) failure.addSuppressed(e); }\n        if (failure != null) throw failure;\n    }\n    private static Path run(Path directory, int stage, long number) {\n        return directory.resolve(\"stage-\" + stage + \"-run-\" + number + \".bin\");\n    }\n    public static <T> Sorted<T> sort(Source<T> input, Comparator<? super T> order,\n                                    Codec<T> codec, Path workParent, Limits limits) throws IOException {\n        Objects.requireNonNull(input); Objects.requireNonNull(order);\n        Objects.requireNonNull(codec); Objects.requireNonNull(limits);\n        Path work = Files.createTempDirectory(workParent, \"em-sort-\");\n        try {\n            Counters counters = new Counters();\n            ArrayList<T> chunk = new ArrayList<>(Math.min(limits.chunkRecords(), 1024));\n            long runs = 0;\n            T value;\n            while ((value = input.next()) != null) {\n                chunk.add(value);\n                counters.records = Math.incrementExact(counters.records);\n                counters.maxChunkRecords = Math.max(counters.maxChunkRecords, chunk.size());\n                if (chunk.size() == limits.chunkRecords()) {\n                    flush(chunk, order, codec, run(work, 0, runs));\n                    runs = Math.incrementExact(runs);\n                }\n            }\n            if (!chunk.isEmpty()) {\n                flush(chunk, order, codec, run(work, 0, runs));\n                runs = Math.incrementExact(runs);\n            }\n            counters.initialRuns = runs;\n            // Also represent an empty input by one valid empty run.\n            if (runs == 0) { Files.createFile(run(work, 0, 0)); runs = 1; }\n            int stage = 0;\n            while (runs > 1) {\n                long next = 0;\n                for (long start = 0; start < runs;) {\n                    ArrayList<Path> batch = new ArrayList<>(limits.fanIn());\n                    for (int i = 0; i < limits.fanIn() && start < runs; i++, start++)\n                        batch.add(run(work, stage, start));\n                    counters.maxMergeReaders = Math.max(counters.maxMergeReaders, batch.size());\n                    merge(batch, run(work, stage + 1, next), order, codec);\n                    next = Math.incrementExact(next);\n                    for (Path old : batch) Files.delete(old);\n                }\n                stage = Math.incrementExact(stage); runs = next;\n            }\n            counters.mergePasses = stage;\n            return new Sorted<>(work, run(work, stage, 0), codec, counters.freeze());\n        } catch (IOException | RuntimeException | Error failure) {\n            try { deleteOwnedDirectory(work); } catch (IOException cleanup) { if (failure != cleanup) failure.addSuppressed(cleanup); }\n            throw failure;\n        }\n    }\n    private static <T> void flush(ArrayList<T> chunk, Comparator<? super T> order,\n                                   Codec<T> codec, Path target) throws IOException {\n        chunk.sort(order);\n        try (Sink<T> out = new Sink<>(target, codec)) { for (T value : chunk) out.add(value); }\n        chunk.clear();\n    }\n    private record Head<T>(T value, int source) {}\n    private static final class Readers<T> implements AutoCloseable {\n        final ArrayList<Cursor<T>> values = new ArrayList<>();\n        public void close() throws IOException {\n            IOException failure = null;\n            for (Cursor<T> in : values) {\n                try { in.close(); }\n                catch (IOException e) { if (failure == null) failure = e; else if (failure != e) failure.addSuppressed(e); }\n            }\n            if (failure != null) throw failure;\n        }\n    }\n    private static <T> void merge(List<Path> inputs, Path target,\n                                   Comparator<? super T> order, Codec<T> codec) throws IOException {\n        Comparator<Head<T>> headOrder = (a, b) -> {\n            int c = order.compare(a.value(), b.value());\n            return c != 0 ? c : Integer.compare(a.source(), b.source());\n        };\n        PriorityQueue<Head<T>> heap = new PriorityQueue<>(headOrder);\n        try (Readers<T> readers = new Readers<>(); Sink<T> out = new Sink<>(target, codec)) {\n            for (Path input : inputs) {\n                Cursor<T> in = new Cursor<>(input, codec);\n                readers.values.add(in);\n                T first = in.next();\n                if (first != null) heap.add(new Head<>(first, readers.values.size() - 1));\n            }\n            while (!heap.isEmpty()) {\n                Head<T> head = heap.remove();\n                out.add(head.value());\n                T next = readers.values.get(head.source()).next();\n                if (next != null) heap.add(new Head<>(next, head.source()));\n            }\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMIO"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMIO.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.nio.*;\nimport java.nio.charset.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** UTF-8 contracts and atomic output staging shared by the examples. */\npublic final class EMIO {\n    private EMIO() {}\n    public static final int MAX_LINE_BYTES = 32768;\n    public static String decode(byte[] bytes) throws CharacterCodingException {\n        return StandardCharsets.UTF_8.newDecoder()\n                .onMalformedInput(CodingErrorAction.REPORT)\n                .onUnmappableCharacter(CodingErrorAction.REPORT)\n                .decode(ByteBuffer.wrap(bytes)).toString();\n    }\n    public static final class Lines implements AutoCloseable, EMExternalSort.Source<String> {\n        private final InputStream in;\n        private final byte[] bytes = new byte[MAX_LINE_BYTES + 1];\n        public Lines(Path path) throws IOException {\n            in = new BufferedInputStream(Files.newInputStream(path), EMExternalSort.BUFFER_BYTES);\n        }\n        public String next() throws IOException {\n            int n = 0, c;\n            while ((c = in.read()) != -1 && c != '\\n') {\n                if (n == bytes.length) throw new IOException(\"record exceeds byte limit\");\n                bytes[n++] = (byte)c;\n            }\n            if (c == -1 && n == 0) return null;\n            if (c == '\\n' && n > 0 && bytes[n - 1] == '\\r') n--;\n            if (n > MAX_LINE_BYTES) throw new IOException(\"record exceeds byte limit\");\n            String value = decode(Arrays.copyOf(bytes, n));\n            if (value.indexOf('\\r') >= 0 || value.indexOf('\\0') >= 0)\n                throw new IOException(\"embedded CR/NUL or unterminated CR is not supported\");\n            return value;\n        }\n        public void close() throws IOException { in.close(); }\n    }\n    public static String key(String s) throws IOException {\n        if (s.isEmpty()) throw new IOException(\"empty ID/URL/user\");\n        return s; // No trim, case folding, Unicode or URL normalization.\n    }\n    public static long decimal(String s, boolean nonnegative) throws IOException {\n        if (s.isEmpty()) throw new IOException(\"empty integer\");\n        int start = s.charAt(0) == '-' || s.charAt(0) == '+' ? 1 : 0;\n        if (start == s.length()) throw new IOException(\"integer has no digits\");\n        for (int i = start; i < s.length(); i++)\n            if (s.charAt(i) < '0' || s.charAt(i) > '9') throw new IOException(\"invalid decimal integer\");\n        try {\n            long value = Long.parseLong(s);\n            if (nonnegative && value < 0) throw new IOException(\"negative integer\");\n            return value;\n        } catch (NumberFormatException e) { throw new IOException(\"integer outside signed long range\", e); }\n    }\n    public static void writeString(DataOutputStream out, String value) throws IOException {\n        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);\n        if (bytes.length > MAX_LINE_BYTES) throw new IOException(\"key too long\");\n        out.writeInt(bytes.length); out.write(bytes);\n    }\n    public static String readString(DataInputStream in) throws IOException {\n        int length = in.readInt();\n        if (length < 0 || length > MAX_LINE_BYTES) throw new IOException(\"invalid run string length\");\n        byte[] bytes = new byte[length]; in.readFully(bytes); return decode(bytes);\n    }\n    public static final EMExternalSort.Codec<String> STRINGS = new EMExternalSort.Codec<>() {\n        public void write(DataOutputStream out, String value) throws IOException { writeString(out, value); }\n        public String read(DataInputStream in) throws IOException { return readString(in); }\n    };\n    public static final EMExternalSort.Codec<Long> LONGS = new EMExternalSort.Codec<>() {\n        public void write(DataOutputStream out, Long value) throws IOException { out.writeLong(value); }\n        public Long read(DataInputStream in) throws IOException { return in.readLong(); }\n    };\n    @FunctionalInterface public interface OutputAction { void write(BufferedWriter out) throws IOException; }\n    public static void separateOutput(Path output, Path... inputs) throws IOException {\n        Path normalized = output.toAbsolutePath().normalize();\n        for (Path input : inputs)\n            if (normalized.equals(input.toAbsolutePath().normalize()) ||\n                    (Files.exists(output) && Files.isSameFile(output, input)))\n                throw new IOException(\"output aliases an input\");\n    }\n    /** Same-filesystem atomic move required; unsupported providers fail, no non-atomic fallback.\n     * Replacement of an existing target under ATOMIC_MOVE is provider-specific.\n     * Atomic publication is not a power-loss durability/fsync or crash-resume guarantee.\n     */\n    public static void atomicText(Path output, OutputAction action) throws IOException {\n        Path target = output.toAbsolutePath().normalize();\n        Path stage = Files.createTempFile(target.getParent(), \".em-output-\", \".tmp\");\n        try {\n            try (BufferedWriter out = Files.newBufferedWriter(stage, StandardCharsets.UTF_8)) { action.write(out); }\n            Files.move(stage, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);\n        } catch (IOException | RuntimeException | Error failure) {\n            try { Files.deleteIfExists(stage); } catch (IOException cleanup) { if (failure != cleanup) failure.addSuppressed(cleanup); }\n            throw failure;\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMNumeric"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMNumeric.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.math.*;\nimport java.nio.file.*;\n\n/** One signed 64-bit decimal integer per UTF-8 line. Numeric duplicates are retained. */\npublic final class EMNumeric {\n    private EMNumeric() {}\n    public record Median(long lower, long upper) {\n        public BigDecimal exact() {\n            return new BigDecimal(BigInteger.valueOf(lower).add(BigInteger.valueOf(upper)))\n                    .divide(BigDecimal.valueOf(2));\n        }\n    }\n    static EMExternalSort.Sorted<Long> ordered(Path input, Path work,\n                                               EMExternalSort.Limits limits) throws IOException {\n        EMExternalSort.Sorted<Long> result = null;\n        try (EMIO.Lines lines = new EMIO.Lines(input)) {\n            result = EMExternalSort.sort(() -> {\n                String line = lines.next();\n                return line == null ? null : EMIO.decimal(line, false);\n            }, Long::compare, EMIO.LONGS, work, limits);\n        } catch (IOException | RuntimeException | Error failure) {\n            if (result != null) {\n                try { result.close(); } catch (IOException cleanup) { if (failure != cleanup) failure.addSuppressed(cleanup); }\n            }\n            throw failure;\n        }\n        return result;\n    }\n    public static EMExternalSort.Stats sortFile(Path input, Path output, Path work,\n                                                EMExternalSort.Limits limits) throws IOException {\n        EMIO.separateOutput(output, input);\n        try (EMExternalSort.Sorted<Long> sorted = ordered(input, work, limits)) {\n            EMIO.atomicText(output, out -> {\n                try (EMExternalSort.Cursor<Long> cursor = sorted.open()) {\n                    Long value;\n                    while ((value = cursor.next()) != null) { out.write(Long.toString(value)); out.newLine(); }\n                }\n            });\n            return sorted.stats();\n        }\n    }\n    public static Median median(Path input, Path work, EMExternalSort.Limits limits) throws IOException {\n        try (EMExternalSort.Sorted<Long> sorted = ordered(input, work, limits)) {\n            long n = sorted.stats().records();\n            if (n == 0) throw new IllegalArgumentException(\"empty input has no median\");\n            long lowerRank = (n - 1) / 2, upperRank = n / 2;\n            long lower = 0, upper = 0;\n            try (EMExternalSort.Cursor<Long> cursor = sorted.open()) {\n                for (long i = 0; i <= upperRank; i++) {\n                    Long value = cursor.next();\n                    if (value == null) throw new EOFException(\"run ended before median rank\");\n                    if (i == lowerRank) lower = value;\n                    if (i == upperRank) upper = value;\n                }\n            }\n            return new Median(lower, upper);\n        }\n    }\n    /** Exact signed-long radix selection: count pass + eight full input passes.\n     * Requires an immutable input snapshot throughout all passes.\n     * Two 256-counter histograms track the two median order statistics together.\n     */\n    public static Median radixMedian(Path input) throws IOException {\n        long n = 0;\n        try (EMIO.Lines lines = new EMIO.Lines(input)) {\n            String line;\n            while ((line = lines.next()) != null) {\n                EMIO.decimal(line, false); n = Math.incrementExact(n);\n            }\n        }\n        if (n == 0) throw new IllegalArgumentException(\"empty input has no median\");\n        long lowRank = (n - 1) / 2, highRank = n / 2;\n        long lowPrefix = 0, highPrefix = 0, mask = 0;\n        for (int shift = 56; shift >= 0; shift -= 8) {\n            long[] lowCounts = new long[256], highCounts = new long[256];\n            boolean shared = lowPrefix == highPrefix;\n            long seen = 0;\n            try (EMIO.Lines lines = new EMIO.Lines(input)) {\n                String line;\n                while ((line = lines.next()) != null) {\n                    long ordered = EMIO.decimal(line, false) ^ Long.MIN_VALUE;\n                    int bucket = (int)((ordered >>> shift) & 255);\n                    if ((ordered & mask) == lowPrefix) lowCounts[bucket] = Math.incrementExact(lowCounts[bucket]);\n                    if (!shared && (ordered & mask) == highPrefix) highCounts[bucket] = Math.incrementExact(highCounts[bucket]);\n                    seen = Math.incrementExact(seen);\n                }\n            }\n            if (seen != n) throw new IOException(\"input count changed between passes\");\n            if (shared) highCounts = lowCounts;\n            Selection low = selectBucket(lowCounts, lowRank), high = selectBucket(highCounts, highRank);\n            lowRank = low.rank(); highRank = high.rank();\n            lowPrefix |= ((long)low.bucket()) << shift;\n            highPrefix |= ((long)high.bucket()) << shift;\n            mask |= 255L << shift;\n        }\n        return new Median(lowPrefix ^ Long.MIN_VALUE, highPrefix ^ Long.MIN_VALUE);\n    }\n    private record Selection(int bucket, long rank) {}\n    private static Selection selectBucket(long[] counts, long rank) throws IOException {\n        for (int bucket = 0; bucket < counts.length; bucket++) {\n            if (rank < counts[bucket]) return new Selection(bucket, rank);\n            rank -= counts[bucket];\n        }\n        throw new IOException(\"rank missing; source may have changed\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMWeightedTop"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMWeightedTop.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.math.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Weighted user popularity: user<TAB>action<TAB>timestamp<TAB>count.\n * count is a nonnegative signed-long input; total is an exact BigInteger.\n */\npublic final class EMWeightedTop {\n    private EMWeightedTop() {}\n    public record Log(String user, String action, long timestamp, long count) {\n        public Log {\n            Objects.requireNonNull(user); Objects.requireNonNull(action);\n            if (user.isEmpty() || action.isEmpty() || timestamp < 0 || count < 0)\n                throw new IllegalArgumentException(\"invalid log fields\");\n        }\n    }\n    public record Weight(String user, long count) {}\n    public record Total(String user, BigInteger count) {}\n    public static final Comparator<Total> BEST = Comparator.comparing(Total::count).reversed()\n            .thenComparing(Total::user);\n    /** A mapper emits count, not the constant one. */\n    public static Weight map(Log log) { return new Weight(log.user(), log.count()); }\n    /** One complete user's values; iterable must stream and must not contain other users. */\n    public static Total reduce(String user, Iterable<Long> values) {\n        BigInteger total = BigInteger.ZERO;\n        for (long value : values) {\n            if (value < 0) throw new IllegalArgumentException(\"negative count\");\n            total = total.add(BigInteger.valueOf(value));\n        }\n        return new Total(user, total);\n    }\n    public static final class TopK {\n        private final int k;\n        private final PriorityQueue<Total> heap = new PriorityQueue<>(BEST.reversed());\n        public TopK(int k) { if (k < 0) throw new IllegalArgumentException(\"negative k\"); this.k = k; }\n        public void add(Total value) {\n            Objects.requireNonNull(value);\n            if (k == 0) return;\n            if (heap.size() < k) heap.add(value);\n            else if (BEST.compare(value, heap.peek()) < 0) { heap.remove(); heap.add(value); }\n        }\n        public List<Total> result() {\n            ArrayList<Total> result = new ArrayList<>(heap); result.sort(BEST); return result;\n        }\n    }\n    static Log parse(String line) throws IOException {\n        String[] fields = line.split(\"\\t\", -1);\n        if (fields.length != 4) throw new IOException(\"expected user/action/timestamp/count TSV fields\");\n        return new Log(EMIO.key(fields[0]), EMIO.key(fields[1]),\n                EMIO.decimal(fields[2], true), EMIO.decimal(fields[3], true));\n    }\n    private static final EMExternalSort.Codec<Weight> CODEC = new EMExternalSort.Codec<>() {\n        public void write(DataOutputStream out, Weight value) throws IOException {\n            EMIO.writeString(out, value.user()); out.writeLong(value.count());\n        }\n        public Weight read(DataInputStream in) throws IOException {\n            String user = EMIO.readString(in); long count = in.readLong();\n            if (count < 0) throw new IOException(\"negative run count\"); return new Weight(user, count);\n        }\n    };\n    /** Single-machine executable counterpart to shuffle/group/reduce + TopK.\n     * It does not instantiate Hadoop or claim to exercise distributed retries.\n     */\n    public static List<Total> top(Path input, Path work, EMExternalSort.Limits limits, int k)\n            throws IOException {\n        try (EMIO.Lines lines = new EMIO.Lines(input);\n             EMExternalSort.Sorted<Weight> sorted = EMExternalSort.sort(() -> {\n                 String line = lines.next(); return line == null ? null : map(parse(line));\n             }, Comparator.comparing(Weight::user), CODEC, work, limits);\n             EMExternalSort.Cursor<Weight> cursor = sorted.open()) {\n            TopK top = new TopK(k);\n            String user = null; BigInteger sum = BigInteger.ZERO;\n            Weight value;\n            while ((value = cursor.next()) != null) {\n                if (user != null && !user.equals(value.user())) {\n                    top.add(new Total(user, sum)); sum = BigInteger.ZERO;\n                }\n                user = value.user(); sum = sum.add(BigInteger.valueOf(value.count()));\n            }\n            if (user != null) top.add(new Total(user, sum));\n            return top.result();\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMStrings"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMStrings.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Exact global distinct export and set intersection, not duplicate-only reporting. */\npublic final class EMStrings {\n    private EMStrings() {}\n    private static EMExternalSort.Sorted<String> ordered(Path input, Path work,\n                                                        EMExternalSort.Limits limits) throws IOException {\n        EMExternalSort.Sorted<String> result = null;\n        try (EMIO.Lines lines = new EMIO.Lines(input)) {\n            result = EMExternalSort.sort(() -> {\n                String line = lines.next(); return line == null ? null : EMIO.key(line);\n            }, Comparator.naturalOrder(), EMIO.STRINGS, work, limits);\n        } catch (IOException | RuntimeException | Error failure) {\n            if (result != null) {\n                try { result.close(); } catch (IOException cleanup) { if (failure != cleanup) failure.addSuppressed(cleanup); }\n            }\n            throw failure;\n        }\n        return result;\n    }\n    /** Writes every different ID once, including IDs whose input count was one. */\n    public static long distinct(Path input, Path output, Path work,\n                                 EMExternalSort.Limits limits) throws IOException {\n        EMIO.separateOutput(output, input);\n        long[] written = {0};\n        try (EMExternalSort.Sorted<String> sorted = ordered(input, work, limits)) {\n            EMIO.atomicText(output, out -> {\n                try (EMExternalSort.Cursor<String> cursor = sorted.open()) {\n                    String previous = null, value;\n                    while ((value = cursor.next()) != null) {\n                        if (!value.equals(previous)) {\n                            out.write(value); out.newLine();\n                            written[0] = Math.incrementExact(written[0]); previous = value;\n                        }\n                    }\n                }\n            });\n        }\n        return written[0];\n    }\n    /** Each common URL is written once. Equality is the complete decoded string. */\n    public static long intersection(Path left, Path right, Path output, Path work,\n                                     EMExternalSort.Limits limits) throws IOException {\n        EMIO.separateOutput(output, left, right);\n        long[] written = {0};\n        try (EMExternalSort.Sorted<String> a = ordered(left, work, limits);\n             EMExternalSort.Sorted<String> b = ordered(right, work, limits)) {\n            EMIO.atomicText(output, out -> {\n                try (EMExternalSort.Cursor<String> ca = a.open(); EMExternalSort.Cursor<String> cb = b.open()) {\n                    String x = ca.next(), y = cb.next();\n                    while (x != null && y != null) {\n                        int compare = x.compareTo(y);\n                        if (compare < 0) x = ca.next();\n                        else if (compare > 0) y = cb.next();\n                        else {\n                            out.write(x); out.newLine(); written[0] = Math.incrementExact(written[0]);\n                            String equal = x;\n                            do { x = ca.next(); } while (equal.equals(x));\n                            do { y = cb.next(); } while (equal.equals(y));\n                        }\n                    }\n                }\n            });\n        }\n        return written[0];\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMPeakOnline"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMPeakOnline.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.math.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Distinct-user online peak from user<TAB>login<TAB>logout intervals.\n * Times are nonnegative long ticks; intervals are half-open [login,logout).\n */\npublic final class EMPeakOnline {\n    private EMPeakOnline() {}\n    public record Session(String user, long start, long end) {\n        public Session {\n            Objects.requireNonNull(user);\n            if (user.isEmpty() || start < 0 || end < start) throw new IllegalArgumentException(\"invalid session\");\n        }\n    }\n    private record Event(long time, long delta) {}\n    public record Peak(long users, BigInteger totalDuration, BigInteger longestContinuous,\n                       long intervals) {}\n    private static final EMExternalSort.Codec<Session> SESSIONS = new EMExternalSort.Codec<>() {\n        public void write(DataOutputStream out, Session value) throws IOException {\n            EMIO.writeString(out, value.user()); out.writeLong(value.start()); out.writeLong(value.end());\n        }\n        public Session read(DataInputStream in) throws IOException {\n            return new Session(EMIO.readString(in), in.readLong(), in.readLong());\n        }\n    };\n    private static final EMExternalSort.Codec<Event> EVENTS = new EMExternalSort.Codec<>() {\n        public void write(DataOutputStream out, Event value) throws IOException {\n            out.writeLong(value.time()); out.writeLong(value.delta());\n        }\n        public Event read(DataInputStream in) throws IOException {\n            long time = in.readLong(), delta = in.readLong();\n            if (time < 0 || (delta != -1 && delta != 1)) throw new IOException(\"invalid event\");\n            return new Event(time, delta);\n        }\n    };\n    private static Session parse(String line) throws IOException {\n        String[] f = line.split(\"\\t\", -1);\n        if (f.length != 3) throw new IOException(\"expected user/login/logout TSV fields\");\n        long start = EMIO.decimal(f[1], true), end = EMIO.decimal(f[2], true);\n        if (end < start) throw new IOException(\"logout precedes login\");\n        return new Session(EMIO.key(f[0]), start, end);\n    }\n    private static final class OwnedDirectory implements AutoCloseable {\n        final Path path;\n        OwnedDirectory(Path parent) throws IOException { path = Files.createTempDirectory(parent, \"em-peak-\"); }\n        public void close() throws IOException { EMExternalSort.deleteOwnedDirectory(path); }\n    }\n    /** Writes maximal contiguous peak spans as start<TAB>end, one span per line.\n     * Empty/all-zero-length input: peak=0, no output spans, both durations=0.\n     */\n    public static Peak calculate(Path input, Path peakOutput, Path work, EMExternalSort.Limits limits)\n            throws IOException {\n        EMIO.separateOutput(peakOutput, input);\n        try (OwnedDirectory owned = new OwnedDirectory(work)) {\n            Path events = owned.path.resolve(\"union-events.bin\");\n            try (EMIO.Lines lines = new EMIO.Lines(input);\n                 EMExternalSort.Sorted<Session> sorted = EMExternalSort.sort(() -> {\n                     String line = lines.next(); return line == null ? null : parse(line);\n                 }, Comparator.comparing(Session::user).thenComparingLong(Session::start)\n                         .thenComparingLong(Session::end), SESSIONS, work, limits);\n                 EMExternalSort.Cursor<Session> cursor = sorted.open();\n                 EMExternalSort.Sink<Event> out = new EMExternalSort.Sink<>(events, EVENTS)) {\n                Session pending = null, session;\n                while ((session = cursor.next()) != null) {\n                    if (session.start() == session.end()) continue;\n                    if (pending != null && pending.user().equals(session.user()) && session.start() <= pending.end()) {\n                        pending = new Session(pending.user(), pending.start(), Math.max(pending.end(), session.end()));\n                    } else {\n                        if (pending != null) emit(pending, out);\n                        pending = session;\n                    }\n                }\n                if (pending != null) emit(pending, out);\n            }\n            try (EMExternalSort.Cursor<Event> source = new EMExternalSort.Cursor<>(events, EVENTS);\n                 EMExternalSort.Sorted<Event> sorted = EMExternalSort.sort(source, Comparator.comparingLong(Event::time),\n                         EVENTS, work, limits)) {\n                long[] peak = {0};\n                visitSegments(sorted, (start, end, count) -> peak[0] = Math.max(peak[0], count));\n                Peak[] result = new Peak[1];\n                EMIO.atomicText(peakOutput, out -> {\n                    PeakWriter writer = new PeakWriter(out, peak[0]);\n                    visitSegments(sorted, writer::segment);\n                    result[0] = writer.finish();\n                });\n                return result[0];\n            }\n        }\n    }\n    private static void emit(Session s, EMExternalSort.Sink<Event> out) throws IOException {\n        out.add(new Event(s.start(), 1)); out.add(new Event(s.end(), -1));\n    }\n    @FunctionalInterface private interface SegmentHandler {\n        void accept(long start, long end, long users) throws IOException;\n    }\n    private static void visitSegments(EMExternalSort.Sorted<Event> sorted, SegmentHandler handler)\n            throws IOException {\n        try (EMExternalSort.Cursor<Event> cursor = sorted.open()) {\n            Event next = cursor.next();\n            if (next == null) return;\n            long previous = next.time(), active = 0;\n            while (next != null) {\n                long time = next.time();\n                if (time > previous) handler.accept(previous, time, active);\n                long delta = 0;\n                do {\n                    delta = Math.addExact(delta, next.delta()); next = cursor.next();\n                } while (next != null && next.time() == time);\n                active = Math.addExact(active, delta);\n                if (active < 0) throw new IOException(\"negative active-user count\");\n                previous = time;\n            }\n            if (active != 0) throw new IOException(\"unbalanced events\");\n        }\n    }\n    private static final class PeakWriter {\n        final BufferedWriter out;\n        final long peak;\n        boolean open;\n        long start, end, intervals;\n        BigInteger total = BigInteger.ZERO, longest = BigInteger.ZERO;\n        PeakWriter(BufferedWriter out, long peak) { this.out = out; this.peak = peak; }\n        void segment(long a, long b, long count) throws IOException {\n            if (peak > 0 && count == peak) {\n                if (open && end == a) { end = b; return; }\n                flush(); open = true; start = a; end = b;\n            } else flush();\n        }\n        void flush() throws IOException {\n            if (!open) return;\n            out.write(Long.toString(start)); out.write('\\t'); out.write(Long.toString(end)); out.newLine();\n            BigInteger duration = BigInteger.valueOf(end).subtract(BigInteger.valueOf(start));\n            total = total.add(duration); longest = longest.max(duration);\n            intervals = Math.incrementExact(intervals); open = false;\n        }\n        Peak finish() throws IOException { flush(); return new Peak(peak, total, longest, intervals); }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMTool"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMTool.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.nio.file.*;\n\n/** Small command-line entry point; parent directories must already exist. */\npublic final class EMTool {\n    private static void usage() {\n        throw new IllegalArgumentException(\"commands:\\n\"\n                + \"sort input output work chunkRecords fanIn\\n\"\n                + \"median input work chunkRecords fanIn\\n\"\n                + \"radix-median input\\n\"\n                + \"distinct input output work chunkRecords fanIn\\n\"\n                + \"intersect left right output work chunkRecords fanIn\\n\"\n                + \"weighted-top10 input work chunkRecords fanIn\\n\"\n                + \"peak input output work chunkRecords fanIn\");\n    }\n    private static EMExternalSort.Limits limits(String[] args, int start) {\n        return new EMExternalSort.Limits(Integer.parseInt(args[start]), Integer.parseInt(args[start + 1]));\n    }\n    public static void main(String[] args) throws Exception {\n        if (args.length == 0) usage();\n        switch (args[0]) {\n            case \"sort\" -> {\n                if (args.length != 6) usage();\n                System.out.println(EMNumeric.sortFile(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]), limits(args, 4)));\n            }\n            case \"median\" -> {\n                if (args.length != 5) usage();\n                System.out.println(EMNumeric.median(Path.of(args[1]), Path.of(args[2]), limits(args, 3)).exact().toPlainString());\n            }\n            case \"radix-median\" -> {\n                if (args.length != 2) usage();\n                System.out.println(EMNumeric.radixMedian(Path.of(args[1])).exact().toPlainString());\n            }\n            case \"distinct\" -> {\n                if (args.length != 6) usage();\n                System.out.println(EMStrings.distinct(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]), limits(args, 4)));\n            }\n            case \"intersect\" -> {\n                if (args.length != 7) usage();\n                System.out.println(EMStrings.intersection(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]), Path.of(args[4]), limits(args, 5)));\n            }\n            case \"weighted-top10\" -> {\n                if (args.length != 5) usage();\n                for (var entry : EMWeightedTop.top(Path.of(args[1]), Path.of(args[2]), limits(args, 3), 10))\n                    System.out.println(entry.user() + \"\\t\" + entry.count());\n            }\n            case \"peak\" -> {\n                if (args.length != 6) usage();\n                System.out.println(EMPeakOnline.calculate(Path.of(args[1]), Path.of(args[2]), Path.of(args[3]), limits(args, 4)));\n            }\n            default -> usage();\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMAlgorithmsTest"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMAlgorithmsTest.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.math.*;\nimport java.nio.charset.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Deterministic independent-reference tests. In-memory oracles are test fixtures only. */\npublic final class EMAlgorithmsTest {\n    private static int checks;\n    private static final EMExternalSort.Limits TINY = new EMExternalSort.Limits(7, 3);\n    private static void check(boolean condition, String message) {\n        checks++; if (!condition) throw new AssertionError(message);\n    }\n    @FunctionalInterface private interface Action { void run() throws Exception; }\n    private static void rejects(Action action, Class<? extends Throwable> kind) throws Exception {\n        try { action.run(); throw new AssertionError(\"expected \" + kind); }\n        catch (Throwable failure) {\n            if (!kind.isInstance(failure)) throw failure;\n            checks++;\n        }\n    }\n    private static void cleanWork(Path base) throws IOException {\n        try (DirectoryStream<Path> files = Files.newDirectoryStream(base)) {\n            for (Path p : files) {\n                String name = p.getFileName().toString();\n                check(!name.startsWith(\"em-sort-\") && !name.startsWith(\"em-peak-\") && !name.startsWith(\".em-output-\"),\n                        \"temporary path leaked: \" + name);\n            }\n        }\n    }\n    private static void numeric(Path base) throws Exception {\n        Path input = base.resolve(\"numbers.txt\"), output = base.resolve(\"numbers-out.txt\");\n        Random random = new Random(147159417L);\n        for (int test = 0; test < 100; test++) {\n            int n = test == 0 ? 0 : test == 1 ? 1 : 2 + random.nextInt(450);\n            long[] oracle = new long[n]; StringBuilder text = new StringBuilder();\n            for (int i = 0; i < n; i++) {\n                long value = i % 31 == 0 ? Long.MIN_VALUE : i % 37 == 0 ? Long.MAX_VALUE :\n                        test % 4 == 0 ? random.nextLong() : random.nextInt(43) - 21;\n                oracle[i] = value; text.append(value).append(i % 2 == 0 ? \"\\r\\n\" : \"\\n\");\n            }\n            Files.writeString(input, text); byte[] before = Files.readAllBytes(input);\n            Arrays.sort(oracle);\n            EMExternalSort.Stats stats = EMNumeric.sortFile(input, output, base, TINY);\n            List<String> actual = Files.readAllLines(output);\n            check(actual.size() == n, \"numeric output count\");\n            for (int i = 0; i < n; i++) check(Long.parseLong(actual.get(i)) == oracle[i], \"numeric sort\");\n            check(stats.records() == n && stats.maxChunkRecords() <= 7 && stats.maxMergeReaders() <= 3, \"sort bounds\");\n            if (n > 63) check(stats.mergePasses() >= 3, \"multi-pass exercised\");\n            if (n == 0) {\n                rejects(() -> EMNumeric.median(input, base, TINY), IllegalArgumentException.class);\n                rejects(() -> EMNumeric.radixMedian(input), IllegalArgumentException.class);\n            } else {\n                EMNumeric.Median want = new EMNumeric.Median(oracle[(n - 1) / 2], oracle[n / 2]);\n                check(want.equals(EMNumeric.median(input, base, TINY)), \"external median\");\n                check(want.equals(EMNumeric.radixMedian(input)), \"radix median\");\n            }\n            check(Arrays.equals(before, Files.readAllBytes(input)), \"numeric source unchanged\"); cleanWork(base);\n        }\n        Files.writeString(input, Long.MIN_VALUE + \"\\n\" + Long.MAX_VALUE + \"\\n\");\n        check(EMNumeric.median(input, base, TINY).exact().compareTo(new BigDecimal(\"-0.5\")) == 0, \"overflow-free average\");\n        Files.writeString(input, \"1\\n2\\n10\\n-11\\n-2\\n\");\n        EMNumeric.sortFile(input, output, base, TINY);\n        check(Files.readAllLines(output).equals(List.of(\"-11\", \"-2\", \"1\", \"2\", \"10\")), \"numeric not lexical\");\n        Files.writeString(input, \"5\\n\".repeat(200));\n        check(EMNumeric.radixMedian(input).equals(new EMNumeric.Median(5, 5)), \"all identical radix\");\n        Files.writeString(output, \"KEEP\");\n        for (String invalid : List.of(\"1\\n2.5\\n\", \"9223372036854775808\\n\", \"\\n\", \"+\\n\", \" 1\\n\", \"١\\n\")) {\n            Files.writeString(input, invalid);\n            rejects(() -> EMNumeric.sortFile(input, output, base, TINY), IOException.class);\n            check(Files.readString(output).equals(\"KEEP\"), \"bad input preserves prior output\"); cleanWork(base);\n        }\n    }\n    private static void strings(Path base) throws Exception {\n        Path a = base.resolve(\"ids-a.txt\"), b = base.resolve(\"ids-b.txt\"), output = base.resolve(\"ids-out.txt\");\n        Random random = new Random(462147L);\n        String[] keys = {\"Aa\", \"BB\", \"中文\", \"é\", \"é\", \"001\", \"1\", \" x\", \"x \", \"https://x/a\", \"https://x/A\", \"😀\"};\n        check(\"Aa\".hashCode() == \"BB\".hashCode(), \"collision fixture\");\n        for (int test = 0; test < 90; test++) {\n            TreeSet<String> left = new TreeSet<>(), right = new TreeSet<>();\n            StringBuilder sa = new StringBuilder(), sb = new StringBuilder();\n            for (int i = 0, n = test == 0 ? 0 : 1 + random.nextInt(200); i < n; i++) {\n                String key = i % 9 == 0 ? \"left-only-\" + i : keys[random.nextInt(keys.length)];\n                left.add(key); sa.append(key).append(i % 2 == 0 ? \"\\r\\n\" : \"\\n\");\n            }\n            for (int i = 0, n = test == 0 ? 0 : random.nextInt(200); i < n; i++) {\n                String key = i % 11 == 0 ? \"right-only-\" + i : keys[random.nextInt(keys.length)];\n                right.add(key); sb.append(key).append('\\n');\n            }\n            Files.writeString(a, sa); Files.writeString(b, sb);\n            byte[] beforeA = Files.readAllBytes(a), beforeB = Files.readAllBytes(b);\n            check(EMStrings.distinct(a, output, base, TINY) == left.size(), \"distinct count\");\n            check(Files.readAllLines(output).equals(new ArrayList<>(left)), \"global distinct incl singleton IDs\");\n            TreeSet<String> want = new TreeSet<>(left); want.retainAll(right);\n            check(EMStrings.intersection(a, b, output, base, TINY) == want.size(), \"intersection count\");\n            check(Files.readAllLines(output).equals(new ArrayList<>(want)), \"set intersection\");\n            check(Arrays.equals(beforeA, Files.readAllBytes(a)) && Arrays.equals(beforeB, Files.readAllBytes(b)), \"string sources unchanged\");\n            cleanWork(base);\n        }\n        Files.writeString(a, \"Aa\\nBB\\nAa\\nsolo\\n\");\n        EMStrings.distinct(a, output, base, new EMExternalSort.Limits(1, 2));\n        check(Files.readAllLines(output).equals(List.of(\"Aa\", \"BB\", \"solo\")), \"collision and singleton preserved\");\n        rejects(() -> EMStrings.distinct(a, a, base, TINY), IOException.class);\n        String largest = \"x\".repeat(EMIO.MAX_LINE_BYTES);\n        Files.writeString(a, largest); EMStrings.distinct(a, output, base, TINY);\n        check(Files.readString(output).equals(largest + System.lineSeparator()), \"max bytes and missing final LF\");\n        String multibyte = \"😀\".repeat(EMIO.MAX_LINE_BYTES / 4);\n        Files.writeString(a, multibyte + \"\\r\\n\"); EMStrings.distinct(a, output, base, TINY);\n        check(Files.readString(output).equals(multibyte + System.lineSeparator()), \"max UTF8 bytes plus CRLF\");\n        for (byte[] invalid : List.of(new byte[]{(byte)0xff}, \"\\n\".getBytes(StandardCharsets.UTF_8),\n                \"x\\r\".getBytes(StandardCharsets.UTF_8), \"x\\0y\\n\".getBytes(StandardCharsets.UTF_8),\n                \"x\".repeat(EMIO.MAX_LINE_BYTES + 1).getBytes(StandardCharsets.UTF_8))) {\n            Files.write(a, invalid); Files.writeString(output, \"KEEP\");\n            rejects(() -> EMStrings.distinct(a, output, base, TINY), IOException.class);\n            check(Files.readString(output).equals(\"KEEP\"), \"invalid UTF8/oversize preserves output\"); cleanWork(base);\n        }\n        Files.writeString(a, \"valid\\n\"); Files.write(b, new byte[]{(byte)0xff});\n        rejects(() -> EMStrings.intersection(a, b, output, base, TINY), IOException.class); cleanWork(base);\n    }\n    private static void weighted(Path base) throws Exception {\n        Path input = base.resolve(\"weighted.txt\"); Random random = new Random(147L);\n        for (int test = 0; test < 100; test++) {\n            Map<String, BigInteger> expected = new TreeMap<>(); StringBuilder text = new StringBuilder();\n            for (int i = 0, n = test == 0 ? 0 : random.nextInt(400); i < n; i++) {\n                String user = \"u\" + random.nextInt(33); long weight = i % 43 == 0 ? Long.MAX_VALUE : random.nextInt(50);\n                text.append(user).append(\"\\tlike\\t\").append(i).append('\\t').append(weight).append('\\n');\n                expected.merge(user, BigInteger.valueOf(weight), BigInteger::add);\n            }\n            Files.writeString(input, text);\n            List<EMWeightedTop.Total> want = new ArrayList<>();\n            for (var e : expected.entrySet()) want.add(new EMWeightedTop.Total(e.getKey(), e.getValue()));\n            want.sort((a, b) -> { int c = b.count().compareTo(a.count()); return c != 0 ? c : a.user().compareTo(b.user()); });\n            for (int k : new int[]{0, 1, 10, 50}) {\n                check(EMWeightedTop.top(input, base, TINY, k).equals(want.subList(0, Math.min(k, want.size()))), \"weighted TopK\");\n            }\n            // Independent simulated reducers: only complete per-user totals may enter local Top10.\n            List<EMWeightedTop.TopK> reducers = List.of(new EMWeightedTop.TopK(10), new EMWeightedTop.TopK(10), new EMWeightedTop.TopK(10));\n            for (EMWeightedTop.Total total : want) reducers.get(Math.floorMod(total.user().hashCode(), 3)).add(total);\n            EMWeightedTop.TopK global = new EMWeightedTop.TopK(10);\n            for (EMWeightedTop.TopK reducer : reducers) for (EMWeightedTop.Total value : reducer.result()) global.add(value);\n            check(global.result().equals(want.subList(0, Math.min(10, want.size()))), \"local complete-user Top10 theorem\"); cleanWork(base);\n        }\n        check(EMWeightedTop.map(new EMWeightedTop.Log(\"x\", \"like\", 0, 90)).count() == 90, \"map weight not frequency\");\n        check(EMWeightedTop.reduce(\"x\", List.of(Long.MAX_VALUE, Long.MAX_VALUE)).count()\n                .equals(BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.TWO)), \"reduce no long overflow\");\n        Files.writeString(input, \"a\\tx\\t0\\t100\\nb\\tx\\t0\\t1\\nb\\tx\\t1\\t1\\n\");\n        check(EMWeightedTop.top(input, base, TINY, 1).get(0).user().equals(\"a\"), \"weighted not frequency\");\n        for (String bad : List.of(\"u\\tx\\t0\\t-1\\n\", \"u\\tx\\t0\\n\", \"u\\tx\\t-1\\t3\\n\")) {\n            Files.writeString(input, bad); rejects(() -> EMWeightedTop.top(input, base, TINY, 10), IOException.class); cleanWork(base);\n        }\n    }\n    private record PeakOracle(long peak, List<String> intervals, BigInteger total, BigInteger longest) {}\n    private static PeakOracle brutePeak(List<EMPeakOnline.Session> sessions) {\n        TreeSet<Long> endpoints = new TreeSet<>();\n        for (var s : sessions) { endpoints.add(s.start()); endpoints.add(s.end()); }\n        List<Long> times = new ArrayList<>(endpoints); List<Long> counts = new ArrayList<>(); long peak = 0;\n        for (int i = 0; i + 1 < times.size(); i++) {\n            long point = times.get(i); Set<String> active = new HashSet<>();\n            for (var s : sessions) if (s.start() <= point && point < s.end()) active.add(s.user());\n            long count = active.size(); counts.add(count); peak = Math.max(peak, count);\n        }\n        List<String> intervals = new ArrayList<>(); BigInteger total = BigInteger.ZERO, longest = BigInteger.ZERO;\n        for (int i = 0; i < counts.size();) {\n            if (peak == 0 || counts.get(i) != peak) { i++; continue; }\n            long start = times.get(i), end = times.get(i + 1); i++;\n            while (i < counts.size() && counts.get(i) == peak) { end = times.get(i + 1); i++; }\n            intervals.add(start + \"\\t\" + end);\n            BigInteger d = BigInteger.valueOf(end).subtract(BigInteger.valueOf(start)); total = total.add(d); longest = longest.max(d);\n        }\n        return new PeakOracle(peak, intervals, total, longest);\n    }\n    private static void onePeak(Path base, List<EMPeakOnline.Session> sessions) throws Exception {\n        Path input = base.resolve(\"sessions.txt\"), output = base.resolve(\"peaks.txt\");\n        StringBuilder text = new StringBuilder();\n        for (var s : sessions) text.append(s.user()).append('\\t').append(s.start()).append('\\t').append(s.end()).append('\\n');\n        Files.writeString(input, text); byte[] before = Files.readAllBytes(input);\n        PeakOracle want = brutePeak(sessions); EMPeakOnline.Peak actual = EMPeakOnline.calculate(input, output, base, TINY);\n        check(actual.users() == want.peak() && actual.intervals() == want.intervals().size(), \"distinct-user peak\");\n        check(actual.totalDuration().equals(want.total()) && actual.longestContinuous().equals(want.longest()), \"peak durations\");\n        check(Files.readAllLines(output).equals(want.intervals()), \"all maximal peak spans\");\n        check(Arrays.equals(before, Files.readAllBytes(input)), \"session source unchanged\"); cleanWork(base);\n    }\n    private static void peaks(Path base) throws Exception {\n        Random random = new Random(161L);\n        onePeak(base, List.of());\n        onePeak(base, List.of(new EMPeakOnline.Session(\"a\", 0, 0)));\n        onePeak(base, List.of(new EMPeakOnline.Session(\"a\", 0, 10), new EMPeakOnline.Session(\"a\", 2, 8),\n                new EMPeakOnline.Session(\"b\", 5, 15), new EMPeakOnline.Session(\"b\", 15, 20),\n                new EMPeakOnline.Session(\"c\", 15, 18), new EMPeakOnline.Session(\"a\", 0, 10)));\n        onePeak(base, List.of(new EMPeakOnline.Session(\"a\", 0, 3), new EMPeakOnline.Session(\"b\", 3, 6)));\n        onePeak(base, List.of(new EMPeakOnline.Session(\"a\", 0, Long.MAX_VALUE)));\n        for (int test = 0; test < 160; test++) {\n            List<EMPeakOnline.Session> sessions = new ArrayList<>();\n            for (int i = 0, n = random.nextInt(160); i < n; i++) {\n                long start = random.nextInt(50), end = start + random.nextInt(15);\n                sessions.add(new EMPeakOnline.Session(\"u\" + random.nextInt(15), start, end));\n            }\n            Collections.shuffle(sessions, random); onePeak(base, sessions);\n        }\n        Path input = base.resolve(\"sessions.txt\"), output = base.resolve(\"peaks.txt\");\n        for (String bad : List.of(\"a\\t10\\t2\\n\", \"a\\t-1\\t2\\n\", \"a\\t0\\t\\n\", \"a\\t0\\t2\\textra\\n\")) {\n            Files.writeString(input, bad); Files.writeString(output, \"KEEP\");\n            rejects(() -> EMPeakOnline.calculate(input, output, base, TINY), IOException.class);\n            check(Files.readString(output).equals(\"KEEP\"), \"invalid interval preserves output\"); cleanWork(base);\n        }\n    }\n    private static void failures(Path base) throws Exception {\n        rejects(() -> new EMExternalSort.Limits(0, 3), IllegalArgumentException.class);\n        rejects(() -> new EMExternalSort.Limits(1, 129), IllegalArgumentException.class);\n        int[] i = {0}; IOException sentinel = new IOException(\"injected source failure\");\n        try {\n            EMExternalSort.sort(() -> { if (i[0]++ == 25) throw sentinel; return 25L - i[0]; },\n                    Long::compare, EMIO.LONGS, base, TINY);\n            throw new AssertionError(\"source injection ignored\");\n        } catch (IOException failure) { check(failure == sentinel, \"original exception preserved\"); }\n        cleanWork(base);\n        Path broken = base.resolve(\"truncated.bin\");\n        Files.write(broken, new byte[]{1, 0, 0});\n        try (var cursor = new EMExternalSort.Cursor<>(broken, EMIO.LONGS)) {\n            rejects(cursor::next, EOFException.class);\n        }\n        Path output = base.resolve(\"atomic.txt\"); Files.writeString(output, \"KEEP\");\n        rejects(() -> EMIO.atomicText(output, out -> { out.write(\"partial\"); throw new IOException(\"injected sink failure\"); }), IOException.class);\n        check(Files.readString(output).equals(\"KEEP\"), \"partial sink not published\"); cleanWork(base);\n        Path nonempty = base.resolve(\"output-directory\"); Files.createDirectory(nonempty);\n        Files.writeString(nonempty.resolve(\"keep\"), \"KEEP\");\n        rejects(() -> EMIO.atomicText(nonempty, out -> out.write(\"new\")), IOException.class);\n        check(Files.readString(nonempty.resolve(\"keep\")).equals(\"KEEP\"), \"commit failure preserves target\");\n        Files.delete(nonempty.resolve(\"keep\")); Files.delete(nonempty); cleanWork(base);\n    }\n    private static void remove(Path base) throws IOException {\n        try (DirectoryStream<Path> files = Files.newDirectoryStream(base)) {\n            for (Path file : files) Files.delete(file);\n        }\n        Files.delete(base);\n    }\n    public static void main(String[] args) throws Exception {\n        Path base = Files.createTempDirectory(\"em-tests-\");\n        try {\n            numeric(base); strings(base); weighted(base); peaks(base); failures(base);\n            System.out.println(\"PASS \" + checks + \" assertions; fixed seeds; 100 numeric+radix cases, 90 distinct/intersection cases,\");\n            System.out.println(\"100 weighted cases (4 k values + reducer candidates), 165 independent endpoint/Set peak references;\");\n            System.out.println(\"multi-pass fan-in3, source preservation, singleton/hash-collision/Unicode/extreme/tie cases, malformed input, atomic failure and cleanup.\");\n        } finally { remove(base); }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "EMBoundedStress"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名 EMBoundedStress.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.nio.file.*;\n\n/** A bounded-process regression, not a benchmark or a TB-scale validation. */\npublic final class EMBoundedStress {\n    public static void main(String[] args) throws Exception {\n        int n = args.length == 0 ? 2_000_000 : Integer.parseInt(args[0]);\n        if (n < 1) throw new IllegalArgumentException();\n        Path base = Files.createTempDirectory(\"em-bounded-stress-\");\n        Path input = base.resolve(\"input.txt\"), output = base.resolve(\"output.txt\");\n        long offset = 1_000_000_000_000_000_000L;\n        try {\n            try (BufferedWriter writer = Files.newBufferedWriter(input)) {\n                for (int i = n - 1; i >= 0; i--) { writer.write(Long.toString(offset + i)); writer.newLine(); }\n            }\n            EMExternalSort.Stats stats = EMNumeric.sortFile(input, output, base, new EMExternalSort.Limits(4096, 3));\n            try (EMIO.Lines lines = new EMIO.Lines(output)) {\n                for (int i = 0; i < n; i++)\n                    if (!Long.toString(offset + i).equals(lines.next())) throw new AssertionError(\"wrong sorted rank \" + i);\n                if (lines.next() != null) throw new AssertionError(\"extra output\");\n            }\n            if (stats.records() != n || stats.maxMergeReaders() > 3 || stats.maxChunkRecords() > 4096)\n                throw new AssertionError(\"bounds violated\");\n            try (DirectoryStream<Path> files = Files.newDirectoryStream(base)) {\n                int count = 0; for (Path ignored : files) count++; if (count != 2) throw new AssertionError(\"leak\");\n            }\n            System.out.println(\"PASS exact descending-input/ascending-rank oracle; inputBytes=\" + Files.size(input)\n                    + \"; maxHeapBytes=\" + Runtime.getRuntime().maxMemory() + \"; \" + stats);\n        } finally {\n            try (DirectoryStream<Path> files = Files.newDirectoryStream(base)) { for (Path file : files) Files.delete(file); }\n            Files.delete(base);\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Session平均时长 先配对事件再确定分母"
+    },
+    {
+      "type": "paragraph",
+      "text": "用Map<user,loginTime>配对并累计完成会话时长，同时返回三种不同指标：全部Session等权平均、先求各用户Session均值再让用户等权平均、每用户累计在线时长的平均。没有有效完成会话时返回缺失值而不是0；缺失的会话ID使并发设备会话无法唯一配对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "日志只有 Timestamp、User ID、Operation 三列，Operation 为 login 或 logout，怎样计算平均 Session 在线时长？",
+        "说明时间、空间复杂度，并讨论海量流式输入、乱序和未配对事件的容错边界；平均的分母又应怎样确定？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "日志平均时长需先约定时间格式、重叠会话、异常处理和平均口径。下面 timestampMillis 为非负 long 毫秒时间戳，每用户同时至多一个活动会话；先按事件时间稳定排序，同时间沿输入顺序。重复 login 保留最早未关闭登录并记异常，孤立 logout 跳过并记异常，末尾未配对 login 不计完成会话并报告数量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "“平均会话时长”首先要说清分母，不同分母算的是不同指标。设用户 u 有 c_u 个完成会话，总时长 D_u："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "按 Session 平均：ΣD_u/Σc_u，每个完成会话权重相同。",
+        "先算每个用户的平均 Session 时长，再按用户平均：(Σ(D_u/c_u))/U，每个用户权重相同。",
+        "按用户平均总在线时长：ΣD_u/U，不再除以各自会话数。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "这里 U 只包含至少有一个有效完成会话的用户。如果要包含所有注册用户或观察窗口内用户，还必须提供用户全集和边界口径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如A有10和30毫秒两个会话，B有100毫秒一个会话，三种结果分别140/3≈46.67、(20+100)/2=60、140/2=70。直接对所有用户平均值再求平均会改变权重，不能把60当作每Session平均；合并分片时也应合并总时长与次数，不能对不同样本量分片的均值直接平均。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按时间遍历时，不变量是active仅保存尚未关闭且被当前异常策略接纳的登录。logout与相应起点配对后删除active条目，把duration加入该用户和全局累计并加一次计数。重复login、孤立logout各有单独指标，不参与偷偷造出的会话。已排序且时间非负，因此duration在0..Long.MAX_VALUE；总时长用BigInteger以免大量合法时长相加溢出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "BigDecimal以DECIMAL128求平均，分数可能无限循环，展示值是有明确精度的近似；Result仍保留精确BigInteger总数和会话计数，可随时按另一精度重算。按用户均值再平均会先在每个用户处发生一次DECIMAL128舍入，不能称作任意精度精确有理数结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "相同时间 login/logout 的次序影响配对：logout 在前会记孤立，随后 login 留为未关闭；login 在前可得到 0 时长。只有时间戳、用户、动作三列无法可靠识别重放、跨设备会话或漏失 logout，生产应增加 eventId/sessionId 与可靠顺序定义。当前接口稳定保持相同时间的输入次序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事件乱序到什么程度，决定了能不能直接流式配对。批量输入可以先排序，成本是 O(N log N) 时间、O(N) 额外数据；已经按每个用户的事件时间有序，就能直接消费，主要保存未关闭用户和累计值，状态为 O(U)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果允许无限迟到，就不能同时承诺有限内存、有限等待和全部精确配对：一个很早的 login 可能任意晚才来。必须约定允许迟到时间、保留期，或者改用外部排序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "水位线决定哪些事件时间范围可以最终化，TTL 只决定状态保留多久，两者不能代替真实 logout。流处理可以按 user/sessionId 分区，在水位线约束下缓冲排序，水位线之前再最终化；超限迟到事件走旁路、补算，或发撤回/更正。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用“超时上限”补一个结束时间，属于业务估计，要和实际 logout 配对的结果分开。作业重试还需要检查点与幂等 sink，否则同一个完成会话可能被重复累计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨统计日的会话可以完整归到结束日，或裁剪至窗口交集，或归到开始日，结果不同。跨时区应先规范到时间线；持续时长不能用可跳变的本地钟显示字符串直接相减。当前代码是有限批量内的确定配对器，没有运行Flink、分布式checkpoint或生产日志集成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "生成多用户合法会话并打乱顺序，逐项检查精确总时长、用户明细、会话数与输入不变；另测重复 login、孤立 logout、未关闭会话、同刻顺序、三种均值及总和超出 long 的情况。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "排序O(N log N)，扫描平均O(N)哈希操作，存储O(N+U)。BigInteger/BigDecimal额外位运算成本随累计位数增长，不能在任意精度模型下全视作机器常数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "重复 login 覆盖最近时间、允许重叠会话或栈式配对都会改变答案；选择其他策略时必须修改状态机和测试，当前策略不是所有业务的统一规则。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.math.*;\npublic final class SessionDurations {\n    public enum Operation { LOGIN, LOGOUT }\n    public record Event(long timestampMillis,String user,Operation operation) {public Event{if(timestampMillis<0)throw new IllegalArgumentException(\"negative timestamp\");Objects.requireNonNull(user);Objects.requireNonNull(operation);}}\n    public record UserTotal(BigInteger millis,long sessions) {}\n    public record Result(Map<String,UserTotal> users,BigInteger totalMillis,long sessions,long duplicateLogins,long orphanLogouts,int openAtEnd,Optional<BigDecimal> sessionMeanMillis,Optional<BigDecimal> meanOfUserSessionMeansMillis,Optional<BigDecimal> meanOfUserTotalMillis) {}\n    private static final MathContext MC=MathContext.DECIMAL128;\n    private static BigDecimal divide(BigInteger n,long d){return new BigDecimal(n).divide(BigDecimal.valueOf(d),MC);}\n    // Stable timestamp sort; equal timestamps use input order. One active session per user.\n    public static Result calculate(List<Event> events){Objects.requireNonNull(events);List<Event> sorted=new ArrayList<>(events);for(Event e:sorted)Objects.requireNonNull(e);sorted.sort(Comparator.comparingLong(Event::timestampMillis));Map<String,Long> active=new HashMap<>();Map<String,UserTotal> users=new HashMap<>();BigInteger total=BigInteger.ZERO;long count=0,duplicates=0,orphans=0;\n        for(Event e:sorted){if(e.operation==Operation.LOGIN){if(active.putIfAbsent(e.user,e.timestampMillis)!=null)duplicates++;}else{Long start=active.remove(e.user);if(start==null){orphans++;continue;}long duration=e.timestampMillis-start;BigInteger d=BigInteger.valueOf(duration);UserTotal old=users.getOrDefault(e.user,new UserTotal(BigInteger.ZERO,0));users.put(e.user,new UserTotal(old.millis.add(d),old.sessions+1));total=total.add(d);count++;}}\n        Optional<BigDecimal> session=Optional.empty(),means=Optional.empty(),totals=Optional.empty();if(count>0){session=Optional.of(divide(total,count));BigDecimal sumMeans=BigDecimal.ZERO;for(UserTotal u:users.values())sumMeans=sumMeans.add(divide(u.millis,u.sessions));means=Optional.of(sumMeans.divide(BigDecimal.valueOf(users.size()),MC));totals=Optional.of(divide(total,users.size()));}\n        return new Result(Map.copyOf(users),total,count,duplicates,orphans,active.size(),session,means,totals);\n    }\n    static void check(boolean b){if(!b)throw new AssertionError();}\n    public static void main(String[] args){List<Event> e=List.of(new Event(0,\"a\",Operation.LOGIN),new Event(10,\"a\",Operation.LOGOUT),new Event(20,\"a\",Operation.LOGIN),new Event(50,\"a\",Operation.LOGOUT),new Event(0,\"b\",Operation.LOGIN),new Event(100,\"b\",Operation.LOGOUT));Result x=calculate(e);check(x.sessions==3&&x.totalMillis.equals(BigInteger.valueOf(140))&&x.meanOfUserSessionMeansMillis.orElseThrow().compareTo(BigDecimal.valueOf(60))==0&&x.meanOfUserTotalMillis.orElseThrow().compareTo(BigDecimal.valueOf(70))==0);\n        x=calculate(List.of(new Event(1,\"a\",Operation.LOGIN),new Event(2,\"a\",Operation.LOGIN),new Event(6,\"a\",Operation.LOGOUT),new Event(8,\"a\",Operation.LOGOUT),new Event(9,\"b\",Operation.LOGIN)));check(x.totalMillis.intValueExact()==5&&x.duplicateLogins==1&&x.orphanLogouts==1&&x.openAtEnd==1);\n        check(calculate(List.of()).sessionMeanMillis.isEmpty());check(calculate(List.of(new Event(1,\"a\",Operation.LOGOUT),new Event(1,\"a\",Operation.LOGIN))).sessions==0);\n        List<Event> huge=List.of(new Event(0,\"a\",Operation.LOGIN),new Event(Long.MAX_VALUE,\"a\",Operation.LOGOUT),new Event(0,\"b\",Operation.LOGIN),new Event(Long.MAX_VALUE,\"b\",Operation.LOGOUT));check(calculate(huge).totalMillis.equals(BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.TWO)));\n        Random random=new Random(21);for(int t=0;t<1000;t++){List<Event> log=new ArrayList<>();Map<String,UserTotal> expected=new HashMap<>();long n=0;BigInteger sum=BigInteger.ZERO;for(int u=0;u<8;u++){long clock=u;String user=\"u\"+u;int sessions=random.nextInt(10);BigInteger us=BigInteger.ZERO;for(int i=0;i<sessions;i++){long duration=1+random.nextInt(100);log.add(new Event(clock,user,Operation.LOGIN));log.add(new Event(clock+duration,user,Operation.LOGOUT));clock+=duration+10;us=us.add(BigInteger.valueOf(duration));}if(sessions>0)expected.put(user,new UserTotal(us,sessions));sum=sum.add(us);n+=sessions;}Collections.shuffle(log,random);List<Event> before=List.copyOf(log);x=calculate(log);check(x.sessions==n&&x.totalMillis.equals(sum)&&x.users.equals(expected)&&x.openAtEnd==0&&x.orphanLogouts==0&&x.duplicateLogins==0&&log.equals(before));}System.out.println(\"PASS 1000 shuffled-log oracle cases; three means/duplicates/orphans/open/ties/BigInteger/nonmutation\");}\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四TB整数日志精确Top10 外部分桶与有限值域计数"
+    },
+    {
+      "type": "paragraph",
+      "text": "利用int32只有32位：按高8位分256桶流式写磁盘，同一个值一定进同一个桶；逐桶以低24位直接定位long计数数组。每桶最多2^24种不同值，long计数加touched下标数组共192MiB，远小于4G。每种值计数完成后更新全局大小10的最差项优先堆，最后按频次降序输出。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "4T 日志每行一个 int32，只有 4G 内存和普通 CPU，怎样精确统计出现次数最多的 10 个值？",
+        "如何利用有限整数值域控制内存，怎样处理同频和整数极值？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "4T/4G的十进制或二进制单位、文本/二进制编码没有完全指定；不据此伪造记录数或完成时长。采用UTF-8每行一个有符号int32的输入，精确频次而非近似；同频按数值升序确定前10。需要足够额外磁盘保存分桶二进制数据，若禁止临时磁盘则换多遍扫描方案。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "直接对全部2^32取值建计数数组不可行：即使用4字节计数也需16GiB，8字节计数需32GiB，均超过4G；且4T输入中某值频次可能超过int上限，所以不能只为省空间用int计数。HashMap每条有对象/桶/装箱开销，不可用“一个int键加一个int值8字节”估内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分桶依unsigned右移value>>>24，包括负数在内的全部int位模式都有唯一高8位与低24位。相同值不可能跨桶，所以桶内计数已经是该值全局频次，无需再将同值跨桶累加。重构(bucket<<24)|low恢复原有符号int位模式，比较tie时用Integer比较而非unsigned顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这比假设“哈希后每桶文件都小于内存”稳健：最坏4T全是同一个值，文件仍巨大但只有一个计数槽，读流逐条累加不会加载全文件。每桶不同键的上界由24位值域严格保证，数据偏斜只影响处理时长，不会使计数哈希表超过预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "long[2^24]用128MiB，int[2^24]的touched列表用64MiB。首次命中某低位时登记，桶结束只遍历实际出现的低位并清0，避免每个小桶扫描所有槽。192MiB是两个原始数组有效载荷，真实进程还包括Java堆/对象头/输入缓冲/文件缓存等，应预留预算而不是把4G全分给数组。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每桶最多打开一个计数输入流；分桶写入用访问顺序缓存最多32个8KiB缓冲输出流，超限关闭旧流，之后APPEND重新打开，避免默认同时开256文件而超出文件描述符限制。随机高位分布下32个句柄可能频繁切换，IO效率需测量；可以在允许的句柄/内存预算内增加缓冲或两级分桶，不改变精确性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Top10堆的根必须是当前最差候选：频次最低，同频时值更大。新候选更好才替换根。每个值只在其所属桶处理一次，堆大小最多10；最后排序10项。少于10种值就返回全部，不补虚构值。近似Count-Min/SpaceSaving只有明确允许误差时才可替代，当前题不允许直接丢精确性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "代码从文本逐行限64字符读取，拒绝空行、超长/非法/超int32值；分桶文件以writeInt四字节编码，读取时区分干净EOF与截断记录。频次用incrementExact，异常不静默回绕。临时目录由本次运行新建，finally删除自己创建的桶文件，输入不修改；IO失败会整体报错，不以部分堆结果宣称完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输入若原本二进制4T可约有10^12条量级，但文本含符号与换行就不同，必须按实测格式计N。总至少要读完整输入一遍，分桶法又写/读约4N字节临时数据；普通CPU可执行顺序解析和计数，瓶颈可能磁盘带宽/句柄抖动，不能承诺固定分钟数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "没有额外磁盘时，仍可用同一192MiB数组分256遍扫描原日志，每遍只统计一个高8位区间，内存有界但读取代价高256倍。外部归并排序是另一精确路线：有限块排序生成runs、多路分批归并，最终run-length计数；要限制归并fan-in而非一次打开所有runs。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "自测可缩小 lowBits 配置，强制多桶处理，并用完整 HashMap 计数后排序作独立参考。覆盖正负 int 极值、同频、全同值、空文件、非法记录、输入保持和临时目录清理。真实大文件部署还需单独测量峰值内存、磁盘和吞吐。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "设 N 为记录数、U 为不同值数，流式读取、分桶和计数为 O(N)，堆为 O(U log 10)，另有至多 2^24 个计数项的初始化。有效桶与打开文件管理还含目录成本。lowBits=24 时两个数组约 192MiB，再加固定缓冲和 O(10) 堆；临时磁盘为 4N 字节加元数据。可用 lowBits=4、8、12 构造较小边界用例，但参数缩小不能替代目标机器的资源核算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要先核对可用临时磁盘、进程实际RSS、允许打开文件数、日志编码与snapshot一致性；输入持续变化应固定快照/偏移边界，不能边读取边假定是完整静态4T。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.io.*;\nimport java.nio.file.*;\nimport java.nio.charset.StandardCharsets;\npublic final class ExternalIntTop {\n    public record Count(int value,long frequency) {}\n    private static final Comparator<Count> BEST=Comparator.comparingLong(Count::frequency).reversed().thenComparingInt(Count::value);\n    private static String readRecord(Reader in)throws IOException{StringBuilder line=new StringBuilder();int c;while((c=in.read())!=-1&&c!='\\n'){if(line.length()==64)throw new IOException(\"record exceeds64 chars\");line.append((char)c);}return c==-1&&line.isEmpty()?null:line.toString();}\n    private static Integer readInt(DataInputStream in)throws IOException{int a=in.read();if(a<0)return null;return a<<24|in.readUnsignedByte()<<16|in.readUnsignedByte()<<8|in.readUnsignedByte();}\n    private static final class Writers implements AutoCloseable {\n        private final Path dir;private final LinkedHashMap<Integer,DataOutputStream> open=new LinkedHashMap<>(32,.75f,true);\n        Writers(Path dir){this.dir=dir;}\n        void append(int bucket,int value)throws IOException{DataOutputStream out=open.get(bucket);if(out==null){if(open.size()==32){var it=open.entrySet().iterator();var eldest=it.next();eldest.getValue().close();it.remove();}out=new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(dir.resolve(bucket+\".bin\"),StandardOpenOption.CREATE,StandardOpenOption.APPEND),8192));open.put(bucket,out);}out.writeInt(value);}\n        public void close()throws IOException{IOException failure=null;for(DataOutputStream out:open.values())try{out.close();}catch(IOException e){if(failure==null)failure=e;else if(failure!=e)failure.addSuppressed(e);}open.clear();if(failure!=null)throw failure;}\n    }\n    // Input UTF-8 text: exactly one signed decimal int32 per nonempty line.\n    // Production lowBits=24 => 256 buckets and 192 MiB primitive counting arrays.\n    public static List<Count> top(Path input,Path workDirectory,int k,int lowBits)throws IOException{\n        if(k<0||lowBits<1||lowBits>24)throw new IllegalArgumentException();Objects.requireNonNull(input);Objects.requireNonNull(workDirectory);Path dir=Files.createTempDirectory(workDirectory,\"int32-top-\");\n        try{try(Writers writers=new Writers(dir);BufferedReader in=Files.newBufferedReader(input,StandardCharsets.UTF_8)){String line;while((line=readRecord(in))!=null){if(line.isBlank())throw new IllegalArgumentException(\"blank record\");int value=Integer.parseInt(line.trim());writers.append(value>>>lowBits,value);}}\n            int slots=1<<lowBits,mask=slots-1;long[] counts=new long[slots];int[] touched=new int[slots];PriorityQueue<Count> heap=new PriorityQueue<>(Math.max(1,k),BEST.reversed());\n            try(DirectoryStream<Path> files=Files.newDirectoryStream(dir,\"*.bin\")){for(Path bucketFile:files){int bucket=Integer.parseInt(bucketFile.getFileName().toString().replace(\".bin\",\"\")),used=0;try(DataInputStream in=new DataInputStream(new BufferedInputStream(Files.newInputStream(bucketFile)))){Integer value;while((value=readInt(in))!=null){int index=value&mask;if(counts[index]==0)touched[used++]=index;counts[index]=Math.incrementExact(counts[index]);}}for(int t=0;t<used;t++){int low=touched[t];Count hit=new Count(bucket<<lowBits|low,counts[low]);if(k>0){if(heap.size()<k)heap.add(hit);else if(BEST.compare(hit,heap.peek())<0){heap.remove();heap.add(hit);}}counts[low]=0;}}}\n            List<Count> result=new ArrayList<>(heap);result.sort(BEST);return result;\n        }finally{try(DirectoryStream<Path> files=Files.newDirectoryStream(dir)){for(Path file:files)Files.delete(file);}Files.delete(dir);}\n    }\n    public static void main(String[] args)throws Exception{Path base=Files.createTempDirectory(\"external-top-test-\");try{Path input=base.resolve(\"input.txt\");Random random=new Random(840);for(int test=0;test<20;test++){Map<Integer,Long> expected=new HashMap<>();StringBuilder data=new StringBuilder();for(int i=0,n=1000+random.nextInt(2000);i<n;i++){int v=i%17==0?Integer.MIN_VALUE:i%19==0?Integer.MAX_VALUE:random.nextInt(501)-250;data.append(v).append('\\n');expected.merge(v,1L,Long::sum);}Files.writeString(input,data,StandardCharsets.UTF_8);List<Count> oracle=new ArrayList<>();for(var e:expected.entrySet())oracle.add(new Count(e.getKey(),e.getValue()));oracle.sort(BEST);oracle=new ArrayList<>(oracle.subList(0,Math.min(10,oracle.size())));for(int bits:new int[]{4,8,12})if(!top(input,base,10,bits).equals(oracle))throw new AssertionError();}\n            Files.writeString(input,\"7\\n\".repeat(10000),StandardCharsets.UTF_8);if(!top(input,base,10,8).equals(List.of(new Count(7,10000))))throw new AssertionError();Files.writeString(input,\"\",StandardCharsets.UTF_8);if(!top(input,base,10,8).isEmpty())throw new AssertionError();Files.writeString(input,\"1\\n2147483648\\n\",StandardCharsets.UTF_8);try{top(input,base,10,8);throw new AssertionError();}catch(NumberFormatException ok){}try(var files=Files.list(base)){if(files.count()!=1)throw new AssertionError(\"temporary bucket cleanup\");}Files.delete(input);System.out.println(\"PASS 60 real disk partition/count top10 comparisons; signed extremes/ties/all-identical/empty/invalid/cleanup; no 4TB run claimed\");\n        }finally{try(var files=Files.list(base)){for(Path file:files.toList())Files.delete(file);}Files.delete(base);}}\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "大文件重复行与频次TopK：有界外排序、全局聚合和数值TopK区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "Top100 如果按已有数值或分数排序，单遍维护大小为 100 的小顶堆就行；如果按频次排序，必须先汇总同一个键在所有文件里的完整次数，再进 TopK 堆。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件大于内存时，先分批排序落盘成 run，再固定路数、多轮归并，在相邻同键处求和。最后顺序扫一遍：一边输出 count>1 的重复行，一边维护 Top100。堆解决的是“完整计数里的前一百”，并不替代前面的全局计数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "极大量数据取 Top100，先要确认按数值还是按频次吗？",
+        "10 个 100G 查询日志文件、单机仅 10G 内存且允许多机，怎样找出访问频次最高的 100 个 Query？",
+        "文件超过内存时，怎样找出重复的完整行？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "按数值取最大、按完整 Query 累计频次、输出重复整行，是三个不同接口。这里按 UTF-8 每行一个 Query 或记录，去掉 LF 及其前可选 CR，不 trim、不折叠大小写、不做 Unicode 规范化，空行也是一个键。重复输出每个重复键与次数各一次；频次 TopK 按次数降序，同次数按 Java String 顺序升序。输入必须是冻结快照，程序不修改输入文件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "数值TopK不变量：堆保存已读前缀中最大的至多K个元素，根是其中最小者；新值不超过根可丢，超过则替根。每个元素处理O(log K)，空间O(K)，最后把堆排序才是有序TopK输出，遍历PriorityQueue不是有序结果。完整largest接口保留重复数值出现次数；若要不同值TopK，需额外明确去重语义和状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "频次 TopK 不能把每条输入记录原样放进 100 元素堆：暂时低频的 Query 以后可能大量出现。不同 Query 很多时，全量 HashMap 会超过 10GB；任意字符串键也不能直接套 int32 全集的定长计数。能装入内存时用 Map<整行,long> 计数，再筛 count>1 或维护 TopK；超过内存时改为外存聚合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整Java外排序先按chunkRecords条数分批，每条原始行在LF之前最多32768字节（若为CRLF，该CR也计入此读取配额），UTF-8严格解码；只在读到LF时移除其前至多一个CR，EOF前孤立CR或额外CR均属于键。每批排序，相同键压缩成(key,count)二进制记录。字段用长度前缀和long计数，避免Query内部tab、分隔符碰巧破坏中间格式；排序按完整String比较，哈希碰撞不参与等价判定。超长行拒绝是明确演示协议，真实无限长行需外部块比较/更复杂的流式键表示，不能一句“逐行读”假装有界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "归并每轮只打开fanIn个run，每个读器只留一个当前(key,count)，小顶堆按key排序取下一项，相邻同键累加并写下一轮run。run路径按(stage,index)生成，只保留总run数，不把海量文件路径全部加载内存。完成一组才删除本程序自己的上一轮文件；最终所有相同键必聚成一条完整全局计数。计数加法Math.addExact溢出就报错，不静默变负。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最后读完整计数流，count>1发给Consumer流式输出重复键及次数，同时用大小K堆保留最优计数。最差根按频次小优先、同频key更大优先，这与最终频次降序/key升序的总序相反，保证边界相同频率时可重复。若要重复行所在行号或全部副本，当前接口不提供，需额外保存偏移/第二遍扫描，不能只从count恢复位置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "10GB内存要留给JVM、GC、IO缓冲、索引对象和结果，chunkRecords×最大行宽决定上界量级，但对象头/字符串编码/排序引用数组和临时拷贝仍需真实测量。给定有限chunkRecords、fanIn和行长度，内存不随总输入规模无限增长；并不宣称本程序精准≤某固定MiB。磁盘峰值含输入、run、中间新一轮文件及输出，IO带宽、磁盘空间、文件句柄和失败清理都要预算。目标规模的性能需要按上述资源口径评估，不能由小文件测试直接外推。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多机可用稳定hash(Query)按键分区，Map阶段产生(Query,1)，可用局部combiner先合并计数减网络；同键的所有部分次数最后必须到同一逻辑归并者求和，得到完整(key,total)。然后各键分区输出自己的Top100，汇总这些候选再Top100是正确的：若某键连所在分区Top100都进不了，已有100个同分区完整键按一致总序胜过它，它不可能全局Top100。"
+    },
+    {
+      "type": "paragraph",
+      "text": "但“每原始文件各算Top100再合并”一般错误，因为同键频次跨文件分散。构造10个文件，每文件共同Query x出现50次，另有100个仅该文件独有的Query各51次；x在每文件都进不了Top100，但全局x=500，所有私有键只有51，x是全局最高。必须先按完整Query聚合再裁剪候选，不能忽略数据分布前提。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分区偏斜不能只加桶数就保证内存：同一超级热键仍去同桶，但排序归并按键流式计数可只持一个累加器。若要拆热点，可先按额外盐分片做部分计数，再去盐按Query合并，最终完成后才TopK。稳定哈希仅路由，保留完整键验证相等，不能把64位hash相等直接视为相同Query。近似sketch/采样可能降低成本，但有误差，题目要求精确时不能暗换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本是单机批任务：创建专用临时目录、结束时清理自有文件，不修改输入；它不提供断点恢复和作业提交协议。需要这些能力时，应增加 run 清单与校验和、输入快照版本、每轮完成标记、幂等重算和临时结果原子发布。输出 callback 失败时可能已产生部分结果，不能视为事务。多机部署还需框架的调度、容错与网络协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一行出现三次输出一次(key,3)；不同大小写或不同Unicode编码序列默认不同。CRLF与LF行结束符不属于键，最后一行没有换行仍计入；文件末尾单独CR不是CRLF，必须保留为键内容，例如文件\"x\\n\"与文件\"x\\r\"是两个不同键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "外排序用很小的 chunk 与 fan-in 强制多段、多轮归并，再与完整 HashMap 频次、重复集合和 TopK 对照。覆盖 Unicode、空行空文件、CRLF、同频并列、输入不变、临时清理、非法 UTF-8 和超长行；数值 TopK 另测 long 极值与重复值。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "设N行、每批R行、初始run数S≈ceil(N/R)、归并路数F、键比较最坏成本B。初始排序O(N log R·B)，每轮归并O(N log F·B)，最多ceil(log_F S)轮，压缩重复可减少后续记录数；磁盘每轮顺序读写相应数据。最终U个不同键TopK O(U log(K+1)·比较成本)，输出排序O(K log K)。内存O(RB+FB+KB)加有界缓冲和实现对象开销，磁盘O(输入字节量级及中间层)，不是O(K)整体。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "十个各 100GB 日志、仅 10GB 内存并允许多机时，先明确按 Query 频次还是数值排名；下面保留精确全键聚合与全局 Top100，不能让多机成为省略全局统计的理由。"
+    },
+    {
+      "type": "paragraph",
+      "text": "当前字符串比较是Java UTF16词典序，只用于同频稳定tie，不宣称按中文拼音/自然语言排序；统计相等以精确字符串为准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.io.*;\nimport java.nio.*;\nimport java.nio.charset.*;\nimport java.nio.file.*;\nimport java.util.*;\nimport java.util.function.Consumer;\n\n/** Exact line-frequency aggregation with bounded chunks and bounded fan-in.\n * Input: UTF-8, one query/line. LF and at most one CR immediately before LF are separators; EOF CR is data.\n * No case folding, trimming, Unicode normalization or hash-only equality.\n */\npublic final class ExternalStringCounts {\n    public static final int MAX_LINE_BYTES=32768;\n    public record Entry(String key,long count){}\n    private static final Comparator<Entry> BEST=(a,b)->{int c=Long.compare(b.count,a.count);return c!=0?c:a.key.compareTo(b.key);};\n    private static final Comparator<Entry> WORST=BEST.reversed();\n    private static String decode(byte[] bytes)throws CharacterCodingException{\n        return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();\n    }\n    private static String line(InputStream in)throws IOException{\n        ByteArrayOutputStream out=new ByteArrayOutputStream();int c;\n        while((c=in.read())!=-1 && c!='\\n'){\n            if(out.size()==MAX_LINE_BYTES)throw new IllegalArgumentException(\"line byte quota\");out.write(c);\n        }\n        if(c==-1 && out.size()==0)return null;\n        byte[] data=out.toByteArray();if(c=='\\n' && data.length>0 && data[data.length-1]=='\\r')data=Arrays.copyOf(data,data.length-1);\n        return decode(data);\n    }\n    private static Path run(Path work,int stage,long number){return work.resolve(\"s\"+stage+\"-r\"+number+\".bin\");}\n    private static void write(DataOutputStream out,Entry value)throws IOException{\n        byte[] key=value.key.getBytes(StandardCharsets.UTF_8);out.writeInt(key.length);out.write(key);out.writeLong(value.count);\n    }\n    private static Entry read(DataInputStream in)throws IOException{\n        int first=in.read();if(first==-1)return null;\n        int length=(first<<24)|(in.readUnsignedByte()<<16)|(in.readUnsignedByte()<<8)|in.readUnsignedByte();\n        if(length<0||length>MAX_LINE_BYTES)throw new IOException(\"invalid owned run key length\");\n        byte[] key=new byte[length];in.readFully(key);long count=in.readLong();if(count<1)throw new IOException(\"invalid count\");\n        return new Entry(decode(key),count);\n    }\n    private static void flush(List<String> chunk,Path target)throws IOException{\n        Collections.sort(chunk);\n        try(DataOutputStream out=new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(target)))){\n            int i=0;while(i<chunk.size()){int j=i+1;while(j<chunk.size()&&chunk.get(j).equals(chunk.get(i)))j++;write(out,new Entry(chunk.get(i),j-i));i=j;}\n        }\n        chunk.clear();\n    }\n    private record Head(Entry entry,int source){}\n    private static void merge(List<Path> inputs,Path target)throws IOException{\n        List<DataInputStream> readers=new ArrayList<>();\n        Throwable primary=null;\n        PriorityQueue<Head> heap=new PriorityQueue<>(Comparator.comparing((Head h)->h.entry.key).thenComparingInt(Head::source));\n        try{\n            for(Path path:inputs){DataInputStream in=new DataInputStream(new BufferedInputStream(Files.newInputStream(path)));readers.add(in);Entry e=read(in);if(e!=null)heap.add(new Head(e,readers.size()-1));}\n            try(DataOutputStream out=new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(target)))){\n                String key=null;long count=0;\n                while(!heap.isEmpty()){\n                    Head h=heap.remove();Entry e=h.entry;\n                    if(key!=null && !key.equals(e.key)){write(out,new Entry(key,count));count=0;}\n                    key=e.key;count=Math.addExact(count,e.count);\n                    Entry next=read(readers.get(h.source));if(next!=null)heap.add(new Head(next,h.source));\n                }\n                if(key!=null)write(out,new Entry(key,count));\n            }\n        }catch(IOException | RuntimeException | Error ex){\n            primary=ex;throw ex;\n        }finally{\n            IOException failure=null;\n            for(DataInputStream in:readers)try{in.close();}catch(IOException ex){if(failure==null)failure=ex;else if(failure!=ex)failure.addSuppressed(ex);}\n            if(failure!=null){if(primary==null)throw failure;if(primary!=failure)primary.addSuppressed(failure);}\n        }\n    }\n    public static List<Entry> count(List<Path> inputs,Path directory,int chunkRecords,int fanIn,int k,Consumer<Entry> duplicates)throws IOException{\n        Objects.requireNonNull(inputs);Objects.requireNonNull(duplicates);\n        if(chunkRecords<1||fanIn<2||k<0)throw new IllegalArgumentException(\"invalid bounds\");\n        Path work=Files.createTempDirectory(directory,\"exact-lines-\");\n        try{\n            List<String> chunk=new ArrayList<>(chunkRecords);long runs=0;\n            for(Path input:inputs)try(InputStream in=new BufferedInputStream(Files.newInputStream(input))){\n                String s;while((s=line(in))!=null){chunk.add(s);if(chunk.size()==chunkRecords){flush(chunk,run(work,0,runs));runs=Math.incrementExact(runs);}}\n            }\n            if(!chunk.isEmpty()){flush(chunk,run(work,0,runs));runs=Math.incrementExact(runs);}\n            if(runs==0)return List.of();\n            int stage=0;\n            while(runs>1){\n                long next=0;\n                for(long start=0;start<runs;){\n                    List<Path> batch=new ArrayList<>(fanIn);for(int i=0;i<fanIn&&start<runs;i++,start++)batch.add(run(work,stage,start));\n                    merge(batch,run(work,stage+1,next++));for(Path old:batch)Files.delete(old);\n                }\n                stage++;runs=next;\n            }\n            PriorityQueue<Entry> top=new PriorityQueue<>(WORST);\n            try(DataInputStream in=new DataInputStream(new BufferedInputStream(Files.newInputStream(run(work,stage,0))))){\n                Entry e;while((e=read(in))!=null){\n                    if(e.count>1)duplicates.accept(e);\n                    if(k>0){if(top.size()<k)top.add(e);else if(BEST.compare(e,top.peek())<0){top.remove();top.add(e);}}\n                }\n            }\n            List<Entry> result=new ArrayList<>(top);result.sort(BEST);return result;\n        }finally{\n            // This fresh directory contains only files created by this invocation.\n            try(DirectoryStream<Path> files=Files.newDirectoryStream(work)){for(Path file:files)Files.deleteIfExists(file);}Files.deleteIfExists(work);\n        }\n    }\n    /** Value-ranked occurrences, not frequency TopK. Repeated numeric values are retained. */\n    public static long[] largest(PrimitiveIterator.OfLong input,int k){\n        if(k<0)throw new IllegalArgumentException(\"negative k\");PriorityQueue<Long> heap=new PriorityQueue<>();\n        while(input.hasNext()){long value=input.nextLong();if(k==0)continue;if(heap.size()<k)heap.add(value);else if(value>heap.peek()){heap.remove();heap.add(value);}}\n        long[] out=new long[heap.size()];for(int i=out.length-1;i>=0;i--)out[i]=heap.remove();return out;\n    }\n    public static void main(String[] args)throws IOException{\n        Path work=Files.createTempDirectory(\"external-count-test-\");Random random=new Random(999);\n        try{\n            List<Path> inputs=List.of(work.resolve(\"a.txt\"),work.resolve(\"b.txt\"),work.resolve(\"c.txt\"));\n            for(int test=0;test<100;test++){\n                Map<String,Long> oracle=new HashMap<>();List<byte[]> snapshots=new ArrayList<>();\n                for(Path f:inputs){StringBuilder text=new StringBuilder();int n=test==0?0:random.nextInt(500);for(int i=0;i<n;i++){String key=random.nextInt(15)==0?\"\":\"查询\"+random.nextInt(120);oracle.merge(key,1L,Long::sum);text.append(key).append(i%2==0?\"\\r\\n\":\"\\n\");}Files.writeString(f,text);snapshots.add(Files.readAllBytes(f));}\n                List<Entry> expected=new ArrayList<>();Map<String,Long> expectedDuplicates=new HashMap<>();for(var e:oracle.entrySet()){expected.add(new Entry(e.getKey(),e.getValue()));if(e.getValue()>1)expectedDuplicates.put(e.getKey(),e.getValue());}expected.sort(BEST);\n                Map<String,Long> actualDuplicates=new HashMap<>();List<Entry> actual=count(inputs,work,17,4,7,e->{if(actualDuplicates.put(e.key,e.count)!=null)throw new AssertionError(\"duplicate final key\");});\n                if(!actual.equals(expected.subList(0,Math.min(7,expected.size())))||!actualDuplicates.equals(expectedDuplicates))throw new AssertionError();\n                for(int i=0;i<inputs.size();i++)if(!Arrays.equals(snapshots.get(i),Files.readAllBytes(inputs.get(i))))throw new AssertionError(\"source changed\");\n                try(var files=Files.list(work)){if(files.count()!=3)throw new AssertionError(\"leak\");}\n            }\n            if(!Arrays.equals(largest(Arrays.stream(new long[]{Long.MIN_VALUE,5,5,7,Long.MAX_VALUE}).iterator(),3),new long[]{Long.MAX_VALUE,7,5}))throw new AssertionError();\n            Path bad=inputs.get(0);Files.writeString(bad,\"x\".repeat(MAX_LINE_BYTES+1));try{count(List.of(bad),work,17,4,7,e->{});throw new AssertionError();}catch(IllegalArgumentException expected){}\n            Files.write(bad,new byte[]{(byte)0xff});try{count(List.of(bad),work,17,4,7,e->{});throw new AssertionError();}catch(CharacterCodingException expected){}\n            System.out.println(\"PASS 100 actual multi-file external-sort runs (17-record chunks, fan-in4) vs exact Map counts/Top7/duplicates;Unicode/empty/CRLF/ties/source preservation/cleanup;value-TopK extremes;oversized/invalidUTF8 rejection\");\n        }finally{try(DirectoryStream<Path> files=Files.newDirectoryStream(work)){for(Path file:files)Files.deleteIfExists(file);}Files.deleteIfExists(work);}\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10TB视频日志本地统计：磁盘去重、观看UV与点赞/点击口径"
+    },
+    {
+      "type": "paragraph",
+      "text": "人数是UV，不是事件行数。精确结果要按(video,行为,user)去重再按video/行为计数，不能把10TB读入pandas或每个视频保留无限内存set。给出完整本地Python磁盘SQLite方案：复合主键唯一约束落盘、流式有限批量插入、索引顺序聚合并流式写CSV；同时说明10TB时的磁盘/吞吐/恢复限制和外排序替代。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "本地 Python 怎样处理 10T 视频浏览、点赞日志，统计各视频观看人数与点击人数？",
+        "点赞与点击能否互换？怎样明确用户去重、行为类型和磁盘预算？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "浏览、点赞和点击是不同事件，统计人数还要定义身份键、时间窗及撤销语义。下面用有界快照的 UTF-8 TSV(video_id,user_id,action)，action 为 view、like 或 click，分别统计三种行为的去重用户；仅有点赞不能推导点击。上游统一解析用户身份，程序拒绝 null、超长和非法记录。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "视频 UV 数的是不同用户，不是事件条数。同一人看同一个视频 100 次，观看人数还是 1；看两个视频，则在两个视频中各计 1。view 和 click 也应分别去重，同一人可以在两种行为中各计一次，不能合成一个集合。"
+    },
+    {
+      "type": "paragraph",
+      "text": "点赞还要区分“曾经点过”和“当前仍点赞”。日志有 like/unlike 时，当前点赞人数要按 (user,video) 的时间/序号确定最新状态，再统计 liked；这里的 ever-like 去重不等于这个问题。匿名设备与登录 user 如何映射、怎样过滤机器人、迟到数据归哪个时间窗，都要有业务合同，算法不能自行猜测。"
+    },
+    {
+      "type": "paragraph",
+      "text": "程序按二进制读取单行，readline 上限 4097 字节，超过 4096 字节就拒绝，避免畸形长行破坏内存边界。UTF-8 严格解码，ID 最长 256 字节，使用参数化 SQL，batch 最多 500 条。这些是教学接口的资源上限；生产应根据数据合同调整，不能只凭“逐行”就断言内存有界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "磁盘表WITHOUT ROWID以(video,kind,user)作复合主键，INSERT OR IGNORE只抑制已有同键重复；主键顺序将同视频行为聚在一起，全部唯一行完成后SUM(CASE WHEN kind=... THEN 1 ELSE 0 END)得三个UV。重复重放记录不会多计。所有视频存在于三个行为之一的集合中；从未出现过任何事件的视频不会凭空输出0，需要另接完整视频维表。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存设置cache_size=-32768是约32MiB目标缓存，不是进程RSS硬上限；关闭mmap，临时对象落盘，Python只留有限batch和单条。SQLite索引、页缓存、解释器、事务与输出还有额外内存和磁盘，必须实测RSS与峰值临时空间。可用 EXPLAIN QUERY PLAN 检查是否按主键顺序扫描 unique_visitors，以及是否发生临时排序；数据库版本或 SQL 改动后需重新检查计划。"
+    },
+    {
+      "type": "paragraph",
+      "text": "吞吐估算须按10TB实际字节数、读盘吞吐、去重后唯一U、键宽、页放大、事务提交和随机I/O测代表性样本。索引大小可能大于输入有效载荷，输入加数据库加journal/临时文件加输出都要有空间；不承诺某台机器若干小时完成。对近乎全唯一日志，SQLite B树插入可能非常慢，工程上通常优先比较外排序：按内存预算生成有序run，对三元组多路归并并相邻去重，再顺序累计各视频行为。归并路数受文件句柄和每路buffer约束，需要多轮时保留中间层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可用稳定哈希把同一(video,行为,user)发送到同分片，分片内精确去重后按video/行为合计；哈希仅路由，仍要存原始键消除碰撞，不把摘要相同当相等。按video单独分桶会被一个热点视频打爆，可按整个去重键分片，使同一用户三元组不跨分片重复；不同分片同视频计数再相加。若只求近似UV可考虑可合并sketch，但误差与小基数行为须明确，不能用于题目要求精确时偷换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本是从头处理的批任务，使用新的私有工作目录，结束后只删除自己拥有的临时文件，不修改日志；当前没有断点续跑接口。要增加恢复，可持久化数据库，把已提交的快照标识和字节偏移与批量 INSERT 放入同一事务，恢复时校验输入未变并从已确认边界继续，唯一键使重放幂等。发布报表时先写临时文件，校验行数和摘要后原子替换，防止部分输出被误当完整结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "v1/u1/view重复两行，v1/u2/view一行，v1/u1/like一行，则v1观看UV=2、点赞UV=1；没有click记录只能说本输入click计数为0，不能断言真实系统从未点击或用点赞填充点击。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地视频 UV 用小规模 SQLite 落盘输入，与每视频、每行为的独立用户集合比较。检查空文件、Unicode、重复重放、输入不变、非法 action、空 ID、多字段、超长行与临时清理；大规模吞吐和峰值内存需在对应数据量下另外测量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "令N事件数、U唯一三元组数、B有界键长度。抽象B树插入约O(N log U)次索引比较/访问（字符串比较还计B），聚合O(U)，磁盘O(U·B)加页/journal开销；实际I/O必须区分顺序扫描与随机写。Python工作集受500条和单条上限约束，SQLite缓存仅目标值，不宣称总RSS≤32MiB。输出按流迭代，结果空间在文件不在内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "只读取一个明确快照；目录多文件应按确定清单及快照顺序输入，不能遍历期间把新写入文件重复算或漏算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "10个T没有统一说明TB/TiB，容量规划须明确字节数；代码没有依赖平台内存读取全量，没有删除非本程序所有的文件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Python本地精确去重程序与实际落盘自测"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "重复文件存储怎样保证不误去重"
+    },
+    {
+      "type": "paragraph",
+      "text": "先用长度和内容摘要筛选候选，再对候选内容做字节级校验或保留可验证的碰撞处理，不能把摘要相同当成数学上必然相同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "整文件去重适合完全相同的文件；分块去重可以复用不同文件的相同片段，但还要保存文件到块序列的清单、块引用计数、完整性校验和原子提交边界。固定块边界简单，前部插入少量字节可能使后续全部错位；内容定义分块能缓解错位，但会增加扫描和分块规则复杂度。上传中断不能留下已可见的不完整清单，删除文件也不能提前删除仍被其他清单引用的块。加密、租户隔离和相同内容是否允许跨租户共享，还会改变去重边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一只羊与九十九只狼"
+    },
+    {
+      "type": "paragraph",
+      "text": "在“狼优先保命、能安全吃羊时才选择吃、所有狼都按同样逻辑理性行动”的模型下，狼数为奇数时会有一只狼吃羊；99 是奇数，所以原羊被吃，吃羊的狼变成羊后不再被剩余 98 只狼吃。"
+    },
+    {
+      "type": "paragraph",
+      "text": "归纳起点：1 只狼吃完后没有其他狼，安全；2 只狼任何一只吃完都会面对 1 只狼，所以都不吃。若 n−1 为奇数，吃羊者变成羊后会被吃，于是 n 为偶数时无人行动；若 n−1 为偶数，变成羊后安全，于是 n 为奇数时可以行动。结论依赖共同知道的偏好与行动规则；没有这些假设，只有“吃羊后变羊”的物理规则不足以唯一确定结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "九块糖分给十个人"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确定糖能否区分、是否允许有人没有，以及是否必须全部分完，否则答案不唯一。"
+    },
+    {
+      "type": "paragraph",
+      "text": "九块相同糖全部分给十个不同的人、允许零块，等价于十个非负整数之和为 9，隔板法为 C(18,9)=48620。九块不同糖各自独立选十个人之一，是 10^9；要求每个人至少一块时，9<10，答案为 0。若人也不可区分，就变成整数分拆，不能再用标号篮子的隔板法。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "已按时间排序的超大日志，怎样截取时间范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "为每固定一段记录保存“时间戳、记录起始字节偏移”的稀疏索引，先二分定位起始附近，再顺序扫描到结束时间，就能减少无关磁盘读取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "索引必须从真正的记录边界生成；变长行不能用“行号乘平均行长”直接 seek。起点要选择不会越过第一个目标记录的块，尤其是相同时间戳跨块时；终止条件也要按闭区间或半开区间约定。输出 Z 字节至少 O(Z)，索引定位对 B 个块为 O(log B)，还需局部扫描。每块记录数固定为 K 时，最多额外扫描约 K 条，但超长单行仍需字节预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "日志必须是稳定版本或具有一致快照，追加和轮转要更新文件代次、偏移索引与读取边界；普通 mmap 只提供地址映射，不会自动建立时间或行索引。外存索引中的 Lines (https://my.feishu.cn/wiki/PU07w5G8zi0MqjkjGEecc33Mnxd#doxcn6fSU0zeDjhtcM0POVI12dh)展示了更密的“每行偏移”索引及生命周期处理，时间索引在此基础上还需解析时间戳并保存有序锚点。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题面中的数字和示例也需要验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "保留每一个给定数字，并用最小反例检验其含义；数字齐全不代表约束已经齐全。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "“1 到 N 的排列，恰有 K 对相邻奇数”要先问是线性还是环形相邻，是计数、构造还是判可行，N 和 K 的范围是什么。",
+        "数组中有已染色与未染色节点，并给出每个节点的染色代价，求染色 K 个的代价：K 是节点数量，不是颜色编号。先确认是否要求连续 K 个、已有着色是否计入数量、费用如何累计及输出目标；若要求连续窗口，可沿滑动窗口方向分析，不能在规则不完整时编造唯一答案。",
+        "象棋棋盘上走象，有会卡位的小兵，象可以吃掉小兵：需要保留象、小兵阻挡和可吃子的条件，再确认棋盘范围、起终点或目标、具体移动与卡位规则，以及吃子后状态如何变化。规则完整后才能确定 BFS 状态，不能把阻挡当成始终不变。",
+        "“最短无重复子串”若只要求非空且无重复，任意单字符就是最短答案；若还要求覆盖某些字符，那是最小覆盖窗口；若其实要求最长，应明确改为最长窗口合同。",
+        "数字消除示例 2 1 2 2 1 4 4 4 → 2 还需要确认消除阈值、每轮顺序、是否连锁以及输出是数值、长度还是剩余序列。它不能直接借用字符串“连续三个及以上消除”的规则。",
+        "“剩余空间最小”只有一个最大子数组的类比时，仍缺少容量、物品是否可拆分及输出，不能直接选背包或 Kadane。",
+        "“被包裹的字符隐藏；MCP 调用只输出 instruction 内容”需要包裹符号、JSON 或其他消息协议、转义规则、跨块边界、未闭合输入和结束时的行为。先给协议样例，再写状态机；没有分隔符时无法可靠判断何时应隐藏。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "题号冲突可以用明确名称并列排查：LC150 通常指逆波兰表达式，不能同时作为有序数组原地去重的合同；LC200 是岛屿数量，而“最大岛屿”还需确认是否要面积；LC31 是下一排列，与旋转有序数组搜索不同。“岛屿第 10 题”也不足以指定题型。数岛屿常见的两层外循环负责扫描每一个格子；发现未访问陆地后，内部 DFS/BFS 才负责完整标记同一个连通块，不能把两种循环的职责混在一起。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“用 QuickSelect 达到 O(N) 时间、O(1) 额外空间”还应确认 O(N) 是期望还是最坏保证。随机枢轴、迭代三向划分满足期望线性和常数工作空间，最坏仍为二次；要求最坏线性时需要另选有最坏界的确定性选择方案，不能仅把随机版本复杂度的“期望”删掉。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

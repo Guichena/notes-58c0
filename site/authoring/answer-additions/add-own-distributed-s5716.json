@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s5716",
+  "entryId": "sceneqa-1",
+  "expectedOriginalHash": "2a6df71c6270a4fc96fcf30fe7c07f3c7b4f48772a0ecda98d09ef0651cf386e",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.2 Redis预扣、队列和MySQL订单链路怎样补齐生产可靠性"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis预扣最多提供准入或受明确定义的预留，订单权威提交、可靠发布与对账必须连成可恢复协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Redis预扣后发MQ失败怎么办；Redis与MySQL初始库存不一致怎么办；这条链路怎样达到生产可靠性。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "分析Redis预扣、外部队列与MySQL落单的独立提交边界，同时考虑初始化、重试和消费失败。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先确立权威与受理语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "选择MySQL订单/预留/库存账为最终权威时，Redis只做入口预筛和展示投影，成功预筛不等于订单成功。API返回“排队中”前必须保证请求ID、输入和可恢复执行义务已可靠记录；本地进程内排队不能支撑这一承诺。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果原链路把Redis作为唯一可售库存权威，那么主从切换丢预扣、Redis→MQ双写丢通知、重复补回和初始装载都需独立协议证明。Lua原子性只覆盖一个Redis执行域，不能把Redis、队列和MySQL自动变成原子事务。仅用重试几次后人工介入还缺持久失败义务、告警和自动对账。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把失败按提交点分类"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费时数据库扣库存和写订单同一事务：扣库存成功但写订单失败应回滚整个本地事务，不能已经ack消息；重放仍用同requestId。如果事务提交成功但消息确认/HTTP响应丢失，按唯一请求ID读取原订单，不能再扣一次。只有“唯一约束冲突”可按重复读取，其他SQL错误不可当重复吞掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 预筛已扣、MQ 投递却超时，不能马上把库存加回。原请求可能已经成功，此时 INCR 会凭空多出库存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先保留预留记录和稳定 reservationId，查询权威订单或待处理请求；有可靠请求账就补发同事件 ID，没有完成则按明确状态释放。释放只能由 HELD→RELEASED 的一次合法转换触发。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "自动校验、补偿和初始装载"
+    },
+    {
+      "type": "paragraph",
+      "text": "定时按索引扫描：超龄PENDING请求重新调度；超期RUNNING租约核对后接管；outbox最老记录触发补发/告警；已CLOSED且有支付事实建立退款待办；订单与预留不匹配冻结并告警。队列异常和数据库异常分别恢复，补偿动作必须复用业务幂等键和版本，不直接改总数掩盖差异。"
+    },
+    {
+      "type": "paragraph",
+      "text": "初始化缓存，也要防止覆盖装载期间的新扣减。先从一致数据库快照建 Redis 库存，记录变更水位，追平后续增量，再激活新缓存版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "仍在卖票或下单时，不能简单 SELECT 总量再 SET。可以短暂停受理、版本化切换，或采用其他有证明的快照+增量协议。重建后逐笔核对预留和订单，不只看总数是否相等。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "生产验收不是组件清单"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要入口容量与反滥用、热点隔离、连接/线程池边界、消息保留与积压恢复、数据库备份恢复、支付/关单竞态、灰度发布和权限审计。成功/售罄/重试中/未知待核实分开展示，不能所有失败都返回“售罄”。对账记录差异、原因、补偿ID和最终结果，避免修复脚本自己造成重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障注入受理后断电、预筛后投递失败、DB提交响应丢失、重复消息、消费者重启、Redis切换、初始化同时写入及旧补偿晚到。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.12 Redis到MySQL异步合并库存更新，最终一致能否放松原子性"
+    },
+    {
+      "type": "paragraph",
+      "text": "最终一致允许传播延迟，却不能放松库存扣减和批次去重的原子性；合并必须保留正确的版本及一次应用边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Redis库存如何批量落MySQL；哪些更新能合并；最终一致是否不需要原子性。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步对象是Redis到MySQL的库存变化，须先区分绝对状态版本、可合并差额和订单预留事实。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先说哪份数据负责批准卖出"
+    },
+    {
+      "type": "paragraph",
+      "text": "若MySQL是库存/预留最终权威，Redis只是预筛/展示，那么Redis落后可接受的只是展示或受理提示；最终卖出仍由DB条件/事务裁决，不能把滞后Redis的成功当最终订单成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若Redis权威扣库存、MySQL异步持久投影，单Redis原子脚本也不证明故障后额度不回退。需说明扣库存+预留+可靠事件的原子受理、AOF/复制/确认与切换丢写窗口、已接受订单怎样恢复、重建共同水位与旧owner隔离。Redis异步复制且WAIT不自动变强一致，不能一失败就切读旧MySQL可售量继续卖，否则可能把已售但未同步量又卖一遍。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "增量批次与快照批次是两套协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "增量事件需稳定eventId、sku/bucket、顺序版本和delta，消费者只合并一段已经确定完整的输入，例如连续[startVersion,endVersion]。同事务登记batchId/覆盖区间、加总delta并推进消费水位；重复batch读取结果，不能再加一次。存在版本缺口先补齐，不能直接把highwater跳过缺失的扣减。"
+    },
+    {
+      "type": "paragraph",
+      "text": "批次去重之前，先固定这批究竟有哪些事件。第一次合并 1…10，重试却改成 5…15，两个不同 batchId 会把 5…10 重复计算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此要固定批次 manifest 或事件集合，或者逐事件建唯一 inbox，不能每批随手存一个临时 UUID。不同 SKU 可以分别合并，但同订单多资源或审计要求的原子语义，不能随意拆散。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若传播的是权威版本v的完整库存快照，目标可CAS仅接受更高v的同域快照，旧快照拒绝；这个规则不能套给delta。+5和−5的净变化0可让纯展示最终数值不变，却不能删除订单/预留、支付、审计或触发其他效果所需的两条事实。水位、事件内容和保留窗口仍要持久维护。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "最终可见不等于允许本地半状态"
+    },
+    {
+      "type": "paragraph",
+      "text": "最终一致允许投影晚一点看见，不允许本地事务留半份状态。权威端若扣库存成功、预留没保存，可能丢库存归属；目标端若记了 batch 完成、库存却没更新，就永久跳过效果。反过来，先更新却没记批次，重放又会扣一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个本地不变量仍需要一个事务或原子执行域；跨域才用可靠责任、去重、顺序和修复来衔接。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如库存100，冻结批次B含两次扣3，目标事务100→94并记B。提交后ACK丢失重放B查已提交结果仍94；若先记B再单独更新，中间崩溃就永远100。若事件104先于103到达且它们是delta，不能仅因为版本104较新就丢103。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "批量收益与恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "按最大条数、字节、时间和业务延迟SLO flush，热点SKU合并降低单行更新次数，但输入/出站责任仍需可恢复；消费者内存中的聚合桶退出会丢进度，须能从持久源重放。消息持续积压要限流/扩瓶颈、监控最老年龄和权威/投影版本差，并提供安全降级。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试固定batch重复/重叠、净零批次、乱序缺口、目标事务每个写点失败、DB提交ACK丢失、Redis切换/从旧快照恢复、消费者换owner与恢复后对账。分桶H2示例只验证本地事务，Redis/MySQL与消息传播之间的故障窗口仍需完整联调和重放验证。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.14 Redis预扣库存与外部MQ发布怎样可靠衔接"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis预扣与MQ发布必须通过持久出站义务、可恢复状态或同域日志衔接，单次Lua加发送调用仍存在双写窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：预扣后MQ发不出怎么办；Lua能否保证Redis与MQ原子；如何恢复未发布预留。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一Redis脚本不能包含外部Broker的原子发送，先选择库存权威和可靠受理点。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "优先考虑权威DB加Outbox"
+    },
+    {
+      "type": "paragraph",
+      "text": "若MySQL负责最终库存资格，订单/预留/请求结果/待发事件在同DB事务提交，relay或CDC发布同eventId到MQ。Redis只作近似预筛和进度投影，Redis失败可以保守限流/暂拒，不能凭旧缓存直接授予真实订单；这条路径把不可恢复双写改为可重放责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障例：DB提交后未send即宕机，outbox仍可补发；Broker收到了但发送账未更新，重发允许重复；下游inbox+业务同事务，提交后ACK。关键不是“再试三次”，而是失败义务在进程退出后仍存在，且每段效果有幂等/确认边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "若必须Redis先受理，事件也需在同执行域留下"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种条件方案是在同Redis hash slot内以短脚本校验资格/库存/参数与key类型，更新预留和库存，同时追加带稳定reservationId/eventId的Redis Stream事件。返回受理前，这组记录须满足选择的持久/复制承诺；relay从Stream消费并向外部MQ发布，确认后XACK，失败保留PEL重试/接管。XACK是该消费组的确认，不等于删除流记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis Stream 方案改变的是责任交接方式：先“Redis 内受理+本地事件”，再异步可靠转发到外部 MQ，避免同步双写的直接窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "relay 在 Broker 成功后、XACK 前退出，仍会重发，因此必须按 eventId 去重。消费者组、裁剪和保留期，要保证未完成责任的 payload 能重建，不能让 TTL 或内存淘汰删掉尚未投递的预留。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Lua原子执行也不是无限故障下的ACID"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本不可穿插不等于运行期错误自动回滚：先校验再写、缩短脚本并控制资源，仍须对写中异常/内存不足建立持久可检测状态和修复。Redis异步复制可能在切换丢已确认写，WAIT也不单独变强一致；如果这会复活已售库存，需安全额度/共同恢复水位/旧owner隔离，或改回可靠权威事务域，不能只加Stream就宣布零超卖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "未得到响应意味着UNKNOWN，按原reservationId查权威预留/订单再决定补发或释放。释放是HELD→RELEASED的一次合法转换，补偿记录与额度变化同原子域；不能投递超时就无条件INCR，因为原消息可能已使订单成功。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "代价与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "DB outbox复用事务但有扫描/CDC、索引与保留成本；Redis Stream路径增加持久化配置、PEL/relay/切换恢复与跨域对账，不能因常态延迟低忽略运维。以reservation/event/order三种ID关联查丢责任、重复效果和版本差，长期故障进入明确待处理状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障测试预扣后、事件写入时、relay发送前后、MQ确认丢、XACK丢、Stream裁剪、Redis切换及超时释放与晚到下单竞争。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8.15 券扣库存后直接返回成功，但MQ漏发导致券未到账，怎样修正"
+    },
+    {
+      "type": "paragraph",
+      "text": "券发放必须持久记录完整发放义务，库存预留后即使消息丢失也能补发或明确失败释放，而非直接遗忘。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：扣库存成功但券没到账怎么办；MQ漏发怎样补；接口何时才能返回发券成功。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "受理、预留成功与券实际发放是不同承诺；不能用修改文案掩盖已经承诺但未完成的业务结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先正面回答小李的体感"
+    },
+    {
+      "type": "paragraph",
+      "text": "若接口已回“领券成功”，但券实例从未创建，小李看到成功却查不到券，确有承诺与实际结果不一致；HTTP已经结束，不会神奇等待丢失的MQ。若接口一直等同步完成，超时只能告诉结果待核实/按requestId查询，不能因为客户端等待结束就断言发券失败。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设计成异步时，可靠记录后返回ACCEPTED/PENDING与requestId，展示处理中；只有券实例和领取结果权威提交才显示ISSUED。同步要求则在预算内等待同一权威结果，超时仍保留可查询状态。历史错误成功记录应补发或按资格/库存协议补偿并给清楚反馈，不能悄悄把它们全改失败。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把异常表放回事务责任中"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存预留、唯一领取资格、领取请求PENDING及outbox在同库同一事务写入，任何失败一同回滚。发布器带eventId可恢复发送，消费者将inbox、券实例、领取结果ISSUED与完成事件同事务，再ACK。跨服务时生产侧通过结果事件推进投影，不能声称两个库同一个本地事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Outbox 不是 send 失败后再补写的异常表，而是成功路径提交之前，就已经存在的待履行责任。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“业务提交→send 失败→写异常表”仍会在发送失败后退出、或异常表写失败时丢责任。正确 outbox 在发布成功、标记之前退出，只会重发；之后扫描 PENDING 和最老 outbox，并对消息与券实例对账，直到业务终态才关闭责任。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RocketMQ发送成功是否已落盘"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能无条件等同。经典Broker的ASYNC_FLUSH允许先确认、后台再刷盘；SYNC_FLUSH等待相应刷盘条件才确认，等待超时不代表消息一定没写入。复制到其他节点与刷本机磁盘是不同确认维度，不能把同步刷盘当多副本容灾。"
+    },
+    {
+      "type": "paragraph",
+      "text": "4.x SendResult还区分SEND_OK、FLUSH_DISK_TIMEOUT、FLUSH_SLAVE_TIMEOUT、SLAVE_NOT_AVAILABLE，应按返回状态和部署配置处理未知/可靠性不足，不能只看有没有抛异常。此处字段是明确4.x接口举例，5.x SDK/代理与复制模式要按实际版本重新核对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "另一方式及其边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ事务消息可按half→本地业务事务→commit/rollback组织，第二次报告丢失由持久事务证据回查，第5.17节给UNKNOWN边界。它减少特定双写窗口，但不自动原子化另一服务的券库；消费者仍幂等。若全部数据确在一库且低延迟允许，也可同步事务内生成券，再异步通知，业务成功不依赖通知到达。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重试要复用领取ID，资格/库存预留与券ID唯一；永久无法发放进入明确失败/释放流程，已发券未知时不能盲目释放后允许再领。测试生产提交即退出、发布/ACK回包丢、异常表写失败、消费重复、下游已发券但状态回传失败，以及用户第二次点领取，核对一份领取意图至多一张合法券。真实服务应逐项验证领取身份、发放结果与回传状态之间的一致性。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "5"
+}

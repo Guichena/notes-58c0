@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-7-2",
+  "entryId": "bg-redis-7",
+  "expectedOriginalHash": "6148c949f18f8f3714bf31057ea3fae83ba918f1304c52ed78210ac659a4dcc4",
+  "title": "故障判断、多数授权与副本选择",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Sentinel 怎样判断故障、授权切换和选择新主"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sentinel 先形成故障判断，再取得执行故障转移的授权，最后选择合格副本并传播新配置。quorum 与多数派分别作用于不同环节，不能只背“超过一半就选主”。Sentinel 不转发每条业务命令，也不负责启动已经宕机的进程。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-redis/5b31504766abc9a7.png",
+      "alt": "Sentinel 监控与客户端服务发现"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "主观下线、客观下线与执行者选举"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sentinel 周期性 PING 被监控的主、副本和其他 Sentinel，典型 PING 周期约一秒；判断超时使用 down-after-milliseconds 等条件，而不是丢一个心跳就宣布故障。单个 Sentinel 认为实例不可达是主观下线 SDOWN。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先决定主节点是不是客观下线：达到配置 quorum 的 Sentinel 共同确认故障，才能形成 ODOWN。接着决定由谁来切换：某个 Sentinel 还要取得已知 Sentinel 集合多数派的授权，通常至少 floor(N/2)+1 票；quorum 配得更大时，还要满足更高门槛。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是两个连续环节，“哪个 Sentinel 负责切换”又不同于“把哪个 Redis 副本提升为主”。配置纪元负责标识和传播新的主节点配置，不是每笔业务写入的共识提交号。"
+    },
+    {
+      "type": "image",
+      "src": "assets/imported/own-redis/cf3e856b494ffa7e.png",
+      "alt": "Sentinel 故障判断与副本晋升示意"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如三名 Sentinel 中两名与主失联、一名仍能访问主，说明监控视角可能分裂。能否形成 ODOWN 取决于 quorum 和有效故障意见；能否切换还取决于执行授权、互通状况与合格副本。客观下线和主切换的这套判断主要针对 master，不能把每个失联副本都说成同样的客观下线选主流程。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "为什么常用三个哨兵，两个真的不能用吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个 Sentinel 可以运行，但多数派是两票。若失去一个，只剩一票，就无法在容忍这个哨兵故障的同时自动完成授权；把 quorum 降为 1 也补不出第二张授权票。"
+    },
+    {
+      "type": "paragraph",
+      "text": "三个 Sentinel 的多数派是两票。合理配置 quorum=2，且剩余两者互通、能够确认主故障并访问合格副本时，可以容忍一个 Sentinel 失效继续切换。不是有三个进程就必然容灾：三个都在同一宿主上，宿主故障会一起丢失；两地 1+2 布局发生分区时，两个的一侧有票数优势，仍须能访问可提升副本和业务网络。"
+    },
+    {
+      "type": "paragraph",
+      "text": "四个的多数派是三票，保持多数时仍只能失去一个；五个的多数派是三票，可失去两个。所以奇数常有更经济的票数容错比，偶数并不违反协议。成员变更及已知 Sentinel 集合也要按规则处理，不能只看此刻进程列表就自行重算并宣称具备多数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "怎样选择合格副本，旧主恢复后怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "先排除不可用或长时间与主断开的副本；在常见 Sentinel 规则中，断链容忍与十倍 down-after-milliseconds 加上主已处于 SDOWN 的时间有关。之后按以下顺序比较合格候选："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "replica-priority 较小者优先，0 表示不允许提升；常见配置值是 100，但应以实际配置为准。",
+        "优先级相同时，已处理的复制 offset 较大者优先。",
+        "仍相同时，选择 run ID 字典序较小者，使选择确定化。run ID 的生成有随机性，不表示最后一步随机抽取副本。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "因此“永远选数据最新的副本”不够准确，优先级和资格过滤在前。获授权的 Sentinel 让选定副本成为主，再把其他可达副本指向它。故障旧主当时可能完全不可达，不能假设立即改好；它重新可达后再按较新的逻辑配置成为新主副本。配置持久化和故障进程重启由相应运维流程负责。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "客户端和业务还要承担哪些事"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端通过 Sentinel 查询当前主地址或订阅变化后，刷新连接并处理在途请求。普通直连旧主的客户端不会因为有哨兵就自动获得正确路由；是否读副本仍由客户端能力和业务策略决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "网络超时可能意味着命令未执行，也可能执行成功但回复丢失。切换后重试有副作用的操作必须使用适当幂等与对账，不能看到连接异常就无限重发。异步复制仍可能丢掉旧主已经确认的写，旧主在隔离窗口中的写与锁也可能失效；Sentinel 的多数授权并没有为这些写提供零丢失承诺。"
+    },
+    {
+      "type": "paragraph",
+      "text": "部署验收要分别推演少一个或少两个哨兵、主副本同时故障、网络分区但进程仍活着、没有合格副本、客户端仍连旧地址与请求结果未知。恢复时延取决于这些条件，不能只由心跳周期推算一个固定值。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "2"
+}

@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-5dc39d05f14c89",
+  "entryId": "own-juc-synchronizers",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "709e406b04960e7d99760cbe1234a75c0236540863a9ea488257177ad47da405",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "内存对齐为什么存在 结构体padding和伪共享怎样区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "对齐满足硬件与ABI访问要求，padding调整对象布局，伪共享则是不同线程写同一缓存行引起的额外一致性竞争。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "7.内存对齐及why"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "对象地址必须符合类型要求"
+    },
+    {
+      "type": "paragraph",
+      "text": "alignof(T)给出类型所需对齐，合适对象起始地址应满足该约束；结构体可能在成员之间及尾部补padding，使每个成员和数组中下一对象正确对齐。sizeof包含这些字节，不只是所有成员有效字段长度之和。"
+    },
+    {
+      "type": "paragraph",
+      "text": "典型char/int/char布局比int/char/char含更多空洞，但只有满足业务ABI/序列化约定时才可重排。C++不保证多态对象首字段或虚表固定布局，相关动态派发复用C++虚函数 对象布局 虚析构与dynamic_cast怎样配合 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnukNU8kb4sfxgogayeGAQZc)；不要对非标准布局类型随意把offsetof结果当可移植接口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "性能和正确性不是同一层"
+    },
+    {
+      "type": "paragraph",
+      "text": "硬件碰巧能读，不代表 C++ 代码就合法。某些处理器或指令支持非对齐访问，但可能跨缓存行、跨页或变成多次操作；其他情形可能异常或受限制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "而在语言层，经不满足对齐要求的 T* 解引用，本身就可能是未定义行为。不能用“x86 能完成”绕过类型的对齐规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "从网络/文件字节解析整数应按格式读取，或memcpy到正确对齐对象再处理端序，避免reinterpret_cast后直接读取未对齐数据。packed布局会改变ABI且可能增加访问代价，不能把pack(1)当无条件省内存诀窍。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "缓存行对齐与伪共享"
+    },
+    {
+      "type": "paragraph",
+      "text": "伪共享是“变量不同，缓存行却相同”。两个线程写不同变量，只要它们落在同一 cacheline，就可能反复争夺整行所有权；没有同字段的逻辑竞争，也可能明显变慢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "padding 或分片可以把热点分开，但会增加内存占用和 cache 压力。类型的自然对齐与硬件缓存行大小也是两件事，不能混用一个数字解释。"
+    },
+    {
+      "type": "paragraph",
+      "text": "alignas(64)只是示例明确要求至少64字节对齐，不证明所有机器cacheline都64，也不使数据原子或线程安全。并发读写仍需对应atomic/锁协议；结构体变大可能让整个工作集更差，需实测。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整无UB观察程序"
+    },
+    {
+      "type": "paragraph",
+      "text": "alignment.cpp打印标准布局A/B的大小、对齐与成员偏移，验证alignas(64)数组两个元素均正确对齐，再把uint32_t通过memcpy写到字节数组偏移1并复制回正确对象，避免未对齐解引用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "alignment.cpp 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "label": "alignment.cpp",
+      "value": "#include <cassert>\n#include <cstddef>\n#include <cstdint>\n#include <cstring>\n#include <iostream>\n#include <type_traits>\nstruct A { char c; int i; char d; };\nstruct B { int i; char c; char d; };\nstruct alignas(64) Slot { std::uint64_t value; };\nint main() {\n    static_assert(std::is_standard_layout_v<A> && std::is_standard_layout_v<B>);\n    static_assert(alignof(Slot)>=64 && sizeof(Slot)%64==0);\n    Slot slots[2]{};\n    assert(reinterpret_cast<std::uintptr_t>(&slots[0])%alignof(Slot)==0);\n    assert(reinterpret_cast<std::uintptr_t>(&slots[1])%alignof(Slot)==0);\n    unsigned char bytes[8]{};\n    std::uint32_t source=0x01020304,decoded=0;\n    std::memcpy(bytes+1,&source,sizeof source);\n    std::memcpy(&decoded,bytes+1,sizeof decoded); // no misaligned uint32_t dereference\n    assert(decoded==source);\n    std::cout<<\"A size=\"<<sizeof(A)<<\" align=\"<<alignof(A)<<\" offsets=\"\n      <<offsetof(A,c)<<','<<offsetof(A,i)<<','<<offsetof(A,d)\n      <<\" B size=\"<<sizeof(B)<<\" Slot=\"<<sizeof(Slot)<<\" PASS\\n\";\n}\n\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-atomics-contention",
+  "targetOrigin": "authored"
+}

@@ -1,0 +1,235 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-durable-dedup",
+  "order": 114,
+  "question": "SADD 成功为什么不等于业务只执行一次，精准去重怎样恢复？",
+  "shortAnswer": "Redis 的存在性裁决不覆盖外部副作用；使用稳定身份、唯一收据与业务效果同事务，未知结果先核验。",
+  "commonPhrasings": [
+    "Kafka offset 能代替业务幂等吗？",
+    "Binlog 加 RocketMQ 怎样形成可恢复投影？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "八 SADD 为什么不能保证业务只执行一次"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要求只是“同一个 ID 只进入这个集合一次”，SADD 已经能原子裁决。但通知、入账或任务完成还有集合之外的业务效果，换一下执行顺序就能看到问题。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先 SADD，再做业务：两步中间崩溃，集合有标记，业务却没完成；重试看到标记便跳过，造成漏执行。先做业务，再 SADD：业务完成后、登记前崩溃，重试又做一遍，造成重复。把两步调换，关不掉这个故障窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "当效果本来就只是同一 Redis 实例中的计数或结构更新，可以把判断与更新放到受控脚本中，Cluster 下还要满足相关 key 同槽。脚本执行期间不被其他命令穿插，不代表能够同时提交外部数据库或 HTTP 调用；执行出错也不能假设已经发生的写入会自动回滚，所以要先校验参数、类型、数值边界，并保持操作短小。MULTI/EXEC 同样不提供一般的执行期事务回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务去重 key 至少包含租户、业务处理者或操作类型、稳定请求身份。通知的新一轮告警与旧消息重投不是同一含义：真正的新业务轮次应产生新的身份，同一轮重试保持同一个身份。同一个业务消息可能被生产成多个 Kafka offset，只按物理投递位置去重就挡不住这种重复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "去重保留期至少覆盖允许的自动重投、离线补偿和人工重放窗口。标记过期、被淘汰或故障切换丢失后，旧消息会重新像新消息一样出现；这不能叫无限期恰好一次。按天分 Set 也要小心午夜重试进入次日空集合，必须根据稳定业务时间路由，或者查询所有仍有效的相邻窗口并解决检查和写入竞争。每次对活跃 Set 续整个 key 的 TTL，又会让老成员长期不能回收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立 String key 加 SET NX PX 能把一次临时占位和过期绑定在一个命令里，适合有明确语义的短期协调；它仍不是业务成功收据。Set 的 SADD 与 EXPIRE 分开执行还存在崩溃后未设 TTL 的窗口，若确需组合，应使用受控原子逻辑并明确第一次创建、重复请求及续期策略。大规模去重还要分桶、稳定路由及恢复，不能把一亿个 ID 全堆进单槽，寄希望于平均 O(1)。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "九 精准去重的核心是唯一收据与业务效果同事务"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以用一个假设的 MySQL 方案回答：以 (scopeId, eventId) 作为 inbox 唯一键，保存规范化 payload 摘要和最终收据；inbox、业务表变更、需要发出的 outbox 意图都放进同一个 InnoDB 事务。提交后才确认消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "现在把故障放在提交之后：数据库已提交，ACK 却丢了。消息再次送来时，用原来的身份读出原收据，不再执行一次业务效果。唯一键裁决谁能处理同一身份，事务保证收据、效果和意图一起提交或一起回滚，两者缺一不可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要先 SELECT 查无记录，再无约束地 INSERT。并发都能查到空，真正拦住竞争者的是数据库唯一约束。唯一键冲突还可能涉及等待、死锁或锁超时，应用需要有界重试整个事务，并保持相同请求身份。相同 ID 携带不同 payload 必须拒绝或报警，不能把第一次请求的结果当作第二种请求的成功。摘要的输入应是版本化、规范化的语义字段，不能直接把 JSON 字段顺序不同造成的文本差异当业务冲突，也不能省略影响效果的重要字段。 SHA-256 摘要比较仍有理论碰撞边界；若业务要求对不同载荷做完全精确的区分，应保存规范载荷并按内容复核，不能把固定长度摘要当成数学上的一一映射。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 schema 和 Java 代码把短事务的 PROCESSING 插入、效果和 DONE 更新都放在一个事务里，PROCESSING 不会作为独立提交的长期抢占记录暴露。scope 和 eventId 在示例中限制为 ASCII 标识，采用二进制唯一键保持精确身份；真实多语言标识应另行定义无歧义的编码与长度规则。数据库连接与表、驱动、SQL 模式、字符集仍需要按部署验证。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "value": "-- MySQL 8.4 teaching schema. Exact byte identity avoids collation merging IDs.\nCREATE TABLE inbox (\n    scope_id VARBINARY(640) NOT NULL,\n    event_id VARBINARY(640) NOT NULL,\n    payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,\n    state VARCHAR(16) CHARACTER SET ascii NOT NULL,\n    receipt MEDIUMTEXT CHARACTER SET utf8mb4 NULL,\n    PRIMARY KEY (scope_id, event_id),\n    CHECK (state IN ('PROCESSING', 'DONE'))\n) ENGINE=InnoDB;\n-- Effect.apply may update business tables and insert an outbox row using the\n-- same connection. Do not send HTTP or MQ messages inside that callback.\n-- Keep committed inbox rows through the full authorized replay horizon.\n"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.sql.Connection;\nimport java.sql.PreparedStatement;\nimport java.sql.ResultSet;\nimport java.sql.SQLException;\nimport java.util.Objects;\nimport javax.sql.DataSource;\n\n/** MySQL 8.4 teaching transaction; HTTP/MQ sends must not happen in Effect. */\npublic final class JdbcInbox {\n    private JdbcInbox() { }\n\n    @FunctionalInterface\n    public interface Effect {\n        // Use only this connection and transactional tables. Return a stored receipt.\n        String apply(Connection connection) throws SQLException;\n    }\n\n    public static String execute(DataSource source, String scope, String eventId,\n                                 String payloadHash, Effect effect) throws SQLException {\n        Objects.requireNonNull(source);\n        Objects.requireNonNull(effect);\n        requireText(scope, 160);\n        requireText(eventId, 160);\n        if (payloadHash == null || !payloadHash.matches(\"[0-9a-f]{64}\")) {\n            throw new IllegalArgumentException(\"canonical SHA-256 hex required\");\n        }\n        try (Connection connection = source.getConnection()) {\n            connection.setAutoCommit(false);\n            try {\n                boolean duplicate = false;\n                try (PreparedStatement insert = connection.prepareStatement(\n                        \"INSERT INTO inbox(scope_id,event_id,payload_hash,state) VALUES (?,?,?,'PROCESSING')\")) {\n                    insert.setString(1, scope);\n                    insert.setString(2, eventId);\n                    insert.setString(3, payloadHash);\n                    insert.executeUpdate();\n                } catch (SQLException e) {\n                    // This INSERT has exactly one unique key in the supplied schema.\n                    if (e.getErrorCode() != 1062 || !\"23000\".equals(e.getSQLState())) { throw e; }\n                    connection.rollback(); // discard failed attempt; begin a fresh read transaction\n                    duplicate = true;\n                }\n                if (duplicate) {\n                    String receipt = readCompleted(connection, scope, eventId, payloadHash);\n                    connection.commit();\n                    return receipt;\n                }\n                String receipt = Objects.requireNonNull(effect.apply(connection), \"receipt\");\n                try (PreparedStatement done = connection.prepareStatement(\n                        \"UPDATE inbox SET state='DONE',receipt=? WHERE scope_id=? AND event_id=? AND state='PROCESSING'\")) {\n                    done.setString(1, receipt);\n                    done.setString(2, scope);\n                    done.setString(3, eventId);\n                    if (done.executeUpdate() != 1) { throw new SQLException(\"inbox transition failed\"); }\n                }\n                connection.commit(); // a connection error here means UNKNOWN, not proven rollback\n                return receipt;\n            } catch (SQLException | RuntimeException e) {\n                try { connection.rollback(); }\n                catch (SQLException rollbackFailure) { if (e != rollbackFailure) e.addSuppressed(rollbackFailure); }\n                throw e;\n            }\n        }\n    }\n\n    private static String readCompleted(Connection c, String scope, String id,\n                                        String payloadHash) throws SQLException {\n        try (PreparedStatement select = c.prepareStatement(\n                \"SELECT payload_hash,state,receipt FROM inbox WHERE scope_id=? AND event_id=? FOR UPDATE\")) {\n            select.setString(1, scope);\n            select.setString(2, id);\n            try (ResultSet row = select.executeQuery()) {\n                if (!row.next()) { throw new SQLException(\"receipt missing: retain and reconcile\"); }\n                if (!payloadHash.equals(row.getString(1))) {\n                    throw new IllegalArgumentException(\"same id with different payload\");\n                }\n                String receipt = row.getString(3);\n                if (!\"DONE\".equals(row.getString(2)) || receipt == null) {\n                    throw new SQLException(\"result not DONE: retain and reconcile\");\n                }\n                return receipt;\n            }\n        }\n    }\n\n    private static void requireText(String value, int maxChars) {\n        if (value == null || value.isBlank() || value.length() > maxChars\n                || !value.matches(\"[A-Za-z0-9:._/-]+\")) {\n            throw new IllegalArgumentException(\"invalid scoped identity\");\n        }\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "Effect 回调必须只使用传入连接操作事务表，不能自行提交、切换连接、执行隐式提交 DDL，或直接发送 HTTP/MQ。需要通知另一个系统时，在这个事务里插入 outbox，提交后由发布者发送。示例只识别给定 inbox INSERT 上的 MySQL 1062 重复键；不能把所有完整性错误都吞掉当重复。真实 schema 若增加其他唯一约束，要重新核对冲突处理。读取重复收据使用新的事务和锁定读，避免把旧快照的“查不到”解释成从未处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "commit 抛出连接异常时，服务端可能已经提交，之后调用 rollback 也不能证明先前效果没有发生。对调用方应保留“结果未知”，用同一个 eventId 查权威收据或安全重试，不能换个 ID 再做一次。连接关闭、响应丢失也应采用这个原则。缓存只保存经确认的 DONE 收据，命中后仍要校验业务域、payload 和结果版本；PROCESSING、FAILED、UNKNOWN 不能一概返回成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "长任务或外部调用需要单独的持久状态机。例如 PROCESSING 记录 owner 和处理轮次，成功转 DONE，确定失败按规则转 FAILED，超时且无法判定外部结果时进入 UNKNOWN。租约到期只说明可以启动恢复判断，不证明旧 worker 未完成。目的端若支持稳定幂等请求号，就按同一号重试与查询；若不支持，先对账并明确人工处理路径，不能靠 Redis 锁推出外部效果恰好一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Outbox 保证的是本地业务事实与待发送意图同存；发布进程收到成功响应前后都可能崩溃，因此消息仍可能重复投递。消费者也要用自己的业务身份做幂等。发送成功、MQ 接收、渠道受理、实际送达和用户已读是不同收据层级，不能把它们都压成一个成功 bit。对重要业务长期保留权威收据，Redis 的短缓存 TTL 不应决定它的可重放范围。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十 Kafka offset 和生成新 ID 是两个追问分支"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果用 Kafka 消费位置作为去重身份，至少要包含 topic、partition、offset 和消费业务身份，跨集群时还要区分 cluster，topic 重建时也要考虑身份代际。同一个 offset 在不同 partition 中不是同一事件，不同业务消费者也可能各应处理一次。提交的消费位点通常表示接下来要处理的位置，不能混淆已处理记录的 offset 与批次提交水位。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务处理完成后再提交 offset，中间崩溃会重放；先提交再处理，中间崩溃又可能漏处理。Kafka 事务可以在相应配置和消费隔离级别下协调 Kafka 内部的输出消息与消费位点，但不会自动把 MySQL 或 HTTP 副作用加入同一个事务。外部业务通常需要目的端配合，比如同库 inbox 与效果同事务。消费者有并行处理时，只能推进连续完成的提交水位，不能让后面一个完成的消息把前面尚未完成的记录跨过去。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果面试官真正问的是“怎样产生一个新 ID”，Set 只是判重器，不能自己发明下一个唯一数字。可以比较数据库受控序列、分配互不重叠的号段、合理的雪花方案或 UUID：分别说明容量与吞吐、节点身份、时钟回拨、随机碰撞和高水位持久化。批量领号必须保证区间不重叠、重启不重发已分配范围；生成随机候选后用唯一约束占位，可以处理碰撞，但仍需限定重试与容量。生成唯一 ID，也不等于同一业务重试会复用原 ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom 可以减少查精确去重收据的部分成本，但阳性不能直接丢消息，否则一个没处理过的事件可能被误判成重复而漏发。阴性也不能跳过唯一约束直接执行：同一个 ID 的两个并发请求可能都阴性，过滤器还可能暂时落后。严格不多发、不漏发的裁决始终回到权威事务和目的端协议，而不是概率判断。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十一 先 Redis 再 Bloom 是否合理"
+    },
+    {
+      "type": "paragraph",
+      "text": "合理与否先看每层存的是什么。对于对象查询，Redis 保存热门完整值，Bloom 保存更大集合的存在性摘要；Redis 命中就返回，可以省掉一次 Bloom 查询。若大部分流量是随机不存在 ID，Bloom 又在本地且完整可信，先 Bloom 可以减少远端 Redis 和数据库访问。MySQL 是权威，说明最终事实由它裁决，不说明每个请求必须先访问它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用一个简化成本模型看：C_R 是 Redis 点查成本，C_B 是 Bloom 成本，h 是所有请求的 Redis 命中概率，z 是所有请求的 Bloom 阴性概率。假设 Redis 命中一定属于 Bloom 可能存在的集合、过滤视图完整，且两条链的数据库回源集合相同，Redis 优先的前两层成本约为 C_R+(1−h)C_B；Bloom 优先约为 C_B+(1−z)C_R。前者减后者是 zC_R−hC_B。因此热门命中高、Bloom 额外调用昂贵时，Redis 优先可能更省；随机不存在流量高且本地 Bloom 便宜时，Bloom 优先可能更省。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是帮助解释选型的模型，不是延迟预测器。网络并行、批量请求、序列化、尾延迟、热点和同步成本都可能改变结果。若 Bloom 也在同一个远端 Redis，一次额外调用就可能多一个 RTT；若本地过滤器频繁重建，CPU 和一致性成本又不能忽略。最终用真实流量分布与故障路径比较。"
+    },
+    {
+      "type": "paragraph",
+      "text": "精准去重的链路还要更严格：Redis 命中有效 DONE 收据，可返回原结果；miss 后 Bloom 阳性，只说明可能处理过，需要查精确权威收据；阴性最多减少某些预读，仍要由数据库唯一插入裁决和提交效果。当前事件还在 PROCESSING 或 UNKNOWN 时，应等待、查状态或进入恢复，不能因为存在一条缓存就说已经成功。近期精确收据与历史 Bloom 的保留窗口、业务域和生成版本必须对应，不能把“短码存在”过滤器拿来判“消息已经发放”。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十二 Binlog 加 RocketMQ 怎样形成可恢复投影"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种可选链路是 MySQL 提交事务，CDC 读取 binlog，发送 RocketMQ，消费者更新或失效 Redis。binlog 是数据库变更日志，CDC 把提交后的变化转换成下游可消费事件；它既不是缓存本身，也不会自动知道所有业务查询应该失效哪些 key。按实体更新一个缓存与让一个跨表聚合查询保持一致，所需上下文不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要做到可恢复，CDC 的源位点和发布状态要持久化。没有确认事件已被可靠接纳之前，不能把源进度推进到无法重放的位置。发送响应丢失时，事件可能已经到 MQ，也可能未成功，因此恢复通常允许重复发送；消费者按 eventId 幂等，并维护实体版本。binlog 保留时间要覆盖最长中断与恢复窗口，位点丢失或日志已清理时，需要重新快照和衔接增量，而不能凭旧缓存继续假装链路完整。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个实体要么有明确顺序，要么用单调业务版本比较，删除携带墓碑或 generation。对完整状态快照，拒绝比水位更旧的事件可以防止回退；对“余额加 1”之类增量，不能简单收到版本 12 就跳过尚未到达的版本 11，应有连续序列、缺口补拉或每事件去重机制。多表事务若要形成一致视图，也要保留事务边界或设计相应聚合协议；仅依靠消息到达次序不足以证明跨分片事务一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "消费者处理完成后再 ACK，崩溃可能重投，因此应用更新必须幂等。业务效果在数据库时，按前面的 inbox 事务处理；只是 Redis 投影时，也要保证版本更新和投影内容修改不被穿插，并理解 Redis 数据丢失后的恢复。缓存丢失可以重建，权威业务收据不能只依靠这个缓存。观测指标至少包括源位点、消费水位、最旧事件年龄、失败重试、死信、积压及对账差异；积压恢复要限速，避免追赶流量拖垮在线业务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "RocketMQ 事务消息是另一条机制：先发送对消费者不可见的半消息，再执行生产者本地事务，根据本地结果提交或回滚消息；状态不明时由 broker 回查生产者的本地事务事实。它解决生产端本地事务与消息可见性的协调，不能代替消费者业务幂等，也不能把任意外部效果变成一次。事务回查要能从持久事实中得出结果，并核对超时与回查期限，不能无限返回 UNKNOWN 后仍承诺消息一定发出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Binlog CDC、事务 Outbox 和 RocketMQ 事务消息可以比较，但不能把它们当作同一条协议。前两者还可以结合，例如用 CDC 订阅 outbox 表得到带业务语义的事件。实际可靠性还取决于发送确认、刷盘、复制、重试和部署配置；RocketMQ 的问题应按对应版本的概念回答，不把 Kafka 的 ISR 或 offset 提交术语机械搬过来。任何“用了某个 MQ”的陈述，都不能独立证明端到端不漏、不重或即时强一致。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十三 缓存一致性还要挡住旧读回填"
+    },
+    {
+      "type": "paragraph",
+      "text": "常用 Cache Aside 是读缓存、miss 后查库并回填，写路径先提交数据库，再删除或更新缓存。先删后写有明显窗口：写者先删，读者读到旧数据库并回填，写者最后提交，缓存留下旧值。先提交再删减少这种窗口，并避免数据库回滚但缓存已经写出新状态；它仍不是强一致证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再安排一个交错：读者 A 先读出 v1，写者 B 提交 v2 并成功删除缓存，A 最后把 v1 填回去。此时删除成功也挡不住旧值复活。DEL 失败、CDC 延迟、事件乱序和本地 JVM 缓存未失效又是其他窗口。延迟双删可以降低某些窗口概率，但固定 sleep 覆盖不了任意慢读、进程暂停和网络延迟。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种可选的防回退协议是维护不会被普通 value 删除一起清掉的版本屏障：写者提交 v2 后，可靠发布实体至少为 v2 的水位；回填 v1 时必须在原子操作里比较当前水位，低版本拒绝；删除也留下相应版本墓碑。只在 value 内带 version 不够，因为 DEL 之后比较基准就没有了。屏障丢失、过期或被淘汰时，应先从权威状态恢复校验，再开放盲回填。这个协议防止已知高版本被低版本覆盖，仍不能消除数据库提交到屏障更新之间的窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可以使用不可变的版本化 key 加可信当前版本指针。写新版本不覆盖旧版本，通过受控指针选择当前值；但指针更新、丢失和滞后同样需要可靠恢复。严格读己之写时，让请求携带刚提交的版本，缓存版本不足就回权威库；任意请求都要严格读取最新状态时，需要更强的共同协调或权威读取，不能声称多加一把 Redis 锁即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "其他模式也要说明失败边界。Write-through 把写缓存与权威写包装在接口里，仍需处理部分成功；Write-behind 先接受写入再异步刷库，必须有可靠日志、幂等、重试和对账，不能只存在易丢的内存队列。Outbox 或 CDC 可以让失效事件可恢复，但事件晚到期间仍有旧读。TTL 限制一次写入的寿命，旧加载重新填入会重新开始 TTL；需要严格陈旧上限时，应保留值的原始读取时间和业务版本，拒绝过老回填。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若还有各 JVM 的 L1 缓存，只删 Redis 不会让所有 L1 自动更新。需要对应的失效传播、版本、容量和 TTL，断链后丢弃不可信状态或回源恢复。Redis Pub/Sub 适合可丢失的实时通知，断线期间的消息不会替订阅者可靠补齐，不能成为永久一致性的唯一保障。热点新闻、画像可以讨论允许旧值的缓存，爬虫锁只能减少并发抓取，持久抓取结果仍需唯一身份；排行榜可用 ZSet、计数可用 INCR，但各自仍有容量、精度、原子边界和故障恢复要求。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十四 用真实项目讲职责 再用假设方案展开"
+    },
+    {
+      "type": "paragraph",
+      "text": "讲制造业可靠通知链路时，可以说：“我采用 Transactional Outbox 配合 RabbitMQ Publisher Confirm/Return 处理落库与发布不一致；消费侧用数据库账本和处理轮次防重。渠道调用前先持久化稳定请求号，超时先对账再决策，异常任务通过退避重试、死信隔离与 XXL-Job 补偿收敛。”这里应把数据库账本的职责与 Redis 的职责分开，不能把整个防重效果归因于 SADD。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 的具体经历可以接着讲：“针对设备抖动和重复催办，我按告警轮次与状态持久化去重并做摘要合并；渠道出口用 Redis Lua 令牌桶控速，为 P0 预留配额，并按积压做滞回降级。”令牌桶解决出口速率，数据库账本解决可靠去重，滞回减少降级状态来回抖动，它们共同服务链路，但不承担同一个不变量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave 则可以说：“我把解析、切片、向量化和索引构建拆成 Kafka 异步任务，通过任务幂等和失败恢复支持长链路执行。”如果继续设计这条链路的去重键，我会考虑资料身份、资料版本、处理阶段和必要的算法版本，让同一阶段重试复用身份，而资料真正更新时允许新任务执行。如果需要热点状态缓存，我会把 Redis 作为可恢复视图，最终完成事实保存在可靠账本。具体 inbox schema、Bloom 参数和 CDC 链路应当作为这个假设方案来解释，不能直接说成已经采用了上述 MySQL 或 RocketMQ 实现。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十五 继续追问时 把正确性落到故障窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "“为什么不直接用 MySQL 唯一索引？”可以用，而且经常是精确幂等的重要基础。它的作用是裁决同一个业务身份的竞争；只有和效果、收据放进同一个事务，才能保护该事务内的业务不变量。是否采用某种数据库范式，与能否用唯一约束做幂等不是一回事。跨库、HTTP 和消息发送仍需各自协议，不能由一条 unique 推到全部副作用。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“为什么不只用分布式锁？”锁能减少并发竞争，不会保存已完成结果。进程强杀、租约到期、GC 暂停或 Redis 节点切换可能让旧执行者和新执行者重叠；目的端条件、代际和持久收据才决定陈旧执行是否还能生效。锁失效后需要的是安全恢复判断，不是盲目把同一动作再做一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“怎样证明没有多发和漏发？”先定义成功层级和去重窗口，再对照唯一收据、业务效果、outbox、inbox 和回放结果。安排同 ID 并发、同 ID 不同 payload、效果前崩溃、提交后响应丢失、ACK 丢失、跨分区同 offset、午夜重试、TTL 到期和 Redis 丢状态；分别验证是否只有允许的业务效果、是否返回同一收据、是否保留未知状态并最终恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bloom 还要专门测假阳性、超容量、错误清位反例、并发丢位反例、重建漏增量、新数据发布与代切换交错，以及副本落后。缓存投影要测旧读→新提交→删除→旧回填、重复与乱序更新、删除后旧更新、新封禁后旧删除、屏障丢失和长时间积压。小型 Java 模型能验证某个算法或时序不变量；数据库锁等待、MQ 发布确认、Redis 复制和故障切换，仍需要在目标部署做集成与故障演练，不能由模型结果直接推出线上 SLA。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

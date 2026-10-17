@@ -1,0 +1,534 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s8645",
+  "entryId": "ai-agent-8",
+  "expectedOriginalHash": "49b8577faa18cd567d9af8e747ddd6cb536316355864af06e5874909ff70523f",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.6 Agent调用Sandbox失败或运行中崩溃怎样恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "沙箱失败后根据持久任务和外部操作收据恢复，纯计算可重做，未知副作用必须先核对。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Agent调用沙箱失败怎么办；执行机崩溃怎么恢复；重建容器是否就能续跑。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sandbox可为容器、虚拟机或其他隔离执行环境，恢复业务任务与恢复整个进程内存是不同承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "调用链持久受理和隔离执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sandbox调用先有持久任务，再有执行环境。入口创建taskId，固定输入和镜像版本，记录资源、权限范围及deadline，并在权威存储写入任务和待派发事件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制器创建环境后，执行器领取带attempt/epoch的租约。输出先进入隔离临时目录或对象，校验通过才提交产物清单。因此HTTP接收成功、环境启动成功、任务完成，必须是三个不同状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "资源限制涵盖CPU、内存、进程数、磁盘/日志和网络出口，凭证按最小权限短期注入，不把宿主机所有目录挂进去。隔离失效可能影响宿主与其他任务，因此不信任代码更适合强沙箱/VM边界；普通共享内核容器不是绝对安全承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "运行中挂掉按最后持久状态处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "监督器检查进程/环境健康，独立任务扫描器查租约和进展超时，不能只看心跳。环境崩溃后从最后已提交检查点在新环境重建所需输入，纯计算可重跑；未提交临时产物隔离并清理，不把半个文件作为最终结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通重建不能恢复原CPU指令位置、内存变量、socket或远程调用。若业务支持应用级checkpoint，则恢复其明确内容；特殊进程快照另有内核/设备/连接兼容性，不作为默认能力。第11.2节已有本地事务checkpoint/租约代码，该状态保护不构成真实沙箱验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "超时与副作用未知"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制面等超时了，Sandbox可能仍在运行，尤其是网络分区后旧环境没有收到停止请求。新attempt提交结果时必须检查epoch，拒绝旧执行者的迟到结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部效果要另设保护：沿用稳定operationId，依靠目的端幂等或结果查询，先核对未知结果再重试。不能换业务键重新发起；本地epoch也不能撤销已经发出的邮件或外部支付。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消先持久化CANCEL_REQUESTED，阻止新步骤并请求环境终止，确认清理后转终态；已开始的副作用按协议补偿/待核实。异常分类决定重试预算：输入错误/权限拒绝不盲重试，节点故障可重新创建，重复OOM应调资源/输入或失败可见。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "注入启动前后、输出上传中、效果完成但checkpoint前、租约过期旧环境复活等窗口；核对只有已校验产物被发布、任务不无故消失且不可重复效果受保护。度量排队、创建/运行时间、资源峰值、孤儿环境、最老无进展任务和恢复时间。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "11.18 AI Coding分布式脚本执行服务：如何受理、隔离、租约接管和核对未知结果"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式脚本服务先持久受理，再以租约代际授权隔离执行；超时转UNKNOWN，只有可信监督器证明结果后才完成或重排。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：AI Coding脚本服务怎么设计；执行机失联怎么接管；脚本超时为什么不能直接重跑。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java参考实现展示有界单权威脚本控制面，不在宿主执行提交脚本，也不实现数据库、认证、沙箱或网络服务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "受理与接口契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "受理已鉴权的不可变artifactHash、输入引用、运行时与资源限制，以(tenant, requestId)标识一次提交意图。同键同输入返回同一任务，同键不同输入报冲突。返回任务ID后提供查询、取消请求及受限产物访问；不能把HTTP字段直接拼成宿主shell命令。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久任务账保存输入版本、状态、owner、epoch、租约、deadline和结果；MQ只负责唤醒。执行器按可信能力领取，创建稳定sandboxOperationId，启动前再次核对制品哈希、资源和权限。大输入和产物使用不可变对象引用，控制面只保存必要元数据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "隔离和取消"
+    },
+    {
+      "type": "paragraph",
+      "text": "每次执行有独立环境和工作目录，只读挂载获准输入，不暴露宿主路径、容器管理socket或其他租户凭据。限制CPU、内存、进程数、文件描述符、临时盘、网络目标、运行时间与输出字节；超额结果显式截断或失败，不允许无限stdout耗尽控制面。"
+    },
+    {
+      "type": "paragraph",
+      "text": "敌对多租户代码需要适合威胁模型的强化沙箱、微虚机或独立节点，namespace本身不是完整安全边界。取消先成为CANCEL_REQUESTED，再由监督器终止整个进程树并核对资源回收；本地取消不能撤销已发出的远端请求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "UNKNOWN与接管"
+    },
+    {
+      "type": "paragraph",
+      "text": "正常状态为QUEUED到RUNNING到SUCCEEDED或FAILED。领取由单一权威原子决定，租约截止不得超过任务deadline；完成校验owner与epoch。租约到期或执行失联转UNKNOWN，不能直接回QUEUED。任务可能已经执行，而响应、产物或最终收据尚未保存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接管前按稳定sandboxOperationId核对，只接受三类有证据的结论："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "已成功，且拿到验证过的产物。",
+        "已失败，并确认不会继续运行。",
+        "尚未启动，而且旧请求以后也不可能再启动。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "只有第三类允许重新排队。下次领取递增epoch，旧owner的回包不能覆盖新任务。超时、找不到一条日志，或用户自报“没执行”，都不足以证明可以重跑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若脚本可产生外部副作用，资源端还需幂等键或查询协议。控制面拒绝旧结果不等于撤回旧脚本的HTTP调用。不提供查询且不可幂等的任意副作用可能必须保持待核实，由人工或业务补偿解决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据结构与复杂度"
+    },
+    {
+      "type": "paragraph",
+      "text": "ScriptControl用同步方法维护有界任务表，任务输入和返回记录不可变，tenant/request绑定完整输入，终态重放校验相同结果。权威时间和owner身份必须来自受信控制面；调用者不能自报时间或epoch以延长执行权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单项查询与状态转换平均O(1)，过期扫描O(任务数)。生产数据库用状态和租约索引分批扫描。已完成记录清理必须遵守最长重试和恢复窗口，不能删掉去重证据后接受旧提交为新任务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与扩展"
+    },
+    {
+      "type": "paragraph",
+      "text": "main覆盖30线程竞争仅一次领取、重复与冲突提交、精确租约到期、UNKNOWN禁止领取、可信未启动核对后重排、旧owner和epoch拒绝、终态结果冲突、取消后仍核实成功、容量及UTF-8输出边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个模型在一个进程内保证条件转换，多个进程各自new对象不构成共享权威；进程重启也不会保存内存状态。生产验收还包括数据库提交前后退出、沙箱创建应答丢失、执行器分区、子进程不退出、路径穿越、日志泄密、资源耗尽和备份恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "028/ScriptControl.java",
+      "value": "import java.nio.charset.StandardCharsets;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Bounded Java task control-plane state machine.\n * Single bounded in-memory authority, NOT a distributed database or execution sandbox.\n * Authenticated tenant/worker and trusted authority time are supplied by the adapter.\n * Reconciliation evidence must come from an authenticated supervisor, not the submitting user.\n */\npublic final class ScriptControl {\n    public enum State { QUEUED, RUNNING, UNKNOWN, CANCEL_REQUESTED, CANCELLED, SUCCEEDED, FAILED }\n    public enum Decision { NOT_STARTED_AND_CANNOT_START, SUCCEEDED, FAILED }\n    public record Key(String tenant, String request) {}\n    public record Input(Key key, String scriptSha, long deadline) {}\n    public record Job(Input input, State state, String owner, long epoch, long leaseUntil, String output) {}\n    private final Map<Key,Job> jobs = new HashMap<>();\n    private final int capacity;\n    public ScriptControl(int capacity) {\n        if(capacity<=0) throw new IllegalArgumentException(\"positive capacity required\");\n        this.capacity=capacity;\n    }\n    private static void identifier(String s) {\n        if(s==null||!s.matches(\"[A-Za-z0-9_-]{1,64}\")) throw new IllegalArgumentException(\"identifier\");\n    }\n    private static void time(long now) {if(now<0)throw new IllegalArgumentException(\"trusted nonnegative time\");}\n    private static void output(String output) {\n        if(output==null||output.getBytes(StandardCharsets.UTF_8).length>4096)throw new IllegalArgumentException(\"output byte limit\");\n    }\n    private Job require(Key key) {\n        Job j=jobs.get(key);if(j==null)throw new IllegalStateException(\"missing job\");return j;\n    }\n    private Job replace(Job j,State state,String owner,long epoch,long until,String output) {\n        Job n=new Job(j.input(),state,owner,epoch,until,output);jobs.put(j.input().key(),n);return n;\n    }\n    public synchronized Job submit(Input in,long now) {\n        Objects.requireNonNull(in);Objects.requireNonNull(in.key());time(now);\n        identifier(in.key().tenant());identifier(in.key().request());\n        if(in.scriptSha()==null||!in.scriptSha().matches(\"[a-f0-9]{64}\")||in.deadline()<=0)\n            throw new IllegalArgumentException(\"input\");\n        Job old=jobs.get(in.key());\n        if(old!=null) {if(!old.input().equals(in))throw new IllegalArgumentException(\"payload conflict\");return old;}\n        if(in.deadline()<=now)throw new IllegalStateException(\"expired input\");\n        if(jobs.size()>=capacity)throw new IllegalStateException(\"capacity\");\n        Job j=new Job(in,State.QUEUED,null,0,0,\"\");jobs.put(in.key(),j);return j;\n    }\n    public synchronized Job claim(Key key,String owner,long now,long ttl) {\n        identifier(owner);time(now);if(ttl<=0)throw new IllegalArgumentException(\"ttl\");\n        long until=Math.addExact(now,ttl);Job j=require(key);\n        if(j.state()!=State.QUEUED||now>=j.input().deadline())throw new IllegalStateException(\"not claimable\");\n        return replace(j,State.RUNNING,owner,Math.incrementExact(j.epoch()),Math.min(until,j.input().deadline()),\"\");\n    }\n    public synchronized Job complete(Key key,String owner,long epoch,long now,String receipt) {\n        time(now);output(receipt);Job j=require(key);\n        if(!Objects.equals(j.owner(),owner)||j.epoch()!=epoch)throw new IllegalStateException(\"stale owner/epoch\");\n        if(j.state()==State.SUCCEEDED) {\n            if(!j.output().equals(receipt))throw new IllegalArgumentException(\"receipt conflict\");return j;\n        }\n        if(j.state()!=State.RUNNING||now>=j.leaseUntil())throw new IllegalStateException(\"not current running lease\");\n        return replace(j,State.SUCCEEDED,owner,epoch,j.leaseUntil(),receipt);\n    }\n    public synchronized void expire(long now) {\n        time(now);\n        for(Job j:List.copyOf(jobs.values()))\n            if(j.state()==State.RUNNING&&now>=j.leaseUntil())\n                replace(j,State.UNKNOWN,j.owner(),j.epoch(),j.leaseUntil(),j.output());\n    }\n    public synchronized Job cancel(Key key) {\n        Job j=require(key);\n        State next=switch(j.state()) {\n            case QUEUED -> State.CANCELLED;\n            case RUNNING,UNKNOWN -> State.CANCEL_REQUESTED;\n            case CANCELLED,CANCEL_REQUESTED -> j.state();\n            default -> throw new IllegalStateException(\"already terminal\");\n        };\n        return replace(j,next,j.owner(),j.epoch(),j.leaseUntil(),j.output());\n    }\n    /** NOT_STARTED_AND_CANNOT_START requires proof old launch requests can never execute later. */\n    public synchronized Job reconcile(Key key,long epoch,Decision decision,String receipt,long now) {\n        time(now);output(receipt);Objects.requireNonNull(decision);Job j=require(key);\n        if(j.epoch()!=epoch||(j.state()!=State.UNKNOWN&&j.state()!=State.CANCEL_REQUESTED))\n            throw new IllegalStateException(\"stale reconciliation\");\n        State next=switch(decision) {\n            case SUCCEEDED -> State.SUCCEEDED;\n            case FAILED -> State.FAILED;\n            case NOT_STARTED_AND_CANNOT_START -> j.state()==State.CANCEL_REQUESTED ? State.CANCELLED :\n                now>=j.input().deadline() ? State.FAILED : State.QUEUED;\n        };\n        return replace(j,next,j.owner(),j.epoch(),j.leaseUntil(),receipt);\n    }\n    public synchronized Job get(Key key) {return require(key);}\n    private static void check(boolean b) {if(!b)throw new AssertionError();}\n    private static void rejects(Runnable f) {try{f.run();throw new AssertionError(\"expected rejection\");}catch(IllegalArgumentException|IllegalStateException|ArithmeticException expected){}}\n    public static void main(String[] args)throws Exception {\n        Key key=new Key(\"tenant\",\"request\");Input input=new Input(key,\"a\".repeat(64),100);\n        ScriptControl s=new ScriptControl(10);s.submit(input,0);check(s.submit(input,100).input().equals(input));\n        rejects(()->s.submit(new Input(key,\"b\".repeat(64),100),0));\n        try(var pool=Executors.newFixedThreadPool(10)) {\n            List<Callable<Boolean>> tasks=new ArrayList<>();\n            for(int i=0;i<30;i++)tasks.add(()->{try{s.claim(key,\"worker\",0,10);return true;}catch(IllegalStateException e){return false;}});\n            int wins=0;for(Future<Boolean> f:pool.invokeAll(tasks))if(f.get())wins++;check(wins==1);\n        }\n        Job j=s.get(key);rejects(()->s.complete(key,\"wrong\",j.epoch(),1,\"x\"));\n        s.expire(10);check(s.get(key).state()==State.UNKNOWN);\n        rejects(()->s.claim(key,\"new\",10,10));rejects(()->s.complete(key,\"worker\",j.epoch(),10,\"x\"));\n        s.reconcile(key,j.epoch(),Decision.NOT_STARTED_AND_CANNOT_START,\"\",10);\n        Job next=s.claim(key,\"new\",10,10);check(next.epoch()==j.epoch()+1);\n        rejects(()->s.complete(key,\"worker\",j.epoch(),11,\"x\"));\n        s.complete(key,\"new\",next.epoch(),11,\"ok\");check(s.complete(key,\"new\",next.epoch(),200,\"ok\").state()==State.SUCCEEDED);\n        rejects(()->s.complete(key,\"new\",next.epoch(),12,\"different\"));\n        ScriptControl cancel=new ScriptControl(1);cancel.submit(input,0);Job run=cancel.claim(key,\"w\",0,10);\n        check(cancel.cancel(key).state()==State.CANCEL_REQUESTED);rejects(()->cancel.complete(key,\"w\",run.epoch(),1,\"done\"));\n        check(cancel.reconcile(key,run.epoch(),Decision.SUCCEEDED,\"committed\",2).state()==State.SUCCEEDED);\n        rejects(()->cancel.submit(new Input(new Key(\"tenant\",\"other\"),\"a\".repeat(64),100),0));\n        ScriptControl queued=new ScriptControl(1);queued.submit(input,0);check(queued.cancel(key).state()==State.CANCELLED);\n        rejects(()->queued.claim(key,\"w\",1,1));rejects(()->queued.submit(input,-1));\n        ScriptControl bounds=new ScriptControl(1);bounds.submit(input,0);Job b=bounds.claim(key,\"w\",0,Long.MAX_VALUE);\n        check(b.leaseUntil()==100);rejects(()->bounds.complete(key,\"w\",b.epoch(),1,\"中\".repeat(1366)));\n        bounds.expire(100);check(bounds.reconcile(key,b.epoch(),Decision.NOT_STARTED_AND_CANNOT_START,\"\",100).state()==State.FAILED);\n        System.out.println(\"PASS ScriptControl: 30 racing claims yield one, payload/receipt conflict, exact expiry UNKNOWN, no blind retry, verified requeue advances epoch, stale completion rejected, cancel can reconcile to success, bounds/deadline/UTF8 output; in-memory control plane only.\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分布式脚本执行怎样完成受理到结果的最小闭环"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式执行的关键是让多个 worker 共享同一个持久任务权威，并把领取、租约、执行和结果提交连起来；租约到期只撤销提交资格，不会自动撤销已经发生的计算或外部副作用。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "同题换问"
+    },
+    {
+      "type": "paragraph",
+      "text": "“用 AI 写一个分布式脚本执行服务。”“两台 worker 怎样避免同时领走同一任务？”“worker 执行后宕机怎么办？”“协调器重启后会不会重复受理？”“旧 worker 迟到的结果能覆盖新结果吗？”“能否直接接收用户的 shell 命令？”"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个练习先交付一个单机可复跑的多进程闭环：Java协调器通过loopback HTTP服务多个独立Java worker进程，用本地快照保存任务；worker真正执行两个受限纯函数模板。"
+    },
+    {
+      "type": "paragraph",
+      "text": "它验证的是协议和进程故障恢复，尚不包含多机高可用、任意代码沙箱或真实LLM服务。题目如果没有约定脚本语言、外部副作用、认证、隔离级别和部署环境，先把这些边界问清并缩小交付范围。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "先约定什么能够执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交内容是已安装的模板名和有界输入，不是待执行源码。两个模板的合同如下："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "upper-v1：字符串最多512个UTF-8字节，使用Locale.ROOT转大写。",
+        "sum-v1：最多256个整数，每项在负十亿到十亿之间，精确求和。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "模板版本也属于任务输入。未知模板、分数、超界输入和额外字段直接拒绝；程序没有shell、eval、动态编译或把用户路径拼入进程命令的入口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "worker 本身是一个真正独立 JVM，它通过 HTTP 领取、计算并提交结果。为了让练习自包含，控制面还重新计算这两个廉价函数核对收据；这是验证教学结果的办法，对昂贵脚本重新计算会失去分布式执行的价值，真实系统应换成可信执行身份、产物哈希和适合任务的校验机制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个模板没有外部副作用，因此租约过期后允许再次执行。同一任务的旧计算与新计算可能短暂重叠，代码只保证过期或旧代际结果不会成为权威结果，不保证计算只发生一次。若换成发邮件、扣款或调用不可幂等外部 API，必须改为 UNKNOWN 与结果核对流程，不能沿用这里的自动重排。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "受理与查询合同"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有接口仅使用 POST 和精确的 Content-Type: application/json，请求体最多 8192 字节。服务只绑定 127.0.0.1，客户端也只允许这个 loopback 地址。下列身份都是同一台可信教学机器上的演示字段，没有身份认证，不能把自填 owner 当作安全身份。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "/submit 输入 id、template、input、ttlMillis。id 是 1 至 64 位字母数字下划线或连字符，ttlMillis 为 100 至 60000。受理成功返回 QUEUED 任务。",
+        "/claim 只输入 owner。一次领取一个任务并返回 RUNNING、epoch、until 等信息，没有可执行任务返回 EMPTY。客户端不能上传 now 或租约时长。",
+        "/complete 输入 id、owner、epoch、output。只有当前有效 owner 和 epoch 能提交正确结果；过期、错误结果和旧代际返回 409。同一终态收据重复提交返回已保存成功结果。",
+        "/get 输入 id，返回已保存的任务及结果。租约扫描在 claim 时懒执行，因此查询可能看到已到 until 的 RUNNING；这不表示完成仍会被接受，complete 总是再次检查时间。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "幂等键绑定的是规范化后的完整合同。键顺序、无关空白，以及数值1/1.0的区别，不会产生新意图；同id却换了模板、输入或ttlMillis，就报冲突。"
+    },
+    {
+      "type": "paragraph",
+      "text": "成功重试返回原任务，不重置deadline。任务总数最多128个，终态也计入其中；程序不自动删除幂等记录，容量满后明确拒绝。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "持久化和租约怎样配合"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制面的方法在单权威内串行处理，每次先构造下一份快照，写临时文件并 force，然后在同一目录原子替换，成功后才更新内存和返回。写入结果不确定时停止后续写入，需重启读取权威文件；损坏或不一致快照拒绝启动，不能静默当成空数据库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "账本要同时挡住同JVM重复打开和其他合作进程，所以使用两层互斥：先在共享登记表里检查重复打开，再让唯一的FileChannel取得本地操作系统文件锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "顺序不能反过来。若先打开第二个通道，等重叠锁异常后再关闭，某些操作系统会因为这次关闭而释放该JVM在同文件上的已有锁。登记检查、通道创建和关闭后的注销，都由同一把JVM锁串行保护；关闭失败时保留未关闭通道的登记，避免新写者进入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "路径别名和文件类型也属于账本合同。先解析真实父目录，让相对路径、点路径和父目录符号链接指向同一账本时共用登记。账本与锁文件本身必须是普通文件，不能是符号链接；已有文件还要检查身份，拒绝同JVM的硬链接别名，以及把另一账本锁文件当数据文件打开。"
+    },
+    {
+      "type": "paragraph",
+      "text": "合作进程必须使用同一规范账本路径，不能自行创建跨进程硬链接别名，也不能替换或删除锁文件。登记表只属于本程序唯一加载的DurableFile类；多ClassLoader容器、绕开该类打开锁文件的代码，均不在教学合同内。文件锁也不是跨主机事务，不能阻止恶意进程访问。"
+    },
+    {
+      "type": "paragraph",
+      "text": "原子替换能否执行，取决于文件系统；已有目标的原子覆盖行为也依赖具体实现。本例在当前本地文件系统通过了重复替换测试。遇到不支持的环境，程序拒绝继续，不降级成“先删除、再写入”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "force 与原子替换解决的故障不同。临时文件被 force 不等于目录重命名已在真实断电时持久，代码没有目录 fsync、复制、备份或磁盘故障处理。因此测试和承诺范围是本地进程被杀后重新打开完好文件，不包含断电无损、磁盘损坏或跨机容灾。"
+    },
+    {
+      "type": "paragraph",
+      "text": "领取时，协调器把epoch和attempts各加一，持久保存租约后再发给worker。租约最多1秒，并且不能超过deadline。"
+    },
+    {
+      "type": "paragraph",
+      "text": "本例是纯函数任务，过期后可重排，但最多领取3次；deadline到期或次数用尽，就变为FAILED。旧owner即使提交正确答案，也会因epoch不匹配而被拒绝。成功收据可以重试，但必须与已保存结果一致，不能改写终态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时间取自协调器。保存的 lastTime 用于避免重启后把权威时间倒退到更早值；时钟大幅前跳仍可能提前过期，大幅回拨可能降低可用性。这是本地演示策略，不能称为分布式时钟方案。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "为什么不直接接受任意脚本"
+    },
+    {
+      "type": "paragraph",
+      "text": "任意脚本需要可信制品、不可变输入、租户权限和独立执行环境，并限制 CPU、内存、进程树、临时盘、文件描述符、网络和输出。敌对多租户代码应根据威胁模型选择沙箱、微虚机或独立节点；普通子进程和线程超时不是完整隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本有外部副作用后，失联恢复必须改变。先保留稳定operationId，向真实执行器或资源端查询：已完成且收据可信，可以恢复成功；无法核对，就保持UNKNOWN。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有可信证据同时证明“没有执行”和“旧请求以后也不会执行”，才允许重新开始。fencing还须延伸到可写资源端，才可能挡住旧写；控制面仅检查epoch，不会把已经发生的扣款回滚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消同样需要 CANCEL_REQUESTED、停止实际进程树及结果核对。本例没有取消、续租、长脚本、真正的用户隔离和外部副作用接口，不把“关闭一个 worker JVM”描述为完整取消协议。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "容量 复杂度和部署取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "每次快照提交与任务数及序列化字节量有关，约 O(J + S)；有序映射操作还有 O(log J) 成本，claim 扫描是 O(J)，不是所有操作都 O(1)。同机小练习用整个快照容易审查，但高吞吐系统应使用事务数据库、条件更新与适当索引，必要时用事务性投递唤醒 worker。MQ 不能代替任务的权威账本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP处理池有4个线程，应用排队最多32项。这限制的是应用执行队列，不能据此断言恶意慢连接的所有资源都已有严格上界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "演示缺少完备认证、TLS、服务端请求读取超时、限流和拒绝服务防护，不能暴露到公网或不可信本地环境。worker的连接与单次请求有超时；超时后退出，后续按相同任务身份查询，不能自行创建新任务。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "AI Coding 的实施顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "先冻结模板、幂等、租约和失败合同，再完成一次 submit→claim→execute→complete→get。随后把内存存储换为本地持久快照，最后增加进程故障和网络协议测试。让 AI 修改一个模块时仍保留接口与独立验收；代码能编译、worker 输出一行成功、控制面已持久保存终态，是三个不同的检查点。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "完整 Java 实现"
+    },
+    {
+      "type": "paragraph",
+      "text": "把下列文件保存到 src 目录。StrictJson 是同一份有界解析器，拒绝重复键并保留精确数字。代码基线为 Java 21，无外部依赖。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "StrictJson.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "029/StrictJson.java",
+      "value": "import java.io.*;\nimport java.math.BigDecimal;\nimport java.nio.*;\nimport java.nio.charset.*;\nimport java.nio.file.*;\nimport java.util.*;\n\n/** Dependency-free, bounded teaching parser. JSON null is Java null. */\npublic final class StrictJson {\n    public static final int MAX_BYTES=1_048_576, MAX_DEPTH=64, MAX_NODES=50_000;\n    private final String text;\n    private int pos, nodes;\n    private StrictJson(String text) { this.text=text; }\n    public static Object parse(String text) {\n        Objects.requireNonNull(text);\n        if(text.length()>MAX_BYTES || text.getBytes(StandardCharsets.UTF_8).length>MAX_BYTES)\n            throw new IllegalArgumentException(\"JSON byte limit\");\n        StrictJson p=new StrictJson(text); Object result=p.value(0); p.ws();\n        if(p.pos!=text.length()) throw p.bad(\"trailing input\");\n        return result;\n    }\n    public static Object read(Path file) throws IOException {\n        try(InputStream in=Files.newInputStream(file)) { return decode(in.readNBytes(MAX_BYTES+1)); }\n    }\n    public static Object decode(byte[] bytes) throws CharacterCodingException {\n        if(bytes.length>MAX_BYTES) throw new IllegalArgumentException(\"JSON byte limit\");\n        return parse(StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)\n                .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString());\n    }\n    private IllegalArgumentException bad(String message) { return new IllegalArgumentException(message+\" at \"+pos); }\n    private void ws() { while(pos<text.length() && \" \\t\\r\\n\".indexOf(text.charAt(pos))>=0) pos++; }\n    private boolean eat(char c) { ws(); if(pos<text.length()&&text.charAt(pos)==c){pos++;return true;}return false; }\n    private void need(char c) { if(!eat(c)) throw bad(\"expected \"+c); }\n    private Object value(int depth) {\n        ws(); if(depth>MAX_DEPTH || ++nodes>MAX_NODES) throw bad(\"structure limit\");\n        if(pos>=text.length()) throw bad(\"missing value\");\n        char c=text.charAt(pos);\n        if(c=='\"') return string();\n        if(c=='{') {\n            pos++; Map<String,Object> map=new TreeMap<>(); if(eat('}'))return map;\n            do { ws(); if(pos>=text.length()||text.charAt(pos)!='\"')throw bad(\"object key\");\n                String key=string(); need(':'); Object v=value(depth+1);\n                if(map.containsKey(key))throw bad(\"duplicate key\"); map.put(key,v);\n            } while(eat(',')); need('}'); return map;\n        }\n        if(c=='[') {\n            pos++; List<Object> list=new ArrayList<>(); if(eat(']'))return list;\n            do { list.add(value(depth+1)); }while(eat(','));need(']');return list;\n        }\n        for(String token:List.of(\"true\",\"false\",\"null\")) {\n            if(text.startsWith(token,pos)) {pos+=token.length();return token.equals(\"null\")?null:token.equals(\"true\");}\n        }\n        int start=pos;\n        if(c=='-')pos++;\n        if(pos>=text.length())throw bad(\"number\");\n        if(text.charAt(pos)=='0')pos++;\n        else { if(!digit19(text.charAt(pos)))throw bad(\"value\"); while(pos<text.length()&&digit(text.charAt(pos)))pos++; }\n        if(pos<text.length()&&text.charAt(pos)=='.') {pos++;int before=pos;while(pos<text.length()&&digit(text.charAt(pos)))pos++;if(pos==before)throw bad(\"fraction\");}\n        if(pos<text.length()&&(text.charAt(pos)=='e'||text.charAt(pos)=='E')) {\n            pos++; if(pos<text.length()&&(text.charAt(pos)=='+'||text.charAt(pos)=='-'))pos++;\n            int before=pos;while(pos<text.length()&&digit(text.charAt(pos)))pos++;\n            if(pos==before)throw bad(\"exponent\");\n        }\n        String token=text.substring(start,pos);\n        if(token.length()>128)throw bad(\"number length\");\n        try { BigDecimal n=new BigDecimal(token); if(Math.abs((long)n.scale())>1000)throw bad(\"number scale\");return n; }\n        catch(NumberFormatException e){throw bad(\"number range\");}\n    }\n    private static boolean digit(char c){return c>='0'&&c<='9';}\n    private static boolean digit19(char c){return c>='1'&&c<='9';}\n    private char hex() {\n        if(pos+4>text.length())throw bad(\"unicode escape\");int n=0;\n        for(int i=0;i<4;i++){char h=text.charAt(pos++);int x=h>='0'&&h<='9'?h-'0':h>='a'&&h<='f'?h-'a'+10:h>='A'&&h<='F'?h-'A'+10:-1;if(x<0)throw bad(\"unicode escape\");n=n*16+x;}\n        return (char)n;\n    }\n    private String string() {\n        pos++; StringBuilder out=new StringBuilder(); boolean closed=false;\n        while(pos<text.length()) {\n            char c=text.charAt(pos++);\n            if(c=='\"'){closed=true;break;} if(c<32)throw bad(\"control character\");\n            if(c=='\\\\') {\n                if(pos==text.length())throw bad(\"escape\");char e=text.charAt(pos++);\n                c=switch(e){case '\"','\\\\','/'->e;case 'b'->'\\b';case 'f'->'\\f';case 'n'->'\\n';case 'r'->'\\r';case 't'->'\\t';case 'u'->hex();default->throw bad(\"escape\");};\n            }\n            out.append(c);\n        }\n        if(!closed)throw bad(\"unclosed string\");\n        for(int i=0;i<out.length();i++) {\n            char c=out.charAt(i);\n            if(Character.isHighSurrogate(c)) {if(i+1>=out.length()||!Character.isLowSurrogate(out.charAt(++i)))throw bad(\"unpaired surrogate\");}\n            else if(Character.isLowSurrogate(c))throw bad(\"unpaired surrogate\");\n        }\n        return out.toString();\n    }\n    public static String write(Object value) {\n        if(value==null)return \"null\";\n        if(value instanceof String s) {\n            StringBuilder b=new StringBuilder(\"\\\"\");\n            for(int i=0;i<s.length();i++) {\n                char c=s.charAt(i);\n                switch(c){case '\"'->b.append(\"\\\\\\\"\");case '\\\\'->b.append(\"\\\\\\\\\");case '\\n'->b.append(\"\\\\n\");case '\\r'->b.append(\"\\\\r\");case '\\t'->b.append(\"\\\\t\");\n                    default->{if(c<32||Character.isSurrogate(c))b.append(String.format(Locale.ROOT,\"\\\\u%04x\",(int)c));else b.append(c);}}\n            }\n            return b.append('\"').toString();\n        }\n        if(value instanceof BigDecimal n)return n.signum()==0?\"0\":n.stripTrailingZeros().toString();\n        if(value instanceof Boolean||value instanceof Integer||value instanceof Long)return value.toString();\n        if(value instanceof List<?> list){List<String> out=new ArrayList<>();for(Object x:list)out.add(write(x));return \"[\"+String.join(\",\",out)+\"]\";}\n        if(value instanceof Map<?,?> map){TreeMap<String,Object> sorted=new TreeMap<>();for(var e:map.entrySet())sorted.put((String)e.getKey(),e.getValue());List<String> out=new ArrayList<>();for(var e:sorted.entrySet())out.add(write(e.getKey())+\":\"+write(e.getValue()));return \"{\"+String.join(\",\",out)+\"}\";}\n        throw new IllegalArgumentException(\"unsupported JSON value\");\n    }\n    public static Map<String,Object> object(Object x){if(!(x instanceof Map<?,?> m))throw new IllegalArgumentException(\"object required\");Map<String,Object> r=new TreeMap<>();for(var e:m.entrySet())r.put((String)e.getKey(),e.getValue());return r;}\n    public static String str(Map<String,Object> m,String k){if(!(m.get(k) instanceof String s))throw new IllegalArgumentException(\"string required: \"+k);return s;}\n    public static long integer(Map<String,Object> m,String k){try{return ((BigDecimal)m.get(k)).longValueExact();}catch(RuntimeException e){throw new IllegalArgumentException(\"integer required: \"+k);}}\n    public static void fields(Map<String,Object> m,String... keys){if(!m.keySet().equals(Set.of(keys)))throw new IllegalArgumentException(\"fields mismatch\");}\n    public static String id(String s){if(s==null||!s.matches(\"[A-Za-z0-9_-]{1,64}\"))throw new IllegalArgumentException(\"identifier\");return s;}\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "DurableFile.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "030/DurableFile.java",
+      "value": "import java.io.*;\nimport java.nio.ByteBuffer;\nimport java.nio.channels.*;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.nio.file.attribute.BasicFileAttributes;\nimport java.util.*;\n\n/** One cooperating writer; local process restart, not replicated or power-loss durable storage. */\npublic final class DurableFile implements AutoCloseable {\n    @FunctionalInterface interface Cleanup {void run()throws IOException;}\n    static void cleanup(Throwable primary,Cleanup action)throws IOException {\n        try{action.run();}catch(IOException|RuntimeException|Error secondary){\n            if(primary==null)throw secondary;\n            if(primary!=secondary)primary.addSuppressed(secondary);\n        }\n    }\n    // This standalone program loads this class once. All cooperating opens use this registry.\n    // Never open a second channel first: closing it can release another channel's OS lock.\n    private static final Object REGISTRY_LOCK=new Object();\n    private static final Set<Lease> ACTIVE=Collections.newSetFromMap(new IdentityHashMap<>());\n    private record Lease(Path file,Path lockFile,FileChannel channel,FileLock lock) {}\n    private final Path file;\n    private final Lease lease;\n    private boolean poisoned,closed;\n\n    private static boolean regularOrMissing(Path path)throws IOException {\n        try {\n            if(!Files.readAttributes(path,BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS).isRegularFile())\n                throw new IOException(\"store and lock must be regular files, not symbolic links\");\n            return true;\n        }catch(NoSuchFileException absent){return false;}\n    }\n    private static boolean sameExisting(Path a,Path b)throws IOException {\n        // Attribute reads do not open a FileChannel that could disturb an existing OS lock.\n        return regularOrMissing(a)&&regularOrMissing(b)&&Files.isSameFile(a,b);\n    }\n    private static Lease acquire(Path path)throws IOException {\n        synchronized(REGISTRY_LOCK) {\n            Path absolute=Objects.requireNonNull(path).toAbsolutePath();\n            Path name=absolute.getFileName();\n            if(name==null||name.toString().equals(\".\")||name.toString().equals(\"..\"))\n                throw new IOException(\"store must have a file name\");\n            Files.createDirectories(absolute.getParent());\n            Path file=absolute.getParent().toRealPath().resolve(name);\n            Path lockFile=file.resolveSibling(name+\".lock\");\n            regularOrMissing(file);regularOrMissing(lockFile);\n            if(sameExisting(file,lockFile))throw new IOException(\"store and lock must be distinct files\");\n            for(Lease held:ACTIVE) {\n                if(file.equals(held.file())||lockFile.equals(held.lockFile())\n                    ||file.equals(held.lockFile())||lockFile.equals(held.file())\n                    ||sameExisting(file,held.file())||sameExisting(lockFile,held.lockFile())\n                    ||sameExisting(file,held.lockFile())||sameExisting(lockFile,held.file()))\n                    throw new IOException(\"another writer in this JVM owns store\");\n            }\n            FileChannel channel=FileChannel.open(lockFile,StandardOpenOption.CREATE,\n                    StandardOpenOption.WRITE,LinkOption.NOFOLLOW_LINKS);\n            try {\n                FileLock lock=channel.tryLock();\n                if(lock==null)throw new IOException(\"another process owns store\");\n                Lease lease=new Lease(file,lockFile,channel,lock);\n                ACTIVE.add(lease);\n                return lease;\n            }catch(IOException|RuntimeException|Error e){cleanup(e,channel::close);throw e;}\n        }\n    }\n    public DurableFile(Path path)throws IOException {lease=acquire(path);file=lease.file();}\n    public synchronized Object read()throws IOException {\n        if(poisoned||closed)throw new IOException(\"store unavailable\");\n        return Files.exists(file)?StrictJson.read(file):null;\n    }\n    public synchronized void save(Object data)throws IOException {\n        if(poisoned||closed)throw new IOException(\"store unavailable; restart and inspect\");\n        byte[] bytes=StrictJson.write(data).getBytes(StandardCharsets.UTF_8);\n        if(bytes.length>StrictJson.MAX_BYTES)throw new IOException(\"snapshot size limit\");\n        Path temp=Files.createTempFile(file.getParent(),\"snapshot-\",\".tmp\");Throwable primary=null;\n        try {\n            try(FileChannel c=FileChannel.open(temp,StandardOpenOption.WRITE)){ByteBuffer b=ByteBuffer.wrap(bytes);while(b.hasRemaining())c.write(b);c.force(true);}\n            // Do not silently fall back to a non-atomic replacement.\n            Files.move(temp,file,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);\n        }catch(IOException|RuntimeException|Error e){primary=e;poisoned=true;throw e;}\n        finally {\n            try{cleanup(primary,()->Files.deleteIfExists(temp));}\n            catch(IOException|RuntimeException|Error e){poisoned=true;throw e;}\n        }\n    }\n    public synchronized void close()throws IOException {\n        if(closed&&!lease.channel().isOpen())return;\n        closed=true;\n        // Do not remove the in-JVM reservation until the old channel is actually closed.\n        synchronized(REGISTRY_LOCK) {\n            Throwable primary=null;\n            try {\n                try{if(lease.lock().isValid())lease.lock().release();}\n                catch(IOException|RuntimeException|Error e){primary=e;throw e;}\n                finally{cleanup(primary,lease.channel()::close);}\n            }finally {\n                if(!lease.channel().isOpen())ACTIVE.remove(lease);\n            }\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "ScriptService.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "031/ScriptService.java",
+      "value": "import com.sun.net.httpserver.*;\nimport java.io.*;\nimport java.math.BigDecimal;\nimport java.net.*;\nimport java.net.http.*;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.Path;\nimport java.time.Duration;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.function.LongSupplier;\n\n/** Local trusted demo: one durable coordinator, multiple independent JVM workers. */\npublic final class ScriptService {\n    static final int CAPACITY=128, MAX_ATTEMPTS=3;\n    static final long LEASE_MILLIS=1000;\n    static final class Conflict extends RuntimeException {\n        private static final long serialVersionUID=1L;\n        Conflict(String text){super(text);}\n    }\n    record Job(String id,String request,String template,Object input,String state,String owner,\n               long epoch,int attempts,long until,long deadline,Object output) {\n        Map<String,Object> json(){Map<String,Object> m=new TreeMap<>();\n            m.put(\"id\",id);m.put(\"request\",request);m.put(\"template\",template);m.put(\"input\",StrictJson.parse(StrictJson.write(input)));\n            m.put(\"state\",state);m.put(\"owner\",owner);m.put(\"epoch\",epoch);m.put(\"attempts\",attempts);\n            m.put(\"until\",until);m.put(\"deadline\",deadline);m.put(\"output\",StrictJson.parse(StrictJson.write(output)));return m;}\n        Job changed(String state,String owner,long epoch,int attempts,long until,Object output){return new Job(id,request,template,input,state,owner,epoch,attempts,until,deadline,output);}\n        static Job from(Object o){Map<String,Object> m=StrictJson.object(o);\n            StrictJson.fields(m,\"id\",\"request\",\"template\",\"input\",\"state\",\"owner\",\"epoch\",\"attempts\",\"until\",\"deadline\",\"output\");\n            Job j=new Job(StrictJson.id(StrictJson.str(m,\"id\")),StrictJson.str(m,\"request\"),StrictJson.str(m,\"template\"),m.get(\"input\"),\n                    StrictJson.str(m,\"state\"),StrictJson.str(m,\"owner\"),StrictJson.integer(m,\"epoch\"),Math.toIntExact(StrictJson.integer(m,\"attempts\")),\n                    StrictJson.integer(m,\"until\"),StrictJson.integer(m,\"deadline\"),m.get(\"output\"));\n            validateInput(j.template,j.input);\n            if(!Set.of(\"QUEUED\",\"RUNNING\",\"SUCCEEDED\",\"FAILED\").contains(j.state)||j.epoch<0||j.attempts<0||j.attempts>MAX_ATTEMPTS||j.until<0||j.deadline<0)\n                throw new IllegalArgumentException(\"invalid snapshot job\");\n            if(!j.owner.isEmpty())StrictJson.id(j.owner);\n            Map<String,Object> original=StrictJson.object(StrictJson.parse(j.request));\n            StrictJson.fields(original,\"id\",\"template\",\"input\",\"ttlMillis\");\n            long ttl=StrictJson.integer(original,\"ttlMillis\");\n            if(!j.id.equals(original.get(\"id\"))||!j.template.equals(original.get(\"template\"))||\n               !StrictJson.write(j.input).equals(StrictJson.write(original.get(\"input\")))||ttl<100||ttl>60000||\n               !j.request.equals(StrictJson.write(original))||j.epoch!=j.attempts||j.until>j.deadline)\n                throw new IllegalArgumentException(\"inconsistent snapshot\");\n            if((j.state.equals(\"RUNNING\")||j.state.equals(\"SUCCEEDED\"))&&(j.owner.isEmpty()||j.epoch==0))\n                throw new IllegalArgumentException(\"missing lease identity\");\n            if(j.state.equals(\"SUCCEEDED\")&&!StrictJson.write(j.output).equals(StrictJson.write(execute(j.template,j.input))))\n                throw new IllegalArgumentException(\"invalid saved result\");\n            return j;\n        }\n    }\n    static void validateInput(String template,Object input) {\n        switch(template) {\n            case \"upper-v1\" -> {if(!(input instanceof String s)||s.getBytes(StandardCharsets.UTF_8).length>512)throw new IllegalArgumentException(\"upper-v1 string <=512 bytes\");}\n            case \"sum-v1\" -> {\n                if(!(input instanceof List<?> xs)||xs.size()>256)throw new IllegalArgumentException(\"sum-v1 array <=256\");\n                for(Object x:xs){if(!(x instanceof BigDecimal n))throw new IllegalArgumentException(\"integer array required\");\n                    long v;try{v=n.longValueExact();}catch(ArithmeticException e){throw new IllegalArgumentException(\"integer range\");}\n                    if(v < -1_000_000_000L||v>1_000_000_000L)throw new IllegalArgumentException(\"integer range\");}\n            }\n            default -> throw new IllegalArgumentException(\"unknown template; executable text is not accepted\");\n        }\n    }\n    static Object execute(String template,Object input) {\n        validateInput(template,input);\n        if(template.equals(\"upper-v1\"))return ((String)input).toUpperCase(Locale.ROOT);\n        long sum=0;for(Object x:(List<?>)input)sum=Math.addExact(sum,((BigDecimal)x).longValueExact());\n        return BigDecimal.valueOf(sum);\n    }\n    static final class Core implements AutoCloseable {\n        private final DurableFile store;\n        private final LongSupplier clock;\n        private Map<String,Job> jobs=new TreeMap<>();\n        private long lastTime;\n        Core(Path file,LongSupplier clock)throws IOException {\n            this.clock=clock;store=new DurableFile(file);\n            try {\n                Object raw=store.read();\n                if(raw!=null){Map<String,Object> m=StrictJson.object(raw);StrictJson.fields(m,\"version\",\"lastTime\",\"jobs\");\n                    if(StrictJson.integer(m,\"version\")!=1)throw new IllegalArgumentException(\"snapshot version\");\n                    lastTime=StrictJson.integer(m,\"lastTime\");if(lastTime<0)throw new IllegalArgumentException(\"snapshot time\");\n                    if(!(m.get(\"jobs\") instanceof List<?> all)||all.size()>CAPACITY)throw new IllegalArgumentException(\"snapshot jobs\");\n                    for(Object x:all){Job j=Job.from(x);if(jobs.put(j.id,j)!=null)throw new IllegalArgumentException(\"duplicate job\");}\n                }\n            }catch(IOException|RuntimeException|Error e){DurableFile.cleanup(e,store::close);throw e;}\n        }\n        private long now(){long t=clock.getAsLong();if(t<0)throw new IllegalArgumentException(\"clock\");return Math.max(t,lastTime);}\n        private void commit(Map<String,Job> next,long time)throws IOException {\n            List<Object> all=new ArrayList<>();for(Job j:next.values())all.add(j.json());\n            store.save(Map.of(\"version\",1,\"lastTime\",time,\"jobs\",all));jobs=next;lastTime=time;\n        }\n        synchronized Map<String,Object> submit(Map<String,Object> req)throws IOException {\n            StrictJson.fields(req,\"id\",\"template\",\"input\",\"ttlMillis\");\n            String id=StrictJson.id(StrictJson.str(req,\"id\")),template=StrictJson.str(req,\"template\");\n            validateInput(template,req.get(\"input\"));long ttl=StrictJson.integer(req,\"ttlMillis\");\n            if(ttl<100||ttl>60000)throw new IllegalArgumentException(\"ttlMillis 100..60000\");\n            String canonical=StrictJson.write(req);Job old=jobs.get(id);\n            if(old!=null){if(!old.request.equals(canonical))throw new Conflict(\"idempotency payload conflict\");return old.json();}\n            if(jobs.size()>=CAPACITY)throw new Conflict(\"capacity\");long time=now();\n            Object input=StrictJson.parse(StrictJson.write(req.get(\"input\")));\n            Job j=new Job(id,canonical,template,input,\"QUEUED\",\"\",0,0,0,Math.addExact(time,ttl),null);\n            Map<String,Job> next=new TreeMap<>(jobs);next.put(id,j);commit(next,time);return j.json();\n        }\n        synchronized Map<String,Object> claim(String owner)throws IOException {\n            StrictJson.id(owner);long time=now();Map<String,Job> next=new TreeMap<>(jobs);boolean dirty=false;\n            for(Job j:jobs.values()) {\n                if(j.state.equals(\"QUEUED\")||j.state.equals(\"RUNNING\")) {\n                    if(time>=j.deadline||(j.state.equals(\"RUNNING\")&&time>=j.until&&j.attempts>=MAX_ATTEMPTS)) {\n                        next.put(j.id,j.changed(\"FAILED\",j.owner,j.epoch,j.attempts,j.until,\"budget exhausted\"));dirty=true;\n                    } else if(j.state.equals(\"RUNNING\")&&time>=j.until) {\n                        // Safe only because these versioned templates are pure and bounded.\n                        next.put(j.id,j.changed(\"QUEUED\",j.owner,j.epoch,j.attempts,j.until,null));dirty=true;\n                    }\n                }\n            }\n            for(Job j:next.values())if(j.state.equals(\"QUEUED\")) {\n                Job claimed=j.changed(\"RUNNING\",owner,Math.incrementExact(j.epoch),j.attempts+1,\n                        Math.min(Math.addExact(time,LEASE_MILLIS),j.deadline),null);\n                next.put(j.id,claimed);commit(next,time);return claimed.json();\n            }\n            if(dirty)commit(next,time);return Map.of(\"state\",\"EMPTY\");\n        }\n        synchronized Map<String,Object> complete(Map<String,Object> req)throws IOException {\n            StrictJson.fields(req,\"id\",\"owner\",\"epoch\",\"output\");\n            String id=StrictJson.id(StrictJson.str(req,\"id\")),owner=StrictJson.id(StrictJson.str(req,\"owner\"));\n            long epoch=StrictJson.integer(req,\"epoch\");Job j=jobs.get(id);if(j==null)throw new Conflict(\"unknown job\");\n            if(j.epoch!=epoch||!j.owner.equals(owner))throw new Conflict(\"stale completion\");\n            Object output=StrictJson.parse(StrictJson.write(req.get(\"output\")));\n            if(StrictJson.write(output).getBytes(StandardCharsets.UTF_8).length>4096)throw new IllegalArgumentException(\"output limit\");\n            // Recompute the two tiny pure templates to reject malformed/incorrect receipts.\n            if(!StrictJson.write(execute(j.template,j.input)).equals(StrictJson.write(output)))throw new Conflict(\"invalid result\");\n            if(j.state.equals(\"SUCCEEDED\")){if(!StrictJson.write(j.output).equals(StrictJson.write(output)))throw new Conflict(\"result conflict\");return j.json();}\n            long time=now();if(!j.state.equals(\"RUNNING\")||time>=j.until||time>=j.deadline)throw new Conflict(\"expired or inactive lease\");\n            Job done=j.changed(\"SUCCEEDED\",owner,epoch,j.attempts,j.until,output);\n            Map<String,Job> next=new TreeMap<>(jobs);next.put(id,done);commit(next,time);return done.json();\n        }\n        synchronized Map<String,Object> get(String id) {\n            Job j=jobs.get(StrictJson.id(id));if(j==null)throw new Conflict(\"unknown job\");return j.json();\n        }\n        public synchronized void close()throws IOException {store.close();}\n    }\n    static final class Server implements AutoCloseable {\n        private final Core core;\n        private final HttpServer server;\n        private final ThreadPoolExecutor pool;\n        Server(Path file,int port)throws IOException {\n            core=new Core(file,System::currentTimeMillis);\n            HttpServer candidate;\n            try{candidate=HttpServer.create(new InetSocketAddress(\"127.0.0.1\",port),16);}\n            catch(IOException|RuntimeException|Error e){DurableFile.cleanup(e,core::close);throw e;}\n            server=candidate;\n            pool=new ThreadPoolExecutor(4,4,0,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(32),new ThreadPoolExecutor.AbortPolicy());\n            server.setExecutor(pool);server.createContext(\"/\",this::handle);server.start();\n        }\n        int port(){return server.getAddress().getPort();}\n        private void handle(HttpExchange ex)throws IOException {\n            int status=200;Object response;\n            try {\n                if(!ex.getRequestMethod().equals(\"POST\"))throw new IllegalArgumentException(\"POST required\");\n                if(ex.getRequestURI().getRawQuery()!=null)throw new IllegalArgumentException(\"no query parameters\");\n                if(!\"application/json\".equals(ex.getRequestHeaders().getFirst(\"Content-Type\")))throw new IllegalArgumentException(\"application/json required\");\n                byte[] bytes=ex.getRequestBody().readNBytes(8193);if(bytes.length>8192)throw new IllegalArgumentException(\"request byte limit\");\n                Map<String,Object> req=StrictJson.object(StrictJson.decode(bytes));\n                response=switch(ex.getRequestURI().getPath()) {\n                    case \"/submit\" -> core.submit(req);\n                    case \"/claim\" -> {StrictJson.fields(req,\"owner\");yield core.claim(StrictJson.str(req,\"owner\"));}\n                    case \"/complete\" -> core.complete(req);\n                    case \"/get\" -> {StrictJson.fields(req,\"id\");yield core.get(StrictJson.str(req,\"id\"));}\n                    default -> throw new IllegalArgumentException(\"unknown route\");\n                };\n            }catch(Conflict e){status=409;response=Map.of(\"error\",e.getMessage());}\n            catch(IllegalArgumentException|java.nio.charset.CharacterCodingException e){status=400;response=Map.of(\"error\",\"invalid request\");}\n            catch(IOException e){status=503;response=Map.of(\"error\",\"storage unavailable\");}\n            catch(RuntimeException e){status=500;response=Map.of(\"error\",\"internal failure\");}\n            byte[] out=StrictJson.write(response).getBytes(StandardCharsets.UTF_8);\n            ex.getResponseHeaders().set(\"Content-Type\",\"application/json; charset=utf-8\");\n            try{ex.sendResponseHeaders(status,out.length);ex.getResponseBody().write(out);}finally{ex.close();}\n        }\n        public void close()throws IOException {\n            Throwable primary=null;\n            try{server.stop(0);pool.shutdownNow();}catch(RuntimeException|Error e){primary=e;throw e;}\n            finally{DurableFile.cleanup(primary,core::close);}\n        }\n    }\n    static Map<String,Object> post(HttpClient client,URI base,String path,Object value)throws Exception {\n        HttpRequest req=HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(3))\n                .header(\"Content-Type\",\"application/json\").POST(HttpRequest.BodyPublishers.ofString(StrictJson.write(value))).build();\n        HttpResponse<byte[]> res=client.send(req,HttpResponse.BodyHandlers.ofByteArray());\n        if(res.statusCode()!=200)throw new IOException(\"HTTP \"+res.statusCode()+\": \"+new String(res.body(),StandardCharsets.UTF_8));\n        return StrictJson.object(StrictJson.decode(res.body()));\n    }\n    static URI loopback(String value) {\n        URI u=URI.create(value);\n        if(!\"http\".equals(u.getScheme())||!\"127.0.0.1\".equals(u.getHost())||u.getPort()<1||u.getPort()>65535||u.getRawUserInfo()!=null||u.getRawQuery()!=null||u.getRawFragment()!=null||!Set.of(\"\",\"/\").contains(u.getPath()))\n            throw new IllegalArgumentException(\"only http://127.0.0.1:port is allowed\");\n        return u;\n    }\n    public static void main(String[] args)throws Exception {\n        if(args.length==3&&args[0].equals(\"server\")) {\n            try(Server server=new Server(Path.of(args[1]),Integer.parseInt(args[2]))) {\n                System.out.println(\"PORT \"+server.port());System.out.flush();\n                // Send a newline for graceful shutdown; a killed process is recovered from its snapshot.\n                System.in.read();\n            }return;\n        }\n        if(args.length==3&&args[0].equals(\"worker\")) {\n            URI base=loopback(args[1]);String owner=StrictJson.id(args[2]);\n            try(HttpClient client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()) {\n                Map<String,Object> j=post(client,base,\"/claim\",Map.of(\"owner\",owner));\n                if(\"EMPTY\".equals(j.get(\"state\"))){System.out.println(\"EMPTY\");return;}\n                Object out=execute(StrictJson.str(j,\"template\"),j.get(\"input\"));\n                Map<String,Object> receipt=new TreeMap<>();receipt.put(\"id\",j.get(\"id\"));receipt.put(\"owner\",owner);receipt.put(\"epoch\",j.get(\"epoch\"));receipt.put(\"output\",out);\n                System.out.println(StrictJson.write(post(client,base,\"/complete\",receipt)));\n            }return;\n        }\n        if(args.length==4&&args[0].equals(\"request\")) {\n            URI base=loopback(args[1]);\n            if(!Set.of(\"/submit\",\"/claim\",\"/complete\",\"/get\").contains(args[2]))throw new IllegalArgumentException(\"route\");\n            try(HttpClient client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build()) {\n                System.out.println(StrictJson.write(post(client,base,args[2],StrictJson.parse(args[3]))));\n            }return;\n        }\n        throw new IllegalArgumentException(\"server snapshot.json port | worker base owner | request base route JSON\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "手动跑通一次提交到结果"
+    },
+    {
+      "type": "paragraph",
+      "text": "在工作目录执行编译，然后在第一个终端启动服务。端口参数 0 表示操作系统分配一个空闲端口，程序打印实际 PORT；服务读到回车或标准输入结束会关闭。"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "032/fence-032.sh",
+      "value": "mkdir -p classes\njava com.sun.tools.javac.Main -Xlint:all -Werror -d classes src/*.java\njava -cp classes ScriptService server jobs.json 0\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "第二个终端把下面示例中的 12345 换成刚打印的端口。整个流程只访问本机 loopback，不需要外部账户、模型密钥、消息队列或数据库。"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "033/fence-033.sh",
+      "value": "java -cp classes ScriptService request http://127.0.0.1:12345 /submit '{\"id\":\"demo1\",\"template\":\"sum-v1\",\"input\":[1,2,3],\"ttlMillis\":60000}'\njava -cp classes ScriptService worker http://127.0.0.1:12345 worker1\njava -cp classes ScriptService request http://127.0.0.1:12345 /get '{\"id\":\"demo1\"}'\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "最后应看到 state 为 SUCCEEDED、output 为 6。再次提交完全相同的合同返回同一任务；把 input 改为 [9] 则返回冲突。演示的标准输出会显示完整任务输入，真实系统应另做敏感字段最小化和日志访问控制。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "控制面与真实进程测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "将后面的 ScriptCoreTests.java、CrashWorker.java、LockLifecycleTests.java 和 http_integration.py 保存到 tests 目录。Python 3 仅使用标准库驱动独立进程和 HTTP，没有代替 Java 实现业务逻辑。"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "034/fence-034.sh",
+      "value": "mkdir -p classes\nWORK=$(mktemp -d)\njava com.sun.tools.javac.Main -Xlint:all -Werror -d classes src/*.java tests/*.java\njava -cp classes ScriptCoreTests \"$WORK/core\"\njava -cp classes LockLifecycleTests \"$WORK/locks\"\npython tests/http_integration.py \"$WORK/network\"\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "控制面测试有 47 个明确断言：30 个竞争领取只有一个胜者，同键冲突、输入预算、拒绝第二写者、精确租约边界、迟到结果、合法终态重试、三次执行预算、deadline、重启读取和快照损坏等，并核对首次异常和清理异常同时发生时保留原诊断。时钟使用可控值，不依赖随机 sleep 恰好触发竞态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程测试有 40 个 HTTP 与进程断言：两个独立 JVM worker 领取不同任务，真实完成纯函数；杀死已领取但未提交的 worker 和协调器，再启动新协调器读取同一快照，等待租约到期，验证新 epoch 和旧收据拒绝；再杀死保存着 QUEUED 的协调器，用新 JVM worker 恢复任务。测试最后关闭所有进程，端口随进程停止。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件锁测试会启动真正的外部JVM来探测锁。在同一JVM连续打开失败、并发打开失败，以及路径别名被拒绝后，外部JVM仍不能取得锁；原持有者关闭后，外部JVM应能取得锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还覆盖快照损坏导致构造失败后的释放、锁路径不合法后的重试、重复close，以及100轮关闭和重新打开的并发竞争。符号链接、硬链接用例依赖本地文件系统；环境不支持时要说明未运行，不能记为通过。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些测试验证了具体失败点，不等于穷尽所有网络分区、任意指令时刻崩溃、磁盘故障或真实多机故障。增加长任务、取消或任意代码能力时，须重新设计执行隔离、续租和 UNKNOWN 核对，不应仅把模板允许列表扩大。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "ScriptCoreTests.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "035/ScriptCoreTests.java",
+      "value": "import java.io.*;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicLong;\n\npublic final class ScriptCoreTests {\n    static int checks;\n    interface Checked {void run()throws Exception;}\n    static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(\"expected \"+b+\" but got \"+a);}\n    static void rejects(Checked f)throws Exception {checks++;try{f.run();}catch(IllegalArgumentException|ScriptService.Conflict|IOException|java.nio.channels.OverlappingFileLockException expected){return;}throw new AssertionError(\"expected rejection\");}\n    static Object p(String s){return StrictJson.parse(s);}\n    static Map<String,Object> request(String id,String template,String input,int ttl){return StrictJson.object(p(\"{\\\"id\\\":\\\"\"+id+\"\\\",\\\"template\\\":\\\"\"+template+\"\\\",\\\"input\\\":\"+input+\",\\\"ttlMillis\\\":\"+ttl+\"}\"));}\n    static Map<String,Object> receipt(Map<String,Object> claim,String output){return StrictJson.object(p(\"{\\\"id\\\":\\\"\"+claim.get(\"id\")+\"\\\",\\\"owner\\\":\\\"\"+claim.get(\"owner\")+\"\\\",\\\"epoch\\\":\"+claim.get(\"epoch\")+\",\\\"output\\\":\"+output+\"}\"));}\n    static void coreTests(Path work)throws Exception {\n        IOException primary=new IOException(\"write failed\"),secondary=new IOException(\"cleanup failed\");\n        DurableFile.cleanup(primary,()->{throw secondary;});eq(primary.getSuppressed().length,1);eq(primary.getSuppressed()[0],secondary);\n        IOException same=new IOException(\"same instance\");DurableFile.cleanup(same,()->{throw same;});eq(same.getSuppressed().length,0);\n        try{DurableFile.cleanup(null,()->{throw secondary;});throw new AssertionError(\"cleanup swallowed\");}catch(IOException e){eq(e,secondary);}\n        DurableFile.cleanup(null,()->{});eq(true,true);\n        RuntimeException runtime=new RuntimeException(\"runtime cleanup\");DurableFile.cleanup(primary,()->{throw runtime;});eq(primary.getSuppressed()[1],runtime);\n        AtomicLong time=new AtomicLong(100);Path file=work.resolve(\"jobs.json\");Map<String,Object> first;\n        try(ScriptService.Core c=new ScriptService.Core(file,time::get)) {\n            var req=request(\"one\",\"sum-v1\",\"[1,2,3]\",60000);\n            eq(c.submit(req).get(\"state\"),\"QUEUED\");eq(c.submit(req).get(\"epoch\"),0L);\n            rejects(()->c.submit(request(\"one\",\"sum-v1\",\"[3]\",60000)));\n            rejects(()->c.submit(request(\"bad\",\"shell\",\"\\\"echo hi\\\"\",1000)));\n            rejects(()->c.submit(request(\"bad\",\"sum-v1\",\"[1.5]\",1000)));\n            rejects(()->c.submit(request(\"bad\",\"sum-v1\",\"[1000000001]\",1000)));\n            rejects(()->c.submit(request(\"bad\",\"upper-v1\",\"\\\"\"+\"中\".repeat(171)+\"\\\"\",1000)));\n            rejects(()->c.submit(request(\"bad\",\"upper-v1\",\"null\",1000)));\n            rejects(()->c.submit(request(\"bad\",\"upper-v1\",\"\\\"ok\\\"\",99)));\n            rejects(()->new ScriptService.Core(file,time::get));\n            try(var pool=Executors.newFixedThreadPool(10)) {\n                List<Callable<Map<String,Object>>> calls=new ArrayList<>();for(int i=0;i<30;i++){String owner=\"w\"+i;calls.add(()->c.claim(owner));}\n                int winners=0;for(var f:pool.invokeAll(calls))if(\"RUNNING\".equals(f.get().get(\"state\")))winners++;\n                eq(winners,1);\n            }\n            first=c.get(\"one\");eq(first.get(\"attempts\"),1);\n            ((List<?>)first.get(\"input\")).clear(); // Returned view must not mutate the authoritative input.\n            first=c.get(\"one\");eq(((List<?>)first.get(\"input\")).size(),3);\n            Map<String,Object> firstView=first;rejects(()->c.complete(receipt(firstView,\"7\")));\n        }\n        final Map<String,Object> initial=first;\n        // A fresh coordinator instance reads the persisted running lease and does not immediately reassign it.\n        try(ScriptService.Core c=new ScriptService.Core(file,time::get)) {\n            eq(c.claim(\"new\").get(\"state\"),\"EMPTY\");eq(c.get(\"one\").get(\"epoch\"),1L);\n            time.set(1100);rejects(()->c.complete(receipt(initial,\"6\")));\n            var next=c.claim(\"new\");eq(next.get(\"epoch\"),2L);eq(next.get(\"attempts\"),2);\n            rejects(()->c.complete(receipt(initial,\"6\")));\n            eq(c.complete(receipt(next,\"6\")).get(\"state\"),\"SUCCEEDED\");\n            time.set(5000);eq(c.complete(receipt(next,\"6.0\")).get(\"state\"),\"SUCCEEDED\");\n            rejects(()->c.complete(receipt(next,\"9\")));\n        }\n        try(ScriptService.Core c=new ScriptService.Core(file,time::get)) {\n            eq(c.submit(request(\"one\",\"sum-v1\",\"[1.0,2,3]\",60000)).get(\"state\"),\"SUCCEEDED\");\n            eq(c.get(\"one\").get(\"output\").toString(),\"6\");\n            c.submit(request(\"timeout\",\"upper-v1\",\"\\\"x\\\"\",100));var claim=c.claim(\"w\");time.addAndGet(100);\n            rejects(()->c.complete(receipt(claim,\"\\\"X\\\"\")));eq(c.claim(\"w\").get(\"state\"),\"EMPTY\");eq(c.get(\"timeout\").get(\"state\"),\"FAILED\");\n            c.submit(request(\"attempts\",\"sum-v1\",\"[]\",60000));\n            for(int i=1;i<=3;i++){eq(c.claim(\"retry\").get(\"attempts\"),i);time.addAndGet(1000);}\n            eq(c.claim(\"retry\").get(\"state\"),\"EMPTY\");eq(c.get(\"attempts\").get(\"state\"),\"FAILED\");\n            rejects(()->c.get(\"missing\"));rejects(()->c.claim(\"../../evil\"));\n        }\n        // Local clock rollback never extends the last persisted authority time backwards.\n        try(ScriptService.Core c=new ScriptService.Core(work.resolve(\"clock.json\"),time::get)) {\n            c.submit(request(\"clock\",\"sum-v1\",\"[]\",100));time.set(0);var j=c.claim(\"w\");eq(j.get(\"until\"),8200L);\n        }\n        Path broken=work.resolve(\"broken.json\");Files.writeString(broken,\"{\\\"version\\\":1\");rejects(()->new ScriptService.Core(broken,time::get));\n        Path full=work.resolve(\"full.json\");time.set(0);\n        try(ScriptService.Core c=new ScriptService.Core(full,time::get)) {\n            for(int i=0;i<ScriptService.CAPACITY;i++)c.submit(request(\"j\"+i,\"sum-v1\",\"[]\",1000));\n            rejects(()->c.submit(request(\"overflow\",\"sum-v1\",\"[]\",1000)));\n        }\n        rejects(()->ScriptService.loopback(\"http://example.com:123\"));rejects(()->ScriptService.loopback(\"http://127.0.0.1:3@evil:80\"));\n        rejects(()->ScriptService.loopback(\"http://127.0.0.1:123/path\"));\n    }\n    public static void main(String[] args)throws Exception {\n        Path work=Path.of(args[0]);Files.createDirectories(work);coreTests(work);\n        System.out.println(\"PASS \"+checks+\" durable control-plane assertions\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "CrashWorker.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "036/CrashWorker.java",
+      "value": "import java.net.http.HttpClient;\nimport java.util.Map;\n\n/** Fault-injection helper: die after claim and before completion. No task execution. */\npublic final class CrashWorker {\n    public static void main(String[] args)throws Exception {\n        try(HttpClient client=HttpClient.newHttpClient()) {\n            var j=ScriptService.post(client,ScriptService.loopback(args[0]),\"/claim\",Map.of(\"owner\",\"crash-worker\"));\n            System.out.println(StrictJson.write(j));System.out.flush();\n            new java.util.concurrent.CountDownLatch(1).await();\n        }\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "LockLifecycleTests.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "037/LockLifecycleTests.java",
+      "value": "import java.io.*;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.util.*;\nimport java.util.concurrent.*;\n\n/** Tests real cooperating JVMs; local trusted directory, no external files/services. */\npublic final class LockLifecycleTests {\n    private static int checks;\n    @FunctionalInterface interface Checked {void run()throws Exception;}\n    private static void check(boolean ok,String message){checks++;if(!ok)throw new AssertionError(message);}\n    private static void rejects(Checked action)throws Exception {\n        boolean failed=false;try{action.run();}catch(IOException expected){failed=true;}\n        check(failed,\"must reject before opening a second conflicting channel\");\n    }\n    private static void openAndClose(Path p)throws IOException {try(DurableFile f=new DurableFile(p)){f.read();}}\n    private static void external(Path file,boolean shouldAcquire)throws Exception {\n        String java=Path.of(System.getProperty(\"java.home\"),\"bin\",\"java\").toString();\n        Process p=new ProcessBuilder(java,\"-cp\",System.getProperty(\"java.class.path\"),\n                \"LockLifecycleTests\",\"probe\",file.toString()).redirectErrorStream(true).start();\n        try {\n            check(p.waitFor(20,TimeUnit.SECONDS),\"external probe completed\");\n            String result=new String(p.getInputStream().readAllBytes(),StandardCharsets.UTF_8).trim();\n            check(p.exitValue()==0,\"probe exited normally: \"+result);\n            check(result.equals(shouldAcquire?\"ACQUIRED\":\"BLOCKED\"),\"external lock state: \"+result);\n        }finally{if(p.isAlive()){p.destroyForcibly();p.waitFor();}}\n    }\n    public static void main(String[] args)throws Exception {\n        if(args[0].equals(\"probe\")) {\n            try(DurableFile f=new DurableFile(Path.of(args[1]))){f.hashCode();System.out.println(\"ACQUIRED\");}\n            catch(IOException expected){System.out.println(\"BLOCKED\");}\n            return;\n        }\n        Path dir=Path.of(args[0]).toAbsolutePath();Files.createDirectories(dir);\n        Path file=dir.resolve(\"jobs.json\");\n        try(DurableFile first=new DurableFile(file)) {\n            first.save(StrictJson.parse(\"{\\\"ok\\\":1}\"));\n            external(file,false);\n            for(int i=0;i<20;i++)rejects(()->openAndClose(file));\n            external(file,false); // Regression: second-open rejection must NOT unlock the first writer.\n            Path relative=Path.of(\"\").toAbsolutePath().relativize(file);\n            rejects(()->openAndClose(relative));\n            Files.createDirectories(dir.resolve(\"sub\"));\n            rejects(()->openAndClose(dir.resolve(\"sub/../jobs.json\")));\n            external(file,false);\n            Path symlink=dir.resolve(\"parent-alias\");Files.createSymbolicLink(symlink,dir);\n            rejects(()->openAndClose(symlink.resolve(\"jobs.json\")));\n            external(symlink.resolve(\"jobs.json\"),false);\n            Path lockAlias=dir.resolve(\"other.json.lock\");Files.createLink(lockAlias,dir.resolve(\"jobs.json.lock\"));\n            rejects(()->openAndClose(dir.resolve(\"other.json\")));\n            external(file,false);\n            Path dataAlias=dir.resolve(\"data-alias.json\");Files.createLink(dataAlias,file);\n            rejects(()->openAndClose(dataAlias));\n            // A second ledger must never read/close the first ledger's locked file as its data.\n            rejects(()->openAndClose(dir.resolve(\"jobs.json.lock\")));\n            Path cross=dir.resolve(\"cross.json\");Files.createLink(cross,dir.resolve(\"jobs.json.lock\"));\n            rejects(()->openAndClose(cross));\n            external(file,false);\n            try(ExecutorService pool=Executors.newFixedThreadPool(8)) {\n                List<Future<Boolean>> result=new ArrayList<>();\n                for(int i=0;i<80;i++)result.add(pool.submit(()->{\n                    try{openAndClose(file);return false;}catch(IOException expected){return true;}\n                }));\n                for(Future<Boolean> f:result)check(f.get(),\"concurrent second opener rejected\");\n            }\n            external(file,false);\n            check(StrictJson.write(first.read()).equals(\"{\\\"ok\\\":1}\"),\"first writer still readable\");\n        }\n        external(file,true);\n        DurableFile again=new DurableFile(file);again.close();again.close();\n        rejects(again::read);rejects(()->again.save(null));external(file,true);\n        // Bad snapshot parsing happens after lock acquisition; Core must close on construction failure.\n        Path broken=dir.resolve(\"broken.json\");Files.writeString(broken,\"{\");\n        boolean badSnapshot=false;\n        try(ScriptService.Core c=new ScriptService.Core(broken,()->100L)){c.hashCode();}\n        catch(IllegalArgumentException expected){badSnapshot=true;}\n        check(badSnapshot,\"malformed snapshot rejected\");\n        external(broken,true);Files.delete(broken);\n        try(ScriptService.Core c=new ScriptService.Core(broken,()->100L)){c.hashCode();check(true,\"reopened repaired store\");}\n        // Failure before channel creation must not leave a registry reservation.\n        Path blocked=dir.resolve(\"blocked.json\");Files.createDirectory(dir.resolve(\"blocked.json.lock\"));\n        rejects(()->openAndClose(blocked));Files.delete(dir.resolve(\"blocked.json.lock\"));\n        openAndClose(blocked);external(blocked,true);\n        Path sym=dir.resolve(\"symbolic.json\");Files.createSymbolicLink(sym,file);\n        rejects(()->openAndClose(sym));\n        Path own=dir.resolve(\"own.json\");Files.writeString(own,\"{}\");Files.createLink(dir.resolve(\"own.json.lock\"),own);\n        rejects(()->openAndClose(own));\n        // Close/open races must leave exactly one usable next owner, never a stale registry entry.\n        for(int i=0;i<100;i++) {\n            DurableFile before=new DurableFile(file);\n            try(ExecutorService pool=Executors.newFixedThreadPool(2)) {\n                CountDownLatch start=new CountDownLatch(1);\n                Future<?> closer=pool.submit(()->{start.await();before.close();return null;});\n                Future<DurableFile> opener=pool.submit(()->{\n                    start.await();try{return new DurableFile(file);}catch(IOException expected){return null;}\n                });\n                start.countDown();closer.get();DurableFile next=opener.get();\n                if(next==null)next=new DurableFile(file);\n                try(DurableFile accepted=next){check(accepted.read()!=null,\"race survivor usable\");}\n            }finally{before.close();}\n        }\n        external(file,true);\n        System.out.println(\"PASS LockLifecycleTests checks=\"+checks+\"; independent JVM lock probes, aliases, construction failures, close and reopen races\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "http_integration.py"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "label": "038/http_integration.py",
+      "value": "#!/usr/bin/env python3\n\"\"\"Trusted loopback only. Independent HTTP oracle and real JVM process death/restart.\"\"\"\nimport concurrent.futures, json, pathlib, select, subprocess, sys, time, urllib.request, urllib.error\nROOT=pathlib.Path(__file__).resolve().parents[1]\nCP=str(ROOT/'classes')\nWORK=pathlib.Path(sys.argv[1]).resolve(); WORK.mkdir(parents=True,exist_ok=True)\nchecks=0\nprocesses=[]\ndef check(value,message):\n    global checks\n    checks+=1\n    if not value: raise AssertionError(message)\ndef line(p):\n    ready,_,_=select.select([p.stdout],[],[],30)\n    if not ready: raise AssertionError('process startup/claim timed out')\n    text=p.stdout.readline().strip()\n    if not text: raise AssertionError('unexpected process exit: '+p.stderr.read())\n    return text\ndef server():\n    p=subprocess.Popen(['java','-cp',CP,'ScriptService','server',str(WORK/'jobs.json'),'0'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)\n    processes.append(p); out=line(p); check(out.startswith('PORT '),'server port')\n    return p,'http://127.0.0.1:'+out.split()[1]\ndef post(base,path,body,expect=200):\n    data=json.dumps(body,separators=(',',':'),ensure_ascii=False).encode()\n    req=urllib.request.Request(base+path,data=data,headers={'Content-Type':'application/json'})\n    try:\n        with urllib.request.urlopen(req,timeout=5) as r: status=r.status; raw=r.read()\n    except urllib.error.HTTPError as e: status=e.code; raw=e.read()\n    check(status==expect,f'{path}: status {status}, want {expect}: {raw!r}')\n    return json.loads(raw)\ndef submit(base,id,template,input,ttl=60000):\n    return post(base,'/submit',dict(id=id,template=template,input=input,ttlMillis=ttl))\ndef worker(base,name):\n    p=subprocess.run(['java','-cp',CP,'ScriptService','worker',base,name],capture_output=True,text=True,timeout=30)\n    check(p.returncode==0,'worker: '+p.stderr)\n    return json.loads(p.stdout) if p.stdout.strip()!='EMPTY' else {'state':'EMPTY'}\ndef stop(p):\n    if p.poll() is None:\n        p.stdin.write('\\n');p.stdin.flush();p.communicate(timeout=8)\n    check(p.returncode==0,'graceful server shutdown')\ntry:\n    s,base=server()\n    submit(base,'a','sum-v1',[1,2,3]); submit(base,'b','upper-v1','aß中')\n    with concurrent.futures.ThreadPoolExecutor(2) as pool:\n        results=list(pool.map(lambda name:worker(base,name),['worker1','worker2']))\n    check({x['id'] for x in results}=={'a','b'},'distinct claims')\n    check(post(base,'/get',{'id':'a'})['output']==6,'sum output')\n    check(post(base,'/get',{'id':'b'})['output']=='ASS中','Unicode output')\n    check(submit(base,'a','sum-v1',[1,2,3])['state']=='SUCCEEDED','submission replay')\n    post(base,'/submit',dict(id='a',template='sum-v1',input=[999],ttlMillis=60000),409)\n    post(base,'/submit',dict(id='unsafe',template='shell',input='echo hi',ttlMillis=60000),400)\n    post(base,'/claim',{'owner':'w','now':0},400)\n    submit(base,'crash','sum-v1',[10,20])\n    dying=subprocess.Popen(['java','-cp',CP,'CrashWorker',base],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)\n    processes.append(dying); first=json.loads(line(dying));check(first['id']=='crash','claim before worker death')\n    dying.kill();dying.communicate(timeout=5)\n    # Kill coordinator while a lease is persisted; recover the same snapshot in a new JVM.\n    s.kill();s.communicate(timeout=5)\n    s,base=server()\n    before=post(base,'/get',{'id':'crash'});check(before['epoch']==first['epoch'],'persisted epoch')\n    check(post(base,'/get',{'id':'a'})['state']=='SUCCEEDED','persisted final result')\n    wait=max(0,(first['until']-int(time.time()*1000))/1000)+0.08\n    time.sleep(wait)\n    nextclaim=post(base,'/claim',{'owner':'replacement'})\n    check(nextclaim['id']=='crash' and nextclaim['epoch']==first['epoch']+1,'expired lease takeover advances epoch')\n    post(base,'/complete',dict(id='crash',owner=first['owner'],epoch=first['epoch'],output=30),409)\n    result=post(base,'/complete',dict(id='crash',owner='replacement',epoch=nextclaim['epoch'],output=30))\n    check(result['state']=='SUCCEEDED','accepted replacement result')\n    check(post(base,'/complete',dict(id='crash',owner='replacement',epoch=nextclaim['epoch'],output=30))['state']=='SUCCEEDED','completion retry')\n    post(base,'/complete',dict(id='crash',owner='replacement',epoch=nextclaim['epoch'],output=31),409)\n    submit(base,'queued','upper-v1','restart')\n    s.kill();s.communicate(timeout=5);s,base=server()\n    check(worker(base,'fresh')['output']=='RESTART','queued task survives coordinator death')\n    check(worker(base,'idle')['state']=='EMPTY','empty queue worker exits')\n    # Body limit and malformed JSON fail without spawning executable commands.\n    req=urllib.request.Request(base+'/submit',data=b'x'*8193,headers={'Content-Type':'application/json'})\n    try: urllib.request.urlopen(req,timeout=5);raise AssertionError('oversize accepted')\n    except urllib.error.HTTPError as e: check(e.code==400,'body byte limit')\n    req=urllib.request.Request(base+'/get',data=b'{\"id\":\"a\",\"id\":\"b\"}',headers={'Content-Type':'application/json'})\n    try: urllib.request.urlopen(req,timeout=5);raise AssertionError('duplicate accepted')\n    except urllib.error.HTTPError as e: check(e.code==400,'duplicate keys rejected')\n    stop(s)\n    check(all(p.poll() is not None for p in processes),'all JVMs stopped')\n    print(f'PASS {checks} HTTP/process assertions: real independent workers, loopback protocol, kill/restart, retained idempotency, lease fencing, safe allowlist, clean shutdown')\nfinally:\n    for p in processes:\n        if p.poll() is None:\n            p.kill();p.communicate(timeout=5)\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "6"
+}

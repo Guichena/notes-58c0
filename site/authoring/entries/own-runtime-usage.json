@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-usage",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "Provider usage 怎样按 attempt 归一化，避免缓存和累计快照重复记账？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-usage",
+      "order": 2580,
+      "question": "Provider usage 怎样按 attempt 归一化，避免缓存和累计快照重复记账？",
+      "shortAnswer": "同 attempt 累计快照覆盖，真实重试另计；缓存分类按厂商合同，缺最终用量仍为 unknown。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "用量为什么不能见到一次 usage 就相加"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： usage 先按“provider＋request/attempt”归一化成累计快照，再在不同 attempt 之间求和；文本 delta 可以拼接，累计 token 不能反复累加。同一次网络请求重复收到终态要去重；一次真实重试产生新模型调用，即使没有产出业务结果也可能消耗费用。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- OpenAI Chat 流启用 stream_options.include_usage 后，最终用量可能在 choices 为空的 chunk；中断时可能收不到它。Responses 的 usage 用 input_tokens/output_tokens 等字段。适配器不能要求每帧都有正文，也不能把断流记成零消耗。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- Claude 流的 message_delta 用量是累计值；缓存口径中，总输入为 input_tokens + cache_read_input_tokens + cache_creation_input_tokens。输出更新覆盖同一 attempt 的旧计数，不与起始计数重复相加。"
+        },
+        {
+          "type": "paragraph",
+          "text": "- DeepSeek 的 prompt_tokens 已包含缓存命中与未命中两部分；prompt_cache_hit_tokens 不能再加到总输入上。截至 2026 年 10 月，DeepSeek Chat Completions 的当前契约为：[DONE] 前最后一个内容块携带完整 usage，choices 有一个无新增内容、finish_reason 非空的元素，没有另发的 usage-only 空 choices 块。include_usage=true 使中间块含 usage:null；关闭或省略时中间块不含此字段，但最终块仍有 usage。不能等一个不会出现的独立空 choices 块才记账，也不能看到 finish_reason 就跳过同块 usage。历史或兼容服务须按固定版本和脱敏线样本另验，适配器可把普通最终块和空 choices 块中的非空 usage 都交给统计层；缺最终用量仍为 unknown。"
+        },
+        {
+          "type": "paragraph",
+          "text": "示例：OpenAI 输入 100、其中缓存 80，输出 40、其中推理 30，总 token 是 140；不是 250。Claude 非缓存输入 10、缓存读 100、写 20，总输入是 130；若输出依次报告 1、5、8，累计输出是 8。计价还需要模型/日期/服务档位及不同 token 类别的价格，token 总数不等于精确账单。配额预扣是估计，最终以实际用量对账；缺失终态不能直接全额退还。"
+        },
+        {
+          "type": "paragraph",
+          "text": "第 30 节的 UsageLedger 给出 Java 归一化和去重实现。真实 JSON 解码应设置帧、字段和嵌套上限，并把原始 request ID 与版本保留在诊断记录；本例接收已经解码的字段映射，不包括网络或厂商 SDK。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "同题换问与连续追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 如果换一个底层大模型，你们整个 Agent 架构需要改多少？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 你了解不同模型厂商的 API 接入协议吗？项目使用的是 Responses API 还是 Chat Completions API？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 基座模型平滑切换：在整个 Agent 运行过程中，若将底层基座模型从开源模型切换为商业 API（或不同 API 间切换），如何保证业务兼容性与效果平滑过渡？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 【场景设计题】 你要提供一个文本生成 HTTP 接口给业务方调用。请你设计请求与返回的关键字段（至少包含：输入上下文、模型参数、输出结构、错误码，以及用于追踪的一次调用 ID）。另外，你会如何支持流式（Streaming）返回？"
+        },
+        {
+          "type": "paragraph",
+          "text": "【追问】 在实际实现中，你会如何生成这个“调用 ID”以确保它的唯一性和可追踪性？\n【追问】 如果你的系统需要支持分布式部署，多个节点都可能生成调用 ID，你会如何设计以确保在分布式环境下调用 ID 的绝对唯一性？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 选用哪个大模型及选型原因？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 5 能力差异不明显时为什么仍保留多个模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 介绍一下你常用的ai工具和大模型 为什么要用这些"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 为什么选择这个LLM？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 拿到一个任务后，怎么做大模型的选型"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 为什么将 Temperature 设置为 0 之后，模型输出仍可能存在差异？"
+        },
+        {
+          "type": "paragraph",
+          "text": "- 大模型推理时同一输入输出差异大，哪些超参数可以降低随机性？"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        },
+        {
+          "entryId": "own-runtime-stream-code",
+          "label": "UsageLedger 完整源码与测试"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

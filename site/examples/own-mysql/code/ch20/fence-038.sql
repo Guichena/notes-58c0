@@ -1,0 +1,5 @@
+-- A1
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+START TRANSACTION;
+SELECT available INTO @a_seen FROM s2_stock WHERE sku=1; -- 10
+SET @a_next=@a_seen-1; -- 模拟 Java 中基于读值计算的 9

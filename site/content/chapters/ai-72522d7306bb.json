@@ -1,0 +1,760 @@
+{
+  "entries": [
+    {
+      "id": "ai-agent-1",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "Agent 基础概念与主链路",
+      "number": "5 问",
+      "items": [
+        {
+          "q": "简单介绍一下 Agent。",
+          "a": "<p class=\"md-p\">我会按四层把它讲成一套可落地的系统：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>目标闭环</b>：它要理解用户问题，还要判断需不需要检索、需不需要调工具、失败后要不要重试、什么时候该停下来给结果。和普通问答模型的差别，在于能不能围绕目标形成闭环。</li><li><b>模型</b>：负责理解和决策。</li><li><b>工具</b>：负责真正执行动作。</li><li><b>状态层</b>：保存上下文和任务进度。</li><li><b>运行时</b>：负责权限、超时、重试和审计。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>这四层讲清楚，Agent 就是一套可以落地的系统。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 的本质是围绕目标持续判断、调用外部能力，并按反馈推进任务的闭环系统。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>目标闭环 / 模型决策 / 工具执行 / 状态层 / 运行时</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "如何定义一个 Agent？它通常由哪些核心组件构成？",
+          "a": "<p class=\"md-p\">核心组件我按六层讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>目标与状态</b>：保存当前任务、上下文和中间进度。</li><li><b>决策与规划</b>：决定下一步做什么。</li><li><b>Tool Use</b>：调用搜索、数据库、代码执行、业务 API 等外部能力。</li><li><b>Observation 与 Feedback</b>：读取工具结果、环境状态和用户反馈。</li><li><b>Executor / Runtime</b>：负责执行、重试、超时、权限和状态流转。</li><li><b>Memory</b>：把需要跨步骤或跨会话保留的信息沉下来。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>价值不在把组件堆上去，而在让它们在目标驱动下形成稳定闭环。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 的本质是围绕目标持续感知、决策、行动，并按反馈迭代执行，而不是单次问答。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>目标与状态 / 决策与规划 / Tool Use / 观察与运行时 / Memory</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Agent 从用户提问到返回结果，核心交互流程一般怎么走？通常会经过几次 LLM 调用？",
+          "a": "<p class=\"md-p\">主链路我按顺序讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>输入与安全</b>：先做输入理解和安全校验。</li><li><b>意图与改写</b>：做意图识别、上下文整理，必要时做 query rewrite。</li><li><b>路由</b>：由模型判断是直接回答、检索增强，还是工具调用。</li><li><b>工具循环</b>：要调工具，就进入“推理 -&gt; 调用 -&gt; 观察 -&gt; 再决策”。</li><li><b>收尾</b>：结果整合、格式化后返回。</li></ol></div>\n<p class=\"md-p\">次数取决于链路复杂度：最简单的直接问答可能 1 次结束；带 query rewrite + 检索总结的链路常见是 2 到 3 次；ReAct 式多步工具链可能还会更多。更值得讲清的是为什么会多出这些调用，以及哪些环节会触发额外调用。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把调用次数答成一个固定数字。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LLM 调用次数不是固定常数：直接问答可能 1 次，改写加检索常见 2 到 3 次，ReAct 多步还会更多。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>输入与安全 / 意图与改写 / 路由决策 / 工具循环 / 次数看复杂度</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Agent 的循环执行一般怎么设计？",
+          "a": "<p class=\"md-p\">我不会让模型无限自由发挥，而是做成显式状态机。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>读状态</b>：先读取当前目标和上下文。</li><li><b>决策</b>：在直接回答、调工具、追问用户、结束里选下一步。</li><li><b>行动</b>：要调工具，就先生成结构化调用意图，再由运行时校验和执行。</li><li><b>回写</b>：执行完把 observation 写回状态，进入下一轮决策。核心闭环是 <code class=\"tok-inline\">state -&gt; decide -&gt; act -&gt; observe -&gt; update state -&gt; decide</code>。</li><li><b>停止护栏</b>：最大步数、总 token 预算、总耗时预算、重复动作检测、空结果重试上限、高风险动作人工确认。</li></ol></div>\n<p class=\"md-p\"><i>优点</i>：任务能继续推进，又知道何时该停。<i>缺点</i>：护栏不足就容易死循环。<i>适用场景</i>：多步工具循环，而不是单次问答。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>循环本身不难，难的是不补停止条件就会死循环。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>要让它既能继续推进任务，又知道什么时候该停。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 循环的本质是显式状态机：state 到 decide、act、observe，再更新状态，并靠护栏决定何时停。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>读状态 / 四选一决策 / 校验后执行 / observation 回写 / 停止护栏</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "一次调用 LLM 的全过程怎么讲？",
+          "a": "<p class=\"md-p\">我会按七步讲一次调用：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>取上下文</b>：拿到用户输入、会话状态和任务上下文。</li><li><b>前置治理</b>：做权限判断、历史裁剪、检索和工具候选筛选。</li><li><b>拼装</b>：拼最终 Prompt 和工具 schema。</li><li><b>请求模型</b>：把请求发给模型服务。</li><li><b>解析返回</b>：看是普通文本、结构化 JSON，还是 tool call。</li><li><b>工具回注</b>：如果有工具调用，交给运行时做校验、执行和结果回注。</li><li><b>后处理</b>：做后处理、审计、记忆写入，再对外返回。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>一次 LLM 调用不是发个字符串再拿个字符串回来，中间还有上下文工程、工具治理、权限、安全、日志和状态更新。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>一次 LLM 调用的本质，是夹着上下文工程、工具治理、权限、安全和状态更新的七步链路。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>取上下文与治理 / 拼装并请求 / 解析与工具回注 / 后处理返回</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-2",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "Tool Use、Function Calling、MCP 与 Skill",
+      "number": "13 问",
+      "items": [
+        {
+          "q": "你怎么看 LLM、Agent、Function Calling、Tool、MCP、Skill 之间的关系和区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>概念</th><th>负责什么</th></tr></thead><tbody><tr><td>LLM</td><td>底层智能核心：理解上下文、生成内容、做推理判断</td></tr><tr><td>Function Calling</td><td>把要调用哪个能力、参数是什么，输出成结构化意图</td></tr><tr><td>Tool</td><td>真正被执行的原子外部能力，如搜索、数据库查询、代码执行、业务 API</td></tr><tr><td>MCP</td><td>标准化接入协议，统一发现和调用资源、工具与上下文</td></tr><tr><td>Skill</td><td>任务级能力封装，把提示词、规则、工具组合、输入输出约束打成能力包</td></tr><tr><td>Agent</td><td>围绕目标把这些串成整条链路</td></tr></tbody></table></div>\n<p class=\"md-p\">适用场景：需要把“怎么想、怎么表达意图、能做什么、怎么接入、这类事怎么稳定做、整条链路怎么跑通”一次说清时，按这六层讲。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>LLM 决定怎么想，Function Calling 决定怎么表达调用意图，Tool 决定真正能做什么，MCP 决定怎么标准化接这些能力，Skill 决定这类事怎么稳定做，Agent 决定怎么围绕目标把整条链路跑通。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>层次讲清之后还能接到什么？</b></p><p class=\"md-p\">可以接到状态治理、权限边界、失败恢复、成本控制和效果评估。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>六层分工：LLM 负责怎么想，Function Calling 表达调用意图，Tool 负责执行，MCP 标准化接入，Skill 封装任务，Agent 串起目标闭环。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>LLM / Function Calling / Tool / MCP / Skill 与 Agent</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Function Calling 和工具调用有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>Function Calling</th><th>工具调用</th></tr></thead><tbody><tr><td>定位</td><td>接口机制</td><td>运行时链路</td></tr><tr><td>解决什么</td><td>模型怎么把调用意图结构化表达出来，比如输出函数名和参数 schema</td><td>意图之外还有工具注册、权限校验、参数校验、真正执行、拿回结果、再决定下一步</td></tr><tr><td>关系</td><td>工具调用体系里的一个核心能力</td><td>覆盖从意图到执行回注，但不靠它单独成立</td></tr><tr><td>缺了什么就不算闭环</td><td>只支持输出函数调用</td><td>没有权限、重试、审计和结果回注</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>有的系统已经在做工具调用，背后未必严格暴露成函数；有的系统支持 Function Calling，但没有权限、重试、审计和结果回注，工程上也不能算工具调用闭环。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>Function Calling 是工具调用里的核心能力，但不等于全部。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Function Calling 是把调用意图结构化表达出来的接口；工具调用是从注册、校验、执行到回注的运行时链路。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>接口机制 / 运行时链路 / 核心但不等于全部</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Tool Use 是怎么实现的？LLM 是如何学会调用外部 API 或工具的？",
+          "a": "<p class=\"md-p\">从工程上看，Function Calling 是让模型输出“调用哪个工具、传什么参数”的结构化意图，而不是输出自然语言让程序去猜。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>模型侧</b>：看到工具描述和 schema 后，生成类似函数名加参数的结构化结果。</li><li><b>运行时</b>：拿到结果后，真正调用 API、数据库或本地工具，再把结果喂回模型继续决策。</li><li><b>权责分开</b>：模型按目标和上下文提出调用意图；执行权在运行时框架。框架做 schema 校验、业务校验、权限判断、工具 allowlist、超时控制和审计记录，必要时二次确认。</li><li><b>为什么会调用</b>：训练侧用带工具调用示例的数据做 SFT，让模型学会什么场景选什么工具、参数怎么填；运行时再用 schema 和反馈把行为压稳。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Function Calling 不是模型自己真的执行了函数，而是模型先产出可执行意图，系统再安全地代为执行。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Tool Use 的本质是模型只产出结构化意图，执行权在运行时：校验、权限、allowlist 和审计后再代为调用。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>结构化意图 / 运行时代执行 / 决策权与执行权 / 训练与约束</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "工具调用到底是谁触发的？是 Agent 解析字符串触发，还是大模型主动分析意图后调用？",
+          "a": "<p class=\"md-p\">我会按两段来讲触发：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>模型出意图</b>：模型根据上下文、工具描述和系统规则，先产出“调用哪个工具、参数是什么”的结构化意图。</li><li><b>运行时落地</b>：运行时认出这不是普通文本回复，而是一个合法的 tool call，这时才真正去执行。</li></ol></div>\n<p class=\"md-p\">模型负责提出调用意图，Agent 或运行时负责识别并落地。字符串只是载体：模型先生成结构化调用片段，运行时再基于 schema 和协议，把它当成可执行事件处理。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能讲成全是模型自己调了工具，也不能讲成全靠字符串 if-else 硬匹配。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>工具调用的本质是两段式：模型先给出结构化调用意图，运行时确认合法 tool call 后才执行。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>模型出结构化意图 / 运行时识别执行 / 字符串只是载体</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "tool 是什么时候发给 LLM 的，什么时候真正执行？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>暴露时机</b>：工具通常在模型做决策之前，就以 schema、描述和可用范围一并发给 LLM，模型才能在当前轮知道自己能用哪些能力。</li><li><b>执行时机</b>：工具不是模型一想到就直接执行。真正执行发生在模型已经输出结构化调用意图之后，由运行时接管。</li><li><b>权责分开</b>：先把工具能力暴露给模型，让模型做选择；执行权留在系统里，由系统决定这个调用是否允许、参数是否合法、要不要真的落地。模型只负责提议，运行时负责执行。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要理解成模型想到某个工具就会当场执行。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>工具先在决策前以 schema 和描述交给模型，执行权留在运行时，模型只提议、系统才落地。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>决策前暴露能力 / 意图之后才执行 / 系统掌握执行权</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "MCP 是什么？它和 A2A 有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>MCP</th><th>A2A</th></tr></thead><tbody><tr><td>解决什么</td><td>客户端怎么发现并调用外部的 tools、resources、prompts，而不是每个平台各写一套私有接入</td><td>多个 Agent 之间怎么协作、传任务、带上下文和回传结果</td></tr><tr><td>偏向</td><td>Agent 到工具</td><td>Agent 到 Agent</td></tr><tr><td>定位</td><td>标准化连接层，不是又一个 Agent 框架</td><td>多 Agent 协作协议</td></tr></tbody></table></div>\n<p class=\"md-p\">MCP 的价值，是把多工具、多平台并存时的接入方式统一下来，再把权限、审计和治理放到更清晰的边界上。很多系统里两者会同时存在。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>最容易讲混的点，是把工具接入协议和多 Agent 协作协议混成一层。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MCP 是模型接外部能力的标准协议，A2A 管 Agent 间协作，一个到工具、一个到 Agent，常同时存在。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>标准化连接层 / Agent 间协作 / 不是替代关系</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "Skill 是什么？它和 Prompt、Tool 分别是什么关系？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>层级</th><th>管什么</th><th>典型内容</th></tr></thead><tbody><tr><td>Prompt</td><td>这一轮怎么说</td><td>单轮交互里的指令和约束</td></tr><tr><td>Tool</td><td>系统能做什么</td><td>原子能力，如搜索、查库、发请求、执行脚本</td></tr><tr><td>Skill</td><td>这类事整体该怎么做</td><td>任务边界、输入输出约束、候选工具、调用顺序、异常处理、结果格式</td></tr></tbody></table></div>\n<p class=\"md-p\">Skill 往往不只是几句提示词，而是把上面这些一起封成可复用能力。它的价值是把分散的 Prompt 和 Tool 组合成可复用、可治理、效果更一致的任务级能力。</p>\n<p class=\"md-p\">落到工程上，Skill 更像“任务模板 + 执行护栏 + 能力编排”。一个成熟 Skill 通常会明确适用场景、入参要求、候选工具、输出格式、失败回退和校验方式，更适合承接高频、可复用、步骤相对稳定的任务。Prompt 偏这一次怎么说，Tool 偏能做什么，Skill 是把“这类任务怎么稳定做完”沉成资产。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Skill 不只是 Prompt 的别名，价值也不在于再造一个新概念。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Skill 的本质是把一类任务怎么稳定做完封成可复用能力：Prompt 管怎么说，Tool 管能做什么。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>三层分工 / Skill 打包内容 / 模板加护栏 / 适合稳定任务</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "MCP 和 Skill 的边界是什么？如果把现有 MCP 工具改造成支持 Skill，需要改哪些地方？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>MCP</th><th>Skill</th></tr></thead><tbody><tr><td>层次</td><td>协议层和连接层</td><td>能力封装层</td></tr><tr><td>解决什么</td><td>模型怎么统一访问外部资源和工具</td><td>把某类任务的上下文、规则、工具组合、输入输出约束打成能力包</td></tr></tbody></table></div>\n<p class=\"md-p\">把现有 MCP 工具改造成 Skill，不是把协议改掉，而是在外面补一层任务视角的封装。我一般改三类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>skill 描述文件</b>：写清适用场景、输入输出、依赖工具、调用约束。</li><li><b>系统提示词或路由规则</b>：让模型知道什么时候展开这个 skill。</li><li><b>执行映射</b>：skill 内部还能继续调到原来的 MCP 工具。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：成熟做法是在原工具层上加一层更高粒度的组合能力，重点补任务语义、调用编排、异常处理和输出收口。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>MCP 更像标准化插座，负责怎么连上能力；Skill 更像插上这些能力后的一整套使用方案，负责怎么把能力用成任务。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MCP 与 Skill 的边界是连接层对能力封装层：改造是加任务封装，不是重写协议。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>连接对封装 / skill 描述文件 / 提示词或路由 / 执行映射</p>",
+          "leadType": "v9:方案/对比"
+        },
+        {
+          "q": "Skill 和 Tool 有什么区别？渐进式披露为什么重要？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>Tool</th><th>Skill</th></tr></thead><tbody><tr><td>形态</td><td>零件，原子能力</td><td>带规则和上下文的能力包</td></tr><tr><td>里面有什么</td><td>单一能力</td><td>可能已包含 Prompt、工具集合、输入输出约束和执行流程</td></tr></tbody></table></div>\n<p class=\"md-p\">渐进式披露重要，是因为能力不是给得越多越好。候选工具和 Skill 太多，会让上下文噪声变大、误调用率上升、token 成本变高。工程上我通常先粗筛候选，再只展开真正相关的那几个：先给够决策所需的最小信息，确认相关后再继续展开。这不只是省 token，更重要的是提高选择质量，减少模型在一堆能力里盲猜。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Skill 和 Tool 的差别是能力包对原子零件；渐进式披露是先给最小决策信息，相关后再展开。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>零件对能力包 / 先粗筛再展开 / 提高选择质量</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "Skill 的懒加载机制底层怎么实现？从交互视角整个过程是什么？",
+          "a": "<p class=\"md-p\">我从交互链路讲懒加载：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先暴露元信息</b>：系统不会一开始把所有 skill 的完整内容塞进上下文，只先给少量元信息，比如 skill 名称、用途、触发条件和输入输出约束。</li><li><b>命中再加载</b>：用户需求或当前任务命中某个 skill 的适用场景时，运行时再加载提示词、规则和依赖工具。</li></ol></div>\n<p class=\"md-p\">任务流是：用户提需求 → 系统先判断是否需要某个 skill → 命中后加载 skill 规则 → 再进入具体执行链路。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>懒加载的核心价值不是炫技，而是先降低上下文噪声，再在相关时展开细节。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Skill 懒加载的本质是先暴露少量元信息，命中适用场景后再加载提示词、规则和依赖工具。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先暴露元信息 / 命中再加载 / 交互过程</p>",
+          "leadType": "v9:原理/场景"
+        },
+        {
+          "q": "CLI 和 MCP 分别解决什么问题？两者是什么关系？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>CLI</th><th>MCP</th></tr></thead><tbody><tr><td>定位</td><td>使用形态，偏人机交互入口</td><td>接入协议，偏能力连接层</td></tr><tr><td>解决什么</td><td>人怎么和 Agent 或工具交互</td><td>模型或 Agent 怎么标准化发现并调用外部能力</td></tr><tr><td>关注点</td><td>命令、终端、工作区、脚本执行、文件读写、日志输出这些本地执行体验</td><td>tools、resources、prompts 这些能力怎么暴露和消费</td></tr></tbody></table></div>\n<p class=\"md-p\">一个 code agent 完全可以跑在 CLI 里，同时通过 MCP 去接搜索、知识库、数据库或业务系统。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把 CLI 和 MCP 讲成替代关系，它们解决的根本不是同一层问题。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>CLI 和 MCP 不在同一层：CLI 是人机交互入口，MCP 是发现并调用外部能力的标准协议。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>人机交互入口 / 能力连接层 / 可同时存在</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Skill 一般怎么设计，才算真正好用？",
+          "a": "<p class=\"md-p\">我设计 Skill 时，至少把四件事写清楚：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>触发边界</b>：什么时候该用它，什么时候不该用。</li><li><b>输入输出契约</b>：入参要什么，产出长什么样。</li><li><b>内部编排</b>：依赖哪些 Prompt、哪些工具，按什么顺序执行。</li><li><b>失败策略</b>：出错后是追问、回退、降级，还是直接报错。</li></ol></div>\n<p class=\"md-p\">再往工程里落，我会加上校验和懒加载：先用元信息帮系统做路由，命中后再展开完整规则和工具集合；执行完还要做格式检查、结果检查，并加上必要的风险护栏。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Skill 不是几句 Prompt 的别名，而是任务模板、能力编排和执行护栏的组合。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>好用 Skill 的本质是把高频任务稳定收口成任务模板、能力编排和执行护栏。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>触发边界 / 输入输出契约 / 内部编排 / 失败策略 / 校验与懒加载</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "agent loop 一般怎么理解？和普通工作流最大的区别是什么？",
+          "a": "<p class=\"md-p\">我把它和普通工作流对照着讲：</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>普通工作流</th><th>agent loop</th></tr></thead><tbody><tr><td>形态</td><td>预先画好的流程图</td><td>根据环境反馈持续重规划</td></tr><tr><td>路径和结束</td><td>哪些节点会走、什么时候结束，设计时大体确定</td><td>每做一步都按 observation 决定下一步：继续调工具、改 query、追问用户，或直接结束</td></tr><tr><td>价值</td><td>步骤大体事先定好</td><td>把不确定任务做成可迭代闭环</td></tr></tbody></table></div>\n<p class=\"md-p\">loop 的价值在于可迭代，不在于多转几圈。它越自由，我越会加上步数上限、预算上限、重复动作检测、状态持久化和回退策略。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>缺少这些约束时，灵活执行很容易变成无限兜圈。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>agent loop 的本质是按环境反馈持续重规划，把不确定任务做成可迭代闭环。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>对照固定工作流 / 按 observation 决策 / 闭环价值 / 自由的代价</p>",
+          "leadType": "v9:原理/对比"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-3",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "ReAct、规划与反思",
+      "number": "7 问",
+      "items": [
+        {
+          "q": "ReAct 是什么？和普通 prompt + tools 有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>普通 prompt + tool calling</th><th>ReAct</th></tr></thead><tbody><tr><td>决策方式</td><td>也能调用工具，但不一定强调循环式决策</td><td>推理、行动、观察、再推理，每一步重新判断信息够不够、要不要继续行动</td></tr><tr><td>适用</td><td>简单查询、固定流程，或证据已经足够</td><td>多步任务</td></tr><tr><td>代价</td><td>不必强行做成闭环</td><td>链路更长、失败点更多、token 成本更高</td></tr></tbody></table></div>\n<p class=\"md-p\">所以我不会所有场景都上 ReAct。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>ReAct 的核心不是多了一个 thought 字段，而是这条推理到观察的闭环。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>ReAct 的本质是推理、行动、观察、再推理的闭环，适合多步任务里反复判断。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>闭环决策 / 对照一次调工具 / 适用边界 / 链路代价</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "ReAct 和 CoT 有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>CoT</th><th>ReAct</th></tr></thead><tbody><tr><td>重点</td><td>把中间推理写出来，本质上仍是一次性推理</td><td>推理和行动交替进行</td></tr><tr><td>形态</td><td>偏脑内推演</td><td>一边想、一边查工具，再根据观察结果修正下一步</td></tr><tr><td>适用</td><td>简单问题用 CoT 就够</td><td>需要外部信息、多步工具调用、路径可能变化</td></tr><tr><td>代价</td><td>不展开外部交互</td><td>链路更长、错误会累积、调试更难</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>简单问题我用 CoT；要外部信息且路径会变时，我用 ReAct，并接受更长链路和更难调试。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>CoT 本质是一次性脑内推演；ReAct 是推理与行动交替、带外部交互的闭环。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>一次性推理 / 交替闭环 / 适用边界 / 错误会累积</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "说下 ReAct。它是如何把思维链和行动结合起来完成复杂任务的？Plan-and-Solve、Reflection 又是什么？",
+          "a": "<p class=\"md-p\">模型先基于当前信息做局部判断；信息不够就调工具拿新证据，再根据观察结果继续推理。它把 CoT 的想和 Tool Use 的做绑在一起，适合多步查询、外部信息依赖强、过程中要不断修正路径的任务。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方法</th><th>做法</th><th>取舍</th></tr></thead><tbody><tr><td>Plan-and-Solve</td><td>先出总计划，再按计划执行</td><td>整体性更强，计划可能一开始就错</td></tr><tr><td>ReAct</td><td>边走边看</td><td>灵活，但链路更长</td></tr><tr><td>Reflection</td><td>执行后做自检和复盘，看答案漏洞、工具使用是否合理、是否需要重试</td><td>补上执行后的校验</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>工程上我一般不是三选一，而是先轻量计划，再 ReAct 执行，关键节点加 Reflection 校验。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>ReAct 把思考、行动、观察、再思考串成循环，把想和做绑在一起完成复杂任务。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>局部判断再取证 / 绑定想和做 / 三种方法取舍 / 组合落地</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "在 Agent 设计里，怎么赋予 LLM 规划能力？CoT、ToT、GoT 这些方法怎么理解？",
+          "a": "<p class=\"md-p\">规划解决的是：模型面对复杂目标时，能不能先拆问题、比较路径、再执行，而不是直接一把梭输出结论。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方法</th><th>做法</th><th>我怎么选</th></tr></thead><tbody><tr><td>CoT</td><td>让模型显式写出中间推理</td><td>简单任务，或再配轻量计划</td></tr><tr><td>Plan-and-Solve 或 Planner-Executor</td><td>把规划和执行拆成两个阶段</td><td>需要先规划、再执行</td></tr><tr><td>ToT</td><td>把多个候选思路当成树来搜索和回溯</td><td>要比较多个方案、容易走错路</td></tr><tr><td>GoT</td><td>把思路节点做成图，允许合并、跳转和复用中间结果</td><td>跨步骤依赖很复杂，图结构更有价值</td></tr></tbody></table></div>\n<p class=\"md-p\">规划越强，链路通常越长、token 越贵、调试越难。我落地时用模型规划，加上显式工作流约束和失败回退，避免完全放飞模型自己搜索。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>关键不是背名词，而是按成本和收益选。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>规划的本质是先拆问题、比较路径再执行，并按成本和收益选方法。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>CoT 写推理 / 规划执行拆开 / ToT 树搜索 / GoT 图复用 / 成本与回退</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "Agent 的 Planning 模块有哪些主流实现方式？Step-by-step 和 Plan-and-execute 有什么区别？",
+          "a": "<p class=\"md-p\">主流实现我按三层讲，差别在先全局想清楚多少，再开始动手。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方式</th><th>做法</th><th>取舍</th></tr></thead><tbody><tr><td>Step-by-step</td><td>每次只决定下一步，走一步看一步</td><td>灵活，信息一变可以马上改方向；适合探索性强、路径不确定的任务；容易局部最优，走着走着忘了全局目标</td></tr><tr><td>Plan-and-execute</td><td>先出一个相对完整的总计划，再交给执行器逐步推进</td><td>整体性更强；适合需求相对明确、步骤依赖清晰的任务；前面的计划错了，后面会整串偏掉</td></tr><tr><td>图式或搜索式规划</td><td>Planner-Executor 加回溯、树搜索、显式状态图</td><td>比前两层更复杂</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>工程上我一般不是二选一，而是先轻量计划，再按 step 执行，中途允许重规划。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Planning 的差别在于先全局想清楚多少再动手，常见是轻量计划加中途重规划。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Step-by-step / Plan-and-execute / 图式或搜索式 / 中途重规划</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "什么是 Self-Reflection？在代码生成或故障排查里怎么用？",
+          "a": "<p class=\"md-p\">我会让模型在产出阶段性结果后，再站到审查者视角检查自己。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>审查者看什么</b>：有没有漏条件、有没有逻辑冲突、有没有用错工具、有没有更合适的修复路径。</li><li><b>代码生成</b>：编译前检查、单测失败后的自修复、接口契约回看。</li><li><b>故障排查</b>：复盘当前结论是不是建立在未经验证的假设上，有没有跳过更基础的排查项。</li><li><b>关键节点</b>：放在第一次失败后、准备执行高风险动作前，或者最终交付前，做一次有目标的自检，而不是全程无限自省。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Self-Reflection 不是再生成一遍，而是有意识地审查；轮次加太多只会让成本和时延暴涨，甚至把简单问题越想越复杂。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Self-Reflection 的本质是产出后换到审查者视角，做一次有目标的自检。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>审查者看什么 / 代码生成 / 故障排查 / 关键节点</p>",
+          "leadType": "v9:原理/场景"
+        },
+        {
+          "q": "ReAct 模式会不会出现推理跑偏？怎么处理？",
+          "a": "<p class=\"md-p\">会，而且是最常见的工程问题之一。ReAct 边想边做，链路一长，模型可能走到错误假设上反复调用工具，或拿到观察结果后继续沿错误方向推。我会加四层护栏：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>收紧工具与 schema</b>：收紧工具描述和参数 schema，减少乱调。</li><li><b>步数超时预算</b>：限制步数、超时和预算，防止无限循环。</li><li><b>关键节点校验</b>：结果判别器、规则检查、Reflection 或人工兜底。</li><li><b>停止与回退</b>：给模型更明确的停止条件和回退策略。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>ReAct 不能只靠模型自觉。它是更灵活的控制策略，不是一张“自动做对”的免死金牌。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>ReAct 跑偏的本质是边想边做、错误假设被一路放大，必须加工程护栏。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>收紧工具与 schema / 步数超时预算 / 关键节点校验 / 停止与回退</p>",
+          "leadType": "v9:原理/方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-4",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "Memory、状态与上下文治理",
+      "number": "7 问",
+      "items": [
+        {
+          "q": "Agent 一般实现了哪些能力？会话记忆、RAG、工具调用这些怎么放在一起看？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>理解层</b>：识别用户目标、约束和风险。</li><li><b>查找层</b>：一般对应 RAG、检索或 query rewrite。</li><li><b>行动层</b>：对应 Tool Call、工作流执行和外部系统交互。</li><li><b>记住层</b>：会话记忆、长期记忆和任务状态。</li><li><b>纠错与治理</b>：纠错层包括 Reflection、重试、回退和结果校验；治理层是权限、审计、观测、限流和成本控制。</li></ol></div>\n<p class=\"md-p\">会话记忆、RAG、工具调用不是并列摆件，而是一条闭环里的不同环节。记忆解决“别失忆”，RAG 解决“别只靠模型脑补”，工具调用解决“别只会说不会做”。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>能把 Agent 和普通聊天模型拉开差距的，是这些能力能不能一起稳定运转。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 能力分六层：理解、查找、行动、记住、纠错、治理，记忆、RAG、工具调用是闭环里的不同环节。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>理解层 / 查找层 / 行动层 / 记住层 / 纠错与治理</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "如果设计一个大型 Agent 系统，整体架构你会怎么分层设计？",
+          "a": "<p class=\"md-p\">我从六个层面讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>接入层</b>：API、对话入口、权限认证、租户隔离和请求路由。</li><li><b>编排与规划层</b>：任务拆解、工作流调度、规则决策、模型路由和多 Agent 协作。</li><li><b>执行层</b>：真正去跑 Tool Call、代码执行、检索、数据库查询和外部系统交互。</li><li><b>状态与记忆层</b>：保存会话状态、任务进度、checkpoint、短期记忆和长期记忆。</li><li><b>工具数据与治理</b>：工具与数据层承接搜索、向量库、业务 API、文件系统、数据库；评测观测与安全治理层负责日志、trace、评测、风控、审计、成本和权限边界。</li></ol></div>\n<p class=\"md-p\">这样把“模型怎么想”“系统怎么做”“状态怎么存”“风险怎么控”拆开。最怕把所有东西都堆在 Prompt 里硬扛：链路一长、工具一多、租户和权限一复杂，系统就很难治理。规划、执行、状态、工具和治理各自归位。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>模型负责推理，系统负责把执行闭环收住。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>大型 Agent 我会按接入、编排、执行、状态、能力、治理六层拆开，模型负责推理，系统把执行闭环收住。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>接入层 / 编排与规划层 / 执行层 / 状态与记忆层 / 工具数据与治理</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "多节点部署下，Agent 是无状态的吗？如果请求打到不同节点，会不会出问题？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>节点轻状态</b>：执行节点最好是无状态或轻状态，任务本身绝对不是无状态。</li><li><b>外部状态存储</b>：会话历史、摘要、checkpoint、工具结果、任务状态、人工接管标记，放到 MySQL、Redis、对象存储或任务表。</li><li><b>用 ID 续跑</b>：请求打到不同节点时，带同一个 <code class=\"tok-inline\">sessionId</code>、<code class=\"tok-inline\">taskId</code> 或 <code class=\"tok-inline\">traceId</code>，就能继续执行。</li><li><b>漂节点的风险</b>：状态只放内存、没有幂等键、没有分布式锁、没有任务恢复点时，请求漂到别的节点，可能重复执行、上下文断裂、同一任务并发跑两份。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>会出问题的不是“多节点”本身，而是状态只放内存里、没有幂等键、没有分布式锁、没有任务恢复点。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>节点可以无状态，任务状态不能无处安放。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>执行节点最好无状态或轻状态，任务本身必须落在外部存储；节点可以无状态，任务状态不能无处安放。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>节点轻状态 / 外部状态存储 / 用 ID 续跑 / 漂节点的风险</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "用户提问很含糊时，Agent 一般怎么处理？",
+          "a": "<p class=\"md-p\">关键是不要在关键信息缺失时直接硬答或乱调工具。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先判断缺什么</b>：实体缺失、时间范围缺失、动作目标不清，还是结果格式不清。</li><li><b>必需参数追问</b>：缺的是执行必需参数，就优先追问。</li><li><b>可选则保守继续</b>：缺的是可选增强信息，就先给一个保守回答，或几个候选分支让用户选。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：先做“能不能在当前信息下安全继续”的判断。能保守继续就继续，不能安全继续就明确追问。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>含糊问题不等于一律追问。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>含糊提问先判断缺的是什么：执行必需就追问，可选增强就保守回答或给候选分支。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先判断缺什么 / 必需参数追问 / 可选则保守继续</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "为什么用户查询重写常常用 LLM？除了 LLM 还有别的方案吗？",
+          "a": "<p class=\"md-p\">用户输入经常不规范：口语化、省略、指代、多轮追问、领域缩写、错别字、目标不清，检索和工具路由都会变差。</p>\n<p class=\"md-p\">用 LLM 做 query rewrite，是把模糊问题改写成更适合检索和执行的表达，比如补全主语、消解指代、抽取关键约束、拆成子问题。重写不是为了“把问题变好看”，而是为了提升召回质量、路由准确率和后续回答稳定性。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方案</th><th>特点</th><th>怎么用</th></tr></thead><tbody><tr><td>规则和词典、同义词扩展、拼写纠错、轻量分类器、实体抽取</td><td>便宜、稳定、可控，灵活性有限</td><td>先兜底</td></tr><tr><td>LLM</td><td>灵活，但更贵、也更难控</td><td>处理复杂输入</td></tr></tbody></table></div>\n<p class=\"md-p\">工程上通常不是只靠 LLM，很多系统会组合使用。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先用便宜、稳定、可控的规则方案兜底，再把复杂输入交给 LLM。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>query rewrite 用 LLM，是为了把不规范输入改写成适合检索和执行的表达，工程上常和规则方案组合。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>输入为何不规范 / LLM 重写做什么 / 规则方案兜底 / 组合使用</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "Agent 运行时怎么捕获 <code class=\"tok-inline\">waiting</code>、<code class=\"tok-inline\">running</code>、<code class=\"tok-inline\">done</code> 这类状态？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>外部状态源</b>：任务表、工作流引擎、事件总线或调度器，而不是自然语言回复。</li><li><b>统一状态机</b>：每个任务或步骤用同一套状态，比如 <code class=\"tok-inline\">PENDING</code>、<code class=\"tok-inline\">RUNNING</code>、<code class=\"tok-inline\">WAITING_INPUT</code>、<code class=\"tok-inline\">SUCCESS</code>、<code class=\"tok-inline\">FAILED</code>、<code class=\"tok-inline\">CANCELLED</code>。</li><li><b>落状态时机</b>：节点开始执行写 <code class=\"tok-inline\">RUNNING</code>，等用户补信息写 <code class=\"tok-inline\">WAITING_INPUT</code>，全部完成后再落 <code class=\"tok-inline\">SUCCESS</code> 或 <code class=\"tok-inline\">FAILED</code>。</li><li><b>可观测可恢复</b>：状态可观测、可回放、可恢复。前端进度条、后端超时重试、人工接管和断点续跑，都读外部状态源，不靠模型生成的一段说明。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>Agent 状态捕获是运行时治理问题，不是 Prompt 修饰问题。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 状态捕获的本质是运行时治理：状态来自任务表、工作流引擎、事件总线或调度器，不是模型口头汇报。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>外部状态源 / 统一状态机 / 落状态时机 / 可观测可恢复</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "如果是独立程序型 Agent，没有现成 API，怎么拿到它的运行状态？",
+          "a": "<p class=\"md-p\">没有现成 API 时，我先把状态从黑盒进程里抠出来，常见四类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>进程内打点</b>：结构化日志、stdout 事件、心跳文件、状态文件。</li><li><b>包装执行器</b>：外面套一层 supervisor，负责启动、监控、超时、中断和状态上报。</li><li><b>系统级活性信号</b>：进程存活、CPU/内存变化、子进程树、退出码。</li><li><b>sidecar 转状态流</b>：补 sidecar 或 agent wrapper，把关键步骤事件转成统一状态流。</li><li><b>活性与进度分层</b>：进程活性看进程与资源信号；任务进度看心跳、阶段事件、最近一次有效产出和超时阈值。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：独立程序型 Agent，状态还在黑盒进程里。只看“进程还活着”不够，进程可能卡死、空转、阻塞 IO，业务上已经不健康。两层合在一起，才能区分它是在正常跑、等外部输入，还是已经卡住。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不会满足于“进程还活着就算 running”。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>独立程序型 Agent 要先把状态从黑盒进程抠出来，并拆成进程活性和任务进度两层。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>进程内打点 / 包装执行器 / 系统级活性信号 / sidecar 转状态流 / 活性与进度分层</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-5",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "多 Agent 架构与调度",
+      "number": "15 问",
+      "items": [
+        {
+          "q": "什么是多智能体系统？相比单 Agent 有什么优势，又会引入哪些复杂性？",
+          "a": "<p class=\"md-p\">我会把一个复杂目标拆给多个有分工的 Agent，比如规划、检索、代码、审查，各自做子任务，再由协调者汇总。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>多 Agent 带来什么</th></tr></thead><tbody><tr><td>分工专业化</td><td>不同 Agent 可以用不同工具、Prompt、模型甚至权限</td></tr><tr><td>并行性</td><td>多个子任务可以同时跑</td></tr><tr><td>可扩展性</td><td>大任务拆得更清楚，不必把所有能力和上下文都压到一个 Agent</td></tr><tr><td>通信成本</td><td>Agent 之间传来传去，会放大延迟和 token</td></tr><tr><td>一致性</td><td>不同 Agent 可能基于不同上下文做出冲突判断</td></tr><tr><td>协调难度</td><td>要定谁最终拍板、谁做冲突解决、失败怎么回滚</td></tr><tr><td>调试</td><td>错可能不在某个 Agent 本身，而在交互协议或信息传递失真</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>多 Agent 并不天然比单 Agent 高级。任务没复杂到需要分工时，单 Agent 往往更合适，也更便宜。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多智能体本质是把复杂目标拆给分工 Agent 再由协调者汇总；不必分工时单 Agent 更合适也更便宜。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>分工专业化 / 并行性 / 可扩展性 / 通信与一致性 / 协调与调试</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "多 Agent 架构里，角色边界一般怎么划分？为什么常见 Supervisor-Worker？",
+          "a": "<p class=\"md-p\">多 Agent 最怕边界不清。我一般按职责拆：谁规划、谁执行、谁检索、谁校验、谁最终收口，而不是按模型名字拆。这样每个 Agent 的输入输出、可用工具、权限范围和成功标准都更好定义。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>角色</th><th>负责什么</th></tr></thead><tbody><tr><td>Supervisor</td><td>调度和裁决：拆任务、分配子任务、控制轮次、汇总结果、处理异常</td></tr><tr><td>Worker</td><td>专用执行单元，只关注自己那一小段任务</td></tr></tbody></table></div>\n<p class=\"md-p\">这样系统更好治理，不会每个 Agent 都既想规划、又想执行、又想拍板。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Supervisor-Worker 不一定最先进，工程上通常只是最容易收口的一种组织方式。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>角色边界按职责拆而不按模型名；Supervisor-Worker 把决策和执行分开，工程上最容易收口。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按职责拆 / 契约更好定义 / 决策与执行分开 / 便于治理收口</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "为什么多个 Agent 往往要并行处理，不能都交给一个 Agent 直接处理吗？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>任务结构</th><th>我会怎么做</th><th>原因</th></tr></thead><tbody><tr><td>单链路、强依赖前一步结果，或规模不大</td><td>一个 Agent 直接做</td><td>更简单，通信成本更低</td></tr><tr><td>能拆成相对独立的子问题</td><td>多个 Agent 并行</td><td>例如多路检索、不同数据源比对、代码生成和安全审查同时做</td></tr></tbody></table></div>\n<p class=\"md-p\">并行的收益我按三类讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>降低总时延</b>：原来串行的子任务改成同时做。</li><li><b>专业化</b>：不同 Agent 可以带不同 Prompt、不同工具、不同权限。</li><li><b>上下文降噪</b>：每个 Agent 只吃自己那一小块输入，不用一个大 Agent 把所有材料全吞进去。</li></ol></div>\n<p class=\"md-p\">代价是调度、结果合并、一致性和观测都会更复杂。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>能拆、值得拆、且合并成本可控时才并行；否则单 Agent 更便宜，也更稳。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>该不该并行看任务结构：强依赖或规模不大用单 Agent；能拆成独立子问题且合并成本可控才多 Agent 并行。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先看任务结构 / 降低总时延 / 专业化 / 上下文降噪 / 合并与观测代价</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "多 Agent 协作时，怎么设计 Agent 之间的通信和协调机制？Agent 之间怎么相互调用？",
+          "a": "<p class=\"md-p\">我按三层设计通信：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>通信协议</b>：写清消息格式、任务 ID、上下文摘要、输入输出 schema 和错误码，避免自然语言互传造成信息漂移。</li><li><b>协调模式</b>：常见有 Supervisor-Worker、Blackboard、Planner-Executor、投票仲裁。</li><li><b>共享状态</b>：决定哪些信息走消息传递，哪些写入共享内存、数据库或任务状态表。</li></ol></div>\n<p class=\"md-p\">Agent 之间的调用，我会收成受控的任务分发，而不是彼此直接发一句 prompt。常见三种：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>Supervisor 下发</b>：显式派子任务，子 Agent 完成后结构化回传。</li><li><b>队列或事件总线</b>：异步触发，谁订阅了对应任务类型谁来执行。</li><li><b>黑板或状态表</b>：Agent 读当前状态，再决定自己是否接手下一步。</li></ol></div>\n<p class=\"md-p\">工程上我还会补四件事：幂等和去重，避免消息重复消费；超时和重试，避免某个 Agent 卡死拖挂全局；权限边界，不是每个 Agent 都能碰所有工具；统一观测，让 <code class=\"tok-inline\">trace_id</code> 和 <code class=\"tok-inline\">span_id</code> 跨 Agent 透传。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>相互调用是围绕任务契约、状态流转和回传协议做受控协作，系统才可治理。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多 Agent 通信是协议、协调模式、共享状态三层，调用要收敛成受控任务分发。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>通信协议 / 协调模式 / 共享状态 / 三种受控调用 / 四项运行时机制</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "子 Agent 怎么避免上下文污染？",
+          "a": "<p class=\"md-p\">子 Agent 我主要防两种污染：一种是父 Agent 把太多历史和噪声一股脑塞过去，子 Agent 抓不住重点；另一种是多个子 Agent 各自写出带推断的中间结论，再互相污染共享上下文。</p>\n<p class=\"md-p\">每个子 Agent 我只给完成当前子任务所需的最小必要信息，把目标、硬约束、输入材料、输出格式单独结构化，不把整段聊天流水账全量透传。</p>\n<p class=\"md-p\">落到工程上再加三层：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>共享事实层</b>：已确认的事实、公共约束、任务 ID 放在统一状态里，避免每个子 Agent 各写一套真相。</li><li><b>摘要回传</b>：返回尽量结构化，例如 <code class=\"tok-inline\">结论 / 证据 / 风险 / 待确认项</code>，不把整段中间推理灌回主上下文。</li><li><b>隔离临时假设</b>：把 <code class=\"tok-inline\">facts / assumptions / open questions</code> 分开存，防止未经确认的推断滚成系统事实。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>关键不是完全不共享，而是共享稳定事实，把噪声和中间态隔开。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>防上下文污染的本质是只给最小必要信息，共享稳定事实，隔离噪声和未确认的中间态。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>两种污染 / 最小必要信息 / 共享事实层 / 摘要结构化回传 / 隔离临时假设</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "每个 Agent 分别是干什么的？",
+          "a": "<p class=\"md-p\">角色要跟任务绑定，我不会背一套固定模板。比较好讲的一种拆法是：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><b>Supervisor</b>：拆任务和收口。</li><li><b>Planner</b>：出子计划。</li><li><b>Retriever</b>：查知识或多路检索。</li><li><b>Tool Agent</b>：调用外部 API 或执行动作。</li><li><b>Reviewer</b>：校验结果、找风险。</li><li><b>Writer 或 Synthesizer</b>：把多个子结果整成最终答案。</li></ul></div>\n<p class=\"md-p\">落到代码或业务系统，可以换成更工程化的分工：需求理解 Agent、数据查询 Agent、执行 Agent、审查 Agent、汇总 Agent。重点不是名字，而是三件事：每个 Agent 的输入是什么、能用哪些工具、输出要交付什么。再把职责边界、输入输出契约和最终裁决关系讲明白，多 Agent 就是分工明确的执行系统，而不是一群模型一起聊。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>每个 Agent 干什么要跟任务绑定，讲清输入、能用哪些工具、输出交付什么。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>角色跟任务绑定 / 常见角色拆法 / 工程化分工 / 输入工具输出</p>",
+          "leadType": "v9:方案/叙述"
+        },
+        {
+          "q": "Multi-Agent 协同时，怎么解决冲突或无限争议？",
+          "a": "<p class=\"md-p\">不同 Agent 基于不同上下文会得出不同结论，互相 review 时也可能谁都不肯拍板。所以我不会只设计协作，还会设计裁决。常见至少四条约束：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>角色边界明确</b>：谁有建议权、谁有执行权、谁有最终拍板权。</li><li><b>共享事实层统一</b>：不让各 Agent 各存一套真相。</li><li><b>设最大协商轮数</b>：超过就交给仲裁 Agent 或人工兜底。</li><li><b>输出带证据和置信度</b>：不能只说结论。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>没有这些约束，多 Agent 很容易从分工协作变成多人扯皮。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>冲突和无限争议的本质是缺裁决：权责、共享事实、协商上限、证据和置信度要一起定。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>建议执行拍板 / 共享事实统一 / 最大协商轮数 / 证据和置信度</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "多个 Agent 之间会不会互相来回调用，最后陷入死循环把 token 打爆？一般怎么防？",
+          "a": "<p class=\"md-p\">会，这是多 Agent 系统里很典型的失控风险。我先对根因，再上系统级护栏。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>角色边界不清</b>：A 觉得该交给 B，B 又觉得该退回 A。</li><li><b>完成和停止没定义好</b>：大家都在继续尝试，没人知道什么时候该停。</li><li><b>失败 observation 太模糊</b>：Agent 会反复做同一类无效调用。</li><li><b>没有统一预算</b>：单个 Agent 局部看都合理，系统整体却已经在烧 token。</li></ol></div>\n<p class=\"md-p\"><b>护栏怎么补</b>：至少要有全局最大步数、单任务 token 预算、单 Agent 轮次上限、重复动作检测和相似 observation 检测；再加显式完成条件、失败回退条件和仲裁者角色，不让两个 Agent 互相无限转交。</p>\n<p class=\"md-p\"><b>落地动作</b>：补 trace、step 日志和告警，一旦 <code class=\"tok-inline\">agentA -&gt; agentB -&gt; agentA</code> 这种模式重复出现，就快速熔断。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>别指望模型自己意识到该停，预算、停止、回退、裁决必须由运行时补齐。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>互相来回调用会打爆 token，要靠运行时补齐预算、停止、回退、裁决四层护栏。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>几类根因 / 步数预算轮次 / 重复与相似检测 / 完成回退裁决 / trace后熔断</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "子 Agent 一定要是独立模型吗？单一模型做角色拆分也算多智能体吗？",
+          "a": "<p class=\"md-p\">子 Agent 不一定要是独立模型。我会先看运行时结构，再看背后是不是同一个基座。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>独立执行单元</b>：只要存在多个执行单元，各自有独立职责、独立上下文边界、独立输入输出契约，即使复用同一个基座模型，也可以算多智能体。</li><li><b>同模型角色拆分</b>：同一个大模型分别扮演 planner、executor、reviewer，只要提示词、状态、可用工具和目标函数真的拆开了，就是一种多智能体实现。</li><li><b>三件判断标准</b>：有没有明确分工、有没有独立状态与上下文、有没有显式协作与裁决机制。这三件都满足，底层同一个模型仍然可以叫多智能体。</li><li><b>Prompt层扮演</b>：同一个对话里随口说“现在你扮演 A，再扮演 B”，没有独立状态、没有明确通信协议、没有可观察的任务分工，更像 Prompt 层的角色扮演，只是单 Agent 在做多步思考。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>没有独立状态、通信协议和可观察的任务分工时，不必把随口换角色上升成多智能体架构。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多智能体的本质是运行时分工与协作，不按模型实例数定义；同一基座拆开职责、上下文和契约也算。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>独立执行单元 / 同模型角色拆分 / 三件判断标准 / Prompt层扮演</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "端到端 RL 环境里，是不是一个 Agent 多步决策就够了，不一定需要多个 Agent？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>单 Agent</th><th>多 Agent</th></tr></thead><tbody><tr><td>何时合适</td><td>任务主要是单策略在一个环境里持续观察、决策、执行、再拿奖励回传，且状态空间和动作空间还能被一个统一策略稳定建模</td><td>任务里天然存在角色分工、工具边界、并行子任务或不同目标函数</td></tr><tr><td>做法</td><td>一个 Agent 做多步 rollout 就可以成立</td><td>一个负责规划，一个负责执行，一个负责验证；或不同 Agent 的权限、观测和动作空间本来就不同</td></tr><tr><td>工程结果</td><td>往往更简单，训练和 credit assignment 也更直接</td><td>拆成多个相对独立的决策单元才更自然</td></tr><tr><td>适用场景</td><td>链路长、步数多，本身仍不必拆</td><td>价值通常不是因为步数多，而是任务结构适合拆</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>容易把步数多、链路长当成该上多 Agent 的理由。端到端 RL 并不因此要求多 Agent。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>该不该拆，关键看任务是不是本来就适合拆成多个相对独立的决策单元。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>端到端RL并不天然要求多Agent；单策略能稳定建模时多步rollout即可，拆不拆看任务结构。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>何时用单Agent / 何时拆多Agent / 训练与归因 / 不看步数链路</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "多 Agent 或长任务系统里，如果某个 Agent 一直卡住，怎么处理？",
+          "a": "<p class=\"md-p\">我不会只按进程还没退出来判断。先分清它是慢、等输入、工具阻塞，还是已经失活，再分层处理。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>三类信号</b>：活性信号看心跳、最近一次状态更新时间、CPU/内存和进程存活；业务进度信号看最近一次有效 observation、工具返回、阶段推进和输出产出；依赖信号看它是不是正在等别的 Agent、外部 API 或人工输入。</li><li><b>超时和 lease</b>：先设超时和 lease，到点自动标记异常。</li><li><b>中断与回退</b>：再做中断、重试、迁移执行，或回退到上一步。</li><li><b>幂等和补偿</b>：任务有副作用时要配幂等和补偿，避免一重试就把影响放大。</li><li><b>原因打标签</b>：给卡住原因打上 <code class=\"tok-inline\">WAITING_INPUT</code>、<code class=\"tok-inline\">TOOL_TIMEOUT</code>、<code class=\"tok-inline\">DEADLOCK_SUSPECTED</code>、<code class=\"tok-inline\">NO_PROGRESS</code>，后面才能自动化恢复。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只看进程还在不在，会把慢、等输入、工具阻塞和失活混成一种情况，后面只能靠人工盯日志。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>“卡住”的本质是先分清慢、等输入、工具阻塞还是已失活，再按超时、中断和补偿分层兜底。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>三类信号 / 超时和lease / 中断与回退 / 幂等和补偿 / 原因打标签</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "当 Agent 需要调用多个工具且存在依赖关系时，调度引擎怎么设计？",
+          "a": "<p class=\"md-p\">我会把场景建成显式状态机或 DAG。每个工具节点先定义输入、输出、前置依赖、超时、重试策略和失败后的补偿动作。调度器管状态流转。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>依赖驱动推进</b>：没有依赖的节点并发执行；有依赖的节点等上游结果 ready 再推进。</li><li><b>结果持久化</b>：中间结果落下来，中途失败才能断点续跑。</li><li><b>执行幂等</b>：节点执行要幂等，重试才不会放大副作用。</li><li><b>失败分类型</b>：临时超时可以重试，参数错误尽快失败回传。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把全部逻辑塞进 Prompt 里硬扛，调度器该关心的是状态流转。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>调度引擎的价值，是让多工具协作变成可恢复、可审计、可治理的执行系统。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>有依赖的多工具调度，本质是状态机或 DAG：无依赖并发，有依赖等 ready，并做到可恢复。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>节点契约 / 依赖驱动推进 / 结果持久化 / 执行幂等 / 失败分类型</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "DAG 调度怎么处理循环依赖、失败重试和断点续跑？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>发布前检环</b>：保存或发布 DAG 时做拓扑排序或 DFS。还有节点无法拓扑展开，就是有环，直接拒绝，不等运行时碰运气。</li><li><b>入度推进</b>：运行时按节点状态、依赖完成情况和入度往下调度。</li><li><b>状态要落库</b>：至少保留 <code class=\"tok-inline\">PENDING</code>、<code class=\"tok-inline\">RUNNING</code>、<code class=\"tok-inline\">SUCCESS</code>、<code class=\"tok-inline\">FAILED</code>、<code class=\"tok-inline\">SKIPPED</code>；可重试错误和不可重试错误分开。</li><li><b>失败点续跑</b>：断点续跑不是重跑全图，而是从失败节点及其受影响下游继续。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>这样图才从流程图变成执行引擎。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>循环依赖在发布前用拓扑排序或 DFS 拦住；续跑靠持久化状态，从失败节点及受影响下游继续。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>发布前检环 / 入度推进 / 状态要落库 / 失败点续跑</p>",
+          "leadType": "v9:方案/排障"
+        },
+        {
+          "q": "Agent 长任务怎么优化？",
+          "a": "<p class=\"md-p\">我按“拆、存、控、并、观”五层做：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>拆成阶段</b>：超长任务拆成阶段或子任务，避免一次上下文塞太满。</li><li><b>checkpoint 续跑</b>：阶段结果、关键状态、工具输出、失败位置做 checkpoint 或持久化，支持断点续跑。</li><li><b>限制膨胀</b>：限制步数、超时、预算和重试次数，防止长链路无限膨胀。</li><li><b>并行降 RT</b>：能并行的子任务并行执行，减少总 RT。</li><li><b>trace 与告警</b>：打通 trace、日志、任务状态和告警，长任务跑偏才排得动。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>优化目标不是让模型一口气想更久，而是让长链路可拆、可存、可控、可恢复。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>长任务优化的本质，是把长链路做成可拆、可存、可控、可恢复的系统。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>拆成阶段 / checkpoint续跑 / 限制膨胀 / 并行降RT / trace与告警</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "假如一个 Agent 推理链路包含 3 个工具，而且请求频率很高，系统整体延迟较高，你会怎么优化？",
+          "a": "<p class=\"md-p\">我先看总延迟落在哪：LLM 本身慢、工具调用串行太多、外部 API RT 高、上下文太长，还是高并发下线程池、连接池、限流和排队把尾延迟拉高。耗时要拆到 prefill / decode、工具执行、网络往返、重试次数和排队等待，再动手。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>减轮次缓存</b>：减少不必要的模型和工具轮次；能并行的并行，能合并的合并，工具结果和检索结果能缓存就缓存，避免每轮从头跑。</li><li><b>缩上下文</b>：减少冗长历史、无效 observation 和重复 schema，必要时做阶段摘要或短期记忆槽位，降低 token 处理开销。</li><li><b>工具治理</b>：慢工具加超时、熔断、降级和 fallback，把高延迟工具隔离出来，必要时先返回部分结果。</li><li><b>推理侧</b>：模型分级路由，小模型先决策，大模型只处理难题，配合流式输出、KV Cache、Prefix Cache、continuous batching，降低整体 RT。</li><li><b>资源治理</b>：线程池隔离、连接池调优、异步化、限流和 backpressure，不让高频请求拖垮整条链路。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不先拆耗时，优化就会变成拍脑袋。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先做链路拆解和观测，再按这五层改。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么很少是单点慢？</b></p><p class=\"md-p\">Agent 延迟通常是多次 LLM 调用和多工具协作叠出来的总和，所以要先观测，再分别优化轮次、上下文、工具、模型、资源。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>高频多工具延迟的本质，是先拆耗时，再优化轮次、上下文、工具、模型和资源。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先拆耗时 / 减轮次缓存 / 缩上下文 / 工具治理 / 推理与资源</p>",
+          "leadType": "v9:方案/排障"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-6",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "框架、平台与 Code Agent",
+      "number": "14 问",
+      "items": [
+        {
+          "q": "LangChain、LangGraph、LlamaIndex、Coze 这类框架怎么区分？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>框架</th><th>定位</th><th>擅长</th></tr></thead><tbody><tr><td>LangChain</td><td>组件编排</td><td>把模型、Prompt、Tool、Chain、Agent 串起来</td></tr><tr><td>LangGraph</td><td>显式状态机和图执行</td><td>复杂流程、恢复执行、长任务</td></tr><tr><td>LlamaIndex</td><td>让模型更好地用数据</td><td>数据接入、索引、检索、RAG</td></tr><tr><td>Coze</td><td>平台化和可视化低代码</td><td>业务方快速搭原型和标准流程</td></tr><tr><td>适用场景</td><td>多步 Agent 流程更常想到 LangChain / LangGraph；文档、数据库、知识源要变成可检索知识系统时 LlamaIndex 更顺手；低门槛搭标准业务流程用 Coze</td><td>按问题选，不按名字背</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>核心是讲定位。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>这几个框架的本质是定位不同：LangChain 编排组件，LangGraph 管状态图，LlamaIndex 管检索，Coze 做低代码。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>LangChain编排 / LangGraph状态图 / LlamaIndex检索 / Coze低代码</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "它们都提到 DAG 或图编排，这些图到底差在哪？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>图从哪来</th><th>更强调什么</th></tr></thead><tbody><tr><td>LangGraph</td><td>状态驱动、显式跳转、恢复执行、复杂控制流</td></tr><tr><td>Coze</td><td>业务编排、配置友好</td></tr><tr><td>自研 DAG</td><td>权限、审计、租户隔离、版本管理，以及和现有内部系统集成</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>图只是外壳，真正不同的是状态治理和平台约束。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>图长得像，不代表工程目标相同；差异的本质是状态治理和平台约束，图只是外壳。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>LangGraph状态流 / Coze业务编排 / 自研平台约束</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "LangGraph 过时了吗？",
+          "a": "<p class=\"md-p\">我不会直接说过时或不过时，先看它解决的问题还在不在。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>显式状态图</b>：它把 Agent 或工作流做成显式状态图，方便表达节点、边、条件跳转、checkpoint、人工介入和恢复执行。</li><li><b>需求还在</b>：只要还要多步执行、状态持久化、可恢复、可观测，它就没有过时。更容易过时的是某些具体 API、生态热度或团队实现偏好，不是图式编排这个思路。</li><li><b>简单链路可不用</b>：它不是唯一方案，也不是所有场景都必须用。简单链路用轻量工作流或普通代码编排就够；复杂多步状态机、长任务和中断恢复，图式编排仍然有价值。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能简单说“过时”或“不过时”。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LangGraph 过不过时，本质看多步执行、状态持久化、可恢复、可观测这些需求还在不在。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>显式状态图 / 需求还在 / 简单链路可不用</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "LangChain 在项目里到底承担什么角色？只是一个大模型接口层吗？怎么做深度定制？",
+          "a": "<p class=\"md-p\">我把它当编排层，负责把 Prompt、模型、Tool、Memory、解析器、回调、链路埋点和部分状态组织串起来。项目里只拿它发一个 chat completion，它确实只是接口封装；一旦做多步调用、RAG、工具路由和统一观测，就更像半个应用框架。</p>\n<p class=\"md-p\">深度定制我一般落在四处：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>自定义 Runnable</b>：自定义 Runnable、Chain 或中间件，把业务自己的路由、重试、权限和日志接进去。</li><li><b>Tool 与 Parser</b>：定制 Tool 和 Output Parser，让调用结果符合自己的 schema 和审计要求。</li><li><b>自有记忆检索</b>：接自己的 Memory、向量检索和缓存，不完全吃框架默认实现。</li><li><b>边界内使用</b>：只把它当编排组件；状态机、权限、任务表和核心执行权仍然留在运行时里。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只把它讲成调模型的 SDK，通常太浅。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>这样才是用框架搭系统，而不是把系统外包给框架。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LangChain 的本质是编排层：串起 Prompt、模型、Tool 与观测；深度定制把执行权留在运行时。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>编排层定位 / 自定义Runnable / Tool与Parser / 自有记忆检索 / 边界内使用</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "Coze 的执行引擎能不能直接支撑你的系统？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>平台通常够用</th><th>往往还要自建</th></tr></thead><tbody><tr><td>场景</td><td>原型验证、标准工作流、低门槛配置</td><td>多租户隔离、细粒度权限、统一审计</td></tr><tr><td>运行要求</td><td>配置驱动的标准流程</td><td>断点续跑、可回放、观测闭环，需要自定义执行引擎和状态存储</td></tr></tbody></table></div>\n<p class=\"md-p\">我会先把这条边界讲清楚：平台能覆盖的，和系统要自己补的，不要混成一件事。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>平台能力和生产级系统能力之间还有距离，边界要先讲清。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Coze 适合原型、标准工作流和低门槛配置；生产级隔离、审计、续跑、回放和观测要补自定义引擎。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>原型与标准工作流 / 生产级能力缺口 / 自定义执行引擎 / 状态存储</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "OpenClaw 和传统 Agent 实现相比，有什么比较明显的新设计或差异？",
+          "a": "<p class=\"md-p\">若把传统 Agent 理解成常见的聊天式 Agent 框架，差异不只是也能调工具。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>传统聊天式 Agent</th><th>OpenClaw</th></tr></thead><tbody><tr><td>工作方式</td><td>一轮轮对话决策</td><td>把工作区、文件、命令、记忆、计划拉进执行闭环</td></tr><tr><td>环境</td><td>聊天式框架</td><td>更接近真实开发工作台：能搜索文件、改文件、维护计划、写记忆，再根据执行反馈继续推进</td></tr><tr><td>状态</td><td>计划、记忆、工作区文件容易藏在模型脑子里</td><td>落到外部可读写工件，状态更外显</td></tr><tr><td>动作</td><td>调个 API</td><td>围绕代码库、命令执行、文件修改完成任务，动作更工程化</td></tr><tr><td>治理</td><td>以对话决策为主</td><td>计划模式、权限控制、工具边界、记忆工具都在强调：让 Agent 在真实环境里可控地做事</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会收成一句：它是在往可执行、可追踪、可恢复的工作代理推进，而不是单纯把对话 Agent 做大。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>OpenClaw 的本质是把工作区、文件、命令、记忆、计划拉进执行闭环，做成可执行、可追踪、可恢复的工作代理。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>执行闭环 / 状态更外显 / 动作更工程化 / 治理边界更清楚</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "OpenClaw 的记忆系统怎么理解？长期记忆平时主要怎么检索、默认又主要落在哪类存储形态？",
+          "a": "<p class=\"md-p\">按当前官方文档，它不是一套很抽象的记忆服务。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>文件层</b>：工作区里的 Markdown 记忆文件配合记忆工具。<code class=\"tok-inline\">memory/YYYY-MM-DD.md</code> 是按天追加的运行记忆，<code class=\"tok-inline\">MEMORY.md</code> 是整理过的长期记忆。模型只有把内容真正写进这些外部文件，后面才算记住了。</li><li><b>两阶段召回</b>：检索时不会一次把所有记忆整段塞回 prompt。先用 <code class=\"tok-inline\">memory_search</code> 找和当前任务相关的候选记忆，再用 <code class=\"tok-inline\">memory_get</code> 精读具体条目或片段。</li><li><b>默认落点</b>：公开口径里，长期记忆主要落在工作区文件这一层。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能把后续工程扩展说成默认事实。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>能不能外置到数据库或向量库？</b></p><p class=\"md-p\">可以扩展到数据库、检索系统或其他存储，但那是扩展实现。默认不该先假设已经有外部数据库或向量库。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>OpenClaw 记忆本质是工作区 Markdown 文件加记忆工具，默认落在文件层，先搜再精读。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按天运行记忆 / 长期记忆文件 / 两阶段召回 / 默认是文件层</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "为什么这种“文件化记忆 + 检索工具”的设计有价值？",
+          "a": "<p class=\"md-p\">最大价值不是存得更多。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>外部工件</b>：记忆变成可读、可写、可审计、可回溯的东西，和工作区里的计划、代码、执行结果放在同一套工程闭环里。Agent 后续能继续用，人也方便查看、纠偏和补充。</li><li><b>写入更显式</b>：什么时候写、写了什么，更容易观察。</li><li><b>召回更可控</b>：可以先搜再取，不必把所有历史无脑塞进上下文。</li><li><b>治理边界</b>：默认先用本地工作区文件把链路收稳。后面若真有多用户、跨会话、大规模检索需求，再把记忆层服务化或外置化。</li></ol></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>文件化记忆的本质，是把模型脑内隐式状态变成可读、可写、可审计、可回溯的外部工件。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>外部工件 / 同一工程闭环 / 写入更显式 / 召回更可控 / 治理可后移</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "为什么有些 Agent 项目会从封装更深的 SDK 迁到直接 API 接入？",
+          "a": "<p class=\"md-p\">这通常不换模型能力本身。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>控制权</b>：直接走 API，协议更直、行为更透明，调参和调用链更容易统一。</li><li><b>整合</b>：也更方便和自己现有的工具调度、鉴权、日志、限流、缓存做整合。</li><li><b>何时该迁</b>：原来 SDK 把中间状态、工具调用策略、上下文管理包得比较深、不够好控时，迁到直连 API 的理由就很充分。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>容易理解成哪个更火就换哪个，或哪个 SDK 更高级。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>迁移的核心是把系统的关键控制权拿回到自己手里。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>从深封装 SDK 迁到直连 API，本质是换接入层控制权，把关键控制拿回自己手里。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>接入层控制权 / 协议更直 / 行为更透明 / 和现有链路整合</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Claude Code 和 Cursor 分别适合什么任务？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>工具</th><th>更像</th><th>适合的任务</th></tr></thead><tbody><tr><td>Claude Code</td><td>终端型 agent、工程执行助手</td><td>跨文件修改、代码库理解、脚本执行、测试回归、文档同步这类需要走完整链路的任务</td></tr><tr><td>Cursor</td><td>编辑器里的高质量搭档</td><td>在 IDE 里做局部补全、单文件改造、对着上下文快速提问、边写边改</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>核心是按任务边界选工具，不固定迷信某一个。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Claude Code 适合走完整链路的工程执行，Cursor 适合在 IDE 里局部补全和边写边改。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按任务类型分 / 完整链路 / IDE 内搭档</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Claude Code、Cursor 这类工具里的 Skill / Command，什么样的才算真正好用？",
+          "a": "<p class=\"md-p\">好不好用，不在名字炫不炫，而在能不能稳定收口一类高频任务。成熟的 Skill 或命令，我至少看四点：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>触发边界清楚</b>：用户一看就知道什么时候该用。</li><li><b>输入输出稳定</b>：同样一句话，不会这次能成、下次跑偏。</li><li><b>步骤和护栏</b>：内部把常见步骤封好，比如先搜索、再规划、再执行、最后验证。</li><li><b>失败可决策</b>：失败时给出可继续决策的反馈，避免只吐一段模糊报错。</li></ol></div>\n<p class=\"md-p\">代码审查、提交、排障、拉取上下文、生成计划，这类高频而且步骤相对固定的事，最适合做成 Skill。一次性小动作硬包成 Skill，反而增加理解成本。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Skill 的价值是把这类任务怎样更稳地完成沉成可复用能力，避免只再造一层 Prompt。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>好用的 Skill 或 Command，本质是把一类高频任务稳定收口，沉成可复用能力。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>触发边界清楚 / 输入输出稳定 / 步骤和护栏 / 失败可决策</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "spec-driving 的 code agent 是什么？spec 模式、brainstorm、plan mode 这几种开发方式怎么理解？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方式</th><th>在做什么</th><th>适合什么</th></tr></thead><tbody><tr><td>spec 模式</td><td>先把共识钉住，再基于 spec 拆任务和执行</td><td>需求复杂、改动范围大、后续还要反复追问</td></tr><tr><td>brainstorm</td><td>发散探索，先列可能路径和 trade-off</td><td>方案还没想清楚</td></tr><tr><td>plan mode</td><td>执行前收敛：要改哪些模块、先后顺序和风险点</td><td>把执行路径压实</td></tr></tbody></table></div>\n<p class=\"md-p\">我会按这个顺序用：先 brainstorm 收集方案，再用 spec 固化边界，最后用 plan mode 把执行路径压实。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>把它理解成先写文档再写代码会偏浅，关键是目标、边界、验收标准和约束先说清楚。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>比较成熟的习惯是三者串起来，不做三选一。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>spec-driving 的本质是先说清目标、边界、验收标准和约束，再让 Agent 按 spec 拆任务执行。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>spec 钉共识 / brainstorm 发散 / plan mode 收敛 / 三者串联</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "Claude Code 的 Plan 模式和 OpenSpec 有什么区别？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>Plan 模式</th><th>OpenSpec</th></tr></thead><tbody><tr><td>层面</td><td>运行时的只规划不落地执行模式</td><td>spec-driven development 的方法论和资产体系</td></tr><tr><td>重点</td><td>允许 agent 调研代码库、分析方案、输出计划，不直接改文件或执行高风险动作</td><td>把需求、设计、任务拆解沉成稳定 spec，再让人或 agent 按 spec 执行</td></tr><tr><td>解决什么</td><td>当前这一次交互里怎么安全地先想清楚</td><td>跨轮次、跨成员、跨阶段怎么围绕同一份规格协作</td></tr><tr><td>边界</td><td>权限和执行边界</td><td>规格与协作边界</td></tr><tr><td>偏向</td><td>当前只做方案规划，不直接动代码</td><td>把方案做成可持续复用和协作的工件</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>两者很容易被放到一起聊，但不是一个层面。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Plan 模式是一次交互的权限和执行边界，OpenSpec 是整条开发流程的规格与协作边界。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>运行时只规划 / 规格资产体系 / 一次交互 / 跨阶段协作</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "如果把大模型工程实践放在一起讲，Prompt 工程、上下文工程、fallback、retry、reflection、模型选型一般怎么收口？",
+          "a": "<p class=\"md-p\">我按让系统更准、更稳、更省来收，不把它们当成孤立名词。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>Prompt 工程</b>：把目标、约束和输出格式说清楚。</li><li><b>上下文工程</b>：给模型什么信息、不该给什么噪声，历史怎么裁剪和摘要。</li><li><b>fallback 和 retry</b>：主链路失败时别一下子全挂。</li><li><b>reflection</b>：关键节点自检和补漏。</li><li><b>模型选型</b>：在效果、成本、时延、结构化输出能力和工具调用稳定性之间取舍。</li></ol></div>\n<p class=\"md-p\">放回真实链路：入口先做路由和上下文整理，请求发给合适模型；执行中若工具超时、结果不完整或模型拒答，再决定重试、换模型、降级还是追问；关键结果输出前，再做一次结构检查或 reflection。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>这些不是平铺罗列的技巧，而是共同服务一条完整执行链路。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>工程重点是把输入组织、模型选择、失败恢复、结果校验做成闭环。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>这些实践共同服务一条执行链路，收口是输入组织、模型选择、失败恢复、结果校验的闭环。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>更准更稳更省 / Prompt 工程 / 上下文工程 / 失败与自检 / 模型选型</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-7",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "可靠性、成本与观测",
+      "number": "8 问",
+      "items": [
+        {
+          "q": "在构建复杂 Agent 时，你认为最主要的挑战是什么？",
+          "a": "<p class=\"md-p\">至少有五个工程难点：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>状态管理</b>：长链路任务里，目标、约束、上下文、工具结果要持续保持一致。</li><li><b>可靠性</b>：工具失败、超时、部分成功要能恢复。</li><li><b>成本和时延</b>：多轮推理、多次检索和多工具调用会迅速放大成本。</li><li><b>安全边界</b>：尤其涉及代码执行、外部 API 和真实业务动作时。</li><li><b>观测与评估</b>：没有 Trace、日志和任务级指标，就分不清 Agent 是靠能力完成还是靠运气完成。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>最大挑战不是让模型会调用工具，而是把不确定系统做成可控系统。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>一个 demo 能跑通，不代表线上能稳定、可审计、可回放、可治理。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>复杂 Agent 最大的挑战，是把不确定系统做成可控系统，难点在系统工程。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>状态管理 / 可靠性 / 成本和时延 / 安全边界 / 观测与评估</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Agent 在生产落地中最大的痛点是什么？如何解决？",
+          "a": "<p class=\"md-p\">痛的地方通常有五个：结果不稳定、链路太长、成本太高、失败难归因、安全边界难守。</p>\n<p class=\"md-p\">解决要配套做，不是单点：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>流程显式化</b>：哪些步骤固定、哪些步骤开放，由系统决定。</li><li><b>观测补齐</b>：至少有 trace、日志、步骤结果、耗时和成本。</li><li><b>评测和回放</b>：不然优化没有抓手。</li><li><b>失败处置</b>：降级、重试、熔断和人工接管。</li><li><b>安全接上</b>：权限、沙箱、审批和审计。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>难点不在会不会调工具，而在怎么把它做成一个像样的系统。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>生产落地里最值钱的是工程治理，而不是 Prompt 花活。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>生产最大痛点是不确定系统很难稳定运营：Demo 能跑，和线上能控、能查、能回放是两回事。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>五类痛点 / 流程显式化 / 观测与回放 / 降级接管 / 权限与审计</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "Agent 调用量现在不大，如果规模放大，会先暴露什么问题？怎么优化？",
+          "a": "<p class=\"md-p\">先暴露的往往不是模型能力。最常见四类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>成本</b>：多轮推理和多工具链会放大 token。</li><li><b>时延</b>：一条链路只要有慢工具，就会拖长整体响应。</li><li><b>稳定性</b>：长链路里任意一个环节超时，都可能把错误率放大。</li><li><b>资源争抢</b>：不同租户和不同优先级任务会互相抢额度。</li></ol></div>\n<p class=\"md-p\">优化按层做：先做路由，不是所有请求都走完整 Agent；再做上下文压缩和结果缓存；再做异步化和优先级队列；然后做模型分层，简单任务交给便宜模型，复杂任务才走强模型；最后补齐观测，包括耗时、步骤成功率、重试率和单次成本。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>没有这些指标，所谓扩容基本都是拍脑袋。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>调用量放大后，先暴露的是成本、时延、稳定性和资源争抢这些系统治理问题。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>成本与 token / 时延被拖长 / 错误率放大 / 额度争抢 / 分层优化</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "Agent 的耗时过长时，有哪些工程侧和模型侧的优化手段？",
+          "a": "<p class=\"md-p\">工程侧我先做四件事：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>路由分层</b>：不是所有请求都进完整 Agent；能直接答的直接答，能单次检索解决的不要走多轮工具循环。</li><li><b>并行化</b>：互不依赖的检索、过滤、工具调用并发跑。</li><li><b>缓存</b>：把 query rewrite、检索结果、工具只读结果和会话摘要做分层缓存。</li><li><b>长任务异步化</b>：前台先回执任务状态，后台慢慢跑，别把所有耗时都堆在一次同步请求里。</li></ol></div>\n<p class=\"md-p\">模型侧是少想、短想、分层想：简单环节用便宜模型做 rewrite、分类和摘要，复杂决策才交给强模型；上下文尽量裁剪，只留当前决策需要的内容；减少无效 Reflection 和重复思考；固定格式输出尽量用结构化约束，减少模型自由发挥。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>耗时长很多时候不是模型太慢，而是系统让它想了太多本不该想的事。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>耗时优化分两侧：工程侧缩短路径，模型侧少想、短想、分层想。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>路由分层 / 并行化 / 分层缓存 / 长任务异步 / 模型侧少想</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "OpenTelemetry 的 Trace 是怎么跨进程传递的？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>入口</b>：服务入口生成或接收 Trace Context。</li><li><b>HTTP</b>：常见做法是遵循 W3C Trace Context，在 HTTP Header 里透传 <code class=\"tok-inline\">traceparent</code>，必要时再带上 <code class=\"tok-inline\">tracestate</code>；调用下游服务时继续注入。</li><li><b>RPC 或 MQ</b>：把上下文写进 metadata 或消息头，消费端再提取出来，继续创建 span。</li></ol></div>\n<p class=\"md-p\">这样一次请求即使跨了网关、应用服务、执行器和异步任务，也能串成同一条 trace。Agent 平台链路天然长，只有日志很难看清时间花在哪、错误断在哪；Trace 能把整条路径和瓶颈段串出来，再配合日志和 metrics 才能排障。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>跨进程靠的是上下文传播协议，而不是各进程各自打日志。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Trace 跨进程传递的本质是上下文传播：入口持有 Trace Context，调用下游时注入，消费端再提取。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>W3C 上下文 / HTTP 头透传 / RPC 与 MQ / 串成一条 trace</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "MCP 的完整交互流程一般怎么讲？Agent 又是怎么和 MCP Server 建立连接、发现工具并完成一次调用的？",
+          "a": "<p class=\"md-p\">我按一条完整链路讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>建连</b>：Agent 进程先和 MCP Server 建立连接。常见是本地 stdio，或远程的 Streamable HTTP。旧版 HTTP+SSE 传输已在 2025-03 版规范中弃用；远程 Server 一般按 OAuth 2.1 做授权。</li><li><b>能力发现</b>：客户端读取 Server 暴露的 tools、resources、prompts 和对应 schema。</li><li><b>注册筛选</b>：运行时把这些能力注册到自己的工具目录，并结合当前会话权限、租户、环境做筛选。</li><li><b>调用意图</b>：用户发来任务后，模型根据目标和可用 schema 产出结构化调用意图。</li><li><b>协议转发</b>：运行时把这个意图按 MCP 协议发给对应 Server。</li><li><b>执行回传</b>：Server 做参数校验、权限校验和实际执行，再把结果按结构化 observation 回传。</li><li><b>写回再决策</b>：Agent 把结果写回当前状态，决定继续下一步调用、换工具、追问用户，还是直接收口回复。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>MCP 不只是发一个 JSON 调一下工具，而是连接建立、能力发现、调用意图生成、协议转发、执行回传、再决策的闭环。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>执行权在谁手里？</b></p><p class=\"md-p\">执行权始终在运行时和 Server 手里，模型只负责提议。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>工具一多怎么避免失控？</b></p><p class=\"md-p\">工程上一定要有超时、错误码、重试、审计和权限边界，不然工具一多，这条链路会很快失控。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MCP 调用的本质是一条闭环：建连、发现能力、生成意图、协议转发、执行回传，再由 Agent 决策。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>建连与授权 / 发现并注册 / 生成调用意图 / 校验后回传 / 写回再决策</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "WebSocket 和 SSE 有什么区别？在 Agent 或 AI 产品里怎么选？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>SSE</th><th>WebSocket</th></tr></thead><tbody><tr><td>通信方向</td><td>服务器单向推给客户端</td><td>双向全双工，客户端和服务端都能随时发消息</td></tr><tr><td>典型场景</td><td>token 流式输出、任务进度、日志流，服务端持续发、客户端主要接收</td><td>多人协作、实时控制、前端中断任务、交互式 Agent 面板</td></tr><tr><td>工程特点</td><td>基于 HTTP，往往更简单，代理和网关兼容性更好，也更轻</td><td>更灵活、更全，可前端实时下发指令、取消任务、回传工具状态、多端协同</td></tr><tr><td>适用场景</td><td>只做大模型回答流式输出</td><td>需要双向实时控制</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会按需求选：SSE 更轻，WebSocket 更全，核心取决于是不是需要双向实时控制。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>SSE 和 WebSocket 的本质差别是单向推送还是双向全双工，核心看要不要双向实时控制。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>通信方向 / 典型场景 / 工程取舍 / 按需选择</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "怎么设计 Agent 的流式输出，尤其是包含工具调用和多轮模型交互时？",
+          "a": "<p class=\"md-p\">我会把流式输出拆成两条流：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>内容流</b>：给用户看的，比如思考进度、阶段状态、最终答案 token 流。</li><li><b>内部事件流</b>：系统内部事件，比如“开始检索”“工具调用中”“工具返回”“进入下一轮决策”。</li></ol></div>\n<p class=\"md-p\">我不会把内部推理原文全吐给用户，而是转成更稳定的阶段事件。这样前端能实时展示进度，后端也能把多轮交互串成一条完整 trace。</p>\n<p class=\"md-p\">链路里有多次模型调用和工具调用时，每个阶段用统一事件模型，比如 <code class=\"tok-inline\">message_delta</code>、<code class=\"tok-inline\">tool_start</code>、<code class=\"tok-inline\">tool_end</code>、<code class=\"tok-inline\">step_summary</code>、<code class=\"tok-inline\">final_answer</code>。前端拿到这些事件后，可以边展示内容、边更新状态条、边决定是否允许用户中断。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>流式输出的核心不是更炫，而是让长链路 Agent 看起来不再像卡死黑盒。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>流式输出的本质是两条流：用户内容流负责展示，内部阶段事件流把多轮串成 trace。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>内容流 / 内部事件流 / 统一事件模型 / 可中断进度</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-8",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "安全、权限与风险控制",
+      "number": "7 问",
+      "items": [
+        {
+          "q": "如何确保 Agent 的行为安全、可控且符合人类意图？常见的对齐方法有哪些？",
+          "a": "<p class=\"md-p\">我把对齐拆成两层：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>训练侧对齐</b>：常见有 SFT、RLHF、DPO、Constitutional AI 这类偏好或规则对齐，让模型更愿意遵循人类偏好和安全边界。</li><li><b>运行时治理</b>：Agent 真正会动工具、改状态、发请求，所以要做最小权限、工具 allowlist、参数 schema 校验、危险动作二次确认、人类兜底审批、沙箱隔离、输出审计和日志回放。</li></ol></div>\n<p class=\"md-p\">涉及支付、发消息、改库、执行代码时，必须把高风险动作从普通回答里隔离出来。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>Agent 安全不是只靠一个安全 prompt。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>有效的是模型对齐 + 工具权限 + 策略引擎 + 人在回路 + 审计回放一起做。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>对齐分两层：训练侧用偏好约束模型，运行时靠权限、策略和人在回路把动作圈住。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>训练侧对齐 / 运行时治理 / 高风险隔离</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "Jailbreak 和 Prompt Injection 有什么区别？为什么具备 Tool Use 的 Agent 风险更高？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>Jailbreak</th><th>Prompt Injection</th></tr></thead><tbody><tr><td>方式</td><td>用户正面和模型对抗，想绕过安全规则，让模型说本来不该说的话</td><td>把恶意指令藏在外部输入里，模型把外部内容误当成高优先级指令</td></tr><tr><td>载体</td><td>直接对话</td><td>网页、邮件、文档、API 返回值</td></tr><tr><td>性质</td><td>直接对话攻击</td><td>间接内容投毒</td></tr></tbody></table></div>\n<p class=\"md-p\"><b>Tool Use 为什么风险更高</b>：普通聊天模型被注入后，很多时候最多是输出异常，也就是“说错话”；Agent 一旦把外部恶意内容当真，可能越权读数据、调用危险接口、执行命令、发起转账或泄露内部信息，也就是“做错事”。Tool Use 会把 Prompt Injection 从内容风险升级成操作风险。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Jailbreak 的本质是正面绕过安全规则；Prompt Injection 的本质是把恶意指令藏进外部输入。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>正面绕规则 / 外部内容投毒 / 操作风险升级</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "Agent 开发中的系统安全风险有哪些？怎么防范？",
+          "a": "<p class=\"md-p\">我会把风险分成六类来讲：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>注入与滥用</b>：Prompt Injection 让模型被外部内容带偏；工具滥用是本来只该读文件，结果去执行了危险命令。</li><li><b>数据越权</b>：把不该看的租户数据、内部文档或密钥带出来。</li><li><b>执行环境风险</b>：代码执行、脚本运行、浏览器自动化带来宿主机暴露。</li><li><b>外部依赖风险</b>：第三方 API 回来的内容本身带恶意指令。</li><li><b>审计与护栏</b>：审计缺失会让出了问题追不回去。防范必须是系统级的：最小权限、工具 allowlist、参数 schema 校验、租户隔离、敏感资源脱敏、沙箱执行、出网控制、危险动作二次确认、完整审计日志，这些都要上。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>安全不能只寄希望于模型听话，要靠权限边界和运行时护栏把风险圈住。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 安全风险分六类，防范的本质是用权限边界和运行时护栏把风险圈住。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>注入与滥用 / 数据越权 / 执行环境风险 / 外部依赖风险 / 审计与护栏</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "为什么工具调用型 Agent 特别容易出现权限越界？最小权限原则怎么落地？",
+          "a": "<p class=\"md-p\">模型擅长把目标做成，不擅长天然尊重组织里的细粒度权限边界。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>目标驱动越界</b>：如果把十几个工具都暴露给它，工具描述又很宽，模型很容易为了完成任务越界。</li><li><b>边界易滑</b>：再叠加多租户数据、跨系统 API 和外部插件，权限边界一模糊，就容易从“查一下订单”滑到把别的租户数据也查出来。</li><li><b>allowlist</b>：按租户、角色、会话、任务类型给工具做 allowlist。</li><li><b>校验与确认</b>：工具参数做 schema 校验和资源范围校验；写操作和高风险操作强制二次确认。</li><li><b>默认只读</b>：默认只开放只读能力，把真正危险的动作放在人工审批或专用服务后面。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>最小权限要做成系统能力，不能写在 Prompt 里祈祷模型听话。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>模型只负责提意图，权限系统负责说它到底能不能做。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>越界的本质是模型会把目标做成，却不天然守细粒度权限；最小权限要做成系统能力。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>目标驱动越界 / 边界易滑 / allowlist / 校验与确认 / 默认只读</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "MCP 调用工具时，参数校验一般怎么做？校验失败后怎么处理？",
+          "a": "<p class=\"md-p\">我按三层由浅到深做：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>schema 校验</b>：字段是否齐全、类型对不对、枚举值是否合法、必填项有没有缺。</li><li><b>业务校验</b>：资源 ID 是否存在、用户是否有权限访问这个路径、时间范围是否越界、文件类型是否支持。</li><li><b>运行时校验</b>：是否超出预算、是否命中危险动作、当前会话是否允许写操作。</li></ol></div>\n<p class=\"md-p\"><b>结构化失败回传</b>：不能只返回一句报错字符串，要返回结构化异常，区分缺参、类型错误、权限不足、资源不存在、风险动作被拒绝，并把错误码和可恢复信息回传给 Agent。这样模型下一步才能判断是补参数重试、换工具、降级回答，还是直接追问用户。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>工具调用稳定性很多时候不是败在模型选错工具，而是败在校验失败后没有给出可继续决策的 observation。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>参数校验的本质是分开“长得像对”和“真能执行”；失败要回可决策的结构化 observation。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>schema 校验 / 业务校验 / 运行时校验 / 结构化失败回传</p>",
+          "leadType": "v9:原理/工程"
+        },
+        {
+          "q": "如何解决 Agent 工具调用时的“幻觉”，比如编造 API、传错参数？",
+          "a": "<p class=\"md-p\">这类幻觉是三类问题叠在一起，治理我一般分四层：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>三类根因</b>：工具暴露有问题，描述太模糊、schema 太松、候选太多，模型分不清；上下文不完整，缺用户 ID、资源 ID、路径范围、版本号，模型就会自己补；运行时没护栏，错误参数直接往下游打，一次小偏差变成真实故障。</li><li><b>强约束 schema</b>：把工具描述写成强约束，字段类型、枚举、必填项、示例都尽量明确。</li><li><b>运行时拦截</b>：做参数校验、权限校验和 allowlist，模型只能提意图，不能直接执行。</li><li><b>结构化失败</b>：把失败原因回传给模型，让它知道是缺参数、参数错了，还是资源不存在。</li><li><b>预检查</b>：关键工具前做 dry-run 或只读预检查。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>核心思路是把“能不能调”从语言猜测，改成可验证的契约。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>工具幻觉的本质是暴露、上下文、护栏三类问题叠在一起，治理要改成可验证契约。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>三类根因 / 强约束 schema / 运行时拦截 / 结构化失败 / 预检查</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "为什么执行器要放进 Docker 沙箱，而不是直接在宿主机跑？",
+          "a": "<p class=\"md-p\">风险模型是核心。执行器往往要跑脚本、工具甚至用户生成代码。直接在宿主机执行，文件系统、网络、资源和权限边界都不好控。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>镜像与限额</b>：用镜像统一运行环境，再用 CPU、内存、用户、挂载目录、网络和超时限制，把风险圈在容器里。</li><li><b>回收和审计</b>：这样既能跑任务，也能相对可控地回收和审计。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>容器不是绝对安全，还要配合最小权限、只读文件系统、网络白名单、镜像治理和超时清理。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>执行器放进 Docker 沙箱的本质，是把文件、网络、资源和权限风险圈在容器里。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>宿主机难控 / 镜像与限额 / 回收和审计</p>",
+          "leadType": "v9:原理/方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    },
+    {
+      "id": "ai-agent-9",
+      "kind": "qa",
+      "mod": "ai",
+      "part": "AI 八股",
+      "cat": "AI · Agent",
+      "title": "评测、选型与持续优化",
+      "number": "5 问",
+      "items": [
+        {
+          "q": "Agent 框架一般怎么选？最终场景看哪些评价指标？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>取向</th><th>更适合</th></tr></thead><tbody><tr><td>LangChain / LangGraph</td><td>快速编排和复杂工作流</td></tr><tr><td>LlamaIndex</td><td>数据接入和 RAG</td></tr><tr><td>Coze、Dify</td><td>原型验证、业务方共创或低代码交付</td></tr><tr><td>自研执行层</td><td>权限、审计、隔离、任务恢复特别重；框架当组件，不当平台本体</td></tr></tbody></table></div>\n<p class=\"md-p\">选型我看五类指标：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>任务成功率</b>：一个目标最终完成的比例。</li><li><b>工具调用质量</b>：成功率、参数正确率、重试率。</li><li><b>链路表现</b>：端到端时延、平均步骤数、单任务成本。</li><li><b>稳定性</b>：超时率、恢复成功率、人工接管率。</li><li><b>业务指标</b>：用户采纳率、转人工率、复问率。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不能只看模型答得像不像人。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>关键是任务有没有完成、成本能不能接受。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>框架选型的本质是按场景匹配，最终看任务有没有完成、成本能不能接受。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>按场景选型 / 任务与工具 / 链路表现 / 稳定性 / 业务指标</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "Agent 能力什么时候值得微调？如果要微调，数据集通常怎么收集？",
+          "a": "<p class=\"md-p\">很多问题我先用 Prompt、工具 schema、流程约束和评测闭环解决，不一定一上来就微调。</p>\n<p class=\"md-p\">值得微调的，通常是工具选择稳定性、参数填充格式、特定任务决策风格、拒答边界，或某类领域动作模式。</p>\n<p class=\"md-p\">数据集我按四类收：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>真实运行日志</b>：把高质量成功轨迹沉淀下来。</li><li><b>人工构造和标注</b>：覆盖关键场景、边界场景和失败案例。</li><li><b>自博弈或模型蒸馏</b>：用强模型生成高质量轨迹再筛。</li><li><b>失败回放</b>：把误调用、漏调用、错误参数、错误停止做成 hard cases。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>清洗和标注标准不清，微调出来的只会模仿日志格式，不会做对任务。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>标注至少要标清什么？</b></p><p class=\"md-p\">任务目标、上下文、工具列表、正确动作序列、最终结果和失败原因都要标清楚。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>值得微调的本质，是补工具选择和参数这类稳定行为，不是一次练出整个系统。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先走非微调 / 值得微调的点 / 四类数据来源 / 清洗与标注</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "做 Agent 开发，对底层 LLM 的能力有什么具体要求？",
+          "a": "<p class=\"md-p\">做 Agent，我不只看模型聪不聪明，而看它是否适合被系统控制。至少六条：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>指令遵循</b>：要稳定，系统提示词和工具规则才压得住。</li><li><b>结构化输出</b>：JSON、schema、Function Calling 要好。</li><li><b>多轮一致性</b>：要够，不然一轮一个说法。</li><li><b>长上下文提取</b>：关键信息要稳，不然记忆和 RAG 用不上。</li><li><b>幻觉控制</b>：不能太重，尤其在工具选择和参数填充上。</li><li><b>时延和成本</b>：要可接受，不然线上跑不起。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只看榜单分数不够。看起来很强的模型，放到真实系统里未必比更合适的模型好用。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>Agent 场景里更重要的是可控、可预测、可集成。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Agent 选底层模型的本质，是看它能不能被系统稳定控制：可控、可预测、可集成。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>指令遵循 / 结构化输出 / 多轮与长上下文 / 幻觉控制 / 时延和成本</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "开源模型的 Function Calling 能力较弱时，怎么通过 Prompt 或微调提升？",
+          "a": "<p class=\"md-p\">我不会一上来就归因到换模型。先把工具暴露方式和训练样本做好，效果往往会明显改善。Prompt 侧我做四件事：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>描述写成契约</b>：参数类型、枚举值、必填项、禁止项写清楚，少用模糊自然语言。</li><li><b>先路由再展开</b>：减少同时暴露的工具数量，别让弱模型一上来就在十几个工具里乱猜。</li><li><b>高质量 few-shot</b>：覆盖正确调用、缺参重试、调用失败后的回退。</li><li><b>卡死输出格式</b>：收成结构化 JSON 或 schema，不给太大自由发挥空间。</li></ol></div>\n<p class=\"md-p\">Prompt 还不够，再做小规模 SFT 或偏好优化。数据要把误调用、漏调用、参数填错、明明该追问却硬调工具这些 hard case 也喂进去。微调目标是让模型更会按规则调用工具。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>数据重点不是成功样本越多越好，缺了 hard case，调用行为补不齐。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先靠约束收窄空间，再靠针对性轨迹数据补行为。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>弱 Function Calling 先把工具和输出收成契约，再用 hard case 补按规则调用。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>描述写成契约 / 先路由再展开 / few-shot / 卡死输出格式 / SFT 补行为</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "如何让 Agent 具备自我学习或经验沉淀的能力？",
+          "a": "<p class=\"md-p\">我按“先沉淀，再筛选，再吸收”来做。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先记录</b>：成功轨迹、失败轨迹、人工修正、用户反馈和高频异常都留下。</li><li><b>再筛选</b>：做聚类、归因和筛选，判断哪些是可复用经验。</li><li><b>再吸收</b>：沉到规则、Skill、长期记忆、检索知识库，或者离线微调数据里。</li></ol></div>\n<p class=\"md-p\">工程上我走离线闭环：线上先收数据，线下做评估和审核，通过后再回灌系统。不让 Agent 在线直接改自己的核心策略，这样不会把一次偶发错误永久学进去。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>经验沉淀不是让模型自己成长，而是把运行轨迹转成可治理的知识资产。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>自我学习的本质是先沉淀轨迹、再筛选可复用经验，离线审核通过后再回灌。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先记录轨迹 / 聚类筛选 / 沉到知识资产 / 离线闭环</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · AI/Agent"
+    }
+  ]
+}

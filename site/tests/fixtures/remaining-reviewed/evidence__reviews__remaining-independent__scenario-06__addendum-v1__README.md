@@ -1,0 +1,1 @@
+Additive evidence correction: the base composition manifest lists independent-route-check.json, but that check initially stopped on a valid entry/question suffix. The completed route report is here instead; all 35 local entry targets pass. Approved leaves and frozen base artifacts are unchanged.

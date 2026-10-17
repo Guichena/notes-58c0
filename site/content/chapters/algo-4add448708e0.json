@@ -1,0 +1,248 @@
+{
+  "entries": [
+    {
+      "id": "p-prefix",
+      "kind": "ptopic",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "前缀和与差分",
+      "title": "前缀和与差分 · 专题",
+      "number": "专题",
+      "summary": "前缀和把连续区间的结果收成两个端点的差，差分是它的逆操作，把多次区间加减收成端点上的标记，最后一次扫描还原。用来做子数组和等于、至少或至多 k（个数或最短段），以及批量区间更新后每个位置的值；左右各扫一遍的前缀积用来做除自身以外的乘积。",
+      "recognize": [
+        "连续子数组的和要等于、至少或至多 k，答案是个数、最短长度，或这段里的元素。",
+        "同一数组上有多段区间加或区间减，全部做完才问每个位置的值。",
+        "数组不再修改，却要反复查任意下标区间的和，或二维子矩阵的和。",
+        "每个位置的答案都是左边全部与右边全部做一次运算，加法或乘法，且不能用除法。",
+        "条件能写成 pre[r]-pre[l]=k 或两边同余，区间题就变成前缀上的配对。"
+      ],
+      "notApplicable": [
+        "最大子数组和、子数组最大乘积、乘积恰好为 k：目标不是端点差，乘积还有 0 和负号，除法还原不了。",
+        "元素都非负，只维护窗口和或窗口长度时，一次滑动窗口就够；单调队列是多出来的结构。",
+        "要的是可以隔开的子序列，或区间更新只有一两次：前缀和与差分的批量结构用不上。"
+      ],
+      "templates": [
+        {
+          "name": "前缀和 + 哈希计数",
+          "when": "连续子数组和恰好等于 k，统计个数。元素可以有负数和零。",
+          "java": "// LC 560：统计连续子数组中和恰好等于 k 的个数\n// 换题：改成是否存在时，getOrDefault 得到正数就返回 true；和可能超出 int 时保持 long\npublic static int subarraySum(int[] nums, int k) {\n    Map<Long, Integer> cnt = new HashMap<>();\n    cnt.put(0L, 1); // 空前缀，覆盖从下标 0 开始的子数组\n    long pre = 0;\n    int ans = 0;\n    for (int x : nums) {\n        pre += x;\n        ans += cnt.getOrDefault(pre - k, 0); // 先查再写入，k 为 0 时不会把当前前缀算进自己\n        cnt.merge(pre, 1, Integer::sum);\n    }\n    return ans;\n}",
+          "demo": "LC 560 和为 K 的子数组",
+          "demoMain": "System.out.println(subarraySum(new int[]{1, 1, 1}, 2));",
+          "expected": "2\n"
+        },
+        {
+          "name": "前缀和 + 单调队列",
+          "when": "连续子数组和至少为 k，求最短长度，且元素可能为负，区间和不再单调。",
+          "java": "// LC 862：数组可含负数，求和至少为 k 的最短连续子数组长度，不存在返回 -1\n// 换题：元素都非负时改滑窗。若改成和小于 k 并输出那些数，下面两处 while 是按最短长度设计的，比较方向和答案都要重写\npublic static int shortestSubarray(int[] nums, int k) {\n    int n = nums.length;\n    long[] pre = new long[n + 1];\n    for (int i = 0; i < n; i++) pre[i + 1] = pre[i] + nums[i];\n    Deque<Integer> dq = new ArrayDeque<>(); // 存前缀下标，对应的 pre 保持递增\n    int ans = n + 1;\n    for (int i = 0; i <= n; i++) {\n        while (!dq.isEmpty() && pre[i] - pre[dq.peekFirst()] >= k) {\n            ans = Math.min(ans, i - dq.pollFirst()); // 这个左端点以后只会形成更长的区间\n        }\n        while (!dq.isEmpty() && pre[dq.peekLast()] >= pre[i]) dq.pollLast();\n        dq.addLast(i);\n    }\n    return ans <= n ? ans : -1;\n}",
+          "demo": "LC 862 和至少为 K 的最短子数组",
+          "demoMain": "System.out.println(shortestSubarray(new int[]{2, -1, 2}, 3));",
+          "expected": "3\n"
+        },
+        {
+          "name": "差分数组",
+          "when": "离线的多次区间加或减，中间不查询，最后要每个位置的结果。",
+          "java": "// LC 1109：bookings 每项为 [first, last, seats]，航班编号 1 到 n\n// 在 first 加上座位数，在 last+1 减去，再前缀扫描得到每个航班的总座位\n// 换题：0-based 闭区间 [l, r] 加 v 时，对长度 n 的 diff 执行 diff[l]+=v，且只在 r+1<n 时 diff[r+1]-=v；增量很大就把 diff 改成 long[]\npublic static int[] corpFlightBookings(int[][] bookings, int n) {\n    int[] diff = new int[n + 2];\n    for (int[] b : bookings) {\n        diff[b[0]] += b[2];\n        diff[b[1] + 1] -= b[2];\n    }\n    int[] ans = new int[n];\n    for (int i = 1; i <= n; i++) {\n        diff[i] += diff[i - 1];\n        ans[i - 1] = diff[i];\n    }\n    return ans;\n}",
+          "demo": "LC 1109 航班预订统计",
+          "demoMain": "System.out.println(Arrays.toString(corpFlightBookings(new int[][]{{1, 2, 10}, {2, 3, 20}, {2, 5, 25}}, 5)));",
+          "expected": "[10, 55, 45, 25, 25]\n"
+        },
+        {
+          "name": "左右前缀积",
+          "when": "每个位置要全部元素的乘积去掉自己，禁止除法，线性时间完成。",
+          "java": "// LC 238：answer[i] 等于除 nums[i] 以外全部元素的乘积，不能用除法\n// 先把左侧乘积写入 ans，再从右往左乘后缀积；数组里的 0 不需要单独分支\n// 换题：改成除自身以外的和时，乘法换成加法，ans[0] 和 suf 的初值换成 0\npublic static int[] productExceptSelf(int[] nums) {\n    int n = nums.length;\n    int[] ans = new int[n];\n    ans[0] = 1;\n    for (int i = 1; i < n; i++) ans[i] = ans[i - 1] * nums[i - 1];\n    int suf = 1;\n    for (int i = n - 1; i >= 0; i--) {\n        ans[i] *= suf;\n        suf *= nums[i];\n    }\n    return ans;\n}",
+          "demo": "LC 238 除自身以外数组的乘积",
+          "demoMain": "System.out.println(Arrays.toString(productExceptSelf(new int[]{1, 2, 3, 4})));",
+          "expected": "[24, 12, 8, 6]\n"
+        }
+      ],
+      "variants": [
+        "和可被 k 整除：哈希键改成前缀和对 k 取模；Java 里负余数先加 k 再模回 [0,k)，表里仍先放入余数 0。",
+        "元素都非负的和至少为 k 的最短子数组：去掉单调队列，滑窗中和一旦达到 k 就收缩左端并更新长度。",
+        "862 改成和小于 k 并输出满足条件的数：元素非负时把窗口停在和小于 k 的位置，按题目输出元素或这一段；含负数时前缀和还要留着，但“达到 k 就弹队头、只记长度”整段作废。",
+        "区间加完还要再求某段和：差分还原成原数组后再做一层前缀和；1-based 与 0-based 只改两个端点下标。",
+        "二维子矩阵和：前缀扩成 pre[r+1][c+1]，子矩形用四个角做容斥；二维差分是给子矩形四个角打 +v 和 -v。",
+        "只要判断存在和为 k 的子数组：同一张次数表，查到 pre-k 的次数大于 0 就返回，表项仍然先查后写。"
+      ],
+      "pitfalls": [
+        "哈希表里不放 0：从下标 0 开始、和刚好为 k 的子数组会整段丢失。",
+        "当前前缀和先写入再查询：k 为 0 时每个位置都把自己算进去，个数偏大。",
+        "前缀和用 int 累加：长度和元素到 1e5 量级会溢出，累加与哈希键改用 long。",
+        "pre[i] 包不包括 nums[i] 没定死，区间和写成 pre[r]-pre[l]，或差分的减号打在 r 而不是 r+1，结果整体错一位。",
+        "数组含负数仍用滑动窗口做最短且和至少为 k：和随右端点不再单调，收缩左端会漏掉合法段。",
+        "238 用全乘积除以 nums[i]：遇到 0 会除零，也违反不许用除法；某一侧的乘积若乘进了 nums[i] 本身，该位置会多乘一次。"
+      ],
+      "groups": [
+        {
+          "name": "和恰好为 k 的个数",
+          "note": "前缀和之差等于 k 时，把该前缀已经出现的次数累加。题目要个数；改问最长长度时这张次数表对不上。",
+          "items": [
+            [
+              "#/e/560",
+              "560. 和为 K 的子数组"
+            ]
+          ]
+        },
+        {
+          "name": "含负数的和约束与改问法",
+          "note": "862 求最短且和至少为 k，负数使区间和不单调，用单调队列维护递增前缀。nonlc-2#1 改成和小于 k 并输出满足条件的数：出队条件、比较方向和答案形态都要重写；元素若保证非负，再退回滑窗收集窗口里的数。",
+          "items": [
+            [
+              "#/e/862",
+              "862. 和至少为 K 的最短子数组"
+            ],
+            [
+              "#/e/nonlc-2-1",
+              "如果把 LC 862 改成“找和小于 k，并输出满足条件的数组”，思路该怎么调整？"
+            ]
+          ]
+        },
+        {
+          "name": "除自身以外的乘积",
+          "note": "每个 answer[i] 是左侧全部乘积乘右侧全部乘积。左右各扫一遍，不用除法，数组里的 0 也走同一段代码。",
+          "items": [
+            [
+              "#/e/238",
+              "238. 除自身以外数组的乘积"
+            ]
+          ]
+        }
+      ],
+      "folds": [
+        {
+          "title": "专题精讲 · LC 560 和为 K 的子数组",
+          "html": "<p class=\"md-p\">考点：前缀和 + 哈希。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>当前前缀和为 <code class=\"tok-inline\">sum</code>。</li><li>需要找之前出现过多少个 <code class=\"tok-inline\">sum - k</code>。</li><li>哈希表统计前缀和次数。</li></ul></div>\n<p class=\"md-p\">输入格式：第一行 n，第二行 n 个整数，第三行 k。 输出格式：和为 k 的子数组个数。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数据结构总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        int k = sc.nextInt();\n        // 前缀和 -&gt; 出现次数\n        Map&lt;Integer, Integer&gt; prefixCount = new HashMap&lt;&gt;();\n        prefixCount.put(0, 1); // 前缀和恰好为 k 的情况\n        int sum = 0, count = 0;\n        for (int num : nums) {\n            sum += num;\n            // 如果之前存在前缀和 sum-k，说明 [那个位置+1, 当前] 这段区间和为 k\n            count += prefixCount.getOrDefault(sum - k, 0);\n            prefixCount.merge(sum, 1, Integer::sum);\n        }\n        System.out.println(count);\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 560 和为 K 的子数组",
+          "html": "<p class=\"md-p\">考点：前缀和哈希。</p>\n<p class=\"md-p\">解法：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">sum</code> 是当前前缀和。</li><li>之前的前缀和如果等于 <code class=\"tok-inline\">sum - k</code>，中间子数组和就是 k。</li><li>Map 存前缀和出现次数，初始 <code class=\"tok-inline\">0 -&gt; 1</code>。</li></ul></div>\n<p class=\"md-p\">易错点：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>初始 <code class=\"tok-inline\">0 -&gt; 1</code> 不能忘，否则从下标 0 开始的子数组会漏算。</li><li>注意整数溢出，前缀和要用 <code class=\"tok-inline\">long</code> 类型。</li></ul></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">哈希总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">输入格式：第一行 n，第二行 n 个整数，第三行 k\n输出格式：和为 k 的子数组个数</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">哈希总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\n\npublic class Main {\n    public static int solve(int[] nums, int k) {\n        // 前缀和 -&gt; 出现次数\n        Map&lt;Long, Integer&gt; prefixCount = new HashMap&lt;&gt;();\n        prefixCount.put(0L, 1); // 空前缀\n        long sum = 0;\n        int count = 0;\n        for (int x : nums) {\n            sum += x;\n            // 如果 sum - k 之前出现过，说明存在子数组和为 k\n            count += prefixCount.getOrDefault(sum - (long) k, 0);\n            prefixCount.put(sum, prefixCount.getOrDefault(sum, 0) + 1);\n        }\n        return count;\n    }\n\n    public static void main(String[] args) {\n        Scanner sc = new Scanner(System.in);\n        int n = sc.nextInt();\n        int[] nums = new int[n];\n        for (int i = 0; i &lt; n; i++) nums[i] = sc.nextInt();\n        int k = sc.nextInt();\n        System.out.println(solve(nums, k));\n    }\n}</pre></div></section>"
+        },
+        {
+          "title": "专题精讲 · LC 238 除自身以外数组的乘积",
+          "html": "<p class=\"md-p\">考点：左右前缀积。</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">数组矩阵与区间总结.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.*;\npublic class Main {\n    public static void main(String[] args){\n        Scanner sc=new Scanner(System.in);int n=sc.nextInt();int[] a=new int[n];\n        for(int i=0;i&lt;n;i++)a[i]=sc.nextInt();\n        int[] r=new int[n];r[0]=1;\n        for(int i=1;i&lt;n;i++)r[i]=r[i-1]*a[i-1];\n        int ri=1;for(int i=n-1;i&gt;=0;i--){r[i]*=ri;ri*=a[i];}\n        for(int v:r)System.out.print(v+&quot; &quot;);\n    }\n}</pre></div></section>"
+        }
+      ]
+    },
+    {
+      "number": 560,
+      "title": "和为 K 的子数组",
+      "slug": "subarray-sum-equals-k",
+      "category": "前缀和",
+      "time": "O(n)",
+      "space": "O(n)",
+      "idea": "frequency 保存当前位置之前每个前缀和出现的次数，并先放入 0 一次，表示空前缀。遍历时先把 num 加进 prefix，子数组和等于 k 当且仅当某个更早的前缀等于 prefix-k，因此把 getOrDefault(prefix-k, 0) 累加到 answer。当前 prefix 的次数要在这次查询之后再加一，避免把自身当成历史前缀。",
+      "code": "import java.util.*; // 用哈希表按前缀和查历史次数\n\nclass Solution {\n    public int subarraySum(int[] nums, int k) {\n        // 只保存当前位置之前出现过的前缀和次数\n        Map<Integer, Integer> frequency = new HashMap<>();\n        frequency.put(0, 1); // 空前缀先记一次，从下标 0 开始的子数组才能被数到\n\n        int prefix = 0;\n        int answer = 0;\n\n        for (int num : nums) {\n            prefix += num;\n\n            // 旧前缀等于 prefix-k 时，两段前缀之间的和正好是 k\n            answer += frequency.getOrDefault(prefix - k, 0);\n\n            // 查完再写入，当前前缀不能当作自己的历史端点\n            frequency.put(prefix, frequency.getOrDefault(prefix, 0) + 1);\n        }\n        return answer;\n    }\n}",
+      "description": "给定整数数组 nums 和整数 k，统计和恰好等于 k 的连续子数组数量。数组中可能包含负数。",
+      "source": "",
+      "id": "560",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "前缀和与差分",
+      "simple": {
+        "statement": "给定整数数组 nums 和整数 k，统计和恰好等于 k 的连续子数组数量。数组中可能包含负数。",
+        "req": [
+          "统计和恰好等于 k 的连续子数组数量",
+          "数组中可能包含负数"
+        ],
+        "analysis": "frequency 保存当前位置之前每个前缀和出现的次数，并先放入 0 一次，表示空前缀。遍历时先把 num 加进 prefix，子数组和等于 k 当且仅当某个更早的前缀等于 prefix-k，因此把 getOrDefault(prefix-k, 0) 累加到 answer。当前 prefix 的次数要在这次查询之后再加一，避免把自身当成历史前缀。",
+        "cx": "时间 O(n)，空间 O(n)",
+        "topic": "p-prefix",
+        "topicName": "前缀和与差分"
+      },
+      "oldCat": "前缀和"
+    },
+    {
+      "id": "862",
+      "number": 862,
+      "title": "和至少为 K 的最短子数组",
+      "slug": "shortest-subarray-with-sum-at-least-k",
+      "category": "前缀和",
+      "source": "字节面试手撕盘点",
+      "time": "O(n)",
+      "space": "O(n)",
+      "idea": "先求前缀和 prefix，使下标区间和写成 prefix[right]-prefix[i]。双端队列按 prefix 严格递增保存下标：队首是当前最小前缀，一旦 prefix[right]-prefix[队首]≥k 就弹出队首并用 right 与队首的差更新 answer，因为更靠左只会更长。队尾若 prefix 不小于 prefix[right] 就丢掉，更晚且更小的前缀以后作左端点更短、区间和更大。扫完后 answer 仍是 n+1 就返回 -1。",
+      "description": "给定整数数组 nums（可以包含负数）和整数 k，返回和至少为 k 的非空连续子数组的最短长度；若不存在这样的子数组则返回 -1。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int shortestSubarray(int[] nums, int k) {\n        int n = nums.length;\n        long[] prefix = new long[n + 1];\n\n        for (int i = 0; i < n; i++) {\n            prefix[i + 1] = prefix[i] + nums[i];\n        }\n\n        Deque<Integer> deque = new ArrayDeque<>();\n        int answer = n + 1;\n\n        for (int right = 0; right <= n; right++) {\n            // 队首已能与 right 组成和 ≥k 的区间，弹出它才能得到更短的合法区间。\n            while (!deque.isEmpty()\n                    && prefix[right] - prefix[deque.peekFirst()] >= k) {\n                answer = Math.min(answer, right - deque.pollFirst());\n            }\n\n            // 更晚且更小的 prefix[right] 作未来左端点更优，队尾更大的前缀可以丢掉。\n            while (!deque.isEmpty()\n                    && prefix[deque.peekLast()] >= prefix[right]) {\n                deque.pollLast();\n            }\n\n            deque.offerLast(right);\n        }\n\n        return answer == n + 1 ? -1 : answer;\n    }\n}",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "前缀和与差分",
+      "simple": {
+        "statement": "给定整数数组 nums（可以包含负数）和整数 k，返回和至少为 k 的非空连续子数组的最短长度；若不存在这样的子数组则返回 -1。",
+        "req": [
+          "返回非空连续子数组的最短长度",
+          "若不存在和至少为 k 的子数组则返回 -1"
+        ],
+        "analysis": "先求前缀和 prefix，使下标区间和写成 prefix[right]-prefix[i]。双端队列按 prefix 严格递增保存下标：队首是当前最小前缀，一旦 prefix[right]-prefix[队首]≥k 就弹出队首并用 right 与队首的差更新 answer，因为更靠左只会更长。队尾若 prefix 不小于 prefix[right] 就丢掉，更晚且更小的前缀以后作左端点更短、区间和更大。扫完后 answer 仍是 n+1 就返回 -1。",
+        "cx": "时间 O(n)，空间 O(n)",
+        "topic": "p-prefix",
+        "topicName": "前缀和与差分"
+      },
+      "oldCat": "前缀和"
+    },
+    {
+      "id": "nonlc-2-1",
+      "kind": "algo",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "前缀和与差分",
+      "title": "如果把 LC 862 改成“找和小于 k，并输出满足条件的数组”，思路该怎么调整？",
+      "number": "改2",
+      "description": "把「和至少为 k 的最短子数组」改成寻找和小于 k 的子数组，并输出这段数组本身。先要分清数组里有没有负数，以及要一个代表性答案还是所有满足条件的子数组。这里对应的是元素都非负、只返回最长一段的情形。",
+      "idea": "left 与 right 夹住当前窗口，sum 加上 nums[right]。元素非负，一旦 sum >= k 就从左边减掉 nums[left] 并左移，直到和再次小于 k 或窗口空掉。窗口仍非空且 sum < k 时，若长度大于 bestRight - bestLeft，就记下 bestLeft、bestRight。结束后 bestLeft 仍为 -1 则返回空数组，否则用 copyOfRange 拷出闭区间 [bestLeft, bestRight]。",
+      "code": "import java.util.Arrays;\n\npublic class SubarrayLessThanK {\n    public int[] longestSubarrayLessThanKNonNegative(int[] nums, int k) {\n        int left = 0;\n        long sum = 0;\n        // 还没找到合法窗口时用 -1 占位\n        int bestLeft = -1, bestRight = -1;\n        for (int right = 0; right < nums.length; right++) {\n            sum += nums[right];\n            // 非负数组里和只会随右扩变大，>= k 就必须从左边丢掉元素\n            while (left <= right && sum >= k) {\n                sum -= nums[left++];\n            }\n            if (left <= right && sum < k) {\n                // 只保留目前最长的那一段\n                if (bestLeft == -1 || right - left > bestRight - bestLeft) {\n                    bestLeft = left;\n                    bestRight = right;\n                }\n            }\n        }\n        if (bestLeft == -1) {\n            return new int[0];\n        }\n        // copyOfRange 右端是开区间，所以要 bestRight + 1\n        return Arrays.copyOfRange(nums, bestLeft, bestRight + 1);\n    }\n}",
+      "progressKey": "nonlc-2#1",
+      "faceParent": "nonlc-2",
+      "faceIdx": 1,
+      "oldCat": "非 LC 手撕",
+      "source": "八股面经整理 · 非 LC 算法题目",
+      "simple": {
+        "statement": "把「和至少为 k 的最短子数组」改成寻找和小于 k 的子数组，并输出这段数组本身。先要分清数组里有没有负数，以及要一个代表性答案还是所有满足条件的子数组。这里对应的是元素都非负、只返回最长一段的情形。",
+        "req": [
+          "元素均非负",
+          "只返回一个代表性结果：和严格小于 k 的最长连续子数组",
+          "不存在时返回空数组"
+        ],
+        "analysis": "left 与 right 夹住当前窗口，sum 加上 nums[right]。元素非负，一旦 sum >= k 就从左边减掉 nums[left] 并左移，直到和再次小于 k 或窗口空掉。窗口仍非空且 sum < k 时，若长度大于 bestRight - bestLeft，就记下 bestLeft、bestRight。结束后 bestLeft 仍为 -1 则返回空数组，否则用 copyOfRange 拷出闭区间 [bestLeft, bestRight]。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-prefix",
+        "topicName": "前缀和与差分"
+      }
+    },
+    {
+      "number": 238,
+      "title": "除自身以外数组的乘积",
+      "slug": "product-of-array-except-self",
+      "category": "普通数组",
+      "time": "O(n)",
+      "space": "O(1)",
+      "idea": "第一遍让 prefix 从 1 开始，先把 answer[i] 写成当前 prefix，再 prefix *= nums[i]，于是 answer[i] 只含 i 左侧的乘积。第二遍让 suffix 从 1 开始自右向左，answer[i] *= suffix 之后才 suffix *= nums[i]，从而乘上不含自身的右侧积。除返回数组外只用了两个累积变量。",
+      "code": "import java.util.*;\n\nclass Solution {\n    public int[] productExceptSelf(int[] nums) {\n        int n = nums.length;\n        int[] answer = new int[n];\n\n        // 写入后再乘 nums[i]，answer[i] 因此不含自身，只剩左侧积。\n        int prefix = 1;\n        for (int i = 0; i < n; i++) {\n            answer[i] = prefix;\n            prefix *= nums[i];\n        }\n\n        // 同样先乘入右侧积，再让 suffix 包含 nums[i]，避免乘到自己。\n        int suffix = 1;\n        for (int i = n - 1; i >= 0; i--) {\n            answer[i] *= suffix;\n            suffix *= nums[i];\n        }\n        return answer;\n    }\n}",
+      "description": "对数组中每个位置 i，返回除 nums[i] 以外所有元素的乘积。题目要求不使用除法，并在线性时间内完成。",
+      "source": "",
+      "id": "238",
+      "kind": "algo",
+      "group": "算法题单",
+      "topic": "数组 / 矩阵 / 区间",
+      "mod": "algo",
+      "part": "线性结构",
+      "cat": "前缀和与差分",
+      "simple": {
+        "statement": "对数组中每个位置 i，返回除 nums[i] 以外所有元素的乘积。题目要求不使用除法，并在线性时间内完成。",
+        "req": [
+          "不能使用除法。",
+          "在线性时间内完成。"
+        ],
+        "analysis": "第一遍让 prefix 从 1 开始，先把 answer[i] 写成当前 prefix，再 prefix *= nums[i]，于是 answer[i] 只含 i 左侧的乘积。第二遍让 suffix 从 1 开始自右向左，answer[i] *= suffix 之后才 suffix *= nums[i]，从而乘上不含自身的右侧积。除返回数组外只用了两个累积变量。",
+        "cx": "时间 O(n)，空间 O(1)",
+        "topic": "p-prefix",
+        "topicName": "前缀和与差分"
+      },
+      "oldCat": "普通数组"
+    }
+  ]
+}

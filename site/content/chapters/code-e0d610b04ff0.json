@@ -1,0 +1,103 @@
+{
+  "entries": [
+    {
+      "id": "database-91",
+      "number": 20,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第四章：高可用、一致性与分库分表",
+      "flat": false,
+      "title": "主从复制与读写分离",
+      "questionHtml": "<p class=\"md-p\">MySQL 主从复制原理是什么？读写分离会遇到什么问题？如何解决主从延迟？</p>",
+      "analysisHtml": "<p class=\"md-p\">主从复制是大厂高频架构题。不要只说“主写从读”，还要讲复制延迟导致的读己之写不一致。</p>\n<p class=\"md-p\">用户刚写完数据，如果马上从库读，可能读不到。比如用户上传文件后立刻刷新列表，从库还没同步，就会以为上传失败。</p>",
+      "knowledge": [
+        "主库写 binlog。",
+        "从库 IO 线程拉取 binlog 写 relay log。",
+        "从库 SQL 线程重放 relay log。",
+        "主从延迟：从库重放落后主库。",
+        "读写分离：写主，读从。",
+        "读己之写：用户写后立即读要保证看到自己的写入。"
+      ],
+      "answerHtml": "<p class=\"md-p\">主从复制简化流程：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>主库提交事务写 binlog。</li><li>从库 IO 线程连接主库，拉取 binlog 到 relay log。</li><li>从库 SQL 线程重放 relay log，得到相同数据。</li></ol></div>\n<p class=\"md-p\">读写分离问题：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>主从延迟导致刚写入的数据在从库不可见。</li><li>大事务会加剧延迟。</li><li>从库故障或复制中断可能读到旧数据。</li></ul></div>\n<p class=\"md-p\">解决方案：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>写后短时间内读主库。</li><li>对强一致接口强制读主库。</li><li>根据主从延迟动态摘除落后从库。</li><li>使用 GTID/binlog 位点，等待从库追上后再读。</li><li>优化大事务，避免一次更新太多行。</li></ul></div>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：什么场景不能读从库？</strong></p>\n<p class=\"md-p\">问题分析：强一致读不能接受延迟。</p>\n<p class=\"md-p\">知识点：一致性要求。</p>\n<p class=\"md-p\">答案：支付结果、库存、刚提交的订单、权限变更后校验等强一致场景读主库。</p>\n<p class=\"md-p\"><strong>变体 2：主从延迟怎么监控？</strong></p>\n<p class=\"md-p\">问题分析：需要量化延迟。</p>\n<p class=\"md-p\">知识点：seconds behind master、心跳表。</p>\n<p class=\"md-p\">答案：监控复制延迟指标；更可靠的是写心跳表，比较从库重放到的时间戳。</p>\n<p class=\"md-p\"><strong>变体 3：从库并行复制能完全解决延迟吗？</strong></p>\n<p class=\"md-p\">问题分析：并行复制提升吞吐但不是万能。</p>\n<p class=\"md-p\">知识点：大事务、热点行、资源瓶颈。</p>\n<p class=\"md-p\">答案：不能。大事务、DDL、热点更新、从库 IO/CPU 不足都会导致延迟。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "高可用与分库分表"
+    },
+    {
+      "id": "database-92",
+      "number": 21,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第四章：高可用、一致性与分库分表",
+      "flat": false,
+      "title": "分库分表设计",
+      "questionHtml": "<p class=\"md-p\">订单表数据量快速增长，单表达到数亿。如何设计分库分表？按 user_id 还是 order_id 分？如何查询和分页？</p>",
+      "analysisHtml": "<p class=\"md-p\">分库分表是高频架构题。关键不是“数据大就分”，而是先说明为什么单库单表扛不住，再按核心查询路径选择分片键。</p>\n<p class=\"md-p\">分片键一旦选错，后续跨分片查询、扩容、事务都会复杂。</p>",
+      "knowledge": [
+        "垂直拆分：按业务域拆库、按冷热字段拆表。",
+        "水平拆分：按分片键把同结构数据分散到多库多表。",
+        "分片键：高频查询条件、分布均匀、尽量避免跨分片。",
+        "路由算法：取模、范围、一致性哈希。",
+        "全局唯一 ID：雪花、号段。",
+        "跨分片查询：广播、聚合、二级索引表、ES。"
+      ],
+      "answerHtml": "<p class=\"md-p\">订单表常见选择：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>C 端用户订单列表以 <code class=\"tok-inline\">user_id</code> 查询为主：按 <code class=\"tok-inline\">user_id</code> 分片，用户订单聚集，列表查询高效。</li><li>后台按 <code class=\"tok-inline\">order_id/order_no</code> 查详情：需要全局订单号能路由，或者建立 <code class=\"tok-inline\">order_no -&gt; shard</code> 映射表。</li></ul></div>\n<p class=\"md-p\">示例路由：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">dbIndex = user_id % dbCount\ntableIndex = user_id / dbCount % tableCount</pre></div></section>\n<p class=\"md-p\">表设计：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE orders_00 (\n    id BIGINT PRIMARY KEY,\n    order_no VARCHAR(64) NOT NULL,\n    user_id BIGINT NOT NULL,\n    amount DECIMAL(18, 2) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    created_at DATETIME NOT NULL,\n    UNIQUE KEY uk_order_no (order_no),\n    KEY idx_user_created (user_id, created_at DESC, id DESC)\n);</pre></div></section>\n<p class=\"md-p\">分页：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>用户订单列表：路由到单个分片后按 <code class=\"tok-inline\">(user_id, created_at, id)</code> 游标分页。</li><li>全站订单列表：跨分片查询每个分片 TopN，再在应用层归并排序。</li><li>后台复杂搜索：同步到 ES。</li></ul></div>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：按 user_id 分片，商家查订单怎么办？</strong></p>\n<p class=\"md-p\">问题分析：商家维度查询会跨很多分片。</p>\n<p class=\"md-p\">知识点：查询模式冲突。</p>\n<p class=\"md-p\">答案：建立商家订单索引表、ES 搜索索引或数据同步到商家维度宽表。分片键只能优先满足主路径。</p>\n<p class=\"md-p\"><strong>变体 2：如何扩容？</strong></p>\n<p class=\"md-p\">问题分析：取模分片扩容会大量迁移数据。</p>\n<p class=\"md-p\">知识点：一致性哈希、逻辑分片。</p>\n<p class=\"md-p\">答案：引入逻辑分片，例如先分 1024 个逻辑 shard，再映射到物理库表。扩容时迁移部分逻辑 shard。</p>\n<p class=\"md-p\"><strong>变体 3：分库分表后事务怎么办？</strong></p>\n<p class=\"md-p\">问题分析：跨库事务复杂且性能差。</p>\n<p class=\"md-p\">知识点：本地事务、最终一致、Saga/TCC。</p>\n<p class=\"md-p\">答案：尽量让单个业务事务落在一个分片；跨分片流程用最终一致、事务消息、Saga 或 TCC，避免大范围 XA。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "高可用与分库分表"
+    },
+    {
+      "id": "database-93",
+      "number": 22,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第四章：高可用、一致性与分库分表",
+      "flat": false,
+      "title": "消息 Outbox 表与幂等消费表设计",
+      "questionHtml": "<p class=\"md-p\">结合你的生产事件触达平台：业务数据写 MySQL 后要发送 MQ。如何保证数据库更新和消息发送最终一致？如何设计幂等消费表？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是你实习经历非常可能被问到的数据库题。面试官关注点是：本地事务和 MQ 不在一个事务管理器里，如何避免“库写了但消息没发”或“消息发了但库没写”。</p>\n<p class=\"md-p\">Outbox 模式是标准答案：业务表和消息事件表在同一个本地事务中提交，再由后台发布器可靠发送消息。</p>",
+      "knowledge": [
+        "本地消息表/Outbox。",
+        "事务内写业务数据和事件数据。",
+        "发布器扫描待发送事件，发送成功后更新状态。",
+        "唯一业务键保证幂等。",
+        "消费端幂等表避免重复处理。",
+        "补偿扫描处理中间态和超时状态。"
+      ],
+      "answerHtml": "<p class=\"md-p\">Outbox 表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE event_outbox (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    event_id VARCHAR(64) NOT NULL,\n    aggregate_type VARCHAR(64) NOT NULL,\n    aggregate_id VARCHAR(64) NOT NULL,\n    topic VARCHAR(128) NOT NULL,\n    payload JSON NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    retry_count INT NOT NULL DEFAULT 0,\n    next_retry_at DATETIME NOT NULL,\n    created_at DATETIME NOT NULL,\n    updated_at DATETIME NOT NULL,\n    UNIQUE KEY uk_event_id (event_id),\n    KEY idx_status_retry (status, next_retry_at)\n);</pre></div></section>\n<p class=\"md-p\">业务事务：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">START TRANSACTION;\n\nINSERT INTO notify_task(task_id, user_id, content, status, created_at)\nVALUES (?, ?, ?, 'INIT', NOW());\n\nINSERT INTO event_outbox(event_id, aggregate_type, aggregate_id, topic, payload, status, next_retry_at, created_at, updated_at)\nVALUES (?, 'notify_task', ?, 'notify.created', CAST(? AS JSON), 'NEW', NOW(), NOW(), NOW());\n\nCOMMIT;</pre></div></section>\n<p class=\"md-p\">发布器逻辑：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT *\nFROM event_outbox\nWHERE status IN ('NEW', 'RETRY')\n  AND next_retry_at &lt;= NOW()\nORDER BY id\nLIMIT 100;</pre></div></section>\n<p class=\"md-p\">发送成功后：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE event_outbox\nSET status = 'SENT',\n    updated_at = NOW()\nWHERE event_id = ?\n  AND status IN ('NEW', 'RETRY');</pre></div></section>\n<p class=\"md-p\">消费幂等表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE consume_log (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    event_id VARCHAR(64) NOT NULL,\n    consumer_group VARCHAR(64) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    created_at DATETIME NOT NULL,\n    updated_at DATETIME NOT NULL,\n    UNIQUE KEY uk_event_consumer (event_id, consumer_group)\n);</pre></div></section>\n<p class=\"md-p\">消费者先插入 <code class=\"tok-inline\">consume_log</code>。如果唯一键冲突，说明处理过或正在处理，直接 ACK 或按状态判断。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：Outbox 表会越来越大怎么办？</strong></p>\n<p class=\"md-p\">问题分析：事件表是持续写入的。</p>\n<p class=\"md-p\">知识点：归档、冷热分离、分区、清理策略。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">SENT</code> 状态保留一段审计时间后归档；按时间分区或迁移到历史表；在线表只保留待发送和近期事件。</p>\n<p class=\"md-p\"><strong>变体 2：发布器多实例如何避免重复发送？</strong></p>\n<p class=\"md-p\">问题分析：多个发布器可能扫描到同一行。</p>\n<p class=\"md-p\">知识点：状态抢占、乐观更新、<code class=\"tok-inline\">SKIP LOCKED</code>。</p>\n<p class=\"md-p\">答案：先用条件更新把 <code class=\"tok-inline\">NEW</code> 改成 <code class=\"tok-inline\">SENDING</code>，影响行数为 1 才发送；或使用 <code class=\"tok-inline\">SELECT ... FOR UPDATE SKIP LOCKED</code> 抢任务。</p>\n<p class=\"md-p\"><strong>变体 3：消费者处理成功但更新 consume_log 失败怎么办？</strong></p>\n<p class=\"md-p\">问题分析：幂等表状态可能不准确。</p>\n<p class=\"md-p\">知识点：业务幂等优先、状态补偿。</p>\n<p class=\"md-p\">答案：真正的幂等应落在业务唯一约束上，<code class=\"tok-inline\">consume_log</code> 是辅助。处理成功后更新失败，可由补偿任务根据业务结果修正。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "高可用与分库分表"
+    },
+    {
+      "id": "database-94",
+      "number": 23,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第四章：高可用、一致性与分库分表",
+      "flat": false,
+      "title": "补偿扫描中间态任务",
+      "questionHtml": "<p class=\"md-p\">生产事件平台中有任务状态机：<code class=\"tok-inline\">INIT -&gt; PUBLISHED -&gt; CONSUMING -&gt; SUCCESS/FAILED/DEAD</code>。服务宕机可能导致任务停在中间态。如何用 SQL 扫描并补偿？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题贴合你的“中间态扫描补偿”。核心是状态机必须可恢复，所有中间态都要有超时时间和重试次数。补偿任务不能和正常消费者互相打架，需要抢占式更新。</p>",
+      "knowledge": [
+        "状态机设计。",
+        "超时扫描。",
+        "乐观锁/条件更新抢占任务。",
+        "重试次数和下次重试时间。",
+        "幂等处理。"
+      ],
+      "answerHtml": "<p class=\"md-p\">任务表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE notify_task (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    task_id VARCHAR(64) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    retry_count INT NOT NULL DEFAULT 0,\n    next_retry_at DATETIME,\n    locked_until DATETIME,\n    created_at DATETIME NOT NULL,\n    updated_at DATETIME NOT NULL,\n    UNIQUE KEY uk_task_id (task_id),\n    KEY idx_status_retry (status, next_retry_at),\n    KEY idx_locked_until (locked_until)\n);</pre></div></section>\n<p class=\"md-p\">扫描候选：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT id\nFROM notify_task\nWHERE status IN ('INIT', 'PUBLISHED', 'CONSUMING', 'RETRY')\n  AND next_retry_at &lt;= NOW()\nORDER BY id\nLIMIT 100;</pre></div></section>\n<p class=\"md-p\">抢占任务：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">UPDATE notify_task\nSET status = 'RETRYING',\n    locked_until = DATE_ADD(NOW(), INTERVAL 5 MINUTE),\n    updated_at = NOW()\nWHERE id = ?\n  AND status IN ('INIT', 'PUBLISHED', 'CONSUMING', 'RETRY')\n  AND next_retry_at &lt;= NOW();</pre></div></section>\n<p class=\"md-p\">只有影响行数为 1 的实例才执行补偿。处理成功改为 <code class=\"tok-inline\">SUCCESS</code>，失败则增加 <code class=\"tok-inline\">retry_count</code> 并计算下一次重试时间；超过阈值进入 <code class=\"tok-inline\">DEAD</code>。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：补偿任务多实例会重复执行吗？</strong></p>\n<p class=\"md-p\">问题分析：多个实例可能扫描到同一批任务。</p>\n<p class=\"md-p\">知识点：条件更新、锁租约。</p>\n<p class=\"md-p\">答案：扫描只是找候选，真正执行前必须用 <code class=\"tok-inline\">UPDATE ... WHERE status=...</code> 抢占。影响行数为 0 说明被其他实例抢走。</p>\n<p class=\"md-p\"><strong>变体 2：任务执行超过 locked_until 怎么办？</strong></p>\n<p class=\"md-p\">问题分析：锁租约过期可能被其他实例抢走。</p>\n<p class=\"md-p\">知识点：心跳续租、幂等。</p>\n<p class=\"md-p\">答案：长任务要定期续租；同时业务处理必须幂等，因为超时重入无法完全避免。</p>\n<p class=\"md-p\"><strong>变体 3：哪些状态应该补偿，哪些不该？</strong></p>\n<p class=\"md-p\">问题分析：不是所有失败都值得重试。</p>\n<p class=\"md-p\">知识点：错误分类。</p>\n<p class=\"md-p\">答案：网络超时、下游 5xx 可重试；参数非法、权限失败这类永久错误直接 <code class=\"tok-inline\">FAILED/DEAD</code>，避免无意义重试。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "高可用与分库分表"
+    }
+  ]
+}

@@ -1,0 +1,507 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-1",
+  "id": "q-own-redis-hash-tree-model",
+  "order": 115,
+  "question": "对象用 String 还是 Hash，手机号分组与组织树怎样拆分发布？",
+  "shortAnswer": "按读写粒度、编码阈值和过期边界建模；迁移保留业务版本，大树用完整代际发布并检验缺块和授权。",
+  "commonPhrasings": [
+    "大 Hash 怎样兼容迁移？",
+    "手机号前三位怎样映射 key、field、value？",
+    "多块树如何避免半成品和跨代读取？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis 对象建模、Hash 拆分与组织树缓存"
+    },
+    {
+      "type": "paragraph",
+      "text": "选 String 还是 Hash，先看对象怎样读、怎样改、怎样过期，以及哪些字段必须一起保持一致。整体快照偏向 String，局部字段更新偏向有界 Hash；一旦对象太大或要拆成多个 key，就必须同时设计版本、迁移和失败恢复。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一、面试里先把问题问清楚"
+    },
+    {
+      "type": "paragraph",
+      "text": "“用户画像用 String 还是 Hash”“手机号怎样映射唯一用户 ID”“Hash 大 key 怎么拆”看起来是类型题，实际都在问同一件事：怎样划分一个对象的存储、访问和生命周期。部门人员树又多了一层关系：节点变化会影响哪些祖先视图，以及读到的多个块是不是同一份快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "我会先确认：对象字段数和最大字节数是多少；通常读整个对象还是几个字段；更新是否涉及跨字段约束；过期是整体还是字段级；Redis 是可重建缓存还是唯一事实来源；还有多少旧客户端需要继续工作。没有这些条件，不能只凭“Hash 更省内存”就定方案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果问的是“String hash”，我会确认它指 Redis 的 String 与 Hash，还是字符串散列算法。后者把字符串映射到有限的哈希空间，用于索引或分桶，可能碰撞；碰撞时还要比较原始字符串，不能把相同 hash 当作同一个业务 ID。它不是 Redis Hash 的另一种持久化类型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果提到“bigmap”，也需要先确认具体含义，不能从名字推断某个产品。若想表达 Bitmap，再按位图能表示什么来判断。下面的方案都明确给出适用条件，不预设实际用户量、字段分布或上线拓扑。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二、String 与 Hash，差别先落在读写粒度"
+    },
+    {
+      "type": "paragraph",
+      "text": "String 可以存一份 JSON、Protobuf 等序列化对象。一次 GET 取得整体，一次 SET 替换整体，版本和 TTL 也跟着一个 key 管理。它适合整体读多、整体刷新、需要保存某一版本完整快照的对象。Redis 只看到字节，不会理解 JSON 里的 name、tags 或 version；普通 String 没有按 JSON 属性更新的语义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如用户画像每次都要读取完整标签集合，而且由离线任务整批更新，可以考虑一个用户一份 String。代价是只改一个小字段时，客户端通常仍要反序列化、修改、重新序列化并写回整份对象，增加网络字节、CPU 和垃圾回收压力。不能用一次 GET/SET 常见的 O(1) 命令口径，掩盖处理 B 字节 payload 的实际成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hash 是一个 key 下的 field/value 映射。HGET 取一个字段，HMGET 取一组字段，HSET 修改指定字段；数值字段可以用 HINCRBY 做单字段原子加法。同一用户标签不多、频繁局部更新时，有界 Hash 往往更自然。一个 field 的 value 仍是一段字节，若把大段 JSON 塞进单个 field，修改其中一个子属性仍要整段重写。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“有界”要同时限制字段数和字段、值的字节数，不能只限制 HLEN。HGETALL 会输出全部字段和值，成本随对象增长；Hash 内部有索引，也不能免掉遍历和网络传输。如果业务只读两个标签，就不要为了省一条代码把数千个字段全取回来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java 中最好把缓存值定义为明确 DTO，固定字符集和序列化契约。跨系统用严格编码，拒绝会被默认替换成同一字节串的非法 Unicode 输入。约定缺失字段、空字符串、业务 null 各表示什么，长 ID 用规范字符串或无损整数表示；跨 Java、JavaScript 等语言时不要让大整数经过不精确的浮点数。二进制格式也要管理 schema 版本、未知字段及默认值，反序列化必须限制输入大小和嵌套深度，不能把任意不可信内容交给没有约束的反序列化器。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三、底层编码为什么会改变内存结论"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 Redis 7.2.0 为例，String 会根据内容和命令路径采用 int、embstr 或 raw。普通字符串由 SDS 表达长度和字节内容，支持二进制；短字符串可能把对象头和内容合在一次分配中，较长或需要扩容的值通常分开分配。它不是 Java 的 char[]，也不是任何看起来像数字的文本都能无损转成整数编码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个版本的小 Hash 可以用 listpack，把 field/value 成对放在紧凑连续内存中，省逐字段节点和指针；查找字段却可能需要扫描，变长更新可能移动字节。超过数量或单项长度等条件后可转成字典，用更多索引空间换更合适的随机访问。示例默认配置的 hash-max-listpack-entries 是 512，hash-max-listpack-value 是 64 字节，字段和值都受后一个条件影响；它们是版本和配置条件，不是业务容量保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，小 Hash 有可能省掉大量独立顶层 key 的元数据，但不能说任意对象都是 Hash 更省。一个很长的字段名或 value 就可能改变编码；转换后的字典、SDS、分配器对齐和碎片都要算。Java String.length() 计算 UTF-16 代码单元，Redis 编码门槛看真正发送的字节，中文和补充平面字符尤其不能混用这两个长度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "比较时用相同数据、相同序列化方式和目标 Redis 配置，检查 TYPE、OBJECT ENCODING、MEMORY USAGE，再比较请求字节、读写比例、更新成本和尾延迟。MEMORY USAGE 对嵌套结构涉及采样，SAMPLES 0 会检查全部嵌套值，不能在很大的生产对象上随意全量测。一个固定的“每个字段省多少字节”无法覆盖所有值长、编码与平台。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四、单条命令原子，不等于对象更新没有竞争"
+    },
+    {
+      "type": "paragraph",
+      "text": "一次 SET 原子，并不能保护此前的 GET。看两个请求：A 和 B 都读到 v7；A 改昵称并写入 v8；B 仍拿着 v7，只改标签后把整份对象写回，于是覆盖了 A 的新昵称。"
+    },
+    {
+      "type": "paragraph",
+      "text": "竞争跨越了 GET、客户端修改、SET 三步。SET 只保证别人不会看到半段新字符串，不保证这次写入所依据的旧快照仍然有效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hash 可以避免某些互不相干字段互相覆盖，但“余额够不够，再扣余额并更新状态”仍是一个业务整体。两个客户端分别 HGET 后 HSET，一样可能竞争。一次多字段 HSET 不会被其他命令插入到中间，但读者连续执行多个 HGET，仍可能跨过另一轮更新；需要同次读取的字段可在一个 HMGET 中取出，跨字段判定与更新则放入有界 Lua，或用 WATCH/MULTI/EXEC 等乐观并发协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 让相关 Redis 操作不被其他客户端命令穿插，运行错误却不会回滚之前成功的写入，所以先校验参数、类型和状态，再做短小更新。WATCH 冲突时要重新读取和决策，不能只把旧计算结果无限重试。pipeline 减少网络往返，不会把多条命令变成事务；跨槽 key 也不能因为一个客户端同时发送就得到跨节点原子性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存里的 version 应来自有明确顺序的权威对象版本，不能随手用客户端时间戳当提交顺序。把“仅在版本仍为 v7 时才替换成 v8”的判断和写入放在同一原子边界，才能阻止旧写覆盖新写。这个版本比较更新是业务并发控制，不是 Java AtomicInteger 的处理器原子指令；它也不自动提交数据库、MQ 或外部接口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还有一个容易漏掉的反例：缓存已经删掉或被淘汰后，旧回填发现 key 不存在，又把 v7 写回来。只比较当前 value 的版本不够，因为比较下界一起丢了。需要不会过早消失的版本屏障、删除墓碑，或不可变版本 key 加可信当前版本指针；屏障、指针丢失时先向权威存储校验，不能把 miss 当作旧数据可写的证据。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "五、TTL、schema 版本和业务版本要分开"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 管缓存寿命，schema 管怎样解码，业务 version 或 generation 管数据属于哪次变更。这三者不能互相代替：刚写入 Redis 的旧快照可以有很长 TTL，解码兼容也不代表内容是最新的。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.2 普通 Hash 的原生过期粒度是整个 key。某些字段需要独立失效时，可以拆成独立 key，或保存逻辑到期时点并在读取时检查、配合清理；逻辑过期不等于 Redis 已释放空间。String 可用 SET 配合 EX/PX 同时设置值和 TTL；普通 SET 替换已有值会清掉旧 TTL，若要保留必须明确使用适用的 KEEPTTL 语义。HSET 修改 Hash 字段通常保留整个 Hash key 的 TTL，但首次创建 Hash 后再单独 EXPIRE 有中间失败窗口，需要按要求放进一个受控原子流程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 7.4 起有 HEXPIRE 等字段级过期命令，不能把它套回 7.2 的部署。设置字段 TTL 后，HSET 覆盖该字段会清除它的字段过期，需要明确重新设置；更新别的字段不会因此清掉它。Redis 8.0 的 HSETEX 提供字段写入与过期选项，但迁移前仍须核对目标服务、客户端、索引组件和相应选项支持。无论字段是否还有 TTL，整个 key 先到期或被淘汰时，字段也一起不可用了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 不是一致性协议。换绑、删除、撤权等事件应由权威变更触发失效或版本推进；慢旧读重写 TTL 会延长旧值寿命。展示类缓存可设置软刷新和硬截止，并在允许范围内加抖动；权限和业务安全截止时间不能为了增加命中而延后。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "六、手机号映射用户 ID，先保住身份语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个手机号对应一个用户 ID，要求返回任意稳定 ID，不只是回答“在不在”。一位 Bitmap 只能表示布尔值，直接拿完整 11 位号码当 offset 又会稀疏浪费，且可能超过 SETBIT 的 offset 范围。SETBIT 的 offset 上限是 2^32−1，对应单个相关位图最高约 512 MiB 的范围；向很远的位置写入可能分配并清零大量内存。密集内部 userId 的签到、在线标记才是更典型的位图场景。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务上先在权威存储保证规范化手机号的唯一绑定和 userId 的稳定性，再用 Redis 加速查询。Redis 丢失或淘汰不能变成给同一逻辑用户随意重新发 ID。手机号可以换绑、回收，既不是永久人的身份，也不是登录凭证；查询到 ID 后仍要完成号码所有权验证和正常登录鉴权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "号码规范化必须包含国家或地区及格式规则，不能把任意输入的符号全部删掉就当成中国大陆号码。以下路由只适用于上游已经明确进入 cn11 命名空间的 11 个 ASCII 数字，不验证号码是否真实、是否可用、归属谁，也不判断运营商。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "七、前三位分组怎样给出明确的 key、field、value"
+    },
+    {
+      "type": "paragraph",
+      "text": "最直接的 String 方案是每个规范化手机号一个 key，value 是稳定 userId。查询和 TTL 独立，按 key 分片也直接；用户很多且值很短时，重复 key 前缀和顶层元数据可能占较多空间，要用实测评估。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若要求按前三位分组，可以用 key = phone-index:v1:cn11:prefix3:前三位，field = 后八位文本，value = userId 的规范字符串。前缀与后缀拼回完整号码，field 的前导零必须保留，不能先转成整数。把完整号码作为 field 也不会丢身份，只是重复前缀更多；反过来，若所有前三位共用同一个 key，又只用后八位做 field，不同号码就会碰撞。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个分组依据是文本前缀，不是实时运营商身份。携号转网等条件下，不能把“前三位一样”当作同一运营商的可靠授权或路由规则。一个前三位组的格式空间仍有 10^8 种后缀，完全可能变成大 Hash 或热点；一个 Hash 仍只属于一个 Cluster slot，减少 key 数不等于能横向扩展这个 key。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若目标是严格限制字段数，可以把前九位放进 key、后两位作为 field，在这个固定格式命名空间里每个 key 至多 100 个不同字段。这个上界只约束字段数，不约束 userId 的字节长度，也不保证热点均匀。另一种办法是稳定散列到固定虚拟桶，保留完整号码或无歧义身份作为 field；分布通常更均匀，但必须监测每桶字段数与字节预算，固定桶数本身不是硬容量上界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "改变桶数、路由函数或索引密钥，都需要新的路由版本及迁移切换。新旧客户端不能各算各的桶然后把查不到误判成未注册；同一号码的两种路由需要受控双读或权威回源。也不要给所有桶相同 hash tag 后又声称它们已分散到各分片。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 路由示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个方法分别展示前三位分组和每组最多 100 字段的分组。返回值由不可变字符串构成；它只计算地址，不连接 Redis，不处理唯一绑定、过期、隐私保护或登录。传入内容必须先完成业务规范化。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "/** Routing model for an already normalized 11-ASCII-digit namespace, not phone validation. */\npublic final class PhoneIndexKey {\n    private PhoneIndexKey() { }\n    public record Address(String key, String field) { }\n    private static void validate(String phone) {\n        if (phone == null || phone.length() != 11)\n            throw new IllegalArgumentException(\"exactly 11 ASCII digits required\");\n        for (int i = 0; i < phone.length(); i++)\n            if (phone.charAt(i) < '0' || phone.charAt(i) > '9')\n                throw new IllegalArgumentException(\"ASCII digits required\");\n    }\n    public static Address prefixThree(String phone) {\n        validate(phone);\n        return new Address(\"phone-index:v1:cn11:prefix3:\" + phone.substring(0, 3),\n                phone.substring(3));\n    }\n    /** At most 100 distinct two-digit fields per key within this fixed-format namespace. */\n    public static Address boundedHundred(String phone) {\n        validate(phone);\n        return new Address(\"phone-index:v1:cn11:prefix9:\" + phone.substring(0, 9),\n                phone.substring(9));\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "八、手机号缓存的失效与隐私怎样处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "换绑时，权威事务应同时约束旧绑定解除、新绑定建立及版本变化，再可靠失效相关索引。删除、号码回收与重新注册也需要业务规则和审计，不能只改一个缓存字段就认为身份生命周期已经完成。回填时带绑定版本或 generation，防止慢请求把换绑前的映射重新写入；关键身份判断必要时回权威路径确认。"
+    },
+    {
+      "type": "paragraph",
+      "text": "每号码独立 key 容易独立过期；分组 Hash 要结合部署版本决定字段 TTL、整桶 TTL 或事件清理。一个活跃字段频繁延长整桶 TTL，会让不活跃的旧字段一直留存，不能把整桶续期当作每条映射都新鲜。大桶禁止在登录热路径 HGETALL，按完整 key/field 查询即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "手机号可能出现在 key、命令参数、慢日志和运维导出中。要限制访问、启用加密传输、脱敏应用和诊断日志、设定必要的保留周期。必要时可用受管密钥的 HMAC 派生索引，并把密钥版本纳入路由；普通无密钥 hash 抵御不了低熵号码枚举。HMAC 也不是匿名化承诺，密钥泄漏、查询接口枚举和访问控制仍须处理。采用 HMAC 后应重新设计分桶，不继续把明文前三位泄漏在 key 中。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "九、Hash 变大或 Redis 内存满，先定位什么在占用资源"
+    },
+    {
+      "type": "paragraph",
+      "text": "先区分大 key、热 key 和实例总容量。很多字段、一个极长 value、少量高频字段，都可能造成不同问题。检查 HLEN、字段和值长度分布、MEMORY USAGE 的采样设置、实际编码、每次响应字节、命令 P95/P99、热点访问及 slot 分布；排查也要限速，不能用一次全量 HGETALL 来诊断已经很重的对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把读取改成 HGET/HMGET 的必要字段，或有上限的业务分页。HSCAN 适合增量运维遍历，不是有稳定页码的业务快照：COUNT 是工作量提示，可能返回零项，也可能在紧凑编码下返回比预想更多的数据；完整迭代可能重复返回字段，遍历期间变化的条目没有完整快照保证。要一直处理到游标回到 0，并让重复处理幂等，不能一页为空就宣布结束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实例内存满时先看 maxmemory、淘汰策略、used_memory、RSS、evicted_keys、拒写及宿主机或容器限额。allkeys 类策略可以选择所有 key，volatile 类主要在设置了过期时间的 key 中选候选；没有可淘汰候选或使用 noeviction 时，需要更多内存的写命令可能被拒绝，读取已有数据并不因此全部失败。LRU/LFU 是近似淘汰，不是精确业务优先级，也不能替代数据生命周期管理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "maxmemory 不等于进程 RSS 的硬上限。分配器碎片、复制或 AOF 相关缓冲、客户端缓冲、fork 写时复制等都可能让真实内存压力更大；某些复制/AOF 缓冲不计入淘汰判定，应结合 mem_not_counted_for_evict 等指标留出余量。容器可能在 Redis 认为还能工作时先把进程杀掉。先保护服务和回源预算，再清理确认可重建或已过期的内容、治理大对象和低收益缓存，必要时扩容分片；不要先随意删除权威数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调高 maxmemory 只能在确实有物理或容器余量时做，不能把 OOM 风险推给宿主机。修改淘汰策略也先判断 key 的业务性质：会话、限流协调状态和唯一权威记录不能因为“为了腾空间”就按普通可丢缓存处理。长期方案还要算容量增长、双份迁移峰值、持久化和复制开销，避免迁移一开始就把内存吃满。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十、拆 Hash 是重新划分边界，不只是多加几个 key"
+    },
+    {
+      "type": "paragraph",
+      "text": "若一个 Hash 装了所有租户或所有用户，先按 tenant + user 拆成自然实体。一个用户仍然过大，再按业务子对象拆，或按固定、跨语言一致的 field 散列算法分桶。算法、字符编码、负数取模和桶数都属于路由契约，不能让 Java 和另一种语言各用默认 hash。每桶设置字段数和总字节预算，超限再走明确的扩容或拒绝路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "拆完后，多字段读取可能需要跨桶并行取回再合并，调用方还要处理部分失败。每个桶有自己的 TTL，跨桶约束不再天然落在一个 key。相同 hash tag 可以把少量相关 key 放同槽以便原子操作，但会集中负载；把整个大租户全部同槽，可能只是把大 key 变成同槽的一组热点，不能宣称突破单分片瓶颈。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个超大 value 可以拆成子对象，或把大内容移到合适的对象存储，只缓存必要摘要和受控引用。压缩有时降低传输与内存，却增加压缩、解压和整块更新的 CPU，也要限制解压后大小。不要用压缩隐藏无界响应，也不要把缓存里拿到的外部地址直接当作可信请求目标。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十一、兼容老业务和老数据，先看谁是事实来源"
+    },
+    {
+      "type": "paragraph",
+      "text": "迁移前先定义 v1/v2 的 key、schema、路由函数和读写契约，盘点所有服务、任务、脚本及最长部署、TTL、回滚窗口。先让兼容层能理解两种格式，再切换数据；新业务只写 v2、老业务只读 v1，会直接形成两个不一致的世界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "旧客户端不能改造时，要么通过兼容服务统一读写，要么可靠捕获变更并维护旧视图，同时明确它的滞后窗口。如果连旧写者和增量变化都观察不到，就无法保证两边持续一致，需要先协调写入口，必要时安排有边界的写入暂停。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以数据库为权威时，新读者可以优先读 v2，miss 后从可见当前版本的权威路径重建。v1 只能作为经过版本验证的临时回退，不能见到 v2 没有就直接搬旧值。迁移采用同一截点的数据库快照，加覆盖截点之后变更的可靠日志、CDC 或 Outbox；处理新增、更新，也处理删除。条件写拒绝旧快照覆盖新版本，同版本不同内容则告警而不是默默互相覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如快照抓到 v10，增量先把 v11 放进 v2，之后 v10 扫描任务迟到，就应被拒绝；若 v11 是删除，墓碑或删除代际必须继续阻止 v10 复活。回退逻辑同样检查墓碑。不能过早清理版本屏障，也不能让滞后副本和长期旧事务快照反复提供“看起来合法”的旧回填。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 Redis 是唯一权威，不能说“删了老缓存再查数据库”。要先有可恢复的持久备份、变更日志和明确截点，协调全部写者，按版本或序列复制、追赶与核验，必要时短暂冻结写入完成切流。HSCAN 一遍同时任由旧写者变化，不足以证明迁移完整。跨槽双写不原子，必须记录部分失败、重试和对账；一边成功一边超时要按结果未知处理，不能直接宣称两边都提交成功。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十二、什么时候切流，老缓存到底删不删"
+    },
+    {
+      "type": "paragraph",
+      "text": "按租户或有明确版本的资源小批切读，影子比较同一业务版本的字段、校验值、缺失率和延迟。不能只比 key 数，因为拆分本来就会改变数量。覆盖新增、修改、删除、乱序增量、重复迁移、旧格式解码和回源失败，同时看 v1 回退占比与仍在写 v1 的客户端身份。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回滚开关只有在旧视图仍能表达新数据、而且已经同步切流后产生的变更时才有效。新 schema 丢弃了旧字段、变更无法反向表达或旧视图已停止同步时，直接把流量切回去不是安全回滚，需要恢复和补齐协议。灰度期额外的双读、双写、双份存储及回源成本也要预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "当旧读写者已退役、增量追到约定水位、影子一致并且回滚窗口结束，才能回收 v1。先受控过期或分批 UNLINK；UNLINK 把主要对象释放工作移到后台，不是删除完全没有 CPU、队列、复制或内存回收成本，仍要限速并观察积压。可靠日志、权威备份与有限回滚窗口可以保留，但不必无限保存两份在线缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "无法证明旧客户端下线时，暂时保留有维护协议的兼容视图，不能随手删；若旧数据涉及已撤销权限或必须删除的信息，则同步执行删除策略并禁用不安全的旧版回退，不能以回滚为由无限保存。迁移没有一个对所有系统都适用的“永远删”或“永远留”，判断标准是读写者、水位、可恢复性和数据生命周期。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十三、部门人员树，先优化查询与建树，再加缓存"
+    },
+    {
+      "type": "paragraph",
+      "text": "先看页面慢在哪里：每个节点再查一次子部门形成 N+1，反复组装或排序，返回了不需要的全量人员，还是权限过滤过重。给查询补合适的索引、按租户取得有界的一致快照、用 id 索引和 parentId 邻接表组装，往往比递归查库更重要。数据量很大时按需加载和分页，不能先全量读入 Java 再声称已经做了分页。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的教学模型是有根森林：一个部门最多一个父部门，一个人只有一个主部门。一个租户可以有多个根；部门 ID 和人员 ID 是两个命名空间，值相同不必冲突。同名部门、同名人员也正常，稳定 ID 才是身份。若存在兼职或多部门归属，就单独建人员与部门的关系集合，定义去重和展示规则，不要在单主部门模型里静默覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "删除父部门时，先明确业务是禁止存在子部门或成员时删除，还是在同一权威事务中迁移、级联处理关系；不能只删除父节点缓存，让孩子成为孤儿。软删除也要定义孩子和成员是否仍可见，并推进相关版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "非法输入在发布前拒绝：重复部门 ID、缺父节点、自环、独立环、人员指向不存在的部门，都不能悄悄修成另一棵树。部门移动还要在权威事务中校验不能挂到自己的后代，缓存建树检查只是最后一道防线，不能让错误关系先成为事实。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十四、小树整份缓存，大树按关系和页面分块"
+    },
+    {
+      "type": "paragraph",
+      "text": "小而有界、读多写少的组织，可以用一个 String 保存平面化快照或序列化树。key 包含 tenant、root、viewSchema、数据 generation，以及需要时的可信权限域或策略版本。value 带 schema、generation、构建时点、roots、节点和必要成员摘要。一次 GET 取得已经发布完成的一份对象，理解简单；相关变更却可能要求整份重建，大租户又可能变成大 key。展示树不应塞入无关的敏感个人字段。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大组织可以分成部门摘要、parent → children 的有界页、department → personIds 的有界页，再按需查人员摘要。页面快照用 String，有界字段对象可用 Hash；需要追加顺序或按排序键取范围时，再比较 List/ZSet。按名称或显示序号排序时，追加稳定 ID 作为并列条件，游标也携带完整排序边界和 generation，避免翻页重复或漏项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个可选的命名协议是 orgtree:v1:tenant:租户编码:root:根编码:g:组织版本:view:视图版本:auth:权限域编码；分块再明确 purpose=department、children 或 members，entity 包含部门 ID 和页游标。环境和服务也要隔离，可在这个命名空间外再加固定环境、服务前缀。示例里的各“编码”必须由固定格式、长度前缀或明确转义生成，不能把用户输入直接用冒号拼起来。未经过编码的花括号也可能改变 Cluster hash tag，租户和授权域应来自可信上下文。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只有确实要在一次同槽操作中访问的有界资源才共享 hash tag。不可变 generation 块可以分散在不同槽，读时并行获取，但完整发布要靠应用协议；给整个租户加同一个 tag 后，这些块就仍集中在一槽。跨 key 各 GET 一次不能天然得到同一版本，所以块 key、value、manifest 和分页游标必须绑定同一个 generation。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十五、多块怎样完整发布，防止读到半棵树"
+    },
+    {
+      "type": "paragraph",
+      "text": "先在权威事务中修改部门或人员关系，推进组织版本并写入可恢复的变更事件。构建者读取同一个一致快照或明确的版本水位，再组装不可变的 generation 块。不能先读部门、过一会儿再读人员而不检查版本，因为两次查询可能夹着一次部门移动。以关系数据库为例，应使用适合目标引擎和隔离级别的一致读取；两次任意查询、两个任意连接并不自动共享快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "发布过程可以这样理解："
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "value": "权威事务提交 g 与变更事件\n          ↓\n读取属于 g 的一致数据 → 校验关系与预算\n          ↓\n写不可变块 g/1、g/2、… → 校验数量与内容摘要\n          ↓\n写完成的 manifest(g)\n          ↓\n按版本条件推进 current → g\n          ↓\n读者固定 g，校验 manifest，只读取 g 的各块\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "manifest 要能说明这棵树由什么组成：schema、generation、预期块身份、数量、校验信息、有效期和完成状态都在其中。只放一个“写完标志”，读者无从判断是不是少了块。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有块写成功且满足完整性条件，当前指针才可以指向这一代。某块写失败，就不发布半棵树；可以继续服务仍满足新鲜度要求的旧代际，或受控回源。若写入可能成功、只是响应丢了，则按 generation 和内容指纹查询已有状态，让重复构建保持幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并发构建时，较旧任务可能较晚完成，所以 current 不能无条件 SET。更新时检查权威版本下界和期望指针，仅允许合法推进；指针所在 Redis 的一次条件写只能保证那次本地裁决，不能自动验证跨槽块永远存在。指针丢失、复制回退或 generation 需要恢复时，从可信权威版本重新校验，不能用“key 不存在”允许任意旧构建者重新发布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读者先固定已发布 g，随后只读 g 的块。缺块、过期、校验失败就把这一代际当作不可用，受控重建或回源，不能从 g+1 捡几块拼进去。即使发布时所有块都存在，之后仍可能淘汰、过期或因故障丢失，因此完整发布协议必须配合读取校验和恢复，而不能承诺永远没有 miss。"
+    },
+    {
+      "type": "paragraph",
+      "text": "旧 g 的保留覆盖最长请求、分页会话及允许的回滚窗口，再最终回收。块 TTL 不能比活动 manifest 的服务期限更早；考虑构建耗时和读取期间剩余寿命，必要时重建新代际、协调保留期限，或在缺失时明确失败回源。分页游标指向的旧 g 已回收时，应要求重新开始或返回明确的过期响应，不能静默把后半页换到当前版本。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十六、移动、撤权、并发重建和故障边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "部门改名影响包含这个节点的视图。部门移动不仅影响自身，还影响旧父链、新父链、两边祖先子树和成员路径；只删移动部门自己的 key，会让旧祖先树继续展示错误关系。初版可以提升整个 tenant 的组织 generation 做粗粒度失效；规模上来后再维护子树依赖和细粒度版本，代价是依赖关系更复杂，必须能证明没有漏失效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "共享组织结构和某个用户看到的结果要分开。可以共享经过最小化处理的结构，再由可信权限服务过滤；缓存已过滤视图时，key 必须包含正确权限域和策略版本，命中仍执行所需鉴权。tenant/id 来自认证上下文和参数检查，缓存 key 难猜不代表安全。离职、撤权不能等待普通展示 TTL，敏感读取和操作应检查当前权威权限，权限服务异常时按安全规则拒绝，而不是拿旧树继续放行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "热点过期时用 single-flight 合并同一 JVM 中的重复构建，多实例还需要协调重建或共享后端预算。获得构建权后再次查缓存，限制最大并发、等待时间、节点数、人员数、总字节和构建时间；超预算返回分页结果或明确降级，不把一个请求扩成无数子查询。单飞只减少重复劳动，不保证版本正确，租约失效后的旧构建者仍要被发布条件挡住。"
+    },
+    {
+      "type": "paragraph",
+      "text": "空组织或某个部门确实没有人员，可以缓存带 schema、generation 和明确空集合的短期结果，避免重复回源；它必须来自成功且已授权的权威读取。数据库超时、权限拒绝、快照构建失败不是“空树”，不能写成负缓存。新增部门或成员要推进版本并失效旧空结果，空结果同样遵守租户、权限和代际隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "展示允许短暂陈旧时，可软刷新、硬截止和小范围抖动；安全关键读取与权限检查不能复用这个容忍度。冷启动没有旧值、构建者中途失败、Redis 整层不可用、后端已达预算，都应有不同分支：有限等待、限量回源、返回仍可接受的旧展示，或拒绝并提示重试。不能让缓存失效后每个请求都全量扫描数据库，也不能把缓存暂时不可用误报成“组织不存在”。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十七、完整 Java 森林索引：迭代建树，结果不可变"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 build 接受已经授权、来自一致快照的部门和人员列表。先建立部门索引，再连接父子关系，从所有根迭代遍历；在每个部门最多一个父亲的前提下，仍有节点无法从任何根到达，就说明存在环。人员单独建索引，重复 personId 或不存在的目标部门都会被拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "返回的是平面邻接结构，Node 保存 parentId、name、children 和 people，人员摘要独立存放。构造时复制集合并保护内部列表，输入 List 在构建完成后变化不会改动结果；调用方不能在 build 读取输入期间并发修改这些 List。不可修改视图只有在底层也不会被别处继续修改时才足够，这里先复制到私有映射，再封装。"
+    },
+    {
+      "type": "paragraph",
+      "text": "preorder 用显式栈返回指定根的前序遍历，结果超出 limit 时抛错，不返回不知是否完整的截断树。它不负责鉴权、人员分页、数据库查询、Redis 发布或网络超时。ID 的排序是 Java 字符串稳定自然顺序，业务显示顺序如需按名称或序号，应另外定义比较器并用 ID 打破并列。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.ArrayDeque;\nimport java.util.ArrayList;\nimport java.util.Collections;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.TreeMap;\n\n/** Builds an immutable forest index from one authorized, consistent source snapshot. */\npublic final class OrganizationIndex {\n    public record Department(String id, String parentId, String name) { }\n    public record Person(String id, String departmentId, String name) { }\n    public record Node(String id, String parentId, String name,\n                       List<String> children, List<String> people) { }\n    private final Map<String, Node> departments;\n    private final Map<String, Person> people;\n    private final List<String> roots;\n\n    private OrganizationIndex(Map<String, Node> departments, Map<String, Person> people,\n                              List<String> roots) {\n        this.departments = Collections.unmodifiableMap(new TreeMap<>(departments));\n        this.people = Collections.unmodifiableMap(new TreeMap<>(people));\n        this.roots = List.copyOf(roots);\n    }\n    public static OrganizationIndex build(List<Department> inputDepartments,\n                                           List<Person> inputPeople,\n                                           int maxDepartments, int maxPeople) {\n        Objects.requireNonNull(inputDepartments); Objects.requireNonNull(inputPeople);\n        if (maxDepartments < 0 || maxPeople < 0\n                || inputDepartments.size() > maxDepartments || inputPeople.size() > maxPeople)\n            throw new IllegalArgumentException(\"snapshot limit\");\n        Map<String, Department> source = new TreeMap<>();\n        Map<String, List<String>> children = new HashMap<>();\n        Map<String, List<String>> members = new HashMap<>();\n        for (Department d : inputDepartments) {\n            Objects.requireNonNull(d); checkId(d.id()); checkName(d.name());\n            if (d.parentId() != null) checkId(d.parentId());\n            if (source.putIfAbsent(d.id(), d) != null)\n                throw new IllegalArgumentException(\"duplicate department\");\n            children.put(d.id(), new ArrayList<>()); members.put(d.id(), new ArrayList<>());\n        }\n        List<String> roots = new ArrayList<>();\n        for (Department d : source.values()) {\n            if (d.parentId() == null) roots.add(d.id());\n            else {\n                List<String> siblings = children.get(d.parentId());\n                if (siblings == null) throw new IllegalArgumentException(\"missing parent\");\n                siblings.add(d.id()); // source is ID-sorted, so each child list is sorted.\n            }\n        }\n        ArrayDeque<String> queue = new ArrayDeque<>(roots);\n        int visited = 0;\n        while (!queue.isEmpty()) {\n            String id = queue.removeFirst(); visited++;\n            queue.addAll(children.get(id));\n        }\n        // Each department has at most one parent. Unreached components are cycles.\n        if (visited != source.size()) throw new IllegalArgumentException(\"department cycle\");\n        Map<String, Person> persons = new TreeMap<>();\n        for (Person p : inputPeople) {\n            Objects.requireNonNull(p); checkId(p.id()); checkId(p.departmentId());\n            checkName(p.name());\n            if (!source.containsKey(p.departmentId()))\n                throw new IllegalArgumentException(\"missing department\");\n            if (persons.putIfAbsent(p.id(), p) != null)\n                throw new IllegalArgumentException(\"duplicate person\");\n        }\n        for (Person p : persons.values()) members.get(p.departmentId()).add(p.id());\n        Map<String, Node> nodes = new TreeMap<>();\n        for (Department d : source.values())\n            nodes.put(d.id(), new Node(d.id(), d.parentId(), d.name(),\n                    List.copyOf(children.get(d.id())), List.copyOf(members.get(d.id()))));\n        return new OrganizationIndex(nodes, persons, roots);\n    }\n    public Map<String, Node> departments() { return departments; }\n    public Map<String, Person> people() { return people; }\n    public List<String> roots() { return roots; }\n    public List<String> preorder(String root, int limit) {\n        Objects.requireNonNull(root);\n        if (limit <= 0 || !departments.containsKey(root))\n            throw new IllegalArgumentException(\"root or limit\");\n        List<String> result = new ArrayList<>();\n        ArrayDeque<String> stack = new ArrayDeque<>(); stack.push(root);\n        while (!stack.isEmpty()) {\n            if (result.size() == limit) throw new IllegalArgumentException(\"result limit\");\n            String id = stack.pop(); result.add(id);\n            List<String> next = departments.get(id).children();\n            for (int i = next.size() - 1; i >= 0; i--) stack.push(next.get(i));\n        }\n        return List.copyOf(result);\n    }\n    private static void checkId(String id) {\n        if (id == null || id.isBlank() || id.length() > 128)\n            throw new IllegalArgumentException(\"identifier\");\n    }\n    private static void checkName(String name) {\n        if (name == null || name.length() > 256) throw new IllegalArgumentException(\"name\");\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十八、复杂度和代码验证应怎样说"
+    },
+    {
+      "type": "paragraph",
+      "text": "设部门数为 n、人员数为 m。TreeMap 的排序索引插入带来 O(n log n + m log m)，人员目标部门 containsKey 的验证还需 O(m log n)，所以更完整的建造上界写为 O(n log(n+1) + m log(m+1) + m log(n+1) + 文本处理成本)。父子连边和遍历本身约 O(n+m)，HashMap 访问按平均情况计算；字符串比较、校验也受 ID 和名称长度影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "结果空间为 O(n+m+文本量)，构建过程还持有输入与临时索引的副本，需要峰值预算。preorder 访问 K 个节点，除栈操作外，每次 TreeMap 查询带来 O(log n)，整体可写 O(K log(n+1)) 加比较成本。显式栈最坏 O(n)，宽树也可能一次压入很多孩子；limit 限制输出节点，不等于额外内存只用 O(limit)，构建总量上限仍不可少。"
+    },
+    {
+      "type": "paragraph",
+      "text": "迭代实现避免在建树或遍历两万层链时消耗两万层 Java 调用栈，但若最后又交给无深度限制的递归 JSON 序列化器，风险会回来。平面格式、分页、最大深度和总输出字节预算应一直延续到接口层。示例 ID 上限 128、名称上限 256，单位是 Java UTF-16 代码单元；发送 Redis 前还要检查编码后的字节上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试应覆盖多根、稳定排序、空树、重复部门和人员、缺父、缺目标部门、自环、独立环、空值、字段长度、输入数量边界、结果不可变和遍历上限；再用两万层链及宽树检查栈与预算。随机森林可用独立的“逐行扫描找孩子”的参考实现核对前序和成员列表，不能只用被测算法自己生成期望值。手机号路由则核对前缀后缀重建、前导零、ASCII 限制和同前九位 100 个字段的完整枚举。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这些本地 Java 检查只能验证路由与索引算法。目标 Redis 版本的编码转换、字段 TTL、Cluster 同槽约束、复制与故障切换，以及数据库一致快照、权限服务、跨槽发布、命中率和端到端延迟，都需要在真实依赖和部署上另外测试。没有测量数据时，不给出“提速多少倍”或“节省多少内存”的结论。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十九、继续追问时，用反例把边界讲透"
+    },
+    {
+      "type": "paragraph",
+      "text": "“Hash 不是单线程执行吗，为什么还丢更新？”单条命令串行，不等于客户端多条读改写被封成一次操作；画出两个客户端都读 v7 的时间线就能解释。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“用了字段 TTL，为什么还拆 key？”还要看字段是否是独立业务实体、是否需要独立分片和隔离、最大 value、访问热度以及客户端支持。字段 TTL 解决生命周期的一部分，不解决一个超大 Hash 的单槽热点。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“分桶后扩容，只改取模的桶数行不行？”不行，旧数据的位置与新公式不同；要管理路由版本、迁移增量、双读边界和回滚。只搬静态快照会漏掉迁移期间新增、更新与删除。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“多块全部写成功，再写指针，就能强一致吗？”还不够。要证明构建数据来自同一版本、指针不会回退、读者固定版本、缺块不会混代、权限按当前规则检查；再说明跨系统故障和副本回退。缓存完整快照与权威实时事实不是同一个承诺。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“怎样证明部门树优化有效？”先给真实部门数、人员数、最大深度、单租户响应字节和更新频率，再比较查询次数、构建耗时、命中率、P95/P99、回源放大与失效延迟。把冷启动和缓存故障也纳入比较，避免只挑热缓存的最好结果；表有多大和一次请求实际取多少数据应分别回答。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二十、结合真实项目，怎样自然地讲应用"
+    },
+    {
+      "type": "paragraph",
+      "text": "我在制造业生产事件可靠触达与智能维修平台的实习里，在渠道出口使用 Redis Lua 令牌桶控速，为 P0 预留配额，并按积压做滞回降级。这个实际场景能说明：建模不仅要考虑字段怎么存，还要考虑哪些状态必须在一次裁决里一起检查和更新。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果继续设计桶状态，我会比较 String 整体快照和 Hash 局部字段更新，把令牌余额、补充时间及需要一起判断的额度放进有界的原子操作，并单独设计过期和故障恢复。审批流程中的版本 CAS 可以用来说明过期版本不能覆盖新状态，但它不等于 Java 原子类，也不证明所有外部副作用一起提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实习的可靠通知主链路使用 RabbitMQ；NoteWeave 的资料解析、切片、向量化和索引构建使用 Kafka 异步任务，两者是不同的项目链路。如果给 NoteWeave 的任务状态或生成结果增加缓存，我会让频繁局部读取的进度字段和整体版本产物分别按需要建模，把资料版本、schema 和权限带进键与失效规则，关键恢复状态保留可靠的权威记录。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果面试转到用户画像或部门人员树，我会把它们作为系统设计题，按访问模式、版本发布、迁移和权限来推导方案，再说明需要哪些真实规模与测量才能确定选型。实际做过的限流与版本并发控制可以帮助解释思路，具体用了哪个 String/Hash 模型、组织树 key 或数据库引擎，应按真实实现回答。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

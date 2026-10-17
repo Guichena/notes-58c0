@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mq-bg-kafka-1-1",
+  "entryId": "bg-kafka-1",
+  "expectedOriginalHash": "fcf7ea2ed6dcfb360c7a4f666dbebdd47b9ea0f575bd5bf0cfaa70426d6218f0",
+  "title": "消息队列手册：机制、具体条件与可靠性边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Q11 Kafka 的核心模型是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 用分区日志保存事件，用副本容错，用消费组维护独立进度；分区负责并行和顺序，副本负责同一份数据的冗余。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Topic、Partition、Broker、Replica、Consumer Group 是什么？Kafka 什么架构？一条消息执行原理？三个 broker 中一个宕机怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "Topic 是逻辑分类；一个 topic 有多个 partition，各自是一条有序日志。Producer 获取元数据，选择分区并向其 leader 发送；follower 从 leader 拉取复制。Consumer 按位置 fetch。Broker 保存分区日志、索引和副本状态，是有状态组件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先用两份不同数据区分分区和副本：P0 在 B1、P1 在 B2，只是把工作分开了；B1 坏了，B2 的 P1 没有 P0 的数据，只有 P0 的其他副本才能接替 P0。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看位置：每个分区的日志由多个 segment 及索引构成，并非一个 topic 对应一个文件。同一记录要用 topic + partition + offset 定位，不同分区出现相同 offset 很正常。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 4.0 为 KRaft-only。Controller quorum 管元数据、broker 注册及分区 leader 等控制面，不是每条业务消息都先写到全局 controller。历史 ZooKeeper 集群另有迁移背景；现代 producer/consumer 通过 broker 元数据发现变化，不应说客户端等 ZooKeeper 直接通知。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一条消息先进入生产者的分区批次，再追加到对应 partition 的 leader 日志，由 follower 拉取复制，最后被消费者按自己的进度批量拉取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“讲讲 Kafka 架构”“底层怎么实现”“分区、副本、消费组分别是什么”“Kafka 结构为什么快”可以从这条链开始，但不能只背组件名。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先分清命名、顺序、容错和独立订阅"
+    },
+    {
+      "type": "paragraph",
+      "text": "Topic 是逻辑分类，例如直播观看时长与直播 PK 开始事件可以属于不同 topic。记录的 key、value、headers 及 schema 版本由应用约定，Kafka 存储的是序列化字节，并不强制同 topic 的每条 value 都符合某个 Java 类。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Partition 是追加日志、顺序和普通消费组并行分工的单位。一个 topic 的各分区共同构成它的数据，一个分区通常由多个 segment 文件及索引组成。Replica 是同一个分区的另一份日志，不是另一个分区。Broker 保存日志、索引和相关状态，因此是有状态服务；磁盘容量变大不意味着写入、读取、复制或恢复速度保持不变。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个消费组对同一 topic 保存一套独立恢复进度。组内成员分担分区，组间可独立读同一批记录。消费者拉取记录不会像从普通工作队列取走物品那样删除日志，所以审计、统计和搜索投影能分别追赶、回放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "与其他消息中间件比较时，Kafka 的典型优势是可保留与回放的日志、多个消费组独立追赶，以及以分区和批量 I/O 支撑事件流处理。复杂任务路由、逐条工作确认或定时任务能力要按产品和版本比较，不能只凭“Kafka 快”覆盖所有需求；完整选型见 Q02“Kafka RabbitMQ RocketMQ 和 Redis 怎样选”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "KRaft 控制面不替每条业务消息做全局共识"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka 4.0 起不再支持 ZooKeeper 模式。KRaft controller quorum 通过元数据日志维护 broker 注册、topic/partition、副本集合和 leader 等集群信息；broker 的业务分区日志沿自己的复制路径工作。生产者发一条订单消息，不是先交给所有 controller 多数派写一份订单日志。"
+    },
+    {
+      "type": "paragraph",
+      "text": "历史 ZooKeeper 模式中，ZooKeeper 参与元数据管理和 controller 选举。现代客户端通过 broker 获取元数据、发现 leader 变化，不需要让每个 producer/consumer 都在 ZooKeeper 注册成业务实体，也不能描述为 ZooKeeper 直接向所有客户端推送路由。讨论 3.x 老集群时，还应问清它处在 ZooKeeper、KRaft 还是迁移阶段。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Delete、compact、tombstone 是三种什么语义？"
+    },
+    {
+      "type": "paragraph",
+      "text": "cleanup.policy=delete 以 segment 为单位按时间或容量清理，retention.ms/retention.bytes 是保留策略，不是每条记录在精确毫秒被删除的计时器。滚动和后台清理决定实际粒度，消费者落后过久可能连恢复位置都不存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "compact 在后台清理同 key 的较旧值，适合重建最新状态。它不是发送端实时去重，不保证任意时刻日志中只有一条相同 key，也不能阻止消费者已对旧记录做过多次副作用。Key 配合 null value 表示 tombstone，可传播删除；tombstone 自身也有保留窗口。离线全量重建若错过删除证据，可能错误恢复旧对象，因此必须把 delete.retention.ms、最长扫描时间和快照/重建协议一起设计。组合 compact,delete 还会按时间或大小删除旧 segment，不能将它理解为永久保留每个 key 的最后值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "恢复预算至少覆盖最长停机、排查、修复和追赶时间，并留出容量余量。保留期消耗完后，seek 只能改变位置，无法重新创造已删除的数据；要靠权威数据库、备份或有明确水位的重新快照。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mq-source-guide",
+      "label": "源手册的版本与验证范围"
+    }
+  ],
+  "questionId": "1"
+}

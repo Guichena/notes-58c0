@@ -1,0 +1,276 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-72",
+  "entryId": "database-72",
+  "expectedOriginalHash": "41cd7c181034a28965331362c06c983addd7b4ac06213a4d70d4f2b30e2ec2ba",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "查询关键字的执行顺序"
+    },
+    {
+      "type": "paragraph",
+      "text": "要找“高薪员工人数超过 10 的部门”，先筛员工，再数部门里还剩多少人。工资条件写在 WHERE，人数条件写在 HAVING。两者不能直接互换：前者判断一名员工，后者判断一个部门。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的查询把 SELECT、FROM、JOIN、WHERE、GROUP BY、HAVING、ORDER BY 和 LIMIT 放在同一个例子里。先按下文的逻辑处理顺序手算结果，再看优化器选择怎样执行；逻辑顺序帮助解释语义，并不限制物理执行只能照这个次序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在空的实验 schema 中建表并运行；同名表存在时换 schema，不覆盖已有数据。预期只返回部门 1 Engineering，high_paid_count 为 11。把工资条件改成 HAVING 不是等价替换，因为它过滤的对象不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 department_query.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/department_query.sql",
+      "value": "CREATE TABLE departments (\n  id INT PRIMARY KEY,\n  name VARCHAR(100) NOT NULL\n) ENGINE=InnoDB;\nCREATE TABLE employees (\n  id INT PRIMARY KEY,\n  department_id INT NOT NULL,\n  salary DECIMAL(12,2) NOT NULL,\n  KEY ix_department_salary (department_id, salary),\n  FOREIGN KEY (department_id) REFERENCES departments(id)\n) ENGINE=InnoDB;\nINSERT INTO departments VALUES (1,'Engineering'),(2,'Support');\nINSERT INTO employees VALUES\n  (1,1,60000),(2,1,61000),(3,1,62000),(4,1,63000),\n  (5,1,64000),(6,1,65000),(7,1,66000),(8,1,67000),\n  (9,1,68000),(10,1,69000),(11,1,70000),(12,1,40000),\n  (13,2,80000);\nSELECT d.id, d.name, COUNT(*) AS high_paid_count\nFROM employees AS e\nJOIN departments AS d ON e.department_id = d.id\nWHERE e.salary > 50000\nGROUP BY d.id, d.name\nHAVING COUNT(*) > 10\nORDER BY d.name, d.id\nLIMIT 5;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是 SQL 查询的逻辑处理顺序，适合推演各子句的语义；它不是 InnoDB 的物理执行时间表。优化器可以做连接重排、谓词下推等变换，只要保持查询语义。"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "FROM：识别确定出数据来源的表",
+        "ON：处理 JOIN 的关联条件",
+        "JOIN：合并关联的表数据",
+        "WHERE：对JOIN操作的结果应用WHERE中的过滤条件，过滤行数据",
+        "GROUP BY：对数据按指定字段进行分组，分组操作通常在WHERE条件过滤之后进行",
+        "HAVING：用于筛选过滤分组后的数据",
+        "SELECT：选择需要返回的字段（计算列、别名等）",
+        "DISTINCT：去除重复的行",
+        "ORDER BY：对结果进行排序",
+        "LIMIT：限制返回的行数。这通常是整个查询过程的最后一步"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "---"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LEFT JOIN和INNER JOIN的区别是什么？ON与WHERE如何改变保留行？"
+    },
+    {
+      "type": "paragraph",
+      "text": "INNER JOIN 只保留满足条件的行对，LEFT JOIN 还保留未匹配左行；右表条件放在 ON 或 WHERE 可能改变结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：LEFT JOIN和INNER JOIN的区别是什么？ON与WHERE如何改变保留行？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "要求列出每个用户及其 OPEN 订单；必须先确认没有合格订单的用户是否仍应出现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "结果语义与最小反例"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把 JOIN 想成“找行对”。INNER JOIN 只输出满足 ON 的行对；LEFT JOIN 在此基础上，再给每条没有匹配的左行补一行，右侧列全为 NULL。一个用户匹配两笔订单，就会输出两行；没有 ORDER BY 时，两行按什么顺序返回也没有保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用三个用户检查条件位置：Ada(id1) 有一笔 OPEN、一笔 CLOSED；Bo(id2) 只有 CLOSED；Cy(id3) 没有订单。把 o.status='OPEN' 写在 LEFT JOIN 的 ON 中，表示“寻找 OPEN 订单”：Ada 匹配成功，Bo 和 Cy 找不到，但仍各保留一行右侧 NULL。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把同一个状态条件移到 WHERE，含义变成“从连接结果里只留下状态为 OPEN 的行”。Bo 和 Cy 的补空行不满足条件，结果只剩 Ada。要不要保留没有合格订单的用户，正是决定条件放在哪里的关键。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "NULL、计数与反连接"
+    },
+    {
+      "type": "paragraph",
+      "text": "统计订单数时COUNT(o.id)在非NULL主键下正确地对无匹配用户得到0，COUNT(*)则会把补出的那一行计成1。查没有订单的用户可LEFT JOIN后WHERE o.id IS NULL，前提id本身非NULL；若拿可空的业务字段判断，真实匹配行字段NULL也会误判。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对同一个用户同时JOIN订单和标签可能造成乘法放大，比如2订单×3标签=6行，SUM金额会重复。应先在正确粒度聚合，或用EXISTS表达只需存在的条件，不能遇重复就随意DISTINCT掩盖错误。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "优化和测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "过滤可前推不意味着任何WHERE都能挪到ON而不改语义。优化器可能把满足空值拒绝条件的外连接化简，但你首先要写对所需结果。索引常从内表连接键和过滤条件组合评估，连接顺序受外连接保留语义限制；不能机械“小表一定放左”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 join_semantics.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/join_semantics.sql",
+      "value": "-- MySQL 8 and standard relational reference fixture; fresh test schema.\nCREATE TABLE join_users(id BIGINT PRIMARY KEY, name VARCHAR(20) NOT NULL);\nCREATE TABLE join_orders(id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(12));\nINSERT INTO join_users VALUES(1,'Ada'),(2,'Bo'),(3,'Cy');\nINSERT INTO join_orders VALUES(10,1,'OPEN'),(11,1,'CLOSED'),(12,2,'CLOSED');\n-- Filter matches in ON: all three users remain.\nSELECT u.id,o.id FROM join_users u LEFT JOIN join_orders o\n ON o.user_id=u.id AND o.status='OPEN' ORDER BY u.id,o.id;\n-- Expected: (1,10),(2,NULL),(3,NULL).\n-- Filter joined rows in WHERE: null-extended rows are removed.\nSELECT u.id,o.id FROM join_users u LEFT JOIN join_orders o\n ON o.user_id=u.id WHERE o.status='OPEN' ORDER BY u.id,o.id;\n-- Expected: (1,10).\nSELECT u.id,COUNT(o.id) AS order_count FROM join_users u\n LEFT JOIN join_orders o ON o.user_id=u.id\n GROUP BY u.id ORDER BY u.id;\n-- Expected: (1,2),(2,1),(3,0).\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接边界要同时看两侧空表、多重匹配、NULL 外键、右表业务字段为 NULL、WHERE 中的复杂 OR 和最后聚合粒度。某条右行确实存在但状态为 NULL，与 LEFT JOIN 补出的整行 NULL 不是同一事实；计数时仍按右表非空主键判断是否匹配。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "SQL聚合查询怎样写，WHERE、GROUP BY、HAVING和NULL各影响什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "聚合查询先过滤明细，再定义分组和指标，最后用 HAVING 过滤组；NULL、空输入和连接放大必须纳入口径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：SQL聚合查询怎样写，WHERE、GROUP BY、HAVING和NULL各影响什么？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下用独立部门与员工数据说明语法，保持 MySQL 8.4 的 ONLY_FULL_GROUP_BY 开启。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先筛明细再按组计算"
+    },
+    {
+      "type": "paragraph",
+      "text": "先用本节员工数据推一遍：WHERE active=1 留下活跃员工；GROUP BY department_id 把他们按部门归组；COUNT(*) 得到每组人数；HAVING 再留下至少 3 人的部门。aggregate.sql 正是这条路径。COUNT 在同一层 WHERE 运行所依据的逻辑阶段还没形成，所以不能在那里直接过滤人数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "推导时，FROM 确定来源，WHERE 筛明细，GROUP BY 形成组并计算 COUNT/SUM/AVG/MIN/MAX 等聚合，HAVING 筛组；SELECT 决定输出哪些列或表达式，ORDER BY 和 LIMIT 决定输出顺序与数量。这里解释的是语义，优化器仍可合法地下推条件、重排连接，不必物化每一步。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果还想显示员工姓名，就要再问“是哪一名员工”。既未聚合、也不满足 MySQL 认可函数依赖的非分组列，会被默认开启的 ONLY_FULL_GROUP_BY 拒绝。关闭它之后随意拿到的一个姓名，也不一定属于最高工资员工。后一个需求应另用排名或回连，并明确并列规则。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "NULL、重复和空输入不是小细节"
+    },
+    {
+      "type": "paragraph",
+      "text": "用工资 100、200、NULL 的三名员工区分计数：COUNT(*) 是 3 人，COUNT(salary) 是 2 个已知工资，COUNT(DISTINCT salary) 数的是不同的非 NULL 工资值。即使两名员工工资相同，他们仍然是两个人。SUM 和 AVG 忽略 NULL，AVG 的分母是已知工资个数，因此不能直接以 SUM/COUNT(*) 替代。全为 NULL 或无行时，SUM/AVG 通常为 NULL，COUNT 为 0。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再把条件改成“这个部门一名员工也没有”。有 GROUP BY 的空输入不会凭空生成一个全零组；要列出所有部门，应从部门表 LEFT JOIN 员工，并把活跃条件写在 ON。此时 COUNT(e.id) 是 0，COUNT(*) 却会数到补出的那一行而得到 1。报表可用 COALESCE 把 NULL 显示为 0，但这只是展示或统计约定，并不证明未知工资原本就是 0。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整例子和扩大规模后的取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "样例部门1有3名活跃员工，工资100、200、NULL，结果people=3、known=2、sum=300、avg=150；未激活工资900被排除。部门3没有员工，在LEFT JOIN版本中仍出现人数0。提供确定排序避免LIMIT随机选组。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按实际过滤/分组评估(active,department_id)等索引、覆盖与临时表代价，聚合处理多少行才是核心；精确计数不是加索引后恒定时间。大报表可预聚合，但需幂等事件、迟到修正和刷新水位，不能把异步报表叫实时账本。具体业务SQL未给时，先说明通用语法和统计口径，再用独立数据推导结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 aggregate.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/aggregate.sql",
+      "value": "CREATE TABLE agg_department(id BIGINT PRIMARY KEY,name VARCHAR(40) NOT NULL);\nCREATE TABLE agg_employee(id BIGINT PRIMARY KEY,department_id BIGINT NOT NULL,salary DECIMAL(12,2),active INT NOT NULL,FOREIGN KEY(department_id) REFERENCES agg_department(id));\nINSERT INTO agg_department VALUES(1,'Engineering'),(2,'Support'),(3,'Empty');\nINSERT INTO agg_employee VALUES(1,1,100,1),(2,1,200,1),(3,1,NULL,1),(4,1,900,0),(5,2,50,1),(6,2,50,1);\nSELECT department_id,COUNT(*) AS people,COUNT(salary) AS known_salaries,\n SUM(salary) AS total,AVG(salary) AS average_salary,MIN(salary) AS minimum_salary,MAX(salary) AS maximum_salary\nFROM agg_employee WHERE active=1\nGROUP BY department_id HAVING COUNT(*)>=3\nORDER BY total DESC,department_id LIMIT 10;\n-- ON preserves departments with no active employees. COUNT(e.id), not COUNT(*).\nSELECT d.id,d.name,COUNT(e.id) AS people,COALESCE(SUM(e.salary),0) AS total\nFROM agg_department d LEFT JOIN agg_employee e ON e.department_id=d.id AND e.active=1\nGROUP BY d.id,d.name ORDER BY d.id;\n-- Rows with identical salaries remain separate employees.\nSELECT COUNT(DISTINCT salary) AS different_known_salaries,COUNT(salary) AS known,COUNT(*) AS all_rows\nFROM agg_employee WHERE department_id=2;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "构造反例时同时放入重复薪资、NULL 工资、未激活员工、空部门和空输入，分别推导 WHERE、HAVING、COUNT(*)、COUNT(列)、SUM 与 AVG。值结果正确与 ONLY_FULL_GROUP_BY 合法、执行计划合理是分开的要求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "INNER JOIN、LEFT JOIN和RIGHT JOIN分别保留哪些行，RIGHT如何改写？"
+    },
+    {
+      "type": "paragraph",
+      "text": "INNER、LEFT、RIGHT 分别保留匹配行、所有左行和所有右行；交换表可将 RIGHT 改成 LEFT，但须保持投影列顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：INNER JOIN、LEFT JOIN和RIGHT JOIN分别保留哪些行，RIGHT如何改写？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "三种结果集及RIGHT改写"
+    },
+    {
+      "type": "paragraph",
+      "text": "INNER只保留匹配配对；LEFT在此基础上保留每条未匹配左行并把右列补NULL；RIGHT保留未匹配右行并补左列NULL。A RIGHT JOIN B ON A.k=B.k可改为B LEFT JOIN A ON相同条件，但显式SELECT A列、B列以保持原列顺序；SELECT *交换表后列位置会变。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例：左表L为(1,k1),(2,k1),(3,NULL)，右表R为(8,k1),(9,k2),(10,NULL)。INNER得到(1,8),(2,8)；LEFT再有(3,NULL)；RIGHT再有(NULL,9),(NULL,10)。NULL=NULL不是TRUE，故两条NULL键不会自动配对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "条件与成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "一对多匹配产生多行，不能误当集合去重。WHERE L.col>0放在RIGHT JOIN之后会删掉L补空行，常改变保留右行的要求；需要保留右行时应区分匹配条件ON与最终过滤WHERE。COUNT非空主键与COUNT(*)含义同样不同。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

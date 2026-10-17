@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-792-matching-subsequences",
+  "kind": "qa",
+  "module": "algo",
+  "part": "线性结构",
+  "category": "哈希与计数",
+  "title": "LC792 匹配子序列的单词数：等待队列与批次边界",
+  "number": 792,
+  "source": "LeetCode 792 官方题面；独立解题说明与 Java 实现",
+  "tags": [
+    "LC792",
+    "子序列",
+    "等待队列",
+    "分桶",
+    "批量匹配"
+  ],
+  "questions": [
+    {
+      "id": "q-own-algo-792-matching-subsequences",
+      "question": "怎样一次扫描主串，统计多个单词中有多少项是它的子序列？",
+      "shortAnswer": "按下一个待匹配字符将单词状态分到 26 个等待队列；扫描主串时只推进对应桶的旧批次，完成则加一。重复单词分别建状态，同一主串位置不能被一个状态用两次。时间 O(n+L+m)，额外空间 O(m)。",
+      "commonPhrasings": [
+        "LeetCode 792 Number of Matching Subsequences",
+        "如何批量判断子序列并保留重复单词计数？"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "题意、约束与统计口径"
+        },
+        {
+          "type": "paragraph",
+          "text": "给定主串 s 和单词数组 words，逐项判断该单词能否在 s 中按从左到右的顺序选出，返回成功项的数量。允许跳过字符，但不能调换顺序，也不能重复使用同一个位置。统计的是数组项，不是不同单词的种数，也不是一个单词在 s 中有多少种选法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "按 LeetCode 792 的输入范围：s 长度为 1～50000，words 有 1～5000 项，每项长度为 1～50；主串和单词均只包含 a～z。数组内的重复单词分别计数。本文实现额外支持空主串、空数组与空单词：空单词总能匹配，且每一项各计一次；null 或非小写英文字母显式抛异常。这些空输入是接口扩展，不是官方测试约束。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "子序列和子串不能混淆"
+        },
+        {
+          "type": "paragraph",
+          "text": "子串要求连续；子序列只要求所选下标严格递增。例如在 axbyc 中，abc 是子序列而不是子串，因此不能用 contains(word) 判断。对子序列来说，一个 a 不能同时满足 aa 的两位；另外 baa 中的 ab 不匹配，即使每个字母的总数足够。只比较字符频率也不成立。"
+        },
+        {
+          "type": "paragraph",
+          "text": "官方示例一：s=abcde，words=[a,bb,acd,ace]，结果为 3。示例二：s=dsahjpjauf，words=[ahjpjau,ja,ahbwzgqnuk,tnmlanowax]，结果为 2。解释和解法均为独立撰写；官方页面仅核对题意、输入范围与样例。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "面试先给基线：每个单词独立用双指针"
+        },
+        {
+          "type": "paragraph",
+          "text": "对每个单词，从主串开头扫描，next 表示该单词还没匹配的第一位。只有当前字符相等时才推进 next，扫完后 next 等于单词长度就计数。这是最容易验证的版本；单词长度大于主串时可以直接跳过，但不影响本质。最早可用位置的贪心选择不会让后续匹配更困难，因为它为剩余字符留出的后缀最长。"
+        },
+        {
+          "type": "paragraph",
+          "text": "记 n 为主串长度，m 为单词数量，L 为所有单词长度之和。基线时间上界 O(m(n+1))，官方非空约束下可写 O(mn)，额外空间 O(1)，不修改输入。本题上限可能让主串被重复检查约 2.5 亿次；应避免对每个单词重新读取大量无关字符。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "Baseline.java（本批实际编译并测试）",
+          "value": "public final class Baseline {\n    // Same lowercase, non-null input precondition; empty inputs also work.\n    public static int count(String s, String[] words) {\n        int matched = 0;\n        for (String word : words) {\n            int next = 0;\n            for (int i = 0; i < s.length() && next < word.length(); i++) {\n                if (s.charAt(i) == word.charAt(next)) next++;\n            }\n            if (next == word.length()) matched++;\n        }\n        return matched;\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "批量优化：让单词等待自己需要的字符"
+        },
+        {
+          "type": "paragraph",
+          "text": "把每个未完成的单词表示成状态 (word,next)，next 是下一个待匹配字符的位置。建立 26 个 FIFO 队列，按 word[next] 放桶。扫描主串的字符 c 时，只有等待 c 的状态有机会推进；其他桶不动。推进一位后，完成的状态使答案加一，否则进入新的待匹配字符桶。每个数组项独立建状态，因此同一个 String 对象出现两次也不会共享进度。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这可以理解为把“每个单词主动扫描主串”改为“主串字符唤醒需要它的单词”。不复制单词剩余部分，不反复 substring，也不保存每个主串位置上的全部状态。State 仅持有原单词引用和整数指针；ArrayDeque 保证入队出队的摊还常数时间。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "最关键的轮次边界：本轮新入队不能本轮再推进"
+        },
+        {
+          "type": "paragraph",
+          "text": "读到 s[i] 时先保存 bucket.size()，随后恰好处理这个数量的队首状态。即使推进后仍等待相同字符，也只追加到队尾，留给下一轮主串字符。因为旧元素仍在前面，固定次数恰好消费旧批次；本轮追加的元素不会被取出。若写 while (!bucket.isEmpty())，s=a、word=aa 会错误地连续消费同一个 a，甚至把任意多个连续 a 都错误完成。"
+        },
+        {
+          "type": "paragraph",
+          "text": "另一种实现是把旧桶整体取走，立即用新空桶替换再遍历旧桶，原理一样；不要既沿用旧队列又无限处理它。主串每一个位置都只给同一状态一次推进机会，这是“严格递增下标”的代码体现。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "手推一轮，检查重复项和连续字符"
+        },
+        {
+          "type": "paragraph",
+          "text": "s=aa，words=[a,aa,aa,aaa,b]。初始化 a 桶有四个独立状态，b 桶一个。第一个 a 的旧批次大小为 4：a 完成，两个 aa 都推进到各自第二位，aaa 推进到第二位；后三个状态重新排入 a 桶。第二个 a 只处理这三个状态，两个 aa 分别完成，aaa 仍缺一位；最终答案 3，b 和 aaa 均失败。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整 Java 解法"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "Solution.java（本批实际编译并测试）",
+          "value": "import java.util.ArrayDeque;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Objects;\n\npublic final class Solution {\n    private static final class State {\n        final String word;\n        int next;\n        State(String word) { this.word = word; }\n    }\n\n    // Contract: lowercase English letters only. Empty strings/arrays are supported\n    // as an extension; null or non-lowercase input is rejected explicitly.\n    public int numMatchingSubseq(String s, String[] words) {\n        requireLowercase(s);\n        Objects.requireNonNull(words, \"words\");\n        List<ArrayDeque<State>> waiting = new ArrayList<>(26);\n        for (int c = 0; c < 26; c++) waiting.add(new ArrayDeque<>());\n        int matched = 0;\n        for (String word : words) {\n            requireLowercase(word);\n            if (word.isEmpty()) {\n                matched++;\n            } else {\n                // One distinct state per array occurrence, including duplicates.\n                waiting.get(word.charAt(0) - 'a').addLast(new State(word));\n            }\n        }\n        for (int i = 0; i < s.length(); i++) {\n            ArrayDeque<State> bucket = waiting.get(s.charAt(i) - 'a');\n            // Snapshot the OLD batch size: requeued states cannot reuse s[i].\n            int roundSize = bucket.size();\n            for (int j = 0; j < roundSize; j++) {\n                State state = bucket.removeFirst();\n                state.next++;\n                if (state.next == state.word.length()) {\n                    matched++;\n                } else {\n                    waiting.get(state.word.charAt(state.next) - 'a').addLast(state);\n                }\n            }\n        }\n        return matched;\n    }\n\n    private static void requireLowercase(String value) {\n        Objects.requireNonNull(value, \"string\");\n        for (int i = 0; i < value.length(); i++) {\n            char c = value.charAt(i);\n            if (c < 'a' || c > 'z') {\n                throw new IllegalArgumentException(\"Only lowercase English letters are supported\");\n            }\n        }\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "正确性：循环不变式与最早匹配贪心"
+        },
+        {
+          "type": "paragraph",
+          "text": "不变式：处理完 s 的前 i 个字符后，每个未完成状态的 next 等于在该前缀中按最早可用位置贪心匹配出的单词前缀长度；它恰好出现在 word[next] 的桶内一次。已完成状态已经从桶移除，并且对应数组项恰好计数一次。初始时非空单词 next=0，按首字母入桶，空单词直接完成，不变式成立。"
+        },
+        {
+          "type": "paragraph",
+          "text": "归纳步骤：新字符不等于下一位时，状态不能推进，其他桶保持不动；相等时，旧批次中的状态恰好推进一位，必要时重新入桶。本轮 size 快照保证同一位置不被重复使用。完成时计一次并移除，未完成时桶键与新 next 一致，因此不变式保持。"
+        },
+        {
+          "type": "paragraph",
+          "text": "还要说明贪心不会漏掉可行匹配：任取一种合法匹配，把它第一个字符的位置替换成最早可用位置，后续位置仍然在其右侧；重复这个交换过程，得到每一步都尽早匹配的方案。因此某单词存在匹配，当且仅当贪心指针能走到末尾。扫描结束后，已计数的正是全部可匹配数组项；每个重复项各有独立状态，计数符合题意。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度：嵌套循环不等于乘起来"
+        },
+        {
+          "type": "paragraph",
+          "text": "初始化与合同检查扫描 n+L 个字符并处理 m 个数组项。主串扫描 n 次；所有状态推进总次数不超过 L，每次出队和入队均为摊还 O(1)。故总时间 O(n+L+m)，在官方非空单词约束下 m≤L，可简写 O(n+L)。显式合同检查只是同阶开销，不改变结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "队列中任一时刻最多 m 个未完成状态，26 个桶为常数，额外空间 O(m+26)=O(m)，不计输入字符串。State 不复制单词内容；ArrayDeque 保留的扩容容量也只随实际入队的状态数量增长。结果≤m≤5000，int 足够。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "测试、边界和容易答错的地方"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "s=a、words=[aa] 是轮次边界的最小反例；必须返回 0。",
+            "重复项全部保留：s=a、words=[a,a] 返回 2，不是 1；同一单词存在多种选法也只按该数组项计 1。",
+            "覆盖首尾桶 a/z、相同单词、完全不匹配、反序、单词等于主串、单词长于主串、连续重复字母以及同一 Solution 对象重复调用。",
+            "不要把每个匹配的主串位置当作一个答案，也不要把 words 改成 Set 后丢失频次。",
+            "当前接口明确拒绝大写、标点和 Unicode 字符；要支持更大字符集，需重新定义字符单位并使用 Map 或坐标压缩，不能直接沿用 char-'a'。",
+            "空单词必须先处理，不能直接 charAt(0)；null 不是空字符串。本实现会检查所有输入，因此匹配完了也不会无声忽略非法字符。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "本批测试直接编译上面的 Solution.java 和 Baseline.java，并检查代码块与 Java 文件逐字一致。独立参考器使用 String.indexOf 从上次位置加一处寻找严格后继，不复用等待桶。测试包含两个官方示例、定向边界、非法输入、全部长度≤7 的二进制主串与长度≤5 的单词、固定随机种子批量对拍及官方最大维度。完整测试源码与实际运行日志随暂存包提供。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "追问：输入形态变化时怎么选方案"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "重复单词很多：先建立 word→频次映射，每个不同单词维护一份状态，完成时加其频次。频次不能丢。构建映射需要读完输入，总时间仍包含 L；状态数可从 m 降到不同单词数 u，另有映射开销。",
+            "主串固定、未来单词持续到来：预存各字符在 s 中的递增位置列表，对单词每一位二分查找严格大于上次下标的位置。预处理 O(n)，长度 k 查询上界 O(k log n)，位置列表空间 O(n)。查询互相独立，更适合在线查询。",
+            "若内存充足且查询很多：建立 next[position][letter] 后继表，26 字母下预处理和空间 O(26n)，每个长度 k 的查询 O(k)。找到位置 p 后必须转到 p+1，不能复用 p。",
+            "主串以流到达且单词预先已知：等待桶天然可以保留状态逐字符处理，不需要保留已读主串；后加入的单词只能匹配到达后的流，若要求匹配完整历史必须另存索引。",
+            "如果要求一个单词有多少种选法，那是不同的子序列计数问题，需要 DP；本题仅判断每项是否存在，并非统计所有下标组合。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "面试收尾可这样说：先逐词双指针给出正确基线，再用 26 个等待队列共享主串扫描。每个数组项维护独立进度，读一个主串字符只处理旧队列批次，完成才加一。靠最早匹配贪心与轮次不变式证明正确，时间 O(n+L+m)，额外空间 O(m)。"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "p-hash",
+          "label": "已有主题：哈希与计数"
+        },
+        {
+          "entryId": "p-twoptr",
+          "label": "基线方法：双指针"
+        }
+      ],
+      "tags": [
+        "LC792",
+        "批次边界",
+        "重复单词"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

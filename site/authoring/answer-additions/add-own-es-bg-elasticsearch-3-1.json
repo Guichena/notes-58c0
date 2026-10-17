@@ -1,0 +1,227 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-es-bg-elasticsearch-3-1",
+  "entryId": "bg-elasticsearch-3",
+  "expectedOriginalHash": "bdd0368b44be371629054effbff269cdc9437ebb403fcd6700db38518cb5a1e7",
+  "title": "写确认、持久化、搜索可见与近实时读取",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.1 一条写请求先经过哪些步骤"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端发出 index、update 或 bulk 请求后，接收节点承担协调职责，解析目标索引或写别名，处理所需 ingest pipeline，再将每项操作路由到相应主分片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "pipeline 可以做字段转换、补充或删除字段，运行它的节点需具有 ingest 能力，协调节点不一定自己执行全部处理。字段映射校验、动态映射更新和主分片上的文档解析相互配合；不要背成“协调节点已经完成所有 mapping，主分片只是收字节”。非法 JSON、对象与数值类型冲突、分析或字段编码失败，都可能使某一项写入被拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "routing 通常来自 _id，也可由调用方显式提供。它决定复制组，不是将文档随便写到负载最低节点。写入用了自定义 routing，GET、update、delete 也要使用一致的值；否则可能查不到旧文档，甚至把相同 _id 写在另一个分片形成重复业务对象。routing 只是分片定位，不能代替租户授权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "bulk 不是把整批固定给一个主分片。协调层按各项目标和路由把它拆给多个复制组，各项独立成功或失败，最终按输入操作次序返回 item 结果。单项文档写的原子边界不自动扩展成整批、跨分片或跨 MySQL 与 ES 的事务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.2 primary 和 in-sync replicas 怎样确认"
+    },
+    {
+      "type": "paragraph",
+      "text": "主分片验证并执行本地操作，再复制到当前 in-sync 集合中的副本，维护这些副本都包含已确认操作的约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "正常写入时，主分片分配序列号，副本执行本地索引工作并返回结果；primary term 是与主分片任期相关的并发令牌。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果一个 in-sync 副本失败，主分片不能把它算作成功，而要通过 master 协调，将它移出 in-sync 集合后再满足确认条件。另一个风险是旧主在网络分区或长 GC 后还不知道自己已失去资格：副本校验和集群协调会阻止它继续合法确认旧任期的写入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这不是“任意副本多数 ACK 就成功”的多数派口号，也不是“所有配置出来的副本永远必须在线”。wait_for_active_shards 控制开始写之前要求多少副本处于 active，8.15 默认只要求主分片；写开始后副本仍可能故障，所以它不是写后所有副本永久健康的保证。应检查响应与实际复制状态，并按业务要求选择冗余和失败处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只剩一个有效副本时仍可能确认写入，失去这份磁盘就没有另一份可恢复的数据。副本解决部分节点故障，并不覆盖误删、错误写入或所有副本同时损毁；备份、重建和恢复验证属于另一个保护层。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.3 Lucene buffer 与 translog 各负责什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lucene 负责形成可检索结构，translog 负责恢复最近尚未进入 Lucene commit 的操作，两者共同支撑低延迟写入与崩溃恢复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "主副分片各自按 mapping 把字段转成倒排、doc values、point 或向量等适用结构。文档进入 Lucene 的写缓冲及后续段文件组织，操作也在确认前写入 translog。不能把“写 buffer”理解成完全不做索引，也不能把“写入 translog 文件”直接等同已经 fsync 到稳定介质。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在 ES 8.15 的 index.translog.durability=request 下，请求返回成功前，相关有效主副本的 translog 要完成 fsync/提交。若设为 async，fsync 由同步间隔驱动，已经确认但尚未同步的操作在故障时存在丢失窗口；8.15 的默认 sync_interval 是 5 秒，它是配置基线，不是任意环境下精确的故障损失承诺。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lucene commit 代价较大，所以不在每一条写后执行。故障恢复可从最近安全 commit 加上必要的 translog 或复制恢复信息继续，而不必要求每条写都变成新 commit。translog 是分片恢复日志，不是永远保存的业务事件流，也不能替代 MySQL CDC 或 MQ 的保留与重放协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.4 refresh fsync flush commit merge 怎样区分"
+    },
+    {
+      "type": "paragraph",
+      "text": "先区分你要确认的结果：让新写能被搜索看到，关注 refresh；让文件持久化，关注 fsync；建立 Lucene commit 并切换 translog 代，关注 ES flush；重新组织段、回收可清理的删除内容，关注 merge。它们回答的是不同问题，不能只记成几个“把数据刷到磁盘”的动作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "refresh 会使新变化进入可供搜索的 searcher，通常涉及将内存索引内容写成可读段并重新打开近实时 reader。段文件可以通过文件系统页缓存读取，不要求为了每次 refresh 都完成 Lucene commit。一次写可能在客户端收到确认之前就被某个并发读观察到，因此“确认、refresh、flush、merge”是需要区分的关口，不能画成所有请求都严格依次串行通过的四个闸门。"
+    },
+    {
+      "type": "paragraph",
+      "text": "fsync 是持久化相关操作。translog fsync 与 Lucene commit 不是同一个动作：前者让日志足以恢复，后者让索引形成耐久提交点。ES flush 执行 Lucene commit 并开始新的 translog generation，旧日志按恢复所需安全清理；它通常自动进行，不应把每次写后的手工 flush 当调优建议。Lucene 内部把缓冲写成段也常叫 flush，讨论 ES _flush API 时要指明层次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "segment 的核心索引结构倾向不可变，更新/删除产生的新状态会逐步累积。merge 将多个段改写为更大的段，处理可回收文档，同时消耗 CPU、读写 I/O 与临时空间。段被旧 searcher、PIT 等引用时，旧文件也可能不能立刻删除。删除成功不代表磁盘用量立刻下降，磁盘没有立刻下降也不等于业务删除失败。"
+    },
+    {
+      "type": "paragraph",
+      "text": "force merge 是强制段合并工具，不是使新写可见的工具。持续写入的热索引上频繁强合并可能制造大段、反复合并和磁盘压力；只读阶段才是更常见的评估场景。merge 可以改变内部 docID，不应让外部业务依赖这些编号。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.5 GET 查到了 为什么 search 还没有"
+    },
+    {
+      "type": "paragraph",
+      "text": "默认按 ID GET 是实时读取，search 使用已有搜索视图，所以同一个刚写入文档可能 GET 已有而 search 尚无。"
+    },
+    {
+      "type": "paragraph",
+      "text": "实时 GET 可利用引擎维护的近期状态取得文档，具体读取路径由当前引擎状态决定，不要背成“GET 永远只读 translog”。realtime=false 会改变 GET 的契约。反过来，GET 查不到还要排除错误 routing、别名指向、ID 和删除状态，不能全归因于 refresh。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写请求的 refresh 参数有三种常用选择："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "false 是默认，不额外为这次请求等待搜索可见。",
+        "true 立即刷新这次操作涉及的相关分片，通常会制造更多小段，代价在写段、搜索多段和后续合并三个阶段支付。",
+        "wait_for 等待相关 refresh 使本次变化可搜再应答，一般不主动立刻刷新；等待监听槽耗尽时仍可能强制刷新，响应可出现 forced_refresh。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "refresh=wait_for 适合有限的写后搜场景，可把需要一起等待的写合成一个 bulk，而不是逐条同步等待。关闭自动 refresh，且没有其他触发刷新行为时，wait_for 可能持续等下去；HTTP 客户端超时只表示客户端停止等待，不证明写入没发生。8.15 的常见自动刷新间隔为 1 秒，默认还有搜索空闲相关行为，不能承诺任意写入“恰好一秒后全局可见”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个等待只涉及已送到 ES 的请求，不能保证源库中尚未投递的更新已到达，也不会把两个独立系统变成同一快照。已经打开的 PIT 保持原搜索视图，不会因后续 refresh 自动看到新写。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.6 search 的后半程怎样接上写链路"
+    },
+    {
+      "type": "paragraph",
+      "text": "搜索协调节点选择各相关复制组中的可用分片副本执行查询，归并候选后再取回所需字段，读的是这些分片各自可用的搜索视图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单片在多个 segment 上定位候选、过滤、评分或按指定字段排序，返回局部候选的排序键与定位信息。协调节点选出全局需要的命中，再向对应分片 fetch _source 或字段。局部统计、并发刷新和排序 tie-break 都可能影响结果，不能把一次 search 当跨索引、跨关系库的事务快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP 200 也可能伴随 timed_out 或 _shards.failed，应用要决定部分结果能否接受，不能只检查状态码就显示“查询完整”。深 from/size 增加各片候选收集与协调合并负担，稳定深翻页要结合 PIT 和 search_after；这些改变分页方式，不会自动修复数据同步缺口。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.7 update 和 delete 为什么通常不是原地改几个字节"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一文档的更新通常是读取当前内容、合并修改，再将旧版本标记删除并索引新版本；update API 节省的是调用方读改写往返与传输表达，不是把不可变倒排段原地改成新文本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整 index 请求表示替换该文档的当前内容，局部 update 可用 doc 或 script。并发读改写要有条件令牌，冲突后重新读取并按业务规则重算，不能把用户旧表单不加判断地再盖上去。retry_on_conflict 处理某些 update 的内部冲突重试，并不使客户端在结果未知时重发“计数加一”天然幂等。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文档 delete 也参与版本和复制，在搜索视图更新后从新搜索中消失。旧 reader/PIT 可以继续看到它之前的视图，因此需要立即撤权的内容应在最终取回或输出处进行权威校验。Lucene 删除位、为复制恢复保留的历史和防止旧业务事件复活所需的墓碑，是不同层次，不能因为都有“删除”两个字就混用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3.12 完整写入与可见性教学请求"
+    },
+    {
+      "type": "paragraph",
+      "text": "将下面内容保存为 write-lifecycle.http，在独立 Elasticsearch 8.15.3 测试环境中按请求逐段执行。索引名必须未使用；本例关闭自动刷新以便观察窗口，恢复为 1 秒后才使用 wait_for。没有其他写者、refresh、flush 或读操作触发刷新，是解释前半段预期的实验条件。"
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "GET /\n\nPUT /interview_visibility_v1\n{\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"refresh_interval\": \"-1\",\n    \"index.translog.durability\": \"request\"\n  },\n  \"mappings\": {\n    \"dynamic\":\"strict\",\n    \"properties\": {\n      \"title\":{\"type\":\"text\"},\n      \"version\":{\"type\":\"long\",\"coerce\":false},\n      \"deleted\":{\"type\":\"boolean\"}\n    }\n  }\n}\n\nPUT /interview_visibility_v1/_doc/1?version=10&version_type=external&refresh=false\n{\"title\":\"search visibility\",\"version\":10,\"deleted\":false}\n\nGET /interview_visibility_v1/_doc/1\n\nGET /interview_visibility_v1/_search\n{\"query\":{\"ids\":{\"values\":[\"1\"]}}}\n\nPOST /interview_visibility_v1/_refresh\n\nGET /interview_visibility_v1/_search\n{\"query\":{\"ids\":{\"values\":[\"1\"]}}}\n\nPUT /interview_visibility_v1/_doc/1?version=9&version_type=external\n{\"title\":\"late old snapshot\",\"version\":9,\"deleted\":false}\n\nPUT /interview_visibility_v1/_doc/1?version=10&version_type=external\n{\"title\":\"search visibility\",\"version\":10,\"deleted\":false}\n\nPUT /interview_visibility_v1/_doc/1?version=11&version_type=external&refresh=true\n{\"title\":\"\",\"version\":11,\"deleted\":true}\n\nPUT /interview_visibility_v1/_doc/1?version=10&version_type=external\n{\"title\":\"late old snapshot\",\"version\":10,\"deleted\":false}\n\nGET /interview_visibility_v1/_search\n{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"deleted\":false}}]}}}\n\nPUT /interview_visibility_v1/_settings\n{\"index\":{\"refresh_interval\":\"1s\"}}\n\nPOST /interview_visibility_v1/_bulk?refresh=wait_for\n{\"index\":{\"_id\":\"2\",\"version\":20,\"version_type\":\"external\"}}\n{\"title\":\"valid bulk item\",\"version\":20,\"deleted\":false}\n{\"index\":{\"_id\":\"3\",\"version\":20,\"version_type\":\"external\"}}\n{\"title\":\"invalid bulk item\",\"version\":\"not-a-long\",\"deleted\":false}\n\nGET /interview_visibility_v1/_doc/2\n\nPOST /interview_visibility_v1/_flush\n\nGET /interview_visibility_v1/_stats/docs,segments,translog,refresh,flush,merge\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "观察顺序如下，不预设一份虚构响应："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "v10 写确认后，实时 GET 应能取到当前文档；在尚未发生 refresh 的新索引中，search 尚看不到它。手工 refresh 后再搜索，应进入可见视图。",
+        "external v9 和再次提交 v10 都应发生版本冲突。接着以 v11 写软墓碑，再提交 v10，应仍被拒绝；带 deleted=false 的搜索不返回该墓碑。",
+        "bulk 的 ID 2 为合法 long，ID 3 的 version 是非法字符串，应分别检查成功与失败 item。整批不回滚，不能只看 HTTP 层。NDJSON 最后一行后须保留换行；index 操作是动作行加文档行，delete 则只有动作行。",
+        "_flush 与 _stats 用于观察提交和运行计数，不能通过某次磁盘大小变化推断所有持久化/删除边界。零副本实验不能验证复制故障。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "条件更新使用另一份未采用 external 协议的文档 4。先单独执行下面的初始化与 GET："
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "PUT /interview_visibility_v1/_doc/4?refresh=wait_for\n{\"title\":\"editable document\",\"version\":1,\"deleted\":false}\n\nGET /interview_visibility_v1/_doc/4\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "再从真实 GET 返回的两个值构造条件请求。以下仅假设 GET 返回 _seq_no=7、_primary_term=2，用于展示完整请求格式；执行时必须替换为该文档实际读到的值，不能把示例数字当固定令牌："
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "PUT /interview_visibility_v1/_doc/4?if_seq_no=7&if_primary_term=2&refresh=wait_for\n{\"title\":\"edited after conditional read\",\"version\":21,\"deleted\":false}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "文档 4 演示 ES 令牌流程，文档 1 和 2 演示 external 流程；不要在真实系统中对同一文档混用这两种写协议，更不能在冲突后直接丢掉条件。本例两个 HTTP 清单只用于讲清机制，不声称完成节点故障、掉电、MQ 重投或源库 CDC 的集成验证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    }
+  ],
+  "questionId": "1"
+}

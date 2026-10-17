@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-87ac0e2a704634",
+  "entryId": "own-juc-correctness",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "a033ebdd61dc32fdbb494e2e017ee66f02b9ac483e34695ab33bec053f55e1a8",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Q6 条件满足后能否假定某线程立刻执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能。CountDownLatch.countDown使满足条件的等待者可以继续，但实际何时获得CPU由调度决定；当前线程和被唤醒线程可能在不同核心上同时推进。不要套用“同一事件循环当前回调结束后才轮到别人”的顺序。需要“先写记录，再允许B继续”时，就在写记录之后释放B等待的门闩，用协议建立先后关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：唤醒→可运行→获得CPU→建立先后关系"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界：条件满足不保证立刻执行；sleep不能作为可靠同步"
+    },
+    {
+      "type": "paragraph",
+      "text": "SchedulingDemo用门闩控制时序，验证直接run与start的执行身份、阶段组合、聚合异常和显式执行器。推演时先标每个任务在哪等待，再标哪一步解除条件，不靠sleep猜测线程已经运行。n个结果的管理空间为O(n)，门闩状态本身为O(1)；测试只断言有同步关系保障的次序，不假设A、B打印总有同一个全序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件名：SchedulingDemo.java。编译运行：javac -encoding UTF-8 SchedulingDemo.java；java SchedulingDemo。在JDK9及以上可使用javac --release 8进行Java8 API与字节码兼容检查。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "SchedulingDemo.java",
+      "value": "import java.util.Arrays;\nimport java.util.List;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicReference;\n\n/** Java 8+: run() is an ordinary call; start() creates concurrent execution. */\npublic final class SchedulingDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch latch) throws InterruptedException {\n        if (!latch.await(3, TimeUnit.SECONDS)) throw new AssertionError(\"latch timeout\");\n    }\n    public static void main(String[] args) throws Exception {\n        final Thread caller = Thread.currentThread();\n        final AtomicReference<Thread> observed = new AtomicReference<>();\n        new Thread(() -> observed.set(Thread.currentThread())).run();\n        check(\"run uses caller thread\", observed.get() == caller);\n\n        final CountDownLatch entered = new CountDownLatch(1);\n        final CountDownLatch release = new CountDownLatch(1);\n        final AtomicReference<Throwable> workerFailure = new AtomicReference<>();\n        Thread thread = new Thread(() -> {\n            try {\n                observed.set(Thread.currentThread());\n                entered.countDown();\n                await(release); // A gate establishes order; a sleep would not.\n            } catch (Throwable ex) { workerFailure.set(ex); }\n        }, \"started-worker\");\n        thread.start();\n        try {\n            await(entered);\n            check(\"start uses another thread\", observed.get() != caller);\n            check(\"started worker waits at gate\", thread.isAlive());\n            boolean rejected = false;\n            try { thread.start(); } catch (IllegalThreadStateException ex) { rejected = true; }\n            check(\"thread cannot be started twice\", rejected);\n        } finally {\n            release.countDown();\n            thread.join(3000);\n            if (thread.isAlive()) { thread.interrupt(); throw new AssertionError(\"worker stuck\"); }\n        }\n        check(\"join observes worker completion\", workerFailure.get() == null);\n\n        ExecutorService pool = Executors.newFixedThreadPool(2);\n        try {\n            CompletableFuture<Integer> source = CompletableFuture.supplyAsync(() -> 21, pool);\n            // thenApply transforms a value; it does not promise a new thread.\n            check(\"thenApply transforms value\", source.thenApply(x -> x * 2).get(3, TimeUnit.SECONDS) == 42);\n            // thenCompose flattens an asynchronous next step instead of nesting futures.\n            CompletableFuture<Integer> composed = source.thenCompose(x ->\n                    CompletableFuture.supplyAsync(() -> x + 1, pool));\n            check(\"thenCompose flattens future\", composed.get(3, TimeUnit.SECONDS) == 22);\n            List<CompletableFuture<Integer>> jobs = Arrays.asList(source, composed);\n            CompletableFuture<Void> all = CompletableFuture.allOf(jobs.toArray(new CompletableFuture<?>[0]));\n            check(\"allOf returns completion only\", all.get(3, TimeUnit.SECONDS) == null);\n            check(\"collect results explicitly\", jobs.get(0).get(3, TimeUnit.SECONDS) + jobs.get(1).get(3, TimeUnit.SECONDS) == 43);\n\n            CompletableFuture<Integer> failed = new CompletableFuture<>();\n            CompletableFuture<Integer> sibling = new CompletableFuture<>();\n            CompletableFuture<Void> combined = CompletableFuture.allOf(failed, sibling);\n            failed.completeExceptionally(new IllegalArgumentException(\"bad input\"));\n            check(\"allOf failure does not cancel sibling\", !sibling.isCancelled());\n            sibling.complete(7); // allOf is a completion barrier, not fail-fast cancellation.\n            boolean failure = false;\n            try { combined.get(3, TimeUnit.SECONDS); }\n            catch (ExecutionException ex) { failure = ex.getCause() instanceof IllegalArgumentException; }\n            check(\"allOf exposes exceptional completion\", failure);\n            check(\"handle recovers exception\", failed.handle((value, ex) -> ex == null ? value : -1)\n                    .get(3, TimeUnit.SECONDS) == -1);\n        } finally {\n            pool.shutdownNow();\n            if (!pool.awaitTermination(3, TimeUnit.SECONDS)) throw new AssertionError(\"pool stuck\");\n        }\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-juc-condition-waiting",
+  "targetOrigin": "authored"
+}

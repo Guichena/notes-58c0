@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-es-bg-elasticsearch-2-0",
+  "entryId": "bg-elasticsearch-2",
+  "expectedOriginalHash": "3d4a6fe17631dfd1040584427b352dd9e14f9c8a9899eee5b090cf50b01e9ad6",
+  "title": "字段模型、分析请求与 NoteWeave 实现边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.3 text keyword 和 multi-fields 的分工"
+    },
+    {
+      "type": "paragraph",
+      "text": "text 用于分析后的全文匹配，keyword 用于完整值的精确过滤、排序或聚合，同一个原始字段可用 multi-fields 同时提供两种能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "标题既需要搜“缓存”，又需要按完整标题聚合，就可设置 title 为 text、title.raw 为 keyword。raw 是同一输入的另一种索引方式，并不是客户端还要发送一个 title.raw，也不会因此多出一份 _source 字段。增加子字段后，已经存在的文档不会自动得到新子字段的索引值，需要重新写入或重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "keyword 可配置 normalizer 做保留单词元的归一化。若大小写本身有业务含义，就保留原始精确字段，再提供另一条忽略大小写的路径。ignore_above 会让超长字符串不进入该 keyword 索引和 doc values，普通 _source 仍可保留它；这会产生“返回能看见，但 term 查不到、聚合里没有”的情况，需要写入校验和监控。"
+    },
+    {
+      "type": "paragraph",
+      "text": "text 默认适合全文评分并保存位置；keyword 常不需要词频评分。不要为了做聚合就直接打开 text 的 fielddata：它会把分析后的词项组织成堆内存可用结构，含义不是原始完整值，且可能增加显著内存成本。多数业务应该聚合 keyword 子字段。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.4 object 数组为何会串配 nested 又付出什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 object 数组会扁平化字段值，nested 才保留每个子对象内部的配对关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设作者为 Alice/writer 和 Bob/editor，普通 object 存储 name 的两个值与 role 的两个值。查询 name=Alice 且 role=editor 可能命中父文档，虽然没有一个作者对象满足这对条件。nested 把子对象作为独立的隐藏 Lucene 文档，在 nested 查询的同一个作用域里做两个条件，就不会把 Alice 与 Bob 的属性拼起来。"
+    },
+    {
+      "type": "paragraph",
+      "text": "nested 有额外文档、join 式匹配和更新成本：父对象包含一百个 nested 子对象时，底层文档数会显著增加；修改嵌套内容也要考虑整个根文档的重索引成本。只有需要同一数组元素的相关性时才用 nested。任意键值元数据若主要做简单精确查询，可评估 flattened；它不会保留 nested 的对象关系，也不能直接替代每个值拥有精确数值类型的建模。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.5 动态 mapping 和字段爆炸怎样处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "动态映射减少早期建模工作，但把任意业务键变成字段名会消耗 mapping、集群状态和查询资源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如把每个用户 ID、时间戳或商品属性值当 JSON 字段名，持续写入就会持续增加字段。ES 8.15 的 total_fields 限制默认是 1000，计数还涉及对象、multi-fields 等映射项；增加上限只能放宽保险丝，不会消除成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "稳定业务 schema 可设 dynamic: strict，未知字段直接拒绝，使调用方尽早发现协议漂移。dynamic: false 会保留普通 _source 中的未知内容但不动态索引；enabled: false 可对某个 object 完全跳过内部解析。确实需要未知键检索时再考虑 dynamic templates 或 flattened，且限制输入深度、键数量和大小。"
+    },
+    {
+      "type": "paragraph",
+      "text": "自动把字符串识别为日期或数值可能给后续写入留下类型冲突。身份证式标识符、长编号和混合格式不能随便自动映射为数字；数字精度、时区和缺值规则应显式定义。大多数字段类型不能在已有数据上原地改成不兼容类型，常见方案是建立新索引、重新转换数据、校验后切别名。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.6 _source stored fields doc values 和 norms 怎样取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "先按查询要做的事区分：还原文档看 _source，独立取回指定字段看 stored fields，排序、聚合等列式访问看 doc values，长度归一化评分看 norms。关闭哪一项，就要核对依赖它的哪条读取或评分路径会失去能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 _source 不参与全文检索，但 GET、展示、update、reindex 和排障会依赖它。请求级 source filtering 减少返回内容，通常仍需要读取并解析源文档，不能等同“磁盘只读一个小字段”。mapping 级禁用或裁剪 _source 更不可逆，可能让后续重建拿不到完整输入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "store: true 为字段增加独立取回能力，需要额外空间；下面 body 特意打开它来展示 stored_fields，真实设计不应对所有字段重复保存。doc values 默认为多数支持它的字段启用，text 不支持常规 doc values。部分数字、keyword、日期、地理点等字段即使 index:false，仍可能利用 doc values 查询，只是通常更慢；因此“关闭 index 一定完全不可查询”不普遍成立。需要真正不检索的字段要结合类型和 doc_values 设置判断。"
+    },
+    {
+      "type": "paragraph",
+      "text": "norms 服务评分中的长度归一化。只做过滤、从不评分的 text 可考虑关闭，减少存储；关闭后不应承诺能立即在原字段上重新打开恢复旧值。减少 index_options 到 docs 也会丢失词频和位置能力，使短语等查询受限。容量设计不是所有开关全开或全关，而是为每条查询路径保留必要结构。"
+    },
+    {
+      "type": "paragraph",
+      "text": "synthetic _source 是重建源内容的另一种机制，与普通原样保存不同。ES 8.15 对普通非时序索引的支持状态及重建形态有版本限制，数组顺序、重复值等也需专门核对；本章示例保持普通 _source，不把其他版本的默认行为套进来。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.7 完整 mapping analyze 和查询教学请求"
+    },
+    {
+      "type": "paragraph",
+      "text": "将下面内容保存为 analysis-mapping.http，可在有权限的独立测试环境中按请求逐段粘贴到 Kibana Dev Tools；它是完整教学请求清单，不是已经执行的集群脚本。先看 GET / 的服务版本，确认目标名称不存在；不要在业务索引执行。一个主分片、零副本只为简化单节点实验，不代表生产高可用配置。"
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "value": "GET /\n\nPUT /interview_docs_v1\n{\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"refresh_interval\": \"1s\",\n    \"index.translog.durability\": \"request\",\n    \"analysis\": {\n      \"filter\": {\n        \"tech_synonyms\": {\n          \"type\": \"synonym_graph\",\n          \"synonyms\": [\"es, elasticsearch\", \"db, database\"]\n        }\n      },\n      \"analyzer\": {\n        \"cjk_mixed\": {\n          \"type\": \"custom\",\n          \"char_filter\": [\"html_strip\"],\n          \"tokenizer\": \"standard\",\n          \"filter\": [\"cjk_width\", \"lowercase\", \"cjk_bigram\"]\n        },\n        \"en_index\": {\n          \"type\": \"custom\",\n          \"tokenizer\": \"standard\",\n          \"filter\": [\"lowercase\"]\n        },\n        \"en_search\": {\n          \"type\": \"custom\",\n          \"tokenizer\": \"standard\",\n          \"filter\": [\"lowercase\", \"tech_synonyms\"]\n        }\n      }\n    }\n  },\n  \"mappings\": {\n    \"dynamic\": \"strict\",\n    \"_source\": {\"enabled\": true},\n    \"properties\": {\n      \"tenant_id\": {\"type\": \"keyword\"},\n      \"doc_id\": {\"type\": \"keyword\"},\n      \"title\": {\n        \"type\": \"text\",\n        \"analyzer\": \"cjk_mixed\",\n        \"search_analyzer\": \"cjk_mixed\",\n        \"fields\": {\"raw\": {\"type\": \"keyword\", \"ignore_above\": 256}}\n      },\n      \"body\": {\"type\": \"text\", \"analyzer\": \"cjk_mixed\", \"store\": true},\n      \"english\": {\n        \"type\": \"text\",\n        \"analyzer\": \"en_index\",\n        \"search_analyzer\": \"en_search\"\n      },\n      \"code_id\": {\"type\": \"keyword\"},\n      \"tags\": {\"type\": \"keyword\"},\n      \"price_cents\": {\"type\": \"long\", \"coerce\": false},\n      \"created_at\": {\"type\": \"date\", \"format\": \"strict_date_optional_time||epoch_millis\"},\n      \"location\": {\"type\": \"geo_point\"},\n      \"version\": {\"type\": \"long\", \"coerce\": false},\n      \"deleted\": {\"type\": \"boolean\"},\n      \"authors_object\": {\n        \"type\": \"object\",\n        \"properties\": {\"name\": {\"type\": \"keyword\"}, \"role\": {\"type\": \"keyword\"}}\n      },\n      \"authors_nested\": {\n        \"type\": \"nested\",\n        \"properties\": {\"name\": {\"type\": \"keyword\"}, \"role\": {\"type\": \"keyword\"}}\n      },\n      \"metadata\": {\"type\": \"object\", \"enabled\": false}\n    }\n  }\n}\n\nPOST /interview_docs_v1/_analyze\n{\"analyzer\":\"cjk_mixed\",\"text\":\"<b>缓存一致性</b> ＥＳ RedisCache\",\"explain\":true}\n\nPOST /interview_docs_v1/_analyze\n{\"analyzer\":\"en_search\",\"text\":\"ES database\",\"explain\":true}\n\nPOST /interview_docs_v1/_analyze\n{\"field\":\"title.raw\",\"text\":\"RedisCache ES\"}\n\nPOST /interview_docs_v1/_analyze\n{\"field\":\"code_id\",\"text\":\"ERR_HTTP_409-v2\"}\n\nPUT /interview_docs_v1/_doc/1?refresh=wait_for\n{\n  \"tenant_id\":\"demo\",\n  \"doc_id\":\"1\",\n  \"title\":\"缓存一致性与 ES\",\n  \"body\":\"Elasticsearch 搜索使用索引。\",\n  \"english\":\"Elasticsearch database guide\",\n  \"code_id\":\"ERR_HTTP_409-v2\",\n  \"tags\":[\"search\",\"java\"],\n  \"price_cents\":990,\n  \"created_at\":\"2026-10-10T00:00:00Z\",\n  \"location\":{\"lat\":31.23,\"lon\":121.47},\n  \"version\":1,\n  \"deleted\":false,\n  \"authors_object\":[{\"name\":\"Alice\",\"role\":\"writer\"},{\"name\":\"Bob\",\"role\":\"editor\"}],\n  \"authors_nested\":[{\"name\":\"Alice\",\"role\":\"writer\"},{\"name\":\"Bob\",\"role\":\"editor\"}],\n  \"metadata\":{\"arbitrary_key\":\"kept only in source\"}\n}\n\nGET /interview_docs_v1/_search\n{\n  \"query\":{\"bool\":{\"must\":[{\"match\":{\"english\":\"es\"}}],\"filter\":[{\"term\":{\"tenant_id\":\"demo\"}},{\"term\":{\"deleted\":false}}]}},\n  \"sort\":[{\"price_cents\":\"asc\"},{\"doc_id\":\"asc\"}],\n  \"aggs\":{\"by_tag\":{\"terms\":{\"field\":\"tags\"}}}\n}\n\nGET /interview_docs_v1/_search\n{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"authors_object.name\":\"Alice\"}},{\"term\":{\"authors_object.role\":\"editor\"}}]}}}\n\nGET /interview_docs_v1/_search\n{\"query\":{\"nested\":{\"path\":\"authors_nested\",\"query\":{\"bool\":{\"filter\":[{\"term\":{\"authors_nested.name\":\"Alice\"}},{\"term\":{\"authors_nested.role\":\"editor\"}}]}}}}}\n\nGET /interview_docs_v1/_search\n{\"_source\":false,\"stored_fields\":[\"body\"],\"docvalue_fields\":[\"price_cents\"],\"query\":{\"ids\":{\"values\":[\"1\"]}}}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "逐项观察的目标是："
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "CJK 分析链移除标签、归一全角 ES 并转小写，再产生中文二元组；RedisCache 转小写但不自动拆 camelCase。以 explain 的实际 token 和位置为准。",
+        "en_search 对 es 引入 elasticsearch 词项，使正文只有 Elasticsearch 的文档也能进入候选；keyword 分析保持完整值，code_id 不被拆成多个编号片段。",
+        "普通 object 的 Alice/editor 查询体现跨元素串配风险，nested 查询在本例中应无命中。",
+        "排序与 tags 聚合使用数值/keyword 的 doc values；stored_fields 可取 body，即使响应关闭 _source。",
+        "未声明字段触发 strict mapping 错误。title.raw 超过 256 字符会失去该子字段的索引值，title 与普通 _source 的情况要分别判断。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "这个实验没有覆盖权限系统：tenant_id 只是数据过滤字段，调用方仍需根据已验证身份构造过滤，不能允许用户传任意 tenant_id 就算授权完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2.8 以当前 NoteWeave 实现为例"
+    },
+    {
+      "type": "paragraph",
+      "text": "当前 NoteWeave 把 QA 的 chunk 检索与 Note 的 source 检索分别建成 ES 投影，并通过 MySQL 读取资格与版本约束补足结果边界。"
+    },
+    {
+      "type": "paragraph",
+      "text": "索引管理代码为文本使用 standard tokenizer 加 cjk_width、lowercase、cjk_bigram，QA 投影包含 heading、content 和 content_embedding，Note 投影包含 summary、tags、metadata_text、section_descriptions 和 source_embedding。向量字段使用配置传入的维度、开启索引并设 cosine；workspace、source、snapshot 与模型/投影版本等信息作为独立字段保留。上面的教学 mapping 加入 strict、nested 和英文同义词是为了讲解，不应冒充这个项目已有的配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "QA 查询先在 ES 中限制 workspace_id 和 is_current_snapshot，必要时再加 source 范围，取回的候选是 chunk。Note 也按 workspace 和当前快照过滤，候选粒度则是 source。"
+    },
+    {
+      "type": "paragraph",
+      "text": "候选取回后，hydration 再从 MySQL 检查 READY、INDEXED、PROJECTED 等状态，并限定最新已索引 snapshot。这里要说准“最新已索引”：它可能还不是刚上传的最新版本。这些读取防线限制了哪些结果能被使用，却不构成 ES 与 MySQL 的跨库事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Wiki 有另一条 JDBC 页面集上的 BM25F 与页面链接检索路径，不能把三个模式都概括成相同的 ES chunk 向量检索。项目 Compose 中的 Elasticsearch 8.15.3 是本地服务声明，不能据此推断生产分片数、线上真实版本、个人承担范围或性能提升。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-es-reading-guide",
+      "label": "版本基线与阅读边界"
+    }
+  ],
+  "questionId": "0"
+}

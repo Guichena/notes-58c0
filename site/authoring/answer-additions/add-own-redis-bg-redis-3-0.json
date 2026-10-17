@@ -1,0 +1,284 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-3-0",
+  "entryId": "bg-redis-3",
+  "expectedOriginalHash": "3aba416eb91c17bd0350fa7268362aecf15d417c19bef27ca7ec4e09169d4d61",
+  "title": "RDB、AOF、fork、COW、容器重启与恢复合同",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读边界：everysec 的约一秒是正常条件下的常见丢失窗口口径，不是任意故障下的严格上界。fork 先复制地址空间管理结构，数据页通过 COW 按写入触发复制。持久化、复制确认、业务耐久与历史备份分别判断。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "RDB、AOF 与备份：Redis 怎样保证数据可靠性"
+    },
+    {
+      "type": "paragraph",
+      "text": "回答 Redis 怎样保证可靠，先分清我们想从哪一种故障里恢复。进程重启后能找回多近的数据，要看持久化；换到另一个节点，它手上有多少数据，要看复制；主节点失效后由谁接手，要看故障转移。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果发生误删，或者整个故障域都丢失，还要靠独立备份回到历史状态。这四层各管一件事，任何一层都不能单独推出“写成功就永不丢失”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法包括“Redis 有哪些持久化机制”“RDB 和 AOF 怎么选”“持久化能保证不丢数据吗”“备份和主从有什么区别”。先说明数据能否重建，再给恢复目标和故障假设，比直接背配置默认值更重要。下面主要讨论 Redis 7.2 的普通主从、Sentinel 和原生 Cluster；混合持久化和 Codis 的历史版本另行区分。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "先确定数据的角色、RPO 和 RTO"
+    },
+    {
+      "type": "paragraph",
+      "text": "RPO 表示允许恢复点落后多少，可以用时间或明确的业务记录范围表达；RTO 表示从故障到恢复可接受服务所允许的时间。二者不能只由一个配置名推出：磁盘吞吐、数据规模、增量回放、拓扑重建、业务校验和切流都会影响结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 Redis 只是数据库的缓存，数据可以重建，持久化的主要价值可能是缩短冷启动时间、减少集中回源。仍要评估缓存清空后数据库能否承受流量，并设计限流、分批预热和降级。如果 Redis 保存难以重新生成的状态，就要同时设计 AOF 策略、复制、独立备份与业务恢复流程；对不能接受倒退的余额、库存、幂等记录等，先明确真正的权威账本和写入承诺，不能默认 Redis 就提供了跨故障强一致事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久化设置还受发行配置、启动参数、托管产品和运维变更影响。“默认的备份机制”不是一个可以脱离产品与版本识别的第三种保证。需要确认它具体指周期快照、混合持久化、副本，还是托管服务备份，不能仅凭“默认”两个字推断。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "RDB、AOF 和混合持久化分别保留什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "RDB 是某个一致时点的数据集快照。它紧凑、便于复制和归档，通常比回放很长的纯命令 AOF 更适合快速加载，但快照之后的写入不在该恢复点内。频繁快照可以缩小窗口，也会增加 fork、写盘和 COW 的成本，不能无限缩短间隔。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AOF 记录恢复当前数据所需的写操作，按顺序加载可以重新构建状态。耐久性取决于写入与 fsync 的完成情况；文件会因反复更新积累冗余，需要重写。它不是永久业务流水：重写后的文件可以只表达最终状态，不保留每次中间操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "混合持久化把 RDB 格式用于 AOF 基线，再记录基线之后的 AOF 增量，兼顾基线加载效率和更新保留。它仍受 fsync、硬件、文件完整性及复制切换的约束，也不会让每次写入自动生成一个新的 RDB 快照。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "副本为什么不能替代历史备份"
+    },
+    {
+      "type": "paragraph",
+      "text": "副本同步的是主节点当前历史，误删、错误覆盖也可能很快复制过去。AOF 重写还可能将“已经删掉”的状态变成新基线，因此副本数量多、当前持久化文件齐全，都不等于可以回到误操作之前。"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立备份应有时间版本、保留策略、校验和、访问控制及与生产故障域隔离的存储位置。备份失败和备份长期未更新需要独立告警。恢复演练要覆盖文件加载和业务校验，不能只检查“文件存在”。对于缓存，演练还应包含恢复期间的回源保护；对于强业务状态，应包含对账、旧写者隔离和重试控制。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Docker Compose 部署四个服务时 重启会不会丢 Redis 缓存"
+    },
+    {
+      "type": "paragraph",
+      "text": "只重启后端程序，不会因为它退出就清空独立 Redis 进程的内存；重启 Redis、重建 Redis 容器或重启整套服务，则要分别检查持久化、卷和恢复策略，尤其不能把限流状态都当成丢了也没有影响的普通缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的部署条件是后端程序、数据库、Redis、Nginx 四个服务实例。Compose 把它们组织成一个应用，并没有把四份进程内存合成一份。回答前先问“重启的具体对象和命令是什么”，再说明数据位置与故障影响，比争论一句“服务重启”更准确。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四种操作对应不同的失效范围"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "只重启后端进程或后端容器。JVM 堆内的本地缓存、连接池和未持久任务会消失；Redis 仍运行时，未到期、未淘汰、未删除的键仍在。后端要重新连接 Redis 和数据库，Nginx 也要正确处理后端短暂不可达。启动脚本若主动清库、换了 Redis 地址、数据库编号或 key 命名空间，看起来也可能“缓存没了”，但原因不是后端内存退出带走了 Redis 内存。",
+        "重启 Redis 进程或同一个 Redis 容器。原 Redis 进程的内存不保留。新进程是否恢复数据，取决于它加载的持久文件、配置和复制来源；“容器还在”不等于内存还在。“restart 后键还在”也不能单独证明没有持久化，因为优雅退出、自动快照或已有文件都可能影响观察。",
+        "删除后重新创建 Redis 容器。容器可写层和进程内存不能作为跨重建承诺；有正确挂载、仍存在的命名卷或 bind mount，持久文件才可能被新容器继续使用。仅有一个空卷不会替 Redis 把内存写进去。匿名卷即使未被删除，也不能假定下一次创建会自动关联到原来的那个卷。",
+        "重启四个服务或宿主机。数据库和 Redis 都需要自己的持久数据恢复，后端需要重建连接，Nginx 需要可用上游。Compose 的启动依赖顺序不等于数据库已能完成业务查询；结合健康检查、应用重试与就绪门槛，再逐步放量。单机四容器没有消除宿主机这个共同故障域。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "以支持相应选项的 Compose V2 为例，服务名确实为 backend 时，docker compose restart --no-deps backend 表达只处理该服务，不应拿无服务名的 restart 或 down/up 代替同一操作。restart 本身不应用 compose.yml 中新改的配置。依赖中的 restart 传播、启动健康条件以及 CLI 选项支持情况要核对固定的 Compose 版本和有效配置；不能靠命令名字推断所有环境都只动一个容器。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "不持久化是明确配置和容错选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "“只拿来做缓存”说明数据用途，不说明服务器已关闭持久化。以 Redis 7.2.0 为讨论基线，自动 RDB 保存规则、AOF 开关、启动参数和实际配置都需要检查。该版本的配置样例说明默认快照条件为：距离上次成功保存至少 3600 秒且累计至少 1 次修改，或至少 300 秒且累计至少 100 次修改，或至少 60 秒且累计至少 10000 次修改；不能把旧版本常见的 900/300/60 三行直接当成它的默认配置。AOF 是否启用又是另一项配置。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果明确选择不自动保存 RDB、不开 AOF，可分别用空 save 规则和 appendonly no 表达，但还要检查配置是否真正被加载、是否存在人工 SAVE/BGSAVE、退出保存或旧文件加载等路径。只改运行中的配置但不更新启动配置，下一次重启可能恢复原策略。讨论“完全空缓存启动”时，必须把已有文件、恢复来源和运维动作也纳入约束，而不是仅背两个开关。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要恢复缓存时，RDB 可以减少冷启动的回源压力，AOF 可以保留更近的写入，代价包括磁盘、fork/COW、刷盘和恢复时间。Redis 7.2 的多部件 AOF 恢复涉及 manifest 及有效 base/incremental 文件集合，挂载目录应覆盖这套文件，而不能只保留一个想象中的 appendonly.aof。持久化不会防止整块磁盘损坏，也不等于独立备份或故障切换零丢写。"
+    },
+    {
+      "type": "paragraph",
+      "text": "卷的生命周期也要单独说。按 Compose V2 的 down 语义，普通 down 默认删除容器和相关网络，通常保留命名卷；down -v 会删除声明的命名卷以及挂载的匿名卷。标为 external 的卷不由 down 删除，bind mount 的宿主机路径也不是同一种 Compose 托管卷。项目名变化、挂载路径错误、权限错误或换了宿主机，都可能使“卷没删”仍然无法恢复原数据。操作前以当前版本的配置、挂载清单和备份为准。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "普通缓存丢失与限流状态丢失的代价不同"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库可重建的商品详情缓存丢失，通常先表现为命中率下降、回源上升和延迟增加。方案可以是热点分批预热、同 key 请求合并、回源并发上限、短超时与有预算的重试；没能回源时按业务约定返回降级内容或拒绝。没有这些保护，“数据最终能重建”仍可能变成数据库被打垮。"
+    },
+    {
+      "type": "paragraph",
+      "text": "限流器保存的是准入历史。假设固定窗口内最多放行 L 次，窗口尚未结束时计数丢失，按 0 初始化可能再放行 L 次；令牌桶恢复成满桶也会额外放出一轮突发。反复重启或状态淘汰可反复打开这个缺口。它即使有 TTL，也不代表业务可以无代价地忘记历史。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此至少要区分两类业务："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "普通展示接口的过载保护，可以选择 fail-open 或保守本地降级，但要说明剩余下游容量、持续时间和全局上限。十个后端实例各发一份完整额度，不能叫“仍然守住全局额度”；本地降级额度总和、实例增减和故障恢复都要有边界。",
+        "登录尝试、短信费用、付费配额或严格供应商限制，更适合 fail-closed、有限排队或使用独立的可靠计量来源。拒绝也有可用性成本，必须明确哪些请求受影响。严格财务配额不能仅靠可回档的限流键承担权威账本。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 不可达与 Redis 恢复为空是两种状态。前者通常会触发连接错误，后者却可能返回正常的“key 不存在”，使程序误认为新用户拥有满额度。要约定缺键的初始化政策、恢复就绪门槛和何时重新启用共享限流；必要时在已知窗口结束或可信状态恢复后才放量。持久化可缩小状态损失，但快照落后、异步复制切换和 TTL 仍可能改变历史，不能据此承诺绝对不超发。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Redis 与数据库都经过网络 为什么缓存仍可能有效"
+    },
+    {
+      "type": "paragraph",
+      "text": "网络往返只是请求的一部分。Redis 命中可以省去数据库 SQL 处理、关系运算、锁等待与结果重建，并让多个后端共享一份热点结果；MySQL 的 Buffer Pool 同样会缓存页面，所以差异不能简化为“Redis 全在内存、数据库每次都查磁盘”。本地缓存少一次远程往返，但多实例之间的失效广播、版本一致性、内存重复和重启预热又是成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "比较时固定同一业务返回、对象大小、新鲜度与故障保证，测网络、池等待、服务端处理、序列化和排队。小而热的数据库主键查询未必比一次大 Redis 查询慢；“都会走网络”也不能推出二者一样快。最终应说明缓存命中减少了多少回源，以及缓存不可用时数据库仍能承受多少流量，不编造固定性能倍数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "连续追问怎样接住"
+    },
+    {
+      "type": "paragraph",
+      "text": "问“你怎么证明只重启后端不清 Redis”，可以设计隔离环境实验：先写一个带足够 TTL 的测试键，记录 Redis 实例身份和进程启动信息，只重启后端，再核对 Redis 未重启、该键和 TTL、客户端地址与命名空间。随后分别验证 Redis 重启、容器重建、整栈恢复；避免用会删除生产卷的命令做演示。每一种实验都要先固定配置和文件来源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "问“为什么不用持久化”，回答应落到可重建数据范围、冷启动承受能力、限流状态丢失政策和恢复目标。问“持久化后是否就安全”，继续说明恢复点、卷与故障域、文件校验、状态回档和恢复后放量。这样才能把四容器的边界、数据用途和故障行为接成完整答案。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "BGSAVE、fork 与 COW：为什么用子进程而不是子线程"
+    },
+    {
+      "type": "paragraph",
+      "text": "BGSAVE 通过 fork 建立子进程的数据视图，由子进程序列化快照，父进程继续处理请求；写时复制让两者在后续写入时保留各自的页面版本。关键是低成本获得稳定视图，不是“进程一定比线程快”。fork 会暂停主执行路径，之后也存在额外内存与 I/O 成本。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "SAVE、BGSAVE 与自动快照规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "SAVE 由主进程同步生成快照，期间阻塞命令处理；BGSAVE 把主要序列化和写文件工作放到子进程，更适合在线场景，但不能称为完全无阻塞。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是说明触发语义的历史配置示例，不代表所有版本的默认值："
+    },
+    {
+      "type": "code",
+      "language": "plaintext",
+      "value": "save 900 1\nsave 300 10\nsave 60 10000\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "规则结合“距离上次成功保存的时间”和“累计修改次数”判断是否触发后台保存，满足其中一条即可形成触发条件。例如第一条表达至少经过 900 秒且累计至少 1 次修改。修改次数不是严格去重后的不同 key 数：反复修改同一个 key 也可能增加变更计数。实际触发还受后台子进程状态、失败重试等条件影响，因此它不是精确到某一秒的定时业务承诺。"
+    },
+    {
+      "type": "paragraph",
+      "text": "子进程通常先写临时 RDB 文件，完整生成后再替换原快照。新快照完成前宕机或断电，应该根据已有的完整持久化状态恢复，不能假定半个临时文件就是新恢复点。若后台保存失败，还要检查错误日志与持久化状态；是否拒绝后续写入需结合 stop-writes-on-bgsave-error 等实际设置，不能默默把失败当成功。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "fork 究竟复制了什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "fork 后父子有独立虚拟地址空间，初始可以共享物理数据页；内核为地址空间建立相应页表和写时复制关系。子进程沿自己的视图遍历数据库，父进程写入原先共享的页面时触发 COW，修改自己的副本，子进程仍能看到快照版本。通常复制的是必要页面，不是每次写操作复制整库，也不是始终完全不复制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "fork 的页表处理会造成暂停，成本与地址空间、页表规模和操作系统状态有关。父子共存期间，写入越密集、触及的共享页越多，额外内存可能越大；慢磁盘或慢传输还会拉长共存时间。大页、内存带宽、分配器和系统压力也会影响成本，所以不能只按最终 RDB 文件大小预留内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "应同时关注 latest_fork_usec、持久化状态、COW 峰值、RSS 与可用内存、快照耗时及请求尾延迟。数据规模与写入覆盖率都应进入容量预算；“放到后台”并不意味着主进程不受资源竞争影响。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "为什么普通线程不能直接得到同样的快照"
+    },
+    {
+      "type": "paragraph",
+      "text": "同进程普通线程共享可变堆。如果持久化线程读完 A 的旧值，业务线程修改了 A、B，持久化线程再读取 B 的新值，最终文件可能包含一个从未同时成立的组合。开线程本身不提供快照隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "线程方案也能做正确，但需要全程锁住数据、先复制完整数据集、MVCC 或不可变版本等额外机制。它们分别带来长暂停、额外内存、版本管理或实现复杂度。Redis 的 fork/COW 利用了操作系统现成的地址空间机制，在这些成本之间做取舍。"
+    },
+    {
+      "type": "paragraph",
+      "text": "进程是地址空间与资源隔离边界，线程是同进程中的执行单元，通常共享代码、堆和打开的文件，各有栈、寄存器执行状态和 TLS。Linux 可以调度可运行的 task，不能说只有进程可以被调度。fork 继承的文件描述符可以指向同一个 open file description，所以父子也不是所有资源完全独立；跨进程还可显式使用共享内存或 IPC。线程中的错误更容易损坏同进程数据，进程私有地址空间则提供额外隔离，但创建和切换谁快多少必须看具体系统。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多线程进程 fork 后，子进程只保留调用 fork 的线程，其他线程持有的锁可能成为安全问题。因此不能把任意 Java 程序 fork 当作通用持久化 API。还要区分 BGSAVE、BGREWRITEAOF 与常规 AOF 追加：并不是每次 AOF 写入或后台 fsync 都 fork 一个进程。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一个最小的地址空间可见性示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的 Linux/Python 示例先 fork，再让父进程把 old 改为 new，子进程仍读取自己的 old；随后创建的同进程线程读取 new。管道用于固定观察顺序。这只是进程与线程可见性的演示，不表达 Redis 快照格式，也不量化 COW 字节数或持久化性能。"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "value": "\"\"\"Linux fork visibility demonstration; not a Redis BGSAVE test or memory benchmark.\"\"\"\nimport os\nimport threading\n\n\ndef demonstrate():\n    state = bytearray(b\"old\")\n    ready_r, ready_w = os.pipe()\n    go_r, go_w = os.pipe()\n    result_r, result_w = os.pipe()\n    pid = os.fork()  # Fork before creating the demonstration thread.\n    if pid == 0:\n        try:\n            os.close(ready_r); os.close(go_w); os.close(result_r)\n            os.write(ready_w, b\"R\")\n            if os.read(go_r, 1) != b\"G\":\n                os._exit(2)\n            os.write(result_w, state)\n            os._exit(0)\n        except BaseException:\n            os._exit(3)\n    os.close(ready_w); os.close(go_r); os.close(result_w)\n    try:\n        assert os.read(ready_r, 1) == b\"R\"\n        state[:] = b\"new\"\n        os.write(go_w, b\"G\")\n        child_view = os.read(result_r, 3)\n        waited, status = os.waitpid(pid, 0)\n        assert waited == pid and os.waitstatus_to_exitcode(status) == 0\n        assert child_view == b\"old\" and state == b\"new\"\n        observed = []\n        thread = threading.Thread(target=lambda: observed.append(bytes(state)))\n        thread.start(); thread.join()\n        assert observed == [b\"new\"]\n        return 4\n    finally:\n        for descriptor in (ready_r, go_w, result_r):\n            os.close(descriptor)\n\n\nif __name__ == \"__main__\":\n    print(f\"ForkSnapshot assertions={demonstrate()}\")\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "快照稳定性只针对本进程的数据视图。业务本身需要把多个 Redis 操作放进合适的原子边界；即使 Redis 内部快照一致，也不会自动和外部数据库或 MQ 形成同一时点的原子快照。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "0"
+}

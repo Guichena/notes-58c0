@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-dbqa-1-2",
+  "entryId": "dbqa-1",
+  "expectedOriginalHash": "86ce7d7a871dd3322999512cb21356d864f37126d84c4848faa8589d965f8111",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "保持运算符，逐题推导"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "c=1 AND b>2 AND a=3，索引 (a,b,c)：先固定 a=3，再扫描 b>2 的区域，c=1 可用于适用的 ICP 或后续过滤。比如 (3,3,0)、(3,3,1)、(3,4,0)、(3,4,1) 在树中交错，c=1 不是一个仅由 C 形成的连续末尾区间。若查询模式稳定，(a,c,b) 可把两个等值放前、范围放后，但要评估其他查询和写成本。",
+        "A=10 AND B>100 AND C>50，索引 (A,B,C)：仍是 A 等值+B 范围，C 可提前过滤；B=100 的行必须排除，C=NULL 也不能当作 >50。章末七行数据的结果为 id=3、5。 改成 (A,C,B) 可优先收紧 C 的范围，再过滤 B，但两个条件都为范围时，不能把换序说成同时获得两个独立等值前缀；还要比较哪一个范围更小。",
+        "a<? AND b>? AND c<?：首列 a 已是范围，后两列通常不再像连续等值前缀那样有效缩小导航区间，但可能过滤。不能偷偷把三个范围改成两个等值再答。",
+        "a=? AND b=? AND c>?：a、b 固定后，c 的范围通常可以直接用于扫描区间。",
+        "a=? AND b=? AND c=? AND id=? 且 id 为主键：主键点查至多一行，优化器往往更愿意先定位 id 再验证其他条件；有联合索引不表示必须选择它。",
+        "A=5 AND C>10 AND B IN(1,2,3,4,5)，索引 (A,B,C)：可以形成五个 (A=5,B=某值,C>10) 范围，三列都可能参与导航。IN 是多个等值范围，不应机械视作 >。列表变大后，优化器内存、估计与成本可能影响计划，并无固定“超过几个值就失效”。 IN 中重复写同一个 B 值不会让原查询重复输出该行；把各值改为 UNION ALL 分支时必须避免重复分支。各个 B 段内的 C 有序，也不代表合并后已按 C 全局有序。",
+        "A>0 AND A<100 AND B=10：候选 (B,A) 可先固定 B 再定位 A 的开区间；(A,B) 常先扫 A 区间再过滤 B。实际优势仍看范围大小、覆盖和其他查询。"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ICP 省的是完整行读取"
+    },
+    {
+      "type": "paragraph",
+      "text": "ICP 要解决的是：已经扫到了二级索引条目，能否在回表前就排除它？如果判断所需的字段都在该条目里，先判断，再只为合格项取聚簇记录，就能少读一些完整行。MySQL 8.4 InnoDB 的 ICP 主要用于这种非覆盖的二级索引访问，包括适用的 range/ref/eq_ref/ref_or_null。它不会改变字典序，也不保证少扫二级条目。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若本来就在读聚簇索引，完整行已经拿到，便没有同样的省回表收益。涉及子查询、存储函数等条件时，也可能不允许下推。检查计划时，key_len 只提供最大使用键前缀的字节线索，不能证明各列都同样缩小了区间；还要结合 JSON/TREE 的范围、index_condition、attached_condition 和实际扫描行数，分清“用于定位”和“扫到后过滤”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "保留 A=10、B>100、C>50 的边界数据"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 range_probe.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/range_probe.sql",
+      "value": "-- Relational boundary fixtures; observe plans separately.\nCREATE TABLE range_probe(id INTEGER PRIMARY KEY,a INTEGER,b INTEGER,c INTEGER);\nCREATE INDEX ix_abc ON range_probe(a,b,c);\nINSERT INTO range_probe VALUES(1,10,100,99),(2,10,101,40),(3,10,101,60),\n (4,10,102,30),(5,10,102,70),(6,11,101,80),(7,10,103,NULL);\nSELECT id FROM range_probe WHERE a=10 AND b>100 AND c>50 ORDER BY id;\n-- Expected: 3,5. C filters holes inside the A/B range.\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "status/age 与五个 IN 等值范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 index_cases.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/index_cases.sql",
+      "value": "-- MySQL demonstration. Run EXPLAIN / EXPLAIN ANALYZE for these SELECTs in a controlled MySQL instance.\nCREATE TABLE index_users(id BIGINT PRIMARY KEY,status INT NOT NULL,age INT NOT NULL,payload VARCHAR(100));\nCREATE INDEX ix_status_age ON index_users(status,age);\nINSERT INTO index_users VALUES(1,0,12,'boundary'),(2,0,13,'yes'),(3,1,30,'wrong status'),(4,0,90,'yes'),(5,0,0,'young');\nSELECT id,age FROM index_users WHERE status=0 AND age>12 ORDER BY id;\nCREATE TABLE index_triplet(id BIGINT PRIMARY KEY,a INT,b INT,c INT,payload VARCHAR(20));\nCREATE INDEX ix_abc ON index_triplet(a,b,c);\nINSERT INTO index_triplet VALUES(1,5,1,10,'boundary'),(2,5,1,11,'yes'),(3,5,5,99,'yes'),(4,5,6,99,'wrong b'),(5,4,2,99,'wrong a'),(6,5,3,NULL,'null c'),(7,5,NULL,99,'null b'),(8,5,2,12,'yes');\nSELECT id FROM index_triplet WHERE a=5 AND c>10 AND b IN(1,2,3,4,5) ORDER BY id;\nSELECT id FROM index_triplet WHERE (a=5 AND b=1 AND c>10) OR (a=5 AND b=2 AND c>10)\n OR (a=5 AND b=3 AND c>10) OR (a=5 AND b=4 AND c>10) OR (a=5 AND b=5 AND c>10) ORDER BY id;\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "2"
+}

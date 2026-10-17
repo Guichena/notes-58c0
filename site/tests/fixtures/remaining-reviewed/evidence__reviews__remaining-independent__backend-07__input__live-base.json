@@ -1,0 +1,536 @@
+{
+  "bg-分布式-1": {
+    "entry": {
+      "id": "bg-分布式-1",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "CAP、一致性与持久化",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "CAP 理论是什么？CP 和 AP 系统分别怎么理解？",
+          "a": "<p class=\"md-p\">CAP 中的 C 指线性一致性；A 要求每个到达非故障节点的请求最终得到符合对象规范的响应；P 表示允许节点间通信丢失或任意延迟的网络分区故障模型。在这种故障模型下，不能对同一读写规范同时保证 C 和 A。它不是“尽量一致、尽量响应”，也不是按行业给整个系统永久贴 CP/AP 标签。</p>\n<p class=\"md-p\">工程里更准确的说法是：分布式系统几乎都得接受 P，关键在于分区来了以后偏 CP 还是偏 AP。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>偏向</th><th>常见取舍示例，须核对接口语义</th><th>取舍</th></tr></thead><tbody><tr><td>CP</td><td>ZooKeeper、etcd；配置中心、注册中心、选主协调</td><td>维护线性一致性；分区时无法确认权威状态的一侧可能拒绝或等待，因此不保证 CAP 可用性</td></tr><tr><td>AP</td><td>缓存、DNS、部分 NoSQL；推荐、缓存、搜索</td><td>分区中仍完成符合约定的响应，可能返回允许的旧数据；不保证线性一致性，恢复后的收敛还依赖同步和冲突处理</td></tr></tbody></table></div>\n<p class=\"md-p\">不同系统不是天然写着 CP 或 AP，而是按核心目标做取舍。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>CAP 讨论的是分区发生时怎么取舍，平时没分区并不等于永远只能三选二。这里的 C 指线性一致性，不要和最终一致、业务一致混成一句话。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先按接口定义合法结果；分区时若必须维护线性一致性，就不能同时保证所有非故障节点最终完成合法响应。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>继续展开通常会落到哪里？</b></p><p class=\"md-p\">通常会落到 BASE 和最终一致性的实现方式。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-distributed-s49\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">CAP 为什么不是任意三选二</h2><p class=\"md-p\">在允许网络分区的读写系统中，不能同时保证线性一致性和所有非故障节点对每个请求最终完成合法响应。</p><p class=\"md-p\">常见问法：CAP分别是什么；网络不分区时能否同时有C和A；为什么报错不等于CAP可用；一个系统能否部分接口偏CP、部分接口偏AP。</p><p class=\"md-p\">CAP 的三个字母，先按定义回答，别套日常口径。C 是线性一致性：每次操作像在调用到返回之间的某一点发生，而且尊重已经完成操作的真实时间顺序。</p><p class=\"md-p\">A 要求最终完成符合对象规范的合法响应，不是“五个九”、低延迟或某个成功率。P 说的是网络消息可能丢失、任意延迟的故障模型，也不是部署时可以随手取消的一项功能。</p><p class=\"md-p\">两个副本初始x=0。它们断开通信后，A侧完成写x=1；随后B侧收到读x。若B独立返回0，违反已完成写之后的线性一致性；若等待A而分区持续，又无法保证最终完成。简单返回任意错误也不能兑现一个合法读写对象的可用性规范。</p><p class=\"md-p\">工程上先按业务定义读取和写入语义。余额扣减可以只在合法权威一侧继续，另一侧拒绝；评论数展示可以返回明确允许的旧投影。它们是不同接口的不同规范，不能因此声称同一冲突操作同时避开CAP约束。无分区时可以同时实现较强一致性与可用性，但仍有网络往返、复制、排队和磁盘成本。</p><p class=\"md-p\">线性一致性和串行化，回答的是不同问题。前者通常看单对象的并发操作，并尊重实时顺序；后者看事务结果是否等价于某个串行执行。严格可串行化还要求事务遵守实时顺序。</p><p class=\"md-p\">所以，单键写入用了共识，并不代表跨键、跨分片事务也自动解决了。</p><p class=\"md-p\">追问时画出请求的调用、提交和响应位置，再标注故障发生在哪条通信边。若不能说明“成功”已经发生在哪个持久边界，就不能推断切主后必须读到什么。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>在允许网络分区的读写系统中，不能同时保证线性一致性与所有到达非故障节点的请求最终完成合法响应。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>线性一致性 C / 最终合法响应 A / 分区故障模型 P / 按接口语义取舍</p>",
+          "leadType": "v9:原理/对比"
+        },
+        {
+          "q": "WAL 是什么？为什么要引入 WAL？",
+          "a": "<p class=\"md-p\">WAL 就是 Write-Ahead Logging，预写日志。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>核心做法</b>：把数据页改到主存储之前，先把这次修改意图顺序写进日志。目的是把随机改数据页变成先顺序写日志、再慢慢刷数据页，同时给崩溃恢复留证据。</li><li><b>持久性</b>：改到一半宕机后，重启可根据日志把已提交、还没刷进数据页的修改补回来。</li><li><b>性能</b>：每次同步刷数据页成本高；顺序写日志通常更快，也更适合批量刷盘。数据库 redo log、本地存储引擎的预写日志都是这一类思路。</li><li><b>运行与恢复</b>：正常时先 append 日志，再异步刷脏页；崩溃后根据日志和 checkpoint 决定哪些修改需要 redo。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>WAL 单独存在并不万无一失，还要配合 checkpoint、刷盘策略和恢复流程。它是先记账再慢慢落正本，不能完全替代最终数据文件。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>它把随机写尽量收敛成顺序写，所以既用来防丢数据，也是高性能存储引擎的核心基础设施。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-mysql-bg-----1-1\">MySQL 手册：具体条件、完整推演与实验</h2><h3 class=\"md-h md-h3\">25.2 为什么不直接把所有脏页写回磁盘？</h3><p class=\"md-p\">假设执行 UPDATE accounts SET balance = balance - 100 WHERE id = 1;，余额从 500 变为 400，记录在示意页 5。InnoDB 会在 Buffer Pool 修改记录和相关索引，并产生 undo、redo。“把页上某个 500 改为 400”只是理解用的画面，真实 redo 有多种记录类型，不能据此猜它的字节格式。</p><p class=\"md-p\">为什么提交不直接刷完这些页？因为分散的小修改会变成多次整页 I/O，同一个热点页也可能反复被刷。把 redo 顺序组织、合并写出，数据页稍后集中刷新，就有机会把多次修改合成一次页写。这是 WAL 的性能动机；具体收益仍由设备、事务大小、批量和负载决定，不能只凭顺序写就报固定提速倍数。</p><p class=\"md-p\">WAL 真正要求的是：一个数据页的修改成为持久数据之前，恢复这些修改所需的日志必须先持久化。 内存页可以先改，redo 也会在 COMMIT 之前产生。大事务尚未提交时，日志缓冲可能已经写出，后台也可能推进同步；“先持久化日志”约束的是数据页落到持久介质的顺序，不是禁止先改内存。</p><p class=\"md-p\">redo 按不断增长的 LSN 标记进度。checkpoint 表示恢复起点的推进；只有不再为所需恢复所依赖的旧日志空间才能复用。容量不足而刷页跟不上时，前台写入会承受等待压力。因此“环形”不能解释成覆盖尚未恢复的数据，也不能解释成 redo log buffer 与磁盘日志是同一块内存。8.4 用 innodb_redo_log_capacity 管理 redo 总容量；容量越大不等于持续 I/O 能力越强。</p><p class=\"md-p\">还要分清“脏页”和“脏读”：脏页只是内存页尚未按当前版本写回文件；脏读则是读到了其他事务未提交的数据。已提交数据可以仍在脏页上，未提交修改也可能已在某个持久页上，是否可见与最终是否保留仍由事务状态、日志和版本规则决定。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mysql-guide\">版本、练习前提与验证边界</a></li></ul>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>WAL 的本质是改数据页前先顺序写日志，把随机写变成顺序写，并给崩溃恢复留证据。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先日志后数据页 / 持久性 / 性能 / 配合恢复流程</p>",
+          "leadType": "v9:原理"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "3bfd2b2c9c6c7b32be455b0c381b44d594d5f5f9ce12c2ac9431772951c8b4cf",
+    "liveSha": "3bfd2b2c9c6c7b32be455b0c381b44d594d5f5f9ce12c2ac9431772951c8b4cf"
+  },
+  "bg-分布式-2": {
+    "entry": {
+      "id": "bg-分布式-2",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "一致性与分布式限流",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "分布式系统里常说的数据一致性，一般是怎么保证的？",
+          "a": "<p class=\"md-p\">我会先分层，不会一上来就上分布式事务。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先定义要求</b>：必须强一致，还是最终一致就够。</li><li><b>主数据</b>：账户余额、库存最终扣减、支付状态这类高敏感数据，最终真相收口在数据库事务、唯一约束、状态机和条件更新上。</li><li><b>派生数据</b>：缓存、搜索索引、推荐结果、分析数据这类副本，更多追求最终一致。</li><li><b>落地组合</b>：本地事务保证单库原子性；幂等键和唯一约束防重复；消息 / outbox 把状态变更可靠发出去；消费端再靠重试、补偿和对账把异常路径收回来。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>一致性不是靠某一个中间件自动送的，而是先分清主数据和派生数据，再按敏感度走强校验，或走最终一致加补偿。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-distributed-s71\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">BASE 与最终一致性如何落成工程协议</h2><p class=\"md-p\">最终一致性只有在更新能够传播、冲突有确定处理规则且恢复责任不会丢失时才会收敛，并没有天然的秒级完成保证。</p><p class=\"md-p\">常见问法：BASE是什么；软状态是否允许随便丢数据；最终一致性与强一致如何选择；超过一致性窗口怎样处理。</p><p class=\"md-p\">基本可用是业务层可接受的降级，例如限制入口流量、关闭可选推荐、返回带版本的旧展示数据；它不意味着核心扣款可以违反余额约束。软状态允许中间状态存在，例如订单已受理而通知待发送，但中间状态必须可查询、有归属、有恢复或终结途径。最终一致描述满足传播和冲突处理条件后各观察结果趋于同一业务事实。</p><p class=\"md-p\">让变化最终传出去，常见做法是把权威变化和“还要传播这件事”的义务写进同一本地事务。异步消费者按稳定事件身份幂等应用，实体版本拒绝旧写；发现缺失版本，就补拉或重建。</p><p class=\"md-p\">发送失败保留待办，在预算内重试；耗尽重试后，进入可查询失败、人工处理或对账修复。只做“写完数据库，再发 MQ”还不够，因为提交后、发消息前进程就可能崩溃。</p><p class=\"md-p\">必须说清允许延迟、顺序范围、重复处理、冲突规则、保留期和截止策略。扣库存通常需要强约束，展示库存可用延迟投影；用户刚改完信息再查看，可以携带提交版本实现读己之写；一个副本已经返回的新版本不应在随后查询中无理由倒退，则还需要单调读策略。</p><p class=\"md-p\">最终一致不等于永不失败。毒消息、权限永久失效、日志已经过期和schema不兼容都可能阻止收敛。监控最老未完成义务、版本缺口、重试积压和对账差异，超过业务窗口时明确降级或失败。把消费者ACK、业务提交和用户看到结果分开定义，才能给出可信SLA。</p><h2 class=\"md-h md-h2\">1.1 怎样理解分布式系统，其优缺点和一致性如何解释</h2><p class=\"md-p\">分布式系统用分片与复制换取容量和容错，必须额外处理部分失败、通信不确定性与跨节点一致性。</p><p class=\"md-p\">常见问法：什么是分布式系统；分布式有哪些优缺点；关系型数据库能否是分布式系统。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">分布式系统由多个独立故障单元经网络协作。SQL、NoSQL是数据模型与接口分类，不能据此判断是否分布式。对数据库选型，必须同时说明分片、副本、事务范围与读写规范。</p><h3 class=\"md-h md-h3\">为什么拆到多台，代价是什么</h3><p class=\"md-p\">分片是分工作，复制是留副本，目的不同。分片把不同数据或计算分散到多台，扩大容量和并行吞吐；复制把同一事实放到多个故障域，用来容错或就近读取。</p><p class=\"md-p\">拆服务还可以支持团队独立部署、隔离资源，但跨网络就多了序列化、排队和超时。原来进程内函数成立的假设，不能原封不动搬到远程调用。</p><p class=\"md-p\">分布式最难处理的，是只坏了一部分，而且调用方不一定知道坏在哪。一次超时，服务端可能没收到、正在处理，也可能已经提交，只是回包丢了；仅凭超时无法区分。</p><p class=\"md-p\">还要处理重复、乱序、时钟偏差、旧节点恢复、成员变化、热点和扩缩迁移。机器更多不代表可用性自然更高：如果一次请求必须等每个依赖都成功，故障影响面反而更大。</p><h3 class=\"md-h md-h3\">一致性先说明对象与历史</h3><p class=\"md-p\">对单条余额操作若要求线性一致，所有成功操作像按真实时间约束的某个顺序原子发生；对多行订单/库存还要事务原子性与隔离，这不是单个KV写有共识就自动提供。展示计数可允许有版本的旧投影，库存资格要权威条件更新；同系统不同路径可不同保证。</p><p class=\"md-p\">单分片可由权威leader加多数复制/共识约束提交与故障切换，强读需确认领导权与读取水位；跨分片事务需事务协议或重新放置数据以本地化不变量。异步投影用事务outbox、幂等消费、版本防倒退、重试与对账。复制、事务、幂等各解决不同层次，不能互相代替。</p><p class=\"md-p\">网络分区时，不可同时对冲突状态无限独立应答又维持线性一致；多数侧推进、少数侧拒绝是可选规范，最终一致侧接受写则必须定义冲突合并。CAP的C/A是形式化语义，返回错误不能自动满足可用性；最终一致也没有天然的秒级上界。</p><h3 class=\"md-h md-h3\">数据库按具体机制比较</h3><p class=\"md-p\">可条件举例：MongoDB分片集合由路由/元数据与各分片副本组协作，分片键决定定向查询和热点；Spanner是分布式关系数据库的一个研究例子；HBase面向大表按行键组织访问。不能只因是文档/KV就认定一定多机，关系型也能做分片/复制/分布式事务。</p><p class=\"md-p\">比较要问数据模型、访问键、事务跨域、读写一致性、故障域、数据量/热点、查询形态与恢复目标。只看“支持分布式”或SQL语法不足以选型。介绍阅读经历时，选择确实读过的材料，说明其问题、协议、假设、反例与收获。</p><h3 class=\"md-h md-h3\">工程验证</h3><p class=\"md-p\">用写成功后分区读、leader切换、双客户端重试、落后副本读取、扩容迁移与备份恢复检查规范。容量评估分单实体串行上限与可分片总吞吐，记录p99及恢复时间；架构推导不构成任何产品的性能承诺。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-mysql-bg-----2-0\">MySQL 手册：具体条件、完整推演与实验</h2><h2 class=\"md-h md-h2\">第36章 数据库、缓存、消息与外部动作</h2><p class=\"md-p\">跨系统一致性的核心，是先明确哪份状态有最终裁决权，再用本地事务保存事实和待办，用稳定身份、条件更新和可恢复状态机处理其他系统的失败窗口。</p><h3 class=\"md-h md-h3\">1. “一致性”具体指什么，MySQL 与 Redis 为什么常一起用？</h3><p class=\"md-p\">业务一致性是业务不变量始终满足，例如账户不能透支、同一审批只能生成一份有效意图；事务隔离讨论并发数据库操作怎样互相可见；副本、缓存和索引一致性讨论不同副本什么时候收敛。ACID 中的一致性不能直接替代后两者。说“最终一致”必须给出权威源、允许的陈旧时间、收敛机制，以及永久失败的发现和处理方式。</p><p class=\"md-p\">MySQL 适合需要关系约束、复杂查询和持久事务的业务事实；Redis 的内存数据结构适合热点读、限流、短期状态和有明确持久化边界的实时工作集。MySQL 也有 Buffer Pool，Redis 也有持久化，不能简单概括成“一个在磁盘，一个没有磁盘”。Redis 是否能当权威源，是业务对丢失、回滚、恢复和查询能力的选择，不是因为它快就自然成立。</p><p class=\"md-p\">常见选择是 MySQL 保存订单、库存、权限版本，Redis 保存派生缓存。一次数据库提交不会自动修改 Redis。Spring 中把两种调用包进同一个 @Transactional 方法，也不会凭空把它们变成一个原子提交协议。</p><h3 class=\"md-h md-h3\">SQL、NoSQL 与 KV 持久化的进一步追问</h3><p class=\"md-p\">关系型模型以表、关系、约束和 SQL 为中心；NoSQL 是一组不同模型的统称，包括键值、文档、宽列和图，不能一概说“不支持事务”“没有 schema”或“必须最终一致”。文档模型适合按聚合读取可变结构，键值适合按已知 key 取小对象，图适合关系遍历，宽列适合明确分区与访问模式；选择要看查询、事务范围、演进、数据规模和团队维护成本。SQL/NoSQL 是接口与数据模型维度，B+ 树、LSM、哈希和倒排索引是实现维度，不能直接画等号。</p><p class=\"md-p\">若追问“KV 一般如何持久化，为什么这样设计”，先指出并非只有一条路线。Redis 7.2.0 的 RDB 形成某时刻快照，便于装载和备份，但最近变化的损失窗口取决于快照时机；AOF 记录写操作，刷盘频率在耐久性与开销之间取舍，重写压缩历史而不是无限增长，恢复还要处理尾部不完整记录和损坏。fork/COW、重写 I/O、磁盘空间与主从切换都是成本，不能把内存原子操作等同磁盘已持久。两种方式组合也需要明确启动恢复选哪份数据以及备份是否真正可恢复。</p><p class=\"md-p\">另一类 KV 引擎走 WAL→内存有序表→不可变磁盘段路线，用批量顺序写和后台 compaction 降低随机写成本；读取可能要查多层，需 Bloom filter、索引与缓存，compaction 又带来写放大、空间放大和后台带宽竞争。删除墓碑不能在仍可能读到旧版本时过早丢弃。它是 LSM 家族的设计取舍，不是 Redis 普通 key/value 的默认底层。持久化日志记录、刷盘、复制确认与副本已应用，是不同的观察点。</p><p class=\"md-p\">回答“你用过什么数据库”时，给出确实接触的产品及职责范围，再解释选型；只知道一个配置文件，可以说当前代码配置了什么，不能扩写成自己完成过生产迁移、容灾或调优。MySQL/Redis 的机制问题可以完整回答，个人经历的空白不应靠编故事补上。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mysql-guide\">版本、练习前提与验证边界</a></li></ul>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>一致性先分清要强一致还是最终一致，再按主数据和派生数据组合事务、幂等、消息与补偿。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定要求 / 主数据收口 / 派生副本 / 组合手段</p>",
+          "leadType": "v9:原理/方案"
+        },
+        {
+          "q": "多机房多集群部署，每个机房都有自己的 Redis，怎么做整体限流？",
+          "a": "<p class=\"md-p\">先看要的是全局严格限流，还是总体接近全局、但优先可用。</p>\n<p class=\"md-p\">全平台今天只能发 100 万张券、一个账号全局每分钟只能成功 10 次这类要求，单靠每个机房各自的本地 Redis 计数很难对齐：跨机房同步有延迟，网络分区时还会出现双边都放行。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>方案</th><th>做法</th><th>取舍</th></tr></thead><tbody><tr><td>中心化全局配额</td><td>关键限流判断收口到统一网关、统一配额服务，或少数强一致协调节点</td><td>全局口径最稳；可用性和跨机房 RT 压力更高</td></tr><tr><td>配额切分</td><td>总额度按机房预分桶，本地 Redis 快速限流，额度快耗尽再异步申请新配额</td><td>可用性更好、RT 更低；接受少量误差，配额回收更复杂</td></tr></tbody></table></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>我会先说清严格性要求，再说明愿意拿多少一致性去换可用性和时延。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>多机房限流先定全局严格还是总体接近全局但优先可用，再在中心配额和按机房切分里选。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先定严格性 / 本地 Redis 的坑 / 中心化配额 / 配额切分</p>",
+          "leadType": "v9:方案/对比"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "3407fba9fe5192a1e036442fadda9e9a5f9525775759e58134bd3a33e724902d",
+    "liveSha": "3407fba9fe5192a1e036442fadda9e9a5f9525775759e58134bd3a33e724902d"
+  },
+  "bg-分布式-3": {
+    "entry": {
+      "id": "bg-分布式-3",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分布式锁与选主",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "如果只有 MySQL，怎么实现分布式锁？<code class=\"tok-inline\">UNIQUE KEY</code> 和 <code class=\"tok-inline\">select ... for update</code> 这两类方案怎么比较？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>唯一约束抢锁</th><th>select ... for update</th></tr></thead><tbody><tr><td>做法</td><td>锁表里 lock_name 做唯一键，谁先 insert 成功谁拿到锁；释放时删行，或配合过期时间和版本号做租约</td><td>基于事务的排他锁，占住某一行</td></tr><tr><td>优点</td><td>简单直观，也比较容易跨进程</td><td>适合本来就在一个短事务里顺手串一下互斥</td></tr><tr><td>缺点</td><td>要处理持锁方宕机、锁过期、误删别人锁，表里通常再带 owner、expire_at、version</td><td>连接断了、事务拖长、锁没及时释放，影响比较大，不适合长时间分布式锁</td></tr><tr><td>适用</td><td>需要租约语义和跨进程互斥时，更偏向唯一键或条件更新</td><td>短事务里保护同一行资源</td></tr></tbody></table></div>\n<p class=\"md-p\">无论哪种，都别把慢业务逻辑长时间包在数据库锁里。</p>\n<p class=\"md-p\">MySQL 可以拿来做锁，但它不是专门的协调组件。高并发下数据库锁会直接占连接、拖事务、放大热点竞争，死锁、超时、主从延迟也会把锁语义搞得更脆弱。临时方案、低频任务互斥、部署规模不大还能接受；锁已经变成系统核心协调机制时，通常 Redis、ZooKeeper、etcd 更合适。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>抢锁成功不保证业务结果天然正确，后面仍要靠幂等键、状态机、版本号或唯一约束兜最终正确性。</p></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>为什么还会追到幂等、防重和 fencing token？</b></p><p class=\"md-p\">锁只是互斥入口。即使用 MySQL 抢锁成功，后面仍要靠幂等键、状态机、版本号或唯一约束兜最终正确性，所以会自然追到幂等、防重和 fencing token。</p></div>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>只有 MySQL 时，分布式锁就是唯一约束抢锁或事务行锁占行；锁只管互斥，业务正确性仍要幂等兜底。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>唯一键抢锁 / 行锁占锁 / 何时能用 MySQL / 锁后仍要幂等</p>",
+          "leadType": "v9:对比/方案"
+        },
+        {
+          "q": "如果只有 MySQL，怎么在多个进程之间做 Leader Election？",
+          "a": "<p class=\"md-p\">我会做成基于租约的抢主，避免把某一行永久锁死。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单行主控表</b>：字段放 <code class=\"tok-inline\">leader_id</code>、<code class=\"tok-inline\">lease_until</code>、<code class=\"tok-inline\">version</code> 或 fencing token。</li><li><b>定时抢租约</b>：条件更新 <code class=\"tok-inline\">where lease_until &lt; now()</code>，把自己写成新 leader；也可以用唯一键插入抢占。</li><li><b>续约与让位</b>：抢到后持续续约，续不上视为主动让位。进程挂了，租约过期后别的实例还能接管。</li><li><b>fencing token</b>：每次成功当选拿到单调递增版本，后续业务动作带上它，避免旧 leader 网络恢复后继续误操作。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：规模不大、依赖少。若对一致性、自动恢复和可观测性要求更高，通常 ZooKeeper 或 etcd 更顺手。</p>\n<p class=\"md-p\"><i>不适合的做法</i>：用长事务或永久 <code class=\"tok-inline\">select for update</code> 当选主。连接异常或事务没释放时，恢复会很难看。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>选主成功不等于安全。旧 leader 失联但没死透时会脑裂双写；线上很多时候更怕双写。不能只停在谁把 leader_id 更新成功，还要带上租约续期、失效检测和 fencing。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>MySQL 选主的本质是租约抢主：到期条件更新或唯一键抢占，续约失败就让位。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单行主控表 / 条件更新抢租约 / 续约失败让位 / fencing token / 防脑裂双写</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "0c91e6e5fb71018af433ff462558835960c1cc69b7f6e2fccae34985796d79e6",
+    "liveSha": "0c91e6e5fb71018af433ff462558835960c1cc69b7f6e2fccae34985796d79e6"
+  },
+  "bg-分布式-4": {
+    "entry": {
+      "id": "bg-分布式-4",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分布式调度",
+      "number": "2 问",
+      "items": [
+        {
+          "q": "XXL-JOB 是什么？它大概有哪些功能？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>调度中心</b>：负责任务配置、触发、路由、监控和告警。</li><li><b>执行器</b>：部署在业务服务侧，真正执行任务逻辑，并把结果回传。</li><li><b>常见功能</b>：定时调度、失败重试、任务分片广播、路由策略、日志查看、执行历史、告警通知、手动触发、动态上下线执行器。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>它要解决的是把分布式环境下的任务调度做成可管理、可观测、可运维的系统。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-distributed-s5102\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">7.2 XXL-JOB架构与3.3.1服务端源码链路怎样读</h2><p class=\"md-p\">XXL-JOB由调度中心确定触发和路由，执行器运行handler并回调，业务仍需为重复触发、超时未停和调度崩溃保存恢复责任。</p><p class=\"md-p\">常见问法：XXL-JOB服务端链路是什么；时间环会不会丢任务；执行超时是否真的停止业务。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">以下机制固定在XXL-JOB 3.3.1，类路径与行为不推广到其他版本；本地示例不等于运行了真实XXL-JOB集群。</p><h3 class=\"md-h md-h3\">调度中心、执行器和业务职责</h3><p class=\"md-p\">调度中心保存任务配置/调度记录，决定何时触发和路由到哪个执行器；执行器接收请求、装载handler并运行，回报结果。业务代码决定幂等、事务和效果，不应把调度成功日志当业务最终成功。集群部署提高可接管能力，但数据库、网络、任务时长及重复触发仍是设计边界。</p><h3 class=\"md-h md-h3\">JobScheduleHelper：持久下次时间与内存时间环</h3><p class=\"md-p\">3.3.1的admin/scheduler/thread/JobScheduleHelper.start创建扫描线程与ring线程。扫描在事务中调用scheduleLock，再查询未来PRE_READ_MS=5000范围任务；严重错过触发时间时走misfire策略，近时逾期直接触发，未来任务按秒数模60进入ringData，并计算/更新下次时间。ring线程处理当前刻度与前两个刻度，再交触发线程池。</p><p class=\"md-p\">XXL-JOB 这里最重要的边界，是数据库的 next trigger time 和 JVM 内存 ringData 并不属于同一个持久事务。</p><p class=\"md-p\">若下次时间已经前移，进程却在内存触发前硬崩溃，数据库锁和优雅停机等待都不能证明这些预读运行不丢。重要业务要保存自己的持久运行槽并对账，也不能把 misfire 说成会逐次补回全部历史触发。</p><h3 class=\"md-h md-h3\">JobTrigger→ExecutorBizImpl→JobThread</h3><p class=\"md-p\">JobTrigger.trigger读取配置与执行器地址，处理分片广播或路由选择，processTrigger先存logId，再构造handler、参数、timeout、广播下标/总数等TriggerRequest，经ExecutorBiz.run远程提交并记录触发结果。分片参数需要业务handler按约定使用，广播本身不会自动分割数据库数据。</p><p class=\"md-p\">core/openapi/impl/ExecutorBizImpl.run解析BEAN/GLUE/script handler及更新版本，处理串行、丢弃后续、覆盖先前等阻塞策略，再把请求放入对应JobThread。JobThread用logId集合避免队列内重复，但取出时即移除，且集合在内存，不能当业务永久去重。handler执行前建立上下文和日志路径。</p><h3 class=\"md-h md-h3\">超时与回调的真实边界</h3><p class=\"md-p\">XXL-JOB 执行超时，不等于业务真的停了。有超时配置时，JobThread 创建 FutureTask 线程并等待 get(timeout)，超时后记录状态、interrupt 执行线程。</p><p class=\"md-p\">Java 中断是协作机制，忽略中断或不可中断的操作仍可能继续产生副作用。覆盖早期执行也不会自动回滚外部操作，业务仍需稳定 runId 和目的端条件提交，拦住迟到结果。</p><p class=\"md-p\">TriggerCallbackThread把回调加入内存队列批量上报，失败时写本地失败回调文件并由重试线程重试。该文件并不意味着所有回调从入队就持久化：内存尚未落盘时硬崩溃、重试文件读取删除后再次上报前失败等窗口都需分析。回调“失败/超时”和真实业务状态可暂时不一致，重跑前核对业务流水。</p><h3 class=\"md-h md-h3\">阅读方法与验收</h3><p class=\"md-p\">从一个jobId沿nextTriggerTime、logId、执行器地址、队列、handler、回调查完整状态，分别定位未调度、未送达、排队、执行失败和回调失败。验证admin硬退出、执行器重启、长任务忽略中断、同logId重复与业务提交后回调丢失。本节AlarmSlots仅是局部事务教学模型，不实现XXL-JOB运行时；调度器与执行器的故障合同应在实际3.3.1部署上分别验证。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>XXL-JOB 的本质是分布式任务调度框架，把何时执行、在哪执行、结果怎么管理统一起来。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>调度中心 / 执行器 / 常见功能 / 可运维调度</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "XXL-JOB 在 CAP 里大致偏什么？",
+          "a": "<p class=\"md-p\">XXL-JOB 是分布式调度框架，不是严格套 CAP 的 KV 存储。我不会硬说它是 AP 还是 CP。</p>\n<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>层面</th><th>更在意什么</th><th>怎么权衡</th></tr></thead><tbody><tr><td>控制面</td><td>任务别乱调、别漏调太多，也更怕脑裂和重复调度</td><td>偏向一致性：中心状态一致，任务只被有限地正确触发</td></tr><tr><td>执行面</td><td>个别执行器异常不能让整个系统不可用</td><td>保留可用性：关注节点存活、失败转移和重试补偿</td></tr></tbody></table></div>\n<p class=\"md-p\">我会把重点放在任务注册、心跳、故障转移、路由和失败重试。不同层面对一致性和可用性的权衡不一样，分布式任务的防重和幂等也要放在这个前提下看。</p>",
+          "sub": "",
+          "mk": 1,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>XXL-JOB 难直接套 CAP：控制面更怕乱调和脑裂，执行面要在节点异常时仍保持可用。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>不是 KV 存储 / 控制面偏一致 / 执行面保可用 / 注册心跳重试</p>",
+          "leadType": "v9:原理/对比"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "9c525a05048b01fb115455a6c4298f4c226fc9039c544d8b1d1608d6364a5e58",
+    "liveSha": "9c525a05048b01fb115455a6c4298f4c226fc9039c544d8b1d1608d6364a5e58"
+  },
+  "bg-分布式-5": {
+    "entry": {
+      "id": "bg-分布式-5",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分布式事务与工程取舍",
+      "number": "1 问",
+      "items": [
+        {
+          "q": "生产环境里要删除五个订单，这种场景能不能做成事务？一般怎么判断？",
+          "a": "<p class=\"md-p\">我从边界和落地方案两层讲。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>同一 MySQL 实例</b>：只删五条订单记录，用本地事务，一次提交或回滚就够。</li><li><b>跨服务</b>：还要联动库存、支付、优惠券、搜索索引、消息通知，就超出单库事务。我不会第一反应上强分布式事务。更现实的是先把订单改成“待删除”或“已作废”，再用本地消息表、事务消息、Saga 补偿、幂等任务把下游逐步收口。删订单牵涉审计、回滚、幂等和历史查询，做成跨服务强事务后链路很重，锁持有时间也会被放大。</li><li><b>怎么判断</b>：单库动作用本地事务；跨服务优先状态机加补偿；只有确实要求强一致、且链路短可控时，才评估 TCC 或更强事务方案。</li><li><b>先问是不是物理删除</b>：很多生产系统订单不是直接 delete，而是逻辑删除、状态流转、归档清理。只要涉及审计、对账、纠纷处理、消息重放，物理删除都会让后续排障很被动。要先把业务语义、审计要求和跨服务边界一起说清楚。</li></ol></div>\n<p class=\"md-p\"><i>取舍</i>：本地事务解决单库原子性，分布式事务解决跨系统一致提交；工程上更常见的是状态机 + 消息 + 补偿 + 幂等，拿最终一致。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>再往下怎么选事务方案？</b></p><p class=\"md-p\">继续展开通常会落到 TCC、Saga、消息事务和幂等到底怎么选。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>删五个订单先分清边界：同库本地事务一次提交，跨服务用状态机加补偿，强一致且链路短才看 TCC。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先看删到哪层 / 单库本地事务 / 状态机加补偿 / 逻辑删除优先 / 最终一致组合</p>",
+          "leadType": "v9:方案/场景"
+        }
+      ],
+      "source": "八股面经整理 · 分布式"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "eacbae998917d3ef7168354427aa218b0411c04d7a9e229a122bf9ae6f29eb06",
+    "liveSha": "eacbae998917d3ef7168354427aa218b0411c04d7a9e229a122bf9ae6f29eb06"
+  },
+  "bg-分布式-6": {
+    "entry": {
+      "id": "bg-分布式-6",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "分库分表基础",
+      "number": "9 问",
+      "items": [
+        {
+          "q": "什么情况下会考虑分库分表？",
+          "a": "<p class=\"md-p\">我会把它当成单机数据库快扛不住时才上的扩展手段。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单表信号</b>：单表数据量太大，索引膨胀明显。</li><li><b>性能信号</b>：写入和查询 RT 持续变差，热点太集中。</li><li><b>资源信号</b>：单库 CPU、IO、连接数已经接近瓶颈。</li></ol></div>\n<p class=\"md-p\">这时候再继续只靠加索引、读写分离、缓存和归档，收益会越来越有限，才会考虑拆。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表不是默认方案，而是单机库在数据量、RT 和资源上快扛不住时的扩展手段。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单表与索引 / RT 与热点 / 资源近瓶颈 / 其他手段有限</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "分库和分表分别解决什么问题？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>分表</th><th>分库</th></tr></thead><tbody><tr><td>主要解决</td><td>单表过大：索引太深、查询和写入变慢、归档困难</td><td>单实例容量、并发和资源瓶颈，比如单机 CPU、磁盘、连接数扛不住</td></tr><tr><td>常见顺序</td><td>很多时候先分表</td><td>单库已经成为瓶颈，再继续分库</td></tr></tbody></table></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分表解决单表过大带来的慢和归档难，分库解决单实例的容量、并发和资源瓶颈。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>分表对单表 / 分库对实例 / 先表后库</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "分片键怎么选？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>优先字段</b>：查询里最常带、分布比较均匀、未来不容易改的字段，比如 <code class=\"tok-inline\">userId</code>、<code class=\"tok-inline\">tenantId</code>、订单主键。</li><li><b>选得好</b>：路由比较稳定，大部分请求都能落到单分片。</li><li><b>选得不好</b>：容易出现热点、跨分片查询，后面迁移也困难。</li><li><b>业务归属</b>：如果天然有强实体归属，通常就围绕这个归属去选。</li></ol></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分片键选查询最常带、分布均匀、以后难改的字段，让路由稳定、请求尽量落单分片。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>常查且均匀 / 以后不易改 / 强实体归属 / 避开热点跨片</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "分库分表之后最麻烦的问题是什么？",
+          "a": "<p class=\"md-p\">拆完之后，很多以前默认成立的能力都没了，麻烦点不在取模本身。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>变复杂的能力</b>：跨分片查询、跨分片排序分页、聚合统计、全局唯一 ID、分布式事务、扩容迁移、热点倾斜。</li><li><b>要补的一整套</b>：路由、中间件、全局 ID、数据迁移和监控治理。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分库分表是用业务复杂度换数据库扩展性，拆完并没有结束。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表的本质是用业务复杂度换扩展性，拆完要另补路由、全局 ID、迁移和治理。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>跨片查询排序 / 聚合与全局 ID / 事务与迁移 / 热点与治理</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "分库分表怎么设计？到底是怎么分库、怎么分表的？",
+          "a": "<p class=\"md-p\">我会先分两层，而不是一上来就 hash。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>垂直拆分</b>：按业务域分库，用户、订单、支付、库存各管各的。</li><li><b>水平拆分</b>：同一类数据按分片键拆成多份。</li></ol></div>\n<p class=\"md-p\">落地顺序一般是：先做业务垂直分库，再对增长最快的热点表做水平分表，必要时继续分库，把流量和容量一起摊开。先判断瓶颈在单表、单库，还是业务边界混乱，再决定先拆业务还是先拆数据量。</p>\n<p class=\"md-p\"><i>适用场景</i>：业务边界混乱先垂直拆；单表或单库容量、流量顶不住再水平拆。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>直接说分 64 张表，说不清先判断瓶颈、再决定拆业务还是拆数据量。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分库分表分两层：先按业务域垂直分库，再按分片键水平拆表，先看瓶颈再决定拆哪一层。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先判断瓶颈 / 垂直按业务分库 / 水平按分片键 / 热点表再摊开</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "分片键如何选择？到底对什么做哈希？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>hash 对象</b>：一般就是分片键本身，比如 <code class=\"tok-inline\">userId</code>、<code class=\"tok-inline\">tenantId</code>、订单号里的某一段稳定标识。</li><li><b>怎么选</b>：不是哪个字段最随机，而是既分布相对均匀，又能支撑主要查询路由。最常按用户查订单历史，拿 <code class=\"tok-inline\">userId</code> 做 hash 比拿状态位合理；主要按订单号查详情，订单号本身或其编码规则更关键。</li><li><b>失衡代价</b>：只为均匀选一个业务上不常带的字段，后面跨分片查询会很痛苦。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只追求均匀、忽略主查询能不能路由，后面跨分片会很痛苦。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分片键选择永远是均匀性和路由能力的平衡。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分片键的本质是均匀性和路由能力的平衡，真正做 hash 的是分片键本身。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>hash 分片键本身 / 均匀且能路由 / 对齐主查询</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "分库分表后跨库、跨表查询怎么做？",
+          "a": "<p class=\"md-p\">能查，代价会高。常见三类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>中间件层路由聚合</b>：把多个分片结果拉回来再合并。</li><li><b>业务侧归并</b>：业务自己做多次查询，再把结果合并。</li><li><b>旁路查询</b>：为高频跨分片单独做宽表、搜索索引、汇总表或离线数仓。</li></ol></div>\n<p class=\"md-p\"><i>缺点</i>：不能再用单库单表时随手一条 SQL 全搞定。<i>适用场景</i>：偶发可以接受；若这类查询是核心主路径，多半是分片策略和访问模式没对齐，或者要额外建设旁路查询体系。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>跨分片不是完全做不到，而是不能再用单库单表那种随手一条 SQL 的心态。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-distributed-s7163\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">9.10 分库分表后跨库查询、分页聚合和事务怎样处理</h2><p class=\"md-p\">把常用查询和强约束尽量本地化，跨库查询使用路由、有限扇出和归并，跨库事务则明确协调或异步一致策略。</p><p class=\"md-p\">常见问法：分库分表后怎么关联查询；跨库分页怎么做；跨库事务怎样处理。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">分库分表先由访问键与事务不变量确定边界，跨分片聚合和分页不能沿用单表成本假设。</p><h3 class=\"md-h md-h3\">优先让常用操作落在同一归属内</h3><p class=\"md-p\">按租户/用户/订单等聚合归属选择分片键，把频繁一起读取或事务修改的数据尽量同分片；全局唯一ID携带/关联路由信息。与主分片键不同的查询可维护全局索引或反向投影，如订单号→分片，避免每次广播。索引更新需可靠事件、版本、去重和修复，旧索引/迁移期间要有可控回退。</p><p class=\"md-p\">少量稳定字典可版本化复制到各分片，业务宽表可冗余必要字段以减少join；冗余意味着更新传播和审计成本。不能把跨服务真实余额复制一份就当作任何时候强一致权威。</p><h3 class=\"md-h md-h3\">不可避免的跨分片查询如何合并</h3><p class=\"md-p\">跨片查询先约定，某一片失败时怎么办。scatter-gather 只并行有限分片，设总 deadline 和并发上限，明确整体失败，还是返回带缺失标记的部分结果。</p><p class=\"md-p\">聚合也要按运算语义合并：SUM、COUNT 可汇总部分量，AVG 要合 sum 与 count，不能平均各片平均值。DISTINCT、全局排序和 join，还需处理重复与路由归属，不是拼几份本地结果就完成。</p><p class=\"md-p\">全局按同一确定全序排序的TopK，在数据条目不重复归属且排序字段就是最终值时可取各分片TopK再归并；若要先按跨分片key求和排名，必须先聚合，第9.9节给出了本地TopK遗漏全局第一的反例。全局分页用稳定复合游标/快照水位与归并，offset深翻页会迫使各分片多读且并发写下易重复漏项。</p><h3 class=\"md-h md-h3\">大范围分析不宜压垮在线分片</h3><p class=\"md-p\">报表/搜索可通过CDC建立OLAP或检索投影，按统一事件进度对齐并标数据新鲜度。应用层小规模join可先查主实体，再按ID批量查关联并合并，避免N+1；大型分布式join需要专门执行引擎、shuffle和资源隔离，不能假设事务库代理免费完成。</p><p class=\"md-p\">每个 MySQL 分片各开 RR 事务，不代表大家看到同一个全局时刻。</p><p class=\"md-p\">报表必须全局快照时，需要统一且可证明的快照或版本协议，或者使用离线已封账数据。否则就公开截止水位和可能偏差，不能因为每个库用了事务，就称全局一致。</p><h3 class=\"md-h md-h3\">跨库事务按不变量选择</h3><p class=\"md-p\">能把核心不变量收回同一数据库/聚合就优先本地事务。确需多个资源强原子提交可用支持的XA/2PC或事务协调框架，分析prepare锁占用、协调者恢复、超时/悬挂和服务不可用时的代价；AT/TCC也有代理/业务预留、全局锁和隔离边界，详见第4.3节及第4.4节。</p><p class=\"md-p\">允许业务中间态可用outbox+幂等投影、Saga或TCC预留确认；最终一致不意味着任意库存都能先扣成负数再补。跨库转账可用明确资金在途科目/状态机和对账，重复/乱序不重复入账，失败根据业务规则补偿而非简单反向SQL。</p><h3 class=\"md-h md-h3\">验证</h3><p class=\"md-p\">测试广播分片超时、重复投影、分片迁移和旧路由、全局排序同分、深分页、平均数不均匀样本、更新期间快照，以及协调者在各阶段退出。保留查询计划/扫描行数和事务悬挂指标；读扩展、事务延迟和运维复杂度一起评价。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>跨分片查询能做但代价高；它若是核心主路径，说明分片策略和访问模式没对齐。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>中间件路由聚合 / 业务多次归并 / 旁路宽表索引</p>",
+          "leadType": "v9:方案"
+        },
+        {
+          "q": "用分表解决大 offset 会带来什么问题？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>单表侧</b>：分表可能让单表上的 offset 压力下降一些，但不会自动把深分页消灭。</li><li><b>跨分片</b>：分页请求一旦跨多个分片，每个分片都要先各自分页或扫描，再把结果拉回来做全局合并排序。查询逻辑更复杂，网络和内存开销也会上来，全局页码更难稳定。</li><li><b>常见做法</b>：游标翻页、书签法、限制深翻页，或者给跨分片场景单独做搜索索引和汇总层。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>分表解决的是容量问题，不是万能分页优化器。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>分表只减轻单表 offset 压力，跨分片深分页仍要各片扫描再全局合并。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>单表压力下降 / 跨片全局合并 / 游标书签限翻 / 搜索索引汇总</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "订单数据如果按订单号分片了，想快速查询某个用户的所有订单，一般怎么做？",
+          "a": "<p class=\"md-p\">分片键是订单号、高频条件是 <code class=\"tok-inline\">userId</code> 时，核心主路径不能每次把所有分片扫一遍再聚合。偶发离线可以这么干。常见三类：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>映射表或全局二级索引</b>：按 <code class=\"tok-inline\">userId</code> 先查出订单 ID 和所在分片，再回源拿详情。</li><li><b>查询侧存储</b>：用户订单查询单独做成宽表、ES 索引或查询侧存储，写链路异步同步过去。</li><li><b>分片键对齐主查询</b>：如果业务上允许，一开始就让分片键和主查询路径对齐，比如按 <code class=\"tok-inline\">userId</code> 或带用户归属的复合键拆。</li></ol></div>\n<p class=\"md-p\"><i>适用场景</i>：前两类补在“已按订单号分片、又要按用户查列表”；第三类要业务允许从头对齐。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>按用户查列表不补查询索引，scatter-gather 成本迟早会成为瓶颈。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>订单号分片只解决按订单查详情；按 userId 查列表必须另补可路由的查询索引。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>映射或二级索引 / 宽表与查询存储 / 分片键对齐主查询</p>",
+          "leadType": "v9:方案"
+        }
+      ],
+      "source": "八股面经整理 · 分库分表"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "ca6bfa9c810d1c35c72ad58eb812709aadb77cef2cee187c0c62228fb56b3a46",
+    "liveSha": "ca6bfa9c810d1c35c72ad58eb812709aadb77cef2cee187c0c62228fb56b3a46"
+  },
+  "bg-分布式-7": {
+    "entry": {
+      "id": "bg-分布式-7",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "分布式",
+      "title": "元数据与血缘补充",
+      "number": "1 问",
+      "items": [
+        {
+          "q": "什么是元数据？怎么理解数据资产和血缘？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>元数据</th><th>血缘</th></tr></thead><tbody><tr><td>回答</td><td>这是什么</td><td>从哪来、怎么变成现在这样</td></tr><tr><td>内容</td><td>表名、字段含义、口径、来源系统、更新频率、负责人、权限边界</td><td>指标、宽表、报表字段的来源，中间的加工、聚合、同步、口径转换，以及最后被谁消费</td></tr><tr><td>价值</td><td>从有人存着但没人敢用，变成知道是什么、能不能信、出问题找谁</td><td>可追溯</td></tr></tbody></table></div>\n<p class=\"md-p\">数据资产建设的第一步，往往不是先做大屏，而是先把元数据补齐。两者一起做，数据资产才可管理、可追责、可复用。</p><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>某个指标突然不准，血缘怎么帮上忙？</b></p><p class=\"md-p\">往上游定位是源表变了、同步链路断了，还是某个 ETL 逻辑改坏了。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>元数据回答这是什么，血缘回答从哪来、怎么变成现在这样，一起才可管理、可追责、可复用。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>描述数据的数据 / 资产先补元数据 / 血缘看来龙去脉 / 可追溯可追责</p>",
+          "leadType": "v9:原理/对比"
+        }
+      ],
+      "source": "八股面经整理 · 数据同步"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-d93550e9049e.json",
+    "snapshotSha": "27a3aa99a0494ef024e9a59d167c076c0a56ef144d361bd379f47b958c298892",
+    "liveSha": "27a3aa99a0494ef024e9a59d167c076c0a56ef144d361bd379f47b958c298892"
+  },
+  "bg-线上排障-1": {
+    "entry": {
+      "id": "bg-线上排障-1",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "线上排障",
+      "title": "线上故障应急与排查主线",
+      "number": "3 问",
+      "items": [
+        {
+          "q": "服务突然出现大量超时和报错，你会如何排查和解决？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>确认影响范围</b>：是单接口、单实例、单机房，还是全链路；是应用自身，还是某个下游依赖抖动。</li><li><b>短期止血</b>：限流、降级、熔断、扩容、切流量、回退版本、关闭非核心功能，先把错误率和延迟拉住，避免继续雪崩。</li><li><b>定位</b>：按流量 → 线程 → 依赖 → 数据 → 资源。先看网关 QPS、线程池和连接池是否打满，再看慢 SQL、Redis 慢查询、MQ 积压、下游服务 RT、CPU、内存、GC、网络是否异常。</li><li><b>恢复期治理</b>：补监控、补限流分级、优化超时配置、增加隔离池、梳理熔断策略、补压测和故障演练，把一次事故收成可复用预案。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>很多线上超时不是代码突然坏了，而是某个依赖抖动把上游线程池拖满，最后表现成整站报错。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>重点是能不能把事故收成一套可复用预案。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>大量超时我按先止血、再定位、再复盘：先拉住错误率和延迟，再沿流量到资源往下排。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>确认影响范围 / 短期止血 / 流量到资源 / 恢复期治理</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "QPS 突然飙升、系统延迟升高时，应该如何快速缓解？",
+          "a": "<p class=\"md-p\">第一目标不是立刻找全根因，而是先稳住系统，避免故障扩散。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>短期止血</b>：限流，优先保护核心接口；降级，把推荐、统计、非核心展示先关掉；熔断，对明显超时的下游快速失败；扩容，对无状态服务先横向扩实例；热点缓存预热，把最热数据尽量前移到缓存层。</li><li><b>定位瓶颈</b>：看网关、线程池、连接池、数据库慢查询、Redis 命中率、MQ 积压、CPU、GC、网络和下游依赖，判断是入口洪峰、热点 key、下游慢、锁竞争还是资源耗尽。</li><li><b>按优先级动手</b>：数据库顶不住，先切缓存和限流；线程池堆满，先降级和拆流量；外部依赖超时，先熔断和回退默认值。</li><li><b>恢复后</b>：容量复盘、压测补齐、热点识别、阈值重设、自动扩容和开关治理。</li></ol></div><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先保命，再定位，再固化预案。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>延迟升高时先稳住系统、避免扩散，再按瓶颈优先级动手，恢复后把预案固化下来。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>止血保核心 / 按瓶颈选动作 / 入口到依赖定位 / 恢复后固化</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "线上服务运行一段时间后突然挂掉，日志提示 OutOfMemoryError。你如何分析是堆内存泄漏、栈溢出还是元空间不足？",
+          "a": "<p class=\"md-p\">线上看到 <code class=\"tok-inline\">OutOfMemoryError</code>，我按这条链路走：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先认子类型</b>：<code class=\"tok-inline\">Java heap space</code> 多是堆不够；<code class=\"tok-inline\">GC overhead limit exceeded</code> 多是堆接近打满且回收效率极低；<code class=\"tok-inline\">Metaspace</code> 是类元信息区域不够；<code class=\"tok-inline\">unable to create new native thread</code> 多和线程数过多或 native 内存不足有关。<code class=\"tok-inline\">StackOverflowError</code> 严格说不是 OOM，是栈深度超限，来自递归或调用层级过深。</li><li><b>按类型取证</b>：堆问题看堆快照和老年代趋势，区分正常流量打高、缓存过大、消息积压，还是典型内存泄漏。<code class=\"tok-inline\">Metaspace</code> 重点查动态代理、类热加载、脚本引擎和类加载器泄漏。线程问题看线程数量、线程池配置、线程栈大小和阻塞情况。</li><li><b>抓现场再回代码</b>：先留 heap dump、GC 日志、线程栈，用 MAT、jcmd、jmap、jstack 分析，最后确认是对象生命周期失控、类加载异常、线程失控还是递归 bug。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span><code class=\"tok-inline\">StackOverflowError</code> 不是 OOM；只说调大内存，也落不到泄漏、类加载、线程失控或递归上。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>先确认 OOM 类型，再抓现场，最后回到业务代码。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>OOM 排查的本质是先分清错误子类型，再按堆、元空间或线程取证回到代码。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先认错误子类型 / 堆看快照老年代 / 元空间查类加载 / 线程看数量与栈 / 取证后回代码</p>",
+          "leadType": "v9:排障"
+        }
+      ],
+      "source": "八股面经整理 · 线上排障"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-7255c81910b6.json",
+    "snapshotSha": "44495fa35e6cedead5b17c4647811c38ca56323f1291de2394574496092cd5fa",
+    "liveSha": "44495fa35e6cedead5b17c4647811c38ca56323f1291de2394574496092cd5fa"
+  },
+  "bg-线上排障-2": {
+    "entry": {
+      "id": "bg-线上排障-2",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "分布式与排障",
+      "cat": "线上排障",
+      "title": "Linux 与 Java 现场排障",
+      "number": "8 问",
+      "items": [
+        {
+          "q": "线上告警服务器 CPU 负载突然飙升到 99%，没有 IDEA，只有一台 Linux 服务器，你如何快速定位是哪个进程、哪个线程、哪段代码导致的？",
+          "a": "<p class=\"md-p\">只有一台 Linux、没有 IDEA 时，我按这条链查：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先定进程</b>：用 <code class=\"tok-inline\">top</code>、<code class=\"tok-inline\">htop</code> 或 <code class=\"tok-inline\">pidstat -u 1</code>，看哪个进程把 CPU 打满。</li><li><b>再定线程</b>：拿到 Java 进程 PID 后，用 <code class=\"tok-inline\">top -Hp &lt;pid&gt;</code> 看最占 CPU 的线程。<code class=\"tok-inline\">top -H</code> 给出的是十进制线程 ID，要转成十六进制，才能和 Java 线程栈对上。</li><li><b>抓栈搜 nid</b>：用 <code class=\"tok-inline\">jstack &lt;pid&gt;</code> 或 <code class=\"tok-inline\">jcmd &lt;pid&gt; Thread.print</code>，在栈里搜对应的十六进制 nid。通常能看出死循环、自旋、热点锁竞争、频繁 JSON 序列化、大量正则，或某段计算逻辑把 CPU 打满。</li><li><b>需要时做火焰图</b>：用 <code class=\"tok-inline\">perf top</code>、<code class=\"tok-inline\">async-profiler</code>、Arthas 的 profiler，看最热的方法栈。</li><li><b>落到源码行</b>：JVM 级工具一般先定位到类、方法和调用栈；更具体的源码行还要靠类文件里的行号表，再结合 <code class=\"tok-inline\">jstack</code>、Arthas 的 <code class=\"tok-inline\">stack</code> / <code class=\"tok-inline\">trace</code> 或 profiler 结果反推。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span><code class=\"tok-inline\">top -H</code> 的线程 ID 是十进制，不转成十六进制就对不上 Java 栈里的 nid。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>收口就在这条链：进程、线程、线程栈、热方法、源码位置。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-juc-1970\">从高 CPU 扩展到等待链与虚拟线程诊断</h2><p class=\"md-p\">以下将原高 CPU 题扩展到请求卡住但 CPU 不忙的情况，并区分平台线程与虚拟线程诊断能力；不改原题条件。</p><h3 class=\"md-h md-h3\">线上卡住或 CPU 高 应先看什么</h3><p class=\"md-p\">先建立时间线和受影响范围，再联合线程、队列、资源和请求证据定位；一张线程转储只能说明一个瞬间，不能直接证明根因。需要区分 CPU 忙、锁竞争、I/O 等待、线程池排队、连接池耗尽、GC 压力和资源依赖环。</p><p class=\"md-p\">如果现象是平台线程 CPU 持续高，先用系统工具找到进程和热线程，把线程 ID 对到转储，再重复采样，看同一段栈是否持续出现。一次采样碰巧落在某个方法中，还不足以把它认定为热点根因。</p><p class=\"md-p\">如果现象是请求不完成而 CPU 不忙，则顺着等待链找：锁由谁持有，线程停在 BLOCKED 还是 parked，池的 active/queue/completed/rejected 怎样变化，任务等了多久，下游连接是否也在等待。线程少可能只是任务都排进队列；线程多也可能都在等同一资源。要用这些证据区分原因，再决定改哪一层。</p><p class=\"md-p\">在允许的环境中可用 jcmd 的 Thread.print、JFR 事件和采样分析；虚拟线程应使用目标 JDK 支持的线程转储及 JFR 能力，传统 ThreadMXBean 的线程统计和死锁检测不能被假定覆盖全部虚拟线程。Thread.dump_to_file 的格式、命令参数和可用事件以实际 jcmd help 为准。采集可能有开销并涉及请求信息，应有权限、限时和数据保留边界。</p><p class=\"md-p\">定位后先用可逆措施控制损害，如限流、停止新任务、隔离慢下游或恢复合理配置。修复要通过受控回归验证取消、超时、异常与恢复流程，不能只验证正常路径更快。测量报告应给出 JVM 版本、硬件、预热、输入、分位延迟、吞吐、错误率和资源占用；单次本地耗时不能冒充生产收益。</p><h2 class=\"md-h md-h2\" id=\"add-own-os-2d8810e78e75d1\">OS/Linux：完整机制、实验与工程边界</h2><p class=\"md-p\">本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。</p><h2 class=\"md-h md-h2\">Linux怎样创建进程 怎样用top和ps定位高CPU服务</h2><p class=\"md-p\">Linux创建进程与装载程序是两个步骤；高CPU排查要从采样窗口和有效CPU配额出发，逐层定位到进程、线程和调用栈。</p><p class=\"md-p\">fork/vfork创建与execve替换映像不同；命令示例用于定位，不擅自对生产进程发终止信号。</p><h3 class=\"md-h md-h3\">创建与执行的准确链路</h3><p class=\"md-p\">fork成功后父子从返回点继续，父得到子PID，子得到0；地址空间逻辑独立，Linux通常用写时复制延迟数据页复制。子继承的FD引用可能仍指向相同内核open file description，因此文件偏移等可以共享。多线程父进程fork后子只保留调用线程，其他线程曾持有的锁可能留下问题，exec前只应做安全允许的操作。</p><p class=\"md-p\">vfork在Linux上让子暂时共享父地址空间并暂停调用它的父线程，子必须很快exec或_exit，不能像普通函数返回或随意修改父栈/调用不安全函数；不能当通用“更快fork”。execve替换当前进程映像，成功不返回且通常保留PID，它本身不新建子进程。父进程用wait/waitpid回收退出状态，防僵尸；posix_spawn常是执行外部程序的更合适抽象。</p><h3 class=\"md-h md-h3\">先确认进程与时间口径</h3><p class=\"md-p\">看 CPU 先统一时间口径，再比较数字。top 展示当前采样窗口，可以按 P 排序；ps aux 或 ps -eo pid,ppid,stat,pcpu,pmem,comm --sort=-pcpu 是快照，其中 %CPU 通常按累计 CPU 时间除以存活时间计算，不能直接和 top 的短窗口混用。</p><p class=\"md-p\">多线程进程超过 100% 不一定异常。还要确认工具按单核还是整机归一化，并核对容器实际 CPU 配额。</p><p class=\"md-p\">定位PID后用top -H -p PID或ps -L -p PID看线程，结合/proc/PID/status、线程栈/运行时剖析和请求日志关联热点。Linux常见R为运行/可运行，S为可中断睡眠，D为不可中断等待，Z为僵尸，T为停止；load高也可能含等待，不自动等于CPU全忙。线程ID与Java栈中的十六进制nid等格式要正确转换再比对。</p><h3 class=\"md-h md-h3\">命令按假设选择</h3><p class=\"md-p\">内存看free、/proc映射、RSS/PSS和cgroup限制；磁盘容量看df -h及inode，目录占用看du，I/O延迟看iostat等；连接看ss，文件/FD看lsof或/proc/PID/fd；日志用tail、grep，文件用find。工具可用性、权限、采样开销和敏感参数暴露都要评估。</p><p class=\"md-p\">诊断完成前不要见到高CPU就kill，也不要凭单次ps断定服务异常；区分正常计算、死循环、频繁GC、锁自旋和内核网络工作，修复后比较吞吐、延迟、错误率和CPU时间。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>定位 CPU 飙高的本质，是把进程、线程、线程栈、热方法和源码位置串成一条链。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>top 定进程 / 线程 ID 转十六进制 / jstack 对 nid / 火焰图看热栈 / 行号表对源码</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "Linux 系统宕机了，第一时间一般用哪些命令看？",
+          "a": "<p class=\"md-p\">我会按“整体、日志、进程”三步看：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先看系统整体</b>：<code class=\"tok-inline\">uptime</code>、<code class=\"tok-inline\">top</code>、<code class=\"tok-inline\">htop</code>、<code class=\"tok-inline\">vmstat 1</code>、<code class=\"tok-inline\">iostat -x 1</code>、<code class=\"tok-inline\">free -m</code>、<code class=\"tok-inline\">sar</code>，判断 CPU、内存、负载、IO 有没有异常。</li><li><b>再看日志</b>：<code class=\"tok-inline\">dmesg</code>、<code class=\"tok-inline\">journalctl -xe</code>、<code class=\"tok-inline\">tail -n 200 /var/log/messages</code>、<code class=\"tok-inline\">tail -n 200 /var/log/syslog</code>，看有没有 OOM、磁盘错误、内核报错、服务崩溃。</li><li><b>再定位异常进程</b>：<code class=\"tok-inline\">ps -ef</code>、<code class=\"tok-inline\">top -Hp &lt;pid&gt;</code>、<code class=\"tok-inline\">pidstat</code>、<code class=\"tok-inline\">lsof -p &lt;pid&gt;</code>、<code class=\"tok-inline\">ss -lntp</code>，看线程、句柄和连接。如果是 Java 服务，再补 <code class=\"tok-inline\">jstack</code>、<code class=\"tok-inline\">jmap</code>、<code class=\"tok-inline\">jstat</code> 或 Arthas。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>重点不是背命令名，而是先判断到底是系统资源、内核、磁盘，还是单个进程把机器拖垮。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>宕机第一眼的本质，是判断资源、内核、磁盘还是单进程拖垮，再按层取命令。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先看整体资源 / 再看系统日志 / 再定位异常进程 / Java 补现场工具</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "常用 Linux 命令有哪些？",
+          "a": "<p class=\"md-p\">我按使用场景来记：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><b>文件和目录</b>：<code class=\"tok-inline\">ls</code>、<code class=\"tok-inline\">cd</code>、<code class=\"tok-inline\">pwd</code>、<code class=\"tok-inline\">cp</code>、<code class=\"tok-inline\">mv</code>、<code class=\"tok-inline\">rm</code>、<code class=\"tok-inline\">mkdir</code>、<code class=\"tok-inline\">find</code>、<code class=\"tok-inline\">du</code>、<code class=\"tok-inline\">df</code>。</li><li><b>内容查看</b>：<code class=\"tok-inline\">cat</code>、<code class=\"tok-inline\">less</code>、<code class=\"tok-inline\">tail</code>、<code class=\"tok-inline\">head</code>、<code class=\"tok-inline\">grep</code>、<code class=\"tok-inline\">awk</code>、<code class=\"tok-inline\">sed</code>。</li><li><b>进程和资源</b>：<code class=\"tok-inline\">ps</code>、<code class=\"tok-inline\">top</code>、<code class=\"tok-inline\">htop</code>、<code class=\"tok-inline\">pidstat</code>、<code class=\"tok-inline\">free</code>、<code class=\"tok-inline\">vmstat</code>、<code class=\"tok-inline\">iostat</code>。</li><li><b>网络</b>：<code class=\"tok-inline\">curl</code>、<code class=\"tok-inline\">ping</code>、<code class=\"tok-inline\">nc</code>、<code class=\"tok-inline\">ss</code>、<code class=\"tok-inline\">netstat</code>、<code class=\"tok-inline\">tcpdump</code>。</li><li><b>权限</b>：<code class=\"tok-inline\">chmod</code>、<code class=\"tok-inline\">chown</code>、<code class=\"tok-inline\">sudo</code>。</li><li><b>压缩归档</b>：<code class=\"tok-inline\">tar</code>、<code class=\"tok-inline\">gzip</code>、<code class=\"tok-inline\">unzip</code>。</li></ul></div>\n<p class=\"md-p\">排障时直接对上场景：查日志用 <code class=\"tok-inline\">tail -f</code> 配合 <code class=\"tok-inline\">grep</code>，查端口占用用 <code class=\"tok-inline\">ss -lntp</code>，查磁盘和目录大小用 <code class=\"tok-inline\">df -h</code>、<code class=\"tok-inline\">du -sh</code>，查高 CPU 线程用 <code class=\"tok-inline\">top -Hp</code>。</p><h2 class=\"md-h md-h2\" id=\"add-own-os-f8513c56db8316\">OS/Linux：完整机制、实验与工程边界</h2><p class=\"md-p\">本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。</p><h2 class=\"md-h md-h2\">Linux一切皆文件是什么意思 怎样实时跟踪日志并筛选关键词</h2><p class=\"md-p\">Linux以文件描述符统一许多I/O对象的访问接口，但普通文件、目录、管道和socket的操作语义并不相同。</p><h3 class=\"md-h md-h3\">相关追问</h3><ol class=\"md-list\"><li>如何理解 Linux 中“一切皆文件”？常用的 Linux 命令有哪些？如何查看进程和系统资源状态？如何在终端中实时滚动查看日志并搜索指定关键字？</li></ol><h3 class=\"md-h md-h3\">统一接口并不等于所有对象都是磁盘文件</h3><p class=\"md-p\">Linux通过文件描述符引用内核对象，用read/write/close、poll等接口统一处理许多普通文件、设备、管道与socket。VFS以dentry/inode/file及不同操作表分派到具体实现，/proc和/sys还可把部分内核状态展示为文件系统接口。路径名、文件描述符和磁盘数据块是不同概念。</p><p class=\"md-p\">socket可通过socket调用取得FD而没有普通文件路径，管道也不一定能seek；并非每种FD都支持每个系统调用，错误可能为ESPIPE等。内核调度、权限控制和所有资源也不是都能靠读一个普通文件完成。“一切皆文件”是统一抽象的概括，不是严格全称定理。</p><h3 class=\"md-h md-h3\">先选择要验证的系统假设</h3><p class=\"md-p\">路径/文本可用pwd、ls、find、cat、less、head、tail、grep；进程用ps、top和top -H定位，内存用free与/proc口径，磁盘容量用df -h和inode用df -i，目录占用用du，网络连接用ss。load、CPU利用率、磁盘容量和IO延迟不是同一个指标。</p><p class=\"md-p\">以请求慢为例，先看CPU还是等待，再关联进程/线程栈、队列、连接池和下游；CPU低且连接池满不应直接加线程。</p><h3 class=\"md-h md-h3\">实时日志组合要处理轮转 缓冲和匹配语义</h3><p class=\"md-p\">跟踪日志先想清楚：文件轮转后，要跟旧文件还是跟这个名字。GNU 工具可以用 tail -n 100 -F -- /path/app.log \\| grep --line-buffered -F -- &quot;ERROR&quot;：先输出最后 100 行，再持续跟踪。</p><p class=\"md-p\">其中 -F 按名字跟踪并重试打开，适合常见的 rename 后新建同名文件。普通 -f 默认跟描述符，可能还在看旧 inode；copytruncate 则仍有截断间隙丢失等边界，不是换一个参数就能保证日志绝不遗漏。</p><p class=\"md-p\">grep -F是固定字符串，-E才是扩展正则；--阻止前导短横线被当选项，路径和值仍须正确引用。--line-buffered促使每行刷新，避免管道中的grep攒缓冲，但日志生产者本身没flush或没有完整换行时仍可能延迟。多条grep管道会继续引入缓冲和额外过滤语义。</p><h3 class=\"md-h md-h3\">从本地实验到服务日志的边界</h3><p class=\"md-p\">可在只含自造文本的临时目录里启动GNU tail和grep，先确认过滤链已启动，再追加普通行和匹配行，最后重命名旧文件并新建同名文件；检查只输出匹配行并能重新打开，结束后回收两个子进程。</p><p class=\"md-p\">systemd管理的服务可按已有权限用journalctl -u 服务 -f，容器平台也有自己的日志接口；跨实例需时间、请求ID和部署版本关联，单机tail不能证明其他节点没有错误。日志可能含敏感数据，诊断按最小必要字段筛选；本节命令是方法，不是授权对生产环境执行任意命令。</p><h2 class=\"md-h md-h2\">Linux里的read指令可能指什么 怎样正确读取文本或字节</h2><p class=\"md-p\">Bash内建read按记录读入变量，read系统调用按字节读取FD；两者的返回值、EOF和缓冲语义不同。</p><h3 class=\"md-h md-h3\">相关追问</h3><ul class=\"md-list\"><li>linux read指令等</li></ul><h3 class=\"md-h md-h3\">Bash read给当前shell变量赋值</h3><p class=\"md-p\">read通常是shell内建，从标准输入或指定FD读记录并给变量赋值；默认按IFS分词，反斜杠还参与转义。若要原样读取普通文本行，常用IFS= read -r line：空IFS避免剪掉首尾分隔空白，-r保留反斜杠。read不是cat，也不是CPU机器指令。</p><p class=\"md-p\">逐行读取时，最后一行可能没有换行符，不能因此把它漏掉。可以写 while IFS= read -r line || [ -n &quot;$line&quot; ]; do printf &quot;%s\\n&quot; &quot;$line&quot;; done &lt; &quot;$file&quot;，后半条件负责保留最后的非空残行。</p><p class=\"md-p\">这个循环主动给输出补换行，不是二进制逐字节复制；Bash 变量也不能保存任意 NUL。另一个常见坑是通过管道执行 while，子 shell 里的赋值可能不会回到外部 shell，用输入重定向可以避开这类问题。</p><h3 class=\"md-h md-h3\">超时和返回值也需要条件</h3><p class=\"md-p\">Bash read可用-u选FD、-n/-N按字符数量限制、-t指定等待期限，但具体选项和其他shell不同。-t对普通文件并非通用IO截止时间，EOF或不完整读取通常会以非零状态报告，已有部分文本仍可能赋到变量。要按退出状态和协议判断，而不是把空字符串一律当错误。</p><h3 class=\"md-h md-h3\">read系统调用则按字节返回</h3><p class=\"md-p\">C/POSIX read(fd,buf,count)尝试读最多count字节，正数可小于请求数，0对普通文件/字节流通常表示EOF，-1需查看errno。EINTR、非阻塞EAGAIN、设备特殊语义和count为0都应按契约处理；一次成功不代表完整业务帧。当前偏移可能由fork/dup共享的open file description共同维护。</p><p class=\"md-p\">阻塞read没有数据时可进入内核等待，数据到达后先就绪再等调度；页缓存命中则可直接完成。shell内建最终可能用底层读取，但它有行/变量/分词语义，不能把两个API当同一个答案。</p><h2 class=\"md-h md-h2\">Shell怎样提取文件第一万至两万行 怎样避免端点和换行错误</h2><p class=\"md-p\">从第10000行到第20000行两端都包含，共10001行；命令还应明确短文件、最终换行和平台扩展。</p><p class=\"md-p\">按从1开始计数且两端都包含解释，10000到20000共10001行。以下示例针对按LF分隔的普通文本，二进制格式或其他行分隔协议需另行处理。</p><h3 class=\"md-h md-h3\">相关追问</h3><ol class=\"md-list\"><li>使用shell命令取出文件中的第一万至两万行</li></ol><h3 class=\"md-h md-h3\">先算闭区间再写命令</h3><p class=\"md-p\">直观命令是sed -n &#39;10000,20000p&#39; &lt; &quot;$file&quot;，-n关闭默认打印，范围p仅输出目标行。若文件不足10000行无输出，介于10000与20000只输出已有尾段，不补空行；空行仍计作一行。无需先cat全部文件再另起sed。</p><p class=\"md-p\">不是所有系统的sed都支持Q，跨平台时用简单范围p并接受继续读取余下文件的成本，或核验当地sed的具体行为。重定向并给文件变量加引号，既保留空格，也避免前导-被识别为sed选项。</p><h3 class=\"md-h md-h3\">head和tail的算术边界</h3><p class=\"md-p\">用 head 和 tail 也可以取闭区间：先 head -n 20000 拿前两万行，再 tail -n +10000 从其中第 10000 行开始，仍是两端包含。</p><p class=\"md-p\">如果反过来先 tail -n +10000，再用 head 截断，长文件里 head 可能提前退出，让上游遇到 SIGPIPE。开启 set -o pipefail 时要理解这个退出码，不能仅据此认定目标输出一定错了。</p><p class=\"md-p\">不要写head -n 20000 \\| tail -n 10000，它在足够长文件中会从10001行开始，漏掉一行，短文件时口径又不同。shell“第几行”不是编辑器视觉折行，也不是Unicode字符数；CRLF、缺最终换行和超长单行要单独定义输出是否逐字节保留。</p><h3 class=\"md-h md-h3\">示例使用边界</h3><p class=\"md-p\">extract_lines.sh为GNU Bash/GNU sed版本，检查参数个数，输出到标准输出而不改原文件。测试可用0、1、9999、10000、10001、19999、20000、20001、23000行分别有/无最终LF共18种临时文件，逐字节比较完整输出，并覆盖中文、反斜杠、空格和前导-文件名。</p><p class=\"md-p\">提前停止版本时间与前20000行的字节量有关，额外内存至少受单行长度影响，不宣称任意超长行恒定一字节空间；没有扫描真实大文件或做性能基准。</p><h2 class=\"md-h md-h2\">kill与kill -9有什么区别 su命令怎样改变执行身份</h2><p class=\"md-p\">kill默认发送可处理的SIGTERM，kill -9发送不可捕获的SIGKILL；su则在认证和授权约束下切换执行身份。</p><h3 class=\"md-h md-h3\">相关追问</h3><ul class=\"md-list\"><li>kill 和 kill -9</li></ul><p class=\"md-p\">Linux怎样查看进程、发送终止信号和使用su切换身份？</p><h3 class=\"md-h md-h3\">kill默认不是立即强杀</h3><p class=\"md-p\">SIGTERM 给应用一次自行收尾的机会，SIGKILL 不给。kill PID 通常默认发 SIGTERM，它可以被捕获、阻塞或忽略；应用可以停止接收，完成或取消在途任务，刷必要数据后退出。</p><p class=\"md-p\">kill -9 PID 发的是 SIGKILL，目标不能捕获、阻塞或忽略，因此不能指望 finally、析构函数或 shutdown hook 帮忙收尾。面试和操作时用信号名更清楚：kill -TERM PID、kill -KILL PID。</p><p class=\"md-p\">SIGKILL并不保证命令返回瞬间已完全退出，不可中断内核等待可能延后处理；僵尸已退出，更不能再kill它让它回收自己。系统会释放进程内核资源，但业务副作用、半写文件和远端请求可能留下未知结果。SIGTERM的默认动作通常也是终止，区别不在于一个“杀”、另一个“永远不杀”，而是处理机会和可控制性。</p><h3 class=\"md-h md-h3\">操作前核对目标与权限</h3><p class=\"md-p\">用pgrep -a -x 名字或ps核实PID、父子关系、启动时间和命名空间，再以服务的正常停止入口优先处理；需要兜底时有限等待后才考虑强制终止。kill成功只表示相关请求成功，不是业务清理已成功。PID会复用，检查与发送间仍可能竞态；有条件可用支持pidfd的管理接口避免误中复用PID。</p><p class=\"md-p\">kill还可以发其他信号，kill -0常用于检查存在/权限而不发实际信号；负PID或0有进程组语义，不要把未经校验的字符串直接拼进shell命令。发送信号应限定在自己拥有或明确获准操作的目标进程。</p><h3 class=\"md-h md-h3\">su不是修改当前账号数据库</h3><p class=\"md-p\">su以另一用户和组身份运行命令或shell，受认证与系统策略限制；不指定用户通常尝试root，但并不绕过密码/PAM或其他授权。su - 用户模拟登录环境，切换到目标home并设置相应环境；不带-与登录shell的环境处理不同，具体行为看发行版和util-linux/PAM配置。exit结束所开的shell后回到原调用上下文。</p><p class=\"md-p\">sudo按授权策略执行命令和su切换shell身份不是完全同一接口。生产应采用最小权限、明确命令和审计，不能把su等同于任意提权。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>常用 Linux 命令按场景记：文件目录、看内容、进程资源、网络、权限、压缩，排障时对上具体用法。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>文件和目录 / 内容查看 / 进程和资源 / 网络权限压缩 / 排障对上命令</p>",
+          "leadType": "v9:场景"
+        },
+        {
+          "q": "<code class=\"tok-inline\">chmod 644</code> 是什么意思？三个数字分别代表什么？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>三位对谁</b>：<code class=\"tok-inline\">chmod 644</code> 的三个数字分别对应 owner、group、others。<code class=\"tok-inline\">6</code> 等于 <code class=\"tok-inline\">4 + 2</code>，可读可写；后面两个 <code class=\"tok-inline\">4</code> 都是只读。所以文件所有者可读可写，组用户只读，其他用户也只读。</li><li><b>位权</b>：读是 <code class=\"tok-inline\">4</code>，写是 <code class=\"tok-inline\">2</code>，执行是 <code class=\"tok-inline\">1</code>。<code class=\"tok-inline\">7</code> 是 <code class=\"tok-inline\">rwx</code>，<code class=\"tok-inline\">5</code> 是 <code class=\"tok-inline\">r-x</code>，<code class=\"tok-inline\">0</code> 就是什么都没有。</li></ol></div><div class=\"sx-fu\"><p class=\"md-p\"><span class=\"sx-tag fu\">追问</span><b>目录上的执行位是什么意思？</b></p><p class=\"md-p\">目录上的执行位更多表示能不能进入和遍历，不完全等同于普通文件上的执行。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>chmod 644 的本质是 owner 可读可写，group 与 others 只读。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>三位对三类用户 / 6 等于 4+2 / 位权 4/2/1 / 目录执行位另说</p>",
+          "leadType": "v9:原理"
+        },
+        {
+          "q": "Linux 里怎么查看磁盘空间使用率？怎么区分看文件系统和看目录？",
+          "a": "<div class=\"sx-tbl-wrap\"><table class=\"sx-tbl\"><thead><tr><th>维度</th><th>df</th><th>du</th></tr></thead><tbody><tr><td>看什么</td><td>文件系统剩余空间、已用空间和挂载点</td><td>某个目录实际占多少空间</td></tr><tr><td>先回答</td><td>哪块盘快满了</td><td>问题具体藏在哪个目录</td></tr><tr><td>常用形态</td><td>df -h</td><td>du -sh 目录</td></tr><tr><td>适用场景</td><td>先看大盘</td><td>继续往下找是谁把盘吃满</td></tr></tbody></table></div>\n<p class=\"md-p\">排障时我先 <code class=\"tok-inline\">df</code> 看大盘，再用 <code class=\"tok-inline\">du -sh * | sort -h</code> 逐层下钻。如果怀疑是日志、临时文件或容器卷撑满，就到对应目录继续深挖。</p><div class=\"qa-end\"><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span><code class=\"tok-inline\">df</code> 解决哪块盘有问题，<code class=\"tok-inline\">du</code> 解决具体藏在哪个目录。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>看磁盘要分两层：df 看哪块文件系统快满，du 看目录实际把空间吃在哪。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>df 看文件系统 / du 看目录占用 / 先大盘再下钻</p>",
+          "leadType": "v9:对比"
+        },
+        {
+          "q": "如果线上机器磁盘满了，你一般怎么查？",
+          "a": "<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先确认哪块盘</b>：<code class=\"tok-inline\">df -h</code>，看是系统盘、数据盘、容器挂载盘还是日志盘。怀疑 inode 用尽时再看 <code class=\"tok-inline\">df -i</code>，有时不是空间没了，而是小文件太多把 inode 打满。</li><li><b>再找谁占满</b>：用 <code class=\"tok-inline\">du -sh <i> | sort -h</code>、<code class=\"tok-inline\">du -sh /var/log/</i></code> 逐层往下，挖到具体文件。工程上高频来源通常是日志、临时文件、dump 文件、上传目录、容器卷和没清掉的归档。</li><li><b>最后才决定怎么清</b>：不直接上 <code class=\"tok-inline\">rm -rf</code>。先判断文件是不是还被进程占用、业务是不是还在写、能不能归档再删。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>盘还没定位、文件仍被占用或业务还在写，就直接删，止血会变成新事故。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>顺序是先看盘，再找目录和文件，再判断清理动作。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-os-e1ae5892e00076\">OS/Linux：完整机制、实验与工程边界</h2><p class=\"md-p\">本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。</p><h2 class=\"md-h md-h2\">Linux怎样查看服务器负载并找出占磁盘的大文件</h2><p class=\"md-p\">load average反映可运行及部分不可中断等待任务，磁盘容量要结合df、du、inode和仍打开的已删文件解释。</p><h3 class=\"md-h md-h3\">相关追问</h3><ol class=\"md-list\"><li>用过哪些linux命令</li></ol><p class=\"md-p\">服务器的负载情况用什么命令查看</p><ul class=\"md-list\"><li>linux哪些指令定位哪些文件占用了比较大的磁盘空间</li></ul><h3 class=\"md-h md-h3\">先看负载再区分运行与等待</h3><p class=\"md-p\">load 高，先问任务是在争 CPU，还是在等不可中断操作。uptime、top 头部和 /proc/loadavg 展示 1/5/15 分钟 load average；在 Linux，它包含可运行任务及不可中断等待任务，不是 CPU 使用百分比。</p><p class=\"md-p\">例如有四个可用 CPU，只有在主要是 CPU 任务等前提下，load 约 4 才能粗略理解成饱和。若大量任务处于 D 状态，CPU 可以不高而 load 很高；容器 CPU 配额与宿主 load 视图还可能不是同一范围。</p><p class=\"md-p\">用top或mpstat -P ALL 1看CPU时间分布，vmstat 1看运行/阻塞与换页趋势，iostat -xz 1看设备IO队列与延迟，ps -eo pid,ppid,stat,pcpu,pmem,comm定位对象，再按线程和调用栈深入。不同指标采样窗口不同，首次平均值与后续区间样本分开看；设备%util并不通用等于现代多队列设备的极限利用率。</p><h3 class=\"md-h md-h3\">容量问题逐层缩小范围</h3><p class=\"md-p\">排查磁盘容量，我会先找满的是哪个文件系统，再逐层找目录。df -h 看空间，df -i 看是否 inode 用尽；确认目录权限后，用 du -x -h --max-depth=1 -- /目标目录，再进入最大的子目录。</p><p class=\"md-p\">这里 -x 是为了不把别的挂载点混进来。df 统计文件系统已分配空间，du 统计目录树里可见对象，口径不同，数字不一致要继续解释，不能直接认定工具错了。</p><p class=\"md-p\">GNU工具可用find /目标目录 -xdev -type f -size +100M -printf &quot;%s %p\\0&quot;生成大文件逻辑大小与NUL分隔路径，接sort -z -nr及head -z -n 20按记录排序。这个阈值按find规定的单位与向上取整语义理解；奇怪文件名含空格/换行时不能按普通换行或空格切路径。排序可能用较多内存/临时空间，先限制搜索目录，保留权限错误而不是一概丢到/dev/null。</p><h3 class=\"md-h md-h3\">为何最大文件不等于最多磁盘块</h3><p class=\"md-p\">ls -l或find的%s是逻辑长度，稀疏文件可能逻辑很大而实际占块很少；du反映占用但硬链接默认避免同一对象重复计数。快照、压缩、CoW、保留块与权限不全也会改变对账。若rm后df不降，检查是否仍有打开引用，授权时可用lsof +L1缩小到相关服务，不能因此立即杀掉持有者。</p><p class=\"md-p\">命令返回只是采样，文件会并发增长或轮转。要按日志/缓存/业务数据归属确定保留政策、备份和清理流程，大文件名单不授权删除。IO慢与磁盘满是两类问题；容量足够仍可能设备延迟高，容量紧张也可能尚未高IO。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>磁盘满我分三步：先确认哪块盘，再找到谁占满，最后才判断能不能清、怎么清。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>df 确认哪块盘 / df -i 看 inode / du 逐层找大文件 / 清理前先判断</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "如果 CPU 负载很高，你一般怎么查？",
+          "a": "<p class=\"md-p\">我按四层往下查：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>先看机器</b>：<code class=\"tok-inline\">top</code>、<code class=\"tok-inline\">uptime</code>、<code class=\"tok-inline\">vmstat</code> 看整体负载，判断是持续高还是瞬时抖动。</li><li><b>再看进程和线程</b>：<code class=\"tok-inline\">top -Hp pid</code>、<code class=\"tok-inline\">pidstat -p pid 1</code>，确定是哪个进程、哪个线程把 CPU 打高。</li><li><b>Java 对代码栈</b>：把高 CPU 线程 ID 转成十六进制，再到 <code class=\"tok-inline\">jstack</code> 里对线程栈，看它是在死循环、频繁 GC、锁竞争、自旋，还是某段业务逻辑算太重。</li><li><b>再看热点方法</b>：只停在“某个 Java 进程 CPU 高”不够。还要结合 GC 日志、APM、<code class=\"tok-inline\">jcmd</code>、<code class=\"tok-inline\">perf top</code> 或 async-profiler，看是计算密集、异常重试、序列化、JSON 解析、正则，还是下游失败导致的空转重试。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>只盯系统指标、停在某个 Java 进程 CPU 高，还没落到具体线程和代码路径。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>CPU 高最终要落到具体线程和代码路径，不能只看系统指标。</p></div>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>CPU 高我按机器、进程、线程、代码栈四层查，最后落到具体线程和代码路径。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>先看整机负载 / 定位进程与线程 / 十六进制对 jstack / 热点方法再下钻</p>",
+          "leadType": "v9:排障"
+        },
+        {
+          "q": "如果上游调用下游服务失败，你一般怎么排查？",
+          "a": "<p class=\"md-p\">我会先确认失败现象，再往下收：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>确认失败现象</b>：区分网络不通、连接建不上、超时、对方返回错误码，还是请求已经到了但业务处理失败。</li><li><b>调用方日志</b>：看 traceId、错误码、超时点和重试次数，确认是偶发还是持续。</li><li><b>链路或网关</b>：看链路追踪或网关日志，判断请求有没有真正发出去、卡在哪一跳。</li><li><b>下游与资源</b>：看下游服务日志、线程池、连接池、依赖资源和监控。</li></ol></div>\n<p class=\"md-p\"><b>高频原因</b>按层对上：DNS 或网络抖动、连接池打满、线程池耗尽、下游限流熔断、数据库慢查询、锁等待、版本不兼容、序列化协议不一致、请求参数异常。</p>\n<p class=\"md-p\"><b>落地动作</b>：调用方日志、链路追踪、下游监控和日志、资源指标四条线一起收敛，先分层再下钻。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不先把问题分层，就容易在调用方和被调方之间来回猜，或者只盯一个命令、一个组件。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>四条线一起收敛，比单点命令更能把失败位置定住。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-os-a8f7e8c1afacc3\">OS/Linux：完整机制、实验与工程边界</h2><p class=\"md-p\">本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。</p><h2 class=\"md-h md-h2\">Linux netstat怎样看端口连接和队列 与ss的口径怎样核对</h2><p class=\"md-p\">ss或netstat展示的是特定协议、状态和时间点的套接字信息，监听队列与已连接队列要按不同语义解释。</p><h3 class=\"md-h md-h3\">相关追问</h3><ol class=\"md-list\"><li>Linux netstat 命令</li></ol><p class=\"md-p\">熟悉Linux吗，有哪些指令</p><h3 class=\"md-h md-h3\">按问题组合参数</h3><p class=\"md-p\">netstat -lnt看TCP监听且用数字地址端口，-lntu加UDP；-ant看所有TCP socket而不做名字解析，-p尝试附带PID/程序名，-r看路由，-s看协议统计，-i看接口统计。-a是全部，-l是监听，-n避免DNS/服务名解析，不能把这些字母当一条固定咒语。</p><p class=\"md-p\">进程信息受权限、/proc可见性和命名空间影响，缺PID不说明没有拥有者；容器里看到的是相应网络命名空间，不一定等于宿主全部连接。UDP通常没有TCP同样的ESTABLISHED/四次挥手状态，IPv4/IPv6及本地Unixsocket也需区分。</p><h3 class=\"md-h md-h3\">地址 状态和队列字段</h3><p class=\"md-p\">Local Address表示本地绑定端点，Foreign Address为对端或监听占位，0.0.0.0与127.0.0.1的暴露范围不同，IPv6绑定还受v6only等配置影响。监听存在不证明业务健康，ESTABLISHED也不证明远端应用读完或事务已提交。</p><p class=\"md-p\">ESTABLISHED的Recv-Q/Send-Q通常涉及未被应用读取/尚未确认的字节或序列空间；LISTEN下必须按工具和内核接口解释连接积压，不套业务字节。Linux的INET_DIAG监听诊断字段可报告待accept连接积压及其上限，不能把它直接当尚未完成握手的SYN队列。</p><h3 class=\"md-h md-h3\">ss与排错决策</h3><p class=\"md-p\">net-tools/netstat较旧，Linux通常用ss -lntp、ss -tinm等获得更丰富TCP和socket内存信息；路由/接口另看ip route/ip addr。是否安装、字段和权限以目标机器为准；无需为了读一个监听端口先升级权限或调整sysctl。</p><p class=\"md-p\">请求超时，先定位卡在哪个阶段：DNS、connect、TLS、写入、连接池等待，还是读响应。再把四元组、队列趋势、重传与窗口，和应用线程、事件循环及下游日志对到一起。</p><p class=\"md-p\">例如 Send-Q 增长，可能是远端不读、链路丢包或拥塞，也可能是本地产生太快，单张截图不能唯一定位。端口开放和业务已经就绪，也要分开检查。</p><h3 class=\"md-h md-h3\">命令只负责观测 不替代修复</h3><p class=\"md-p\">TIME_WAIT/CLOSE_WAIT、大量监听积压各有不同生命周期，先修应用关闭、accept/消费速度和有界背压，再评估参数。盲目放大发送缓冲可能只增加内存和尾延迟。</p><h2 class=\"md-h md-h2\">Netcat是什么 怎样用它缩小网络故障范围</h2><p class=\"md-p\">Netcat即nc，是把标准输入输出与TCP、UDP或部分本地套接字连接起来的小工具，适合检查连接和简单协议字节，不能替代完整应用健康检查。</p><h3 class=\"md-h md-h3\">先确认版本与目标</h3><p class=\"md-p\">OpenBSD nc、传统netcat、Ncat和BusyBox nc的参数并不完全相同。先用nc -h核对本机实现，再只对自己有权测试的明确主机和端口操作；不要把故障排查变成无范围的端口扫描。下例采用OpenBSD风格，地址使用本机回环，连接期限为2秒。</p><p class=\"md-p\">第一条只尝试建立TCP连接。成功说明当时该网络路径与端口能接受连接，不能证明鉴权、数据库依赖或业务结果正确。连接拒绝通常意味着目标或中间设备主动拒绝；超时也可能是丢包、防火墙、路由或服务排队，单个错误不足以唯一定位。用ss查看本机监听与连接状态，确认服务绑定在127.0.0.1、某张网卡还是所有接口，再比对容器端口与网络命名空间。</p><p class=\"md-p\">第二条发送一个完整的最小HTTP/1.1请求，明确CRLF和头部结束空行；它是明文HTTP测试。HTTPS端点还需要TLS握手与证书/主机名校验，应换用合适的TLS客户端或curl。不要把nc连接成功等同于TLS验证通过，也不要把敏感凭据放进可被日志或shell历史记录的探测命令。</p><p class=\"md-p\">UDP没有TCP式握手，nc -u的“成功”通常不能证明对端收到并处理了报文，应使用有应用响应的协议、服务日志或授权抓包核对。临时监听测试也要限定回环地址、端口和期限，完成后关闭；不使用执行shell的选项，不把临时监听暴露到公网。</p><h2 class=\"md-h md-h2\" id=\"add-own-spring-timeout-diagnostics\">Spring 请求超时、低 CPU 与随机 502</h2><p class=\"md-p\">原分层排障方法保留；以下增加每实例证据、排队/连接/SQL/网络等待和网关 502 的定位条件。</p><h2 class=\"md-h md-h2\">50 一次超时从哪里开始排查</h2><p class=\"md-p\">一次超时，先查请求在哪里等，再决定改什么。沿用户症状、请求路径和时间线定位资源，用同一组证据验证修复；不要一上来就认定数据库、GC 或 Spring 有问题。</p><p class=\"md-p\">同类问法：CPU 很低但接口慢？某接口突然超时？多集群只有一个节点吞吐异常？怎么快速定位业务接口？</p><p class=\"md-p\">先明确范围：所有接口还是单一接口，所有节点还是部分节点，突发还是周期，变更前后有什么不同。看入口请求量、错误和延迟分位，沿 trace 找第一个显著等待段；若 trace 缺失，用 request id、线程名称、执行器指标与数据库会话关联。</p><p class=\"md-p\">找到等待段以后，下一步检查取决于线程实际在做什么：</p><ul class=\"md-list\"><li>大量线程等连接，查连接池和长事务。</li><li>卡在 socket read，查真实网络读超时与供应商状态。</li><li>等锁，找持锁线程或数据库锁链。</li><li>在队列中迟迟没执行，查核心/最大线程、队列容量与排队策略。</li><li>CPU 高，查热方法、序列化、正则或自旋；怀疑 GC 时，停顿时间必须与尖刺对齐才有因果证据。</li></ul><p class=\"md-p\">这些分支的作用，是让观测决定下一步，而不是看到“慢”就把所有资源一起调大。</p><p class=\"md-p\">随机 502 先确认是谁生成响应。它常表示网关或代理没有从上游拿到有效响应，与 504 的上游等待超时语义不同；检查 upstream 地址、连接/响应时间、reset、TLS、协议不匹配、单个 Pod 的重启以及停机时连接重用。若请求根本没到 MVC，修改 ControllerAdvice 不会修好这段链路。没有业务日志时，仍可从代理日志、系统连接、线程栈、JFR、进程重启与实例指标收窄范围，再补最小必要观测。</p><p class=\"md-p\">短期止损可以摘除异常节点、限流、关闭可选高成本功能或回滚明确变更，但不能未经证据扩大所有线程池与连接池。恢复后补故障注入与容量测试，检查是否只是把等待转移到下一层。所有调参都应有目标、指标和回滚条件。</p><p class=\"md-p\">继续追问：没做过线上故障怎么办？可以讲完整定位方案与本地复现实验，不能编造线上 incident。面对项目追问，明确哪些信息知道、哪些需日志或配置才能确认，通常比一句“经验上加缓存”更可靠。</p>",
+          "sub": "",
+          "mk": 0,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>排查的本质是先分清失败落在哪一层，再用日志、链路、下游和资源四条线收敛。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>确认失败现象 / 调用方日志 / 链路或网关 / 下游与资源 / 高频原因分层</p>",
+          "leadType": "v9:排障"
+        }
+      ],
+      "source": "八股面经整理 · 线上排障"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-7255c81910b6.json",
+    "snapshotSha": "b1a448de5e5de6629ae637ff305b577264b6203a422b971ccd71f845d9b0806e",
+    "liveSha": "b1a448de5e5de6629ae637ff305b577264b6203a422b971ccd71f845d9b0806e"
+  },
+  "own-es-reading-guide": {
+    "entry": {
+      "id": "own-es-reading-guide",
+      "kind": "doc",
+      "mod": "bagu",
+      "part": "数据库与缓存",
+      "cat": "Elasticsearch",
+      "title": "Elasticsearch 手册：检索链路与版本边界",
+      "number": "",
+      "source": "自建知识库",
+      "html": "<h2 class=\"md-h md-h2\" id=\"section-es-guide-1\">先把搜索需求和系统承诺说清楚</h2><p class=\"md-p\">回答 Elasticsearch 问题，先说清楚要查什么、结果允许多旧、失败时怎样处理，再解释索引结构与执行过程，最后说明代价和验证办法。</p><p class=\"md-p\">可以沿着一条业务链展开：数据怎样建模和写入，什么时候可搜索，查询怎样找到候选并排序，结果怎样跨分片合并，节点故障和数据重建怎样恢复。每一步都要落到具体条件，而不是只报组件名。</p><ul class=\"md-list\"><li>问“为什么用 ES”，先列出需要的检索能力、更新频率、访问控制和运维成本，再和关系库查询比较。</li><li>问“为什么结果不对”，先固定输入、分词、字段类型、过滤范围、排序规则和可见性时点，再定位链路。</li><li>问“怎样优化”，先观察瓶颈和请求分布，再比较方案；不能离开数据规模、并发和延迟目标给出万能参数。</li><li>问“项目里怎么做”，从真实代码和本人负责的范围展开，区分已经实现的机制、仍需核验的运行条件与可讨论的改进方案。</li></ul><p class=\"md-p\">复习时先用一句话回答，再补完整机制、一个失败场景和取舍。代码与请求示例应连同版本、输入和验证条件一起理解，不能把演示结果直接当成生产系统承诺。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-2\">搜索系统与 Lucene 倒排索引</h2><p class=\"md-p\">Elasticsearch 把文档预先组织成适合检索的索引，由 Lucene 完成单分片检索，再用分片、副本和协调节点扩展容量与可用性；它适合搜索投影，是否值得引入取决于查询语义、新鲜度和维护成本。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-3\">分析链与字段模型</h2><p class=\"md-p\">分析器决定文本会变成哪些可匹配词项，mapping 决定字段保存哪些检索能力；先定义查询语义，再设计分析链和字段，才能避免“明明存进去了却搜不到”。</p><p class=\"md-p\">本章教学请求以 Elasticsearch 8.15.3、Lucene 9.11.1 为版本基线，使用内置组件，不依赖中文分词插件。该基线用于说明具体行为，不是当前新部署的版本推荐。部署应核对真实服务的版本、支持周期和兼容说明；HTTP 示例未连接服务执行，后文说明的是应观察的语义，不是粘贴的运行结果。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-4\">分片布局与读写路由</h2><p class=\"md-p\">主分片把逻辑数据分开，副本复制同一份分片数据，协调节点组织请求，master 管理集群状态。数据面写确认和控制面多数决策有不同协议，不能用一句“多数派成功”概括所有读写。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-5\">从 JSON 写入到搜索可见</h2><p class=\"md-p\">写入成功说明当前写协议已经完成，search 可见还要经过 refresh；持久化、复制、可见性和业务版本必须分别解释，才能正确处理超时、重试与乱序更新。</p><p class=\"md-p\">本章以 Elasticsearch 8.15.3 的普通文档索引为教学基线。具体部署、durability、refresh、副本数与路由设置会改变失败窗口；示例 HTTP 请求没有连接集群执行。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-6\">查询与过滤</h2><p class=\"md-p\">查询先决定哪些文档有资格出现，再决定合格文档如何匹配和排序。权限、租户、有效版本与时间是硬条件，相关性只是排序信号；一篇分数很高的旧文档或越权文档仍不能返回。</p><p class=\"md-p\">本章沿用 Elasticsearch 8.15.3 的教学基线。字段建模和分析链见“分析链与字段模型”，写入与可见性见“从 JSON 写入到搜索可见”。理解这两层后，DSL 才不会变成只背语法。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-7\">TopK 与分布式聚合</h2><p class=\"md-p\">TopK 只返回最好的少量命中，但仍可能访问大量候选。分片局部 TopK 能精确归并为全局 TopK，前提是各片使用同一套已确定的全序、文档身份不重复且没有遗漏分片；聚合按 key 汇总时不能直接套用这个证明。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-8\">稳定分页与深分页</h2><p class=\"md-p\">深分页的核心是避免每页重复收集前面所有命中；稳定分页还必须固定数据视图和完整排序边界。search_after 解决从哪里继续，PIT 解决沿着哪份搜索视图继续，二者都不自动解决当前撤权或源库同步缺口。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-9\">性能诊断与容量</h2><p class=\"md-p\">性能优化必须在相同查询语义、召回质量、新鲜度和持久性目标下比较。先找到 CPU、堆、页缓存、磁盘、排队或热点中的实际瓶颈，再改变一个有解释的变量，不能靠关闭副本、漏返回结果或绕过权限制造漂亮数字。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-10\">扩容 迁移与恢复</h2><p class=\"md-p\">数据增长先定位瓶颈，再选择加节点、rollover、split 或 reindex。加节点移动现有分片，rollover 改变以后写到哪里，split 按约束生成更多主分片，reindex 重建新的索引结构；没有一种操作会自动解决所有旧数据、并发新写和回滚问题。</p><h2 class=\"md-h md-h2\" id=\"section-es-guide-11\">Java 客户端与版本化向量检索</h2><p class=\"md-p\">Java API Client 把请求和响应映射成类型化对象，应用仍要负责连接生命周期、授权范围、超时预算、逐项错误和业务一致性。向量搜索也必须固定服务版本、模型与距离合同，不能把“字段里有数组”直接等同可靠语义检索。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/bg-elasticsearch-1\">Elasticsearch 基础定位与搜索原理</a></li><li><a href=\"#/e/bg-elasticsearch-2\">Elasticsearch 建模、查询与相关性</a></li><li><a href=\"#/e/bg-elasticsearch-3\">Elasticsearch 写入、同步与一致性边界</a></li><li><a href=\"#/e/bg-elasticsearch-4\">Elasticsearch 向量检索与混合搜索</a></li><li><a href=\"#/e/bg-elasticsearch-5\">Elasticsearch 运维治理与使用边界</a></li></ul>"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-a0dfa16a9eb2.json",
+    "snapshotSha": "29a275a7ec23f046faa64fc10df18ee93ddb8fc4eed06f094a9a29e8e344c885",
+    "liveSha": "29a275a7ec23f046faa64fc10df18ee93ddb8fc4eed06f094a9a29e8e344c885"
+  },
+  "own-java-collections": {
+    "entry": {
+      "id": "own-java-collections",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "Java 基础与工程实践",
+      "cat": "集合机制与并发使用契约",
+      "title": "集合机制与并发使用契约",
+      "number": "",
+      "source": "自建知识库",
+      "items": [
+        {
+          "id": "q-own-java-collection-contracts",
+          "q": "怎样从重复、顺序、访问与共享条件选择集合？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>先明确判等、顺序、访问方式和线程共享，再选择集合；不可修改、独立副本、快照和线程安全是不同保证。</p><p class=\"md-p\">选集合前，先问四件事：能不能重复、要哪种顺序、主要怎样访问、是否跨线程共享。条件定下来，再选实现。只说“链表插入快”或“哈希 O1”，还不足以做选择。</p><p class=\"md-p\">Collection 表达元素集合，List 表达带位置的序列，Set 表达按其约定判等的不重复成员，Queue 表达待处理元素的访问纪律，Deque 支持两端操作。Map 表达键到值的映射，不继承 Collection，也不能直接用于增强 for；通常遍历 entrySet、keySet 或 values 视图。Queue 不一定先进先出，例如 PriorityQueue 依优先级出队。</p><p class=\"md-p\">“有序”先要说清是哪一种：List 的位置顺序、LinkedHash 系列的遇见或访问顺序，还是 Tree 系列按比较规则排序。HashMap 不保证顺序；某次按整数递增打印，不会变成接口承诺。</p><p class=\"md-p\">把题目固定为“频繁增删，而且不能重复”，再逐个改变条件：</p><ul class=\"md-list\"><li>没有排序要求，HashSet 通常是起点。</li><li>要保留首次出现的顺序，选 LinkedHashSet。</li><li>要做范围查询和有序导航，考虑 TreeSet。</li></ul><p class=\"md-p\">如果数据已经放不进单机内存，问题就变成存储与分片，不能只换一个集合名称。</p><p class=\"md-p\">集合通常保存引用。ArrayList 底层的 Object[] 连续存储元素引用，不意味着每个业务对象本身相邻；LinkedList 又增加节点对象与前后引用。比较内存不能只数元素个数，还要考虑桶数组、节点、装箱、对象图、空余容量和 GC 压力，数值估算需绑定 JVM 布局与实际测量。</p><p class=\"md-p\">HashMap 的桶数组和内部 Node 链并不是 ArrayList&lt;LinkedList&lt;Entry&gt;&gt;。实现可以直接使用数组和节点，减少包装层并自行控制扩容、遍历、树化和内存布局。原理上能用 ArrayList 实现桶表，但要注意初始 capacity 不等于 size，不能刚 new 就按桶下标 get；额外 API 与自身扩容策略还可能不必要。LinkedList 若充当桶索引表，按桶下标定位要线性扫描，丢掉哈希直接寻址的优势。因此“不能替换”应解释为成本与控制不合适，而不是语法绝对不允许。</p><p class=\"md-p\">集合的不可变、只读、线程安全和快照四者独立。不可修改包装可以仍观察到后端变化；线程安全容器可能允许可变元素；快照可能只复制引用。设计一个返回集合的 API，要把结构能否变、元素能否变、是否关联后端、是否容许 null 和顺序是否稳定分别写清。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>Collection 与 Map 是什么关系？List、Set、Queue 分别承诺什么？</li><li>大量数据频繁增删且不能重复，用哪个集合？</li><li>同时要求有序与线程安全，该怎样改造 HashMap？</li><li>容器内部是不是一定使用另一种标准集合？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java</li><li>面试</li><li>工程实践</li></ul><h2 class=\"md-h md-h2\" id=\"add-own-algo-own-java-collections-q-own-java-collection-contracts\">算法练习补充：数据结构选型与Java集合：从操作合同推到底层代价</h2><h2 class=\"md-h md-h2\">数据结构选型与Java集合：从操作合同推到底层代价</h2><p class=\"md-p\">选结构先看最常做的操作，再带上顺序、去重、并发合同和数据量比较总成本。按下标读、顺序扫描和尾追加通常考虑数组或 ArrayList；已知节点位置后改链接可用链表；按键等值查找用哈希，有序范围查询用平衡树；FIFO/LIFO 用队列或栈，反复取极值用堆。</p><p class=\"md-p\">Java 接口描述行为，具体类决定底层结构与复杂度。回答时要把“用这个类”接着说成“它怎样完成这项操作”，而不是停在类名上。</p><h3 class=\"md-h md-h3\">可能的问法</h3><ul class=\"md-list\"><li>数组与链表的区别和适用场景是什么？Java 常见集合底层使用哪些结构？</li><li>面对具体模块，依据哪些访问模式、数据规模、生命周期和并发条件选择结构与方法？</li></ul><h3 class=\"md-h md-h3\">输入、输出与前提</h3><p class=\"md-p\">按访问模式选择结构：先确定是否保序、是否允许重复、点查还是范围查询、读写比例、并发和空间预算，再比较数组、链表、哈希表、有序树和堆。开源社区最近提交采用哪种结构，需要读到具体代码和负载才能判断，不能只凭结构名称推断。Java 实现细节以注明的 OpenJDK 版本为范围。</p><h3 class=\"md-h md-h3\">为什么这样做</h3><p class=\"md-p\">先把真实操作写清：是get(index)、按value找、按key找，还是范围扫描？顺序是否必须保持？重复值是否保留，按equals还是按引用去重？数据规模N、读写比例、批量/在线、是否常改中间、是否有稳定节点句柄，都会改变结果。总工作可先估Σ操作次数×每次成本，再加扩容/分配/同步/内存；均摊和平均都不能替代单次最坏延迟要求。</p><p class=\"md-p\">数组第 i 项可用基址与步长定位，所以索引访问为常数时间；无序按值查找仍需线性扫描，有序数组才能二分。ArrayList 以 Object[] 保存引用，被引用对象本体不保证连续。中间插删为保持顺序要移动后缀，O(n)；尾追加通常均摊 O(1)，某次扩容复制 O(n)，容量也不等于 size。若不要求顺序，删除可以用末项覆盖，但应先明确这个合同变化。</p><p class=\"md-p\">链表靠next/prev寻路，第i项通常需要O(n)定位；“插删O(1)”必须已经得到所需节点且有前驱或双链。单链仅知道待删节点但无前驱时，一般不能删除任意节点（尤其尾节点）；复制后继值的技巧也会改变节点身份/语义。Java LinkedList是双链，get(i)从较近端寻找，仍为线性量级，反复for(i)get(i)遍历整体可能O(n²)。迭代器顺序走是O(n)，游标已定位时相邻插删才体现改链接优势。</p><p class=\"md-p\">链表每节点对象头与两个链接增加空间和分配成本，追指针常使缓存局部性不如连续槽位，不能仅凭插删多就一律推荐LinkedList，更不能报未经测量的加速倍数。普通FIFO或栈常用ArrayDeque：可增长环形数组，首尾操作摊还常数、扩容单次线性，不支持null；LinkedList允许null但poll返回null又代表空会带来歧义。若要并发阻塞等待与有界背压，应另选BlockingQueue并规定容量/超时，普通Deque没有线程安全或阻塞语义。</p><p class=\"md-p\">Java Collection族包含List、Set、Queue/Deque；Map是另一套键值映射接口，并不是Collection子接口。List保留位置与可重复元素；Set按相等规则去重；Map每个逻辑key最多一份映射；Queue可以FIFO也可以优先级，不能把所有Queue等同严格先进先出。接口变量List&lt;Integer&gt;背后可能是ArrayList或LinkedList，方法名相同不代表索引访问代价相同。</p><p class=\"md-p\">HashMap以数组分桶，桶内用链/树组织冲突条目；先hash定位，再比较逻辑key，碰撞不等于key相等。良好散列与受控负载下get/put平均常数，扩容和hash/equals自身代价另计；不是无条件最坏O1。HashSet通常以HashMap的key承载元素；LinkedHashMap在哈希索引之外增加双链维护插入顺序或显式accessOrder访问顺序，LinkedHashSet相应保留迭代顺序。它们的“链”服务全体条目迭代次序，不是把哈希定位变成线性链表查询。</p><p class=\"md-p\">TreeMap以红黑树维护比较器次序，TreeSet通常借TreeMap存成员，查/插/删O(log n)，可做floor/ceiling与区间视图。比较器返回0就视为同一个排序键，即使equals不相等；例如大小写不敏感比较器下A与a合并成一个条目。比较器必须满足一致的顺序规则，最好与equals一致。红黑树/AVL/B+树内部平衡和磁盘页取舍是后续单独深讲的分支，不能凭本概览替代它。</p><p class=\"md-p\">PriorityQueue以数组二叉堆保存局部堆序：根是最小，offer/poll通常O(log n)、peek O(1)，但迭代器不是排序输出。若要前K小，连续poll或另开拷贝排序；若需要任意区间查询，堆不如有序树。图可以用邻接表O(V+E)表示稀疏边、邻接矩阵O(V²)支持常数查边；Trie按前缀组织字符，适合前缀查询但分支存储有成本；并查集维护合并连通分量，不能直接处理会拆分集合的任意删除。</p><p class=\"md-p\">并发是单独维度。ArrayList/LinkedList/HashMap都不是默认线程安全；fail-fast不是并发正确性保障。CopyOnWriteArrayList修改时复制底层数组，迭代器读创建时的快照，适合读多写少且规模可控，写和存储代价不能忽略。ConcurrentHashMap在Java21采用桶数组/链或树及CAS、局部同步与协助扩容等机制，不该继续套JDK7固定Segment分段锁；它提供并发API但两次单独get/put不是一个原子复合更新，适当用compute/merge，null键值不允许。多key事务需额外协议。</p><p class=\"md-p\">回答具体项目中的选型问题，可以按以下顺序组织：说明模块的输入输出与不变量，给出热点操作和数据规模，列出两三个备选结构，比较定位、更新、生命周期、内存与并发成本，再用边界测试和实际负载验证。结论应对应具体需求与实现版本，并说明何时需要更换方案。</p><p class=\"md-p\">选型示例：日志主要顺序追加、按位置批处理且不需要稳定节点句柄时，ArrayList 通常更简单；缓存按 key 定位后还要移到队首，则 Map 与双链表分别承担定位和重连。若操作系统场景还有禁止睡眠、稳定地址、无 GC 或中断安全约束，应先按对应环境分析，不能直接套用 Java 容器。</p><p class=\"md-p\">代码是可重复的Java21合同实验：删除重载、ListIterator改链、ArrayDeque首尾、HashMap缺失与null、Set去重、LinkedHashMap访问顺序、TreeMap比较器和区间、PriorityQueue连续poll、COW快照及CHM单keycompute。它验证API行为，不是性能基准或并发压测；真实工程选型仍要用自己的访问分布与资源预算。</p><h3 class=\"md-h md-h3\">ArrayList 与 LinkedList 的 sort，为什么走不同的数据路径？</h3><p class=\"md-p\">两者最后都得到排好序的元素，但数据走的路不同。ArrayList 直接排序底层数组的有效区间；LinkedList 先把元素引用复制到数组，排好后再沿链表顺序写回。这样就避免了在链表上反复做数组算法所需的随机访问。</p><p class=\"md-p\">可能的问法。两个 List 都能调用 sort，为什么底层处理不同？是“小数据归并、大数据快排”吗？排序会不会复制对象、重接链表节点，或者保证只用常数空间？</p><p class=\"md-p\">以 OpenJDK 21 为例，ArrayList 覆盖了 sort，调用 Arrays.sort(elementData,0,size,comparator)，不先经 toArray 复制出一份完整数组。只排序有效元素，不处理容量中尚未使用的槽位。直接使用底层数组并不等于 O(1) 辅助空间，对象排序算法仍可能分配归并缓冲。</p><p class=\"md-p\">LinkedList 没有自己的 sort 覆盖，采用 List 的默认流程：toArray 得到独立的引用数组，Arrays.sort 排序，再用 ListIterator 依次 next 和 set，把排序后的引用写回各节点。它既没有递归复制每个元素对象，也不是靠重新连接节点实现原地链表归并；链表节点的顺序保持不变，节点保存的元素引用改变。复制和顺序写回各为 O(n)，而不是反复 get(i)/set(i) 从头定位。若对链表直接使用依赖随机下标的比较与交换，访问代价可能把本来 O(n log n) 的算法拖慢到更高量级。</p><p class=\"md-p\">在未启用旧归并兼容选项的 OpenJDK 21 中，对象数组按给定比较器走 TimSort，自然顺序走 ComparableTimSort；它们利用已有有序段并进行稳定归并，小段会使用插入排序等处理。不能将其概括成“对象少用归并、对象多用快排”，也不能把某个基本类型数组的排序实现直接套到 List 上。稳定性意味着比较结果相等的元素保留原先相对顺序，是 List.sort 的接口约定；具体内部实现则要限定版本。</p><p class=\"md-p\">若一次比较为常数成本，两条路径的最坏时间都可记为 O(1+n log(n+1))，辅助空间安全上界 O(n+1)；近乎有序输入可利用已有顺序减少比较。LinkedList 还要支付整段引用复制和写回，ArrayList 通常省去这两步，但实际速度需结合数据、比较器成本与内存行为测量。排序要求列表允许替换元素，不要求允许改变长度；List.of 等不可修改列表会拒绝，Arrays.asList 的固定长度视图则可以排序并改变其底层数组的元素顺序。</p><p class=\"md-p\">比较器为 null 时使用自然顺序，否则应满足一致性与传递性，并明确 null 元素策略。排序期间不要并发修改列表；ArrayList 的修改计数检查是尽力发现错误使用，不提供线程安全，也不保证比较器抛异常后恢复原顺序。检查稳定性时，可让元素带有相同排序键和不同原序号，只比较键，再确认这些原序号的相对顺序未变。</p><h3 class=\"md-h md-h3\">例子与推演</h3><p class=\"md-p\">若链表按下标从0取到n−1，即使每次get取较近端，总步数仍是二次量级；换成Iterator只沿每条链接一次。若要中间按值删除，两种结构都先定位，不能只比较最后修改指针的常数步骤。</p><p class=\"md-p\">TreeMap忽略大小写时put(&quot;A&quot;,1)后put(&quot;a&quot;,2)只有一个条目；HashMap中get缺失与映射到null均返回null，containsKey才区分。原材料报告了 Java 21 条件下的教学验证；这不是本次内容转换重新执行的结果。</p><h3 class=\"md-h md-h3\">复杂度与正确性</h3><p class=\"md-p\">在定长键比较等适用前提下：数组索引O1、保持顺序中间插删On；动态数组尾追加摊还O1；链表定位On、已定位改链O1；哈希平均O1且扩容/碰撞另计；平衡树O(log n)；堆取/加极值O(log n)、看顶O1。空间均包含元素槽/节点与辅助索引，不能省略返回集合、并发副本或扩容同时保留的新旧数组。</p><h3 class=\"md-h md-h3\">边界、反例与追问</h3><p class=\"md-p\">题目未给定具体模块、数据规模或当前实现时，应先确认这些条件，再给出条件化选型；不能仅凭项目名称决定数据结构。</p><p class=\"md-p\">数组与链表的访问成本是通用结构原理；Go 的数组、slice、map 赋值语义和 Java 集合实现各有语言合同。回答 Java 集合时应具体说明其节点、数组、同步与迭代机制。</p><h3 class=\"md-h md-h3\">完整Java实现与自测</h3><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-algo-manual-guide\">练习前提与自测范围</a></li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>先明确判等、顺序、访问方式和线程共享，再选择集合；不可修改、独立副本、快照和线程安全是不同保证。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-hashmap-mechanism",
+          "q": "HashMap 怎样定位、插入和处理碰撞？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>HashMap 先用散列定位桶，再按键身份或 equals 查找；碰撞、扩容与遍历复杂度都依赖明确的实现和负载条件。</p><p class=\"md-p\">HashMap 查找可以说成两步：先用哈希找桶，再按键的相等关系找映射。 OpenJDK 8 以后的实现使用数组、链表和树桶，既照顾普通访问成本，也控制严重碰撞时的退化。</p><p class=\"md-p\">以 OpenJDK 21 为例，非 null key 先取 hashCode，再用 h ^ (h &gt;&gt;&gt; 16) 混合高低位，null key 的散列值为 0。桶索引用 (n - 1) &amp; hash。n 是 2 的幂时，n-1 的低位全为 1，索引相当于取需要的低位；高位扰动帮助把原始哈希高位信息带进低位。但它无法把所有相同 hashCode 的键变成不同哈希，也不是密码学防碰撞函数。</p><p class=\"md-p\">put 的过程沿着“这个键已经存在吗”展开：</p><ol class=\"md-list\"><li>表还没分配，先初始化。</li><li>目标桶为空，直接建立节点；不为空，先查桶头，再沿链或树查找等价键。判断同时考虑缓存的 hash，以及键身份或 equals。</li><li>找到已有键，就更新 value、返回旧值，通常不增加 size。</li><li>没找到，才增加映射，再处理树化或全表负载触发的扩容。</li></ol><p class=\"md-p\">这里的“键唯一”按逻辑相等定义；值可以重复，也可以是 null。</p><p class=\"md-p\">链地址法让多个映射位于同一桶的节点链中。开放寻址则把碰撞元素放在表内其他槽位，需要探测策略、负载控制及正确删除标记。两者有不同的缓存局部性与删除复杂度，不要把所有 Java 哈希结构都描述成 HashMap 的链表模型，例如 IdentityHashMap 的实现就有自己的开放寻址设计。</p><p class=\"md-p\">追问“再哈希”时，先确认它指哪件事：</p><ul class=\"md-list\"><li>双重散列：用另一散列函数生成开放寻址的探测步长。步长要和表长配合，确保能遍历需要的槽位；删除时不能随意把探测链路中的槽位标为空。</li><li>扩容后的 rehash：容量增长后，重新分布已有条目。它和上面的探测策略不是同一层意思。</li></ul><p class=\"md-p\">另一个方案是公共溢出区：把冲突项放进额外区域，并维护查询、插入、删除所需的关联。如果溢出区只能顺序搜索，也可能线性退化。OpenJDK HashMap 的链桶和树桶，并不是这两种方案。</p><p class=\"md-p\">理想散列下基本 get/put 常用期望 O(1) 描述；单次扩容要处理旧桶与映射。链桶最坏要逐项检查；树桶虽有平衡结构，但大量同哈希且不能提供有效比较次序的键，某些查找路径仍可能探查多处，不能无条件承诺任何恶意键都严格 O(log n)。攻击面很大时，还要限制输入与总容量，不能认为“JDK8 有红黑树”就结束容量治理。</p><p class=\"md-p\">HashMap 的全表遍历成本与 capacity 加 size 成正比，而不只是 size。把容量开得极大、存很少元素，遍历也可能浪费；LinkedHashMap 维护遇见顺序链，其遍历成本通常随 size 增长。若业务要按值搜索，HashMap 并不自动提供值索引，containsValue 一般要遍历。</p><p class=\"md-p\">学习手写 HashMap 时，先实现稳定的不变量：容量为 2 的幂，元素归属正确桶，更新不增加 size，扩容不丢节点，null 与不存在可区分。附带的 MiniHashMap 是单线程、链地址教学实现，刻意不伪装成 JDK 替代品；第 37 节解释如何逐项比较差距。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>讲一下 put 的完整流程，什么情况下覆盖，什么情况下 size 增长？</li><li>为什么还要扰动 hashCode？同 hashCode 怎么办？</li><li>为什么容量选择 2 的幂？碰撞除了链地址法还有什么办法？</li><li>HashMap 的查找和遍历都能说成 O(n) 或 O(1) 吗？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><h2 class=\"md-h md-h2\" id=\"add-own-algo-own-java-collections-q-own-java-hashmap-mechanism\">算法练习补充：HashMap桶表为什么用数组，ArrayList真的不能替换吗</h2><h3 class=\"md-h md-h3\">HashMap桶表为什么用数组，ArrayList真的不能替换吗</h3><h4 class=\"md-h md-h4\">可能的问法</h4><ul class=\"md-list\"><li>实现 HashMap 的“数组加链表”时，为什么桶表通常用数组？</li><li>ArrayList 能否作为桶表？LinkedList 为什么会影响按桶下标定位？</li></ul><h4 class=\"md-h md-h4\">输入、输出与前提</h4><p class=\"md-p\">先把一次查找分成两步：按 hash 找到桶头，再沿桶内结构寻找键。这里问的是第一步使用的桶表，不是桶内部的冲突链。初始化正确的 ArrayList 可以做桶表，但它不会自动完成哈希表扩容重散列；LinkedList 则不适合要求常数随机定位的桶表。</p><h4 class=\"md-h md-h4\">为什么这样做</h4><p class=\"md-p\">区分两层结构：外层table[index]从哈希定位某个桶；内层桶的链表处理落在同一桶的多个key。LinkedList擅长已知节点处局部插删，不等于按任意index定位也O(1)。若用LinkedList装B个桶头，get(index)先从首/尾走到该桶，再遍历桶内链，散列定位优势被破坏。</p><p class=\"md-p\">ArrayList则不必一概否定。new ArrayList&lt;&gt;(16)只预留capacity，逻辑size还是0，get(0)/set(0,...)都会越界。先放入16个null才有16个合法桶槽，之后用set替换桶头、不用add(index,...)移动其他桶索引，完全能实现哈希表。完整Java演示一个固定桶数的链式Map，并用20000步与标准HashMap对照证明这一点。</p><p class=\"md-p\">真实HashMap采用自己的Node数组，能精确控制2次幂桶容量、负载阈值、桶链拆分和树节点。ArrayList的内部capacity不是对外暴露的桶数，也没有承诺某个固定增长倍率；它扩容复制元素只是把原槽原样搬到更大底层数组，不会按新的哈希掩码把节点重新分桶。若把其size改成更大桶数，仍必须自己遍历旧映射重算/拆分位置，不能仅ensureCapacity就宣称完成HashMap扩容。</p><p class=\"md-p\">直接数组还减少一层容器抽象和额外size/modCount等状态，让库内部布局与操作路径更可控；这属于设计与实现开销考量，不是“ArrayList不能随机访问”“Java数组更线程安全”或“ArrayList无法存节点”的理由。实际性能差异要测，不能凭多一层包装杜撰百分比。</p><p class=\"md-p\">ArrayList 桶表示例只支持 get、put、size，允许 null 键值，以链表解决冲突，没有树化、删除、扩容或并发协议。相等键更新 value 而不增加 size，碰撞但不相等的键追加节点；null 返回值与未命中有歧义，业务需要区分时应增加 containsKey。key 的 hashCode 与 equals 必须稳定一致。</p><h4 class=\"md-h md-h4\">例子与推演</h4><p class=\"md-p\">容量16的ArrayList刚创建size=0，set(0,1)实际抛IndexOutOfBoundsException；填入16个null后，set(桶下标,桶头)合法。</p><p class=\"md-p\">可让 key 只产生三种 hashCode 来制造大量碰撞，用标准 HashMap 对照 get、put、覆盖、null 和 size 行为。语义一致只能说明实现可行，不能证明它比 Node[] 更快。</p><h4 class=\"md-h md-h4\">复杂度与正确性</h4><p class=\"md-p\">桶数B、平均链长α=N/B时，演示ArrayList桶定位O(1)，均匀散列下get/put平均O(1+α)，最坏链长N是O(N)。因演示固定B不扩容，N持续增大时α也增大，不能声称无条件长期O(1)。空间O(B+N)；LinkedList桶表定位最坏O(B)，再加桶内搜索。</p><h4 class=\"md-h md-h4\">边界、反例与追问</h4><p class=\"md-p\">若反问“ArrayList本来就有数组，为什么再造数组”，可答JDK内部选择更直接的数据布局和专门扩容策略，而不是存在语言层面的禁止。</p><p class=\"md-p\">线程安全仍需统一外部锁或并发容器；把桶表换成同步List也不自动让“查桶、查链、插入、size更新”整个复合操作原子。</p><h4 class=\"md-h md-h4\">完整Java实现与自测</h4><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-algo-manual-guide\">练习前提与自测范围</a></li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>HashMap 先用散列定位桶，再按键身份或 equals 查找；碰撞、扩容与遍历复杂度都依赖明确的实现和负载条件。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-hashmap-resize",
+          "q": "HashMap 扩容、树化与退化的触发条件是什么？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>扩容重分布全表，树化处理局部碰撞；8、6、64 等阈值必须结合具体 OpenJDK 方法路径和容量解释。</p><p class=\"md-p\">扩容是把全表的桶重新分布，树化是处理某个桶里的长链。先讲清它们解决的不同问题，再讲 8、6、64：这些是特定 OpenJDK 路径的实现阈值，不能离开触发条件单独背。</p><p class=\"md-p\">常见默认容量为 16、负载因子为 0.75。在正常已分配表中阈值通常为 capacity×loadFactor，新增映射使 size 超过 threshold 时触发扩容，因此容量 16、阈值 12 时第 13 个不同键通常触发增长。构造器阶段 threshold 字段可能暂存初始容量目标，最大容量等路径也有特殊处理，源码变量不能脱离状态解释。</p><p class=\"md-p\">把容量从 n 扩为 2n，索引掩码只新增一个二进制位。因此旧桶 j 中的节点，若 hash &amp; n 为 0，仍放 j；否则放 j+n。比如 n=16，hash=5 与 hash=21 原来都在桶 5；新容量 32 时分别去 5 与 21。节点缓存了处理后的 hash，拆分不需要为每个键重新调用业务 hashCode。</p><img src=\"assets/imported/own-java/hashmap-resize.png\" alt=\"HashMap 从16扩容到32，旧桶3中的hash3与35留在3，19与51移至19；只检查新增哈希位。\" loading=\"lazy\" decoding=\"async\"><p class=\"md-p\">以 OpenJDK 21 的普通 putVal 链表尾插路径为例，分两步看树化：</p><ol class=\"md-list\"><li>TREEIFY_THRESHOLD 为 8；这条路径在已有至少 8 个节点后，再插入一个新节点时触发 treeifyBin。常见表现是第 9 个同桶新节点触发尝试。</li><li>treeifyBin 还检查容量。MIN_TREEIFY_CAPACITY 为 64；容量不足 64 时先扩容，让新增索引位有机会分散碰撞，而不是立即树化。</li></ol><p class=\"md-p\">其他插入路径的计数方式可能不同。因此回答节点数时，要一起说出所在方法和路径。</p><p class=\"md-p\">退化也要看路径。UNTREEIFY_THRESHOLD=6 用在扩容拆分树桶后的计数判定；普通删除还有按树结构判断是否太小的逻辑，不能说每次减到 6 就统一退化。</p><p class=\"md-p\">不同门槛有助于减少临界点来回转换，但 8 和 6 不是严格概率推导出的普适常数。源码讨论理想散列下的桶长分布，是在解释树桶应相对罕见，也不能据此证明负载因子 0.75 适合所有工作负载。</p><p class=\"md-p\">红黑树限制高度，同时控制更新时的再平衡开销；AVL 对高度有更严格约束，通常更偏重查找平衡，但更新维护方式不同。选型应比较内存、比较器、插删比例与已有实现复杂度，不能概括为“AVL 每次都要更多旋转”或“红黑树总是更快”。树节点更重，小桶用简单链往往更划算。</p><p class=\"md-p\">JDK 7 的典型实现使用链表与迁移时的头插，错误并发扩容可能形成环；JDK 8 的迁移结构改变消除了这类特定机制，却没有给 HashMap 增加并发安全。丢更新、可见性和结构竞态仍存在，不能把“没有环”当可共享写入的证明。</p><p class=\"md-p\">用户记录增多后查询变慢，先定位证据，再改容量。要分别检查：是否冲突严重、是否出现扩容尖峰、equals/hashCode 是否昂贵，以及大值对象、GC、CPU 缓存失效和内存容量是否造成成本。良好散列下，元素变多不等于平均桶查找必然线性增长。</p><p class=\"md-p\">如果证据指向频繁扩容，可按期望条目数和负载因子准备容量；Java 19 起的 HashMap.newHashMap 直接接收期望映射数。然后仍要考虑最大项数、TTL、淘汰、分片和外部存储。扩大桶数组可能减少冲突，也会增加空间和遍历成本，不能代替有界缓存设计。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>默认负载因子 0.75 是什么意思？为什么不是越低越好？</li><li>扩容后为什么节点留在原位置或移动旧容量？</li><li>第 8 个节点就一定树化吗？退化一定发生在剩 6 个时吗？</li><li>为什么选红黑树而不是 AVL？记录量大为何变慢？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>扩容重分布全表，树化处理局部碰撞；8、6、64 等阈值必须结合具体 OpenJDK 方法路径和容量解释。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-views-snapshots",
+          "q": "怎样区分集合视图、结构副本和不可修改快照？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>视图关联后端，副本独立容器结构，不可修改限制当前修改入口；三者都不自动冻结共享的元素对象。</p><p class=\"md-p\">视图会与原容器共享某种状态；副本有独立的容器结构；不可修改只限制当前入口的修改能力。判断返回的集合能否放心使用，要继续问：后端还会变吗，元素本身会变吗？ 三者都不自动复制或冻结元素对象。</p><p class=\"md-p\">Arrays.asList(String[]) 返回由该数组支持的定长列表，set 会反映到数组，数组元素赋值也会被列表观察到；结构性增删不支持。new ArrayList&lt;&gt;(view) 复制引用到独立可增删容器，但不深拷贝元素。Arrays.asList(int[]) 把整个基本类型数组当作一个元素，得到 size=1 的 List&lt;int[]&gt;；要得到 List&lt;Integer&gt;，应逐项装箱。</p><p class=\"md-p\">比较这三个 API，可以先让源列表发生一次修改：</p><ul class=\"md-list\"><li>Collections.unmodifiableList 是不可修改包装。如果别人仍能改后端列表，包装通常会看到变化。</li><li>List.copyOf 提供不可修改的内容快照语义，源集合结构的后续改变不会反映进去。实现可以复用合格的已有不可修改实例，不保证每次都 new。</li><li>List.of/copyOf 拒绝 null；某些包装容器允许 null，迁移 API 时必须核对。</li></ul><p class=\"md-p\">包装和 copyOf 都可能共享元素引用，所以“不能增删”仍不等于“元素不会变”。</p><p class=\"md-p\">List.subList 是范围视图，允许的修改通过视图反映到原表。如果原表在视图之外发生结构性修改，其语义可能不再有定义，常见实现抛 ConcurrentModificationException；不能把这种异常当所有实现的安全承诺。长期保存很小的视图还可能延长大底层结构的生命周期，需要独立内容时应显式拷贝。</p><p class=\"md-p\">Map.keySet、values、entrySet 也是关联视图。经支持的视图删除通常会删除原 map 映射；一般不能直接向 keySet.add 一个没有 value 的新键。values 可含重复值，按值 remove 通常只删除一个匹配映射，批量删除应明确扫描规则。entry 的 setValue 是否允许、entry 在后续结构变化后是否仍可用，取决于具体视图契约；不要把拿出来的 Entry 默认当永远稳定的独立数据对象。</p><p class=\"md-p\">Map.get(k)==null 对允许 null 值的 map，可能是未命中，也可能是映射到 null；必要时结合 containsKey。getOrDefault 对存在且映射到 null 的键返回 null，不把它替换成默认值。computeIfAbsent 在无映射或映射为 null 时尝试计算，返回 null 不建立新的非空映射；merge 要求传入的待合并 value 非 null，重映射函数返回 null 表示删除。</p><p class=\"md-p\">Java 16 的 Stream.toList 返回不可修改列表；Collectors.toList 不保证具体类型、可变性或线程安全，不能依赖“当前碰巧是 ArrayList”。明确需要可变列表时用 toCollection(ArrayList::new)。同理，Map.copyOf 的迭代顺序不应拿来保留原 LinkedHashMap 的业务顺序；需要独立有序只读快照，可以先复制为 LinkedHashMap，再对这个私有副本做不可修改包装。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>Arrays.asList 的 set、add、remove 分别会怎样？</li><li>List.of、List.copyOf、Collections.unmodifiableList 的区别？</li><li>subList 是副本吗？Map 的 keySet 和 values 呢？</li><li>Stream.toList 与 Collectors.toList 能否直接增删？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>视图关联后端，副本独立容器结构，不可修改限制当前修改入口；三者都不自动冻结共享的元素对象。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-iteration-contracts",
+          "q": "迭代删除、fail-fast、快照和弱一致各承诺什么？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>迭代修改须遵守具体迭代器协议；fail-fast 尽力发现误用，快照固定结构，弱一致允许部分并发变化，都不自动构成事务。</p><p class=\"md-p\">Iterator 封装遍历位置，让调用者不必了解容器内部结构。遇到修改时，再区分三种约定：fail-fast 尽力发现错误修改，快照迭代固定一份结构，弱一致迭代允许观察部分并发变化。它们都不会自动成为业务事务。</p><p class=\"md-p\">Iterable 上的增强 for 按迭代器协议展开，数组增强 for 则按数组访问处理。hasNext 询问是否还有元素，next 在耗尽时抛 NoSuchElementException。可选的 remove 删除上一次 next 返回的元素，不能在首次 next 前调用，也不能对同一个返回元素重复 remove；不支持修改的实现会抛 UnsupportedOperationException。</p><p class=\"md-p\">单线程里也可能触发 ConcurrentModificationException。ArrayList 等实现保存结构修改计数，迭代器保存自己预期的计数；若绕过迭代器直接 add/remove，两者就可能不一致。</p><p class=\"md-p\">沿迭代器自己的 remove 删除时，它可以同步更新自身状态；ListIterator 还支持按契约 set/add。普通 set 替换元素通常不算结构修改，但这不代表其他实现也如此，更不代表业务可以无同步地并发改值。</p><p class=\"md-p\">检测是 best-effort，不构成 happens-before，不保证每次误用都抛异常。例如某些路径在 hasNext 结束时不再触发检查，出现“没有报错但漏读”并不能证明安全。绝不能用捕获 ConcurrentModificationException 再重试来实现任意并发遍历正确性。</p><p class=\"md-p\">CopyOnWriteArrayList 的迭代器固定创建时数组，后续结构变更不影响它，且不支持 iterator.remove/set/add。旧数组只要还被迭代器引用就可能继续占用内存。复制的是引用，所以同一个可变元素的内部字段仍可能改变。</p><p class=\"md-p\">ConcurrentHashMap 的迭代弱一致，可以与更新并行，不是全表单一时刻快照。它不会因这种并发更新按普通 fail-fast 方式抛异常，但可能观察到部分新旧状态。想得到精确批量业务边界，要另设协议，而不是把一次遍历命名为 snapshot 就当完成。</p><p class=\"md-p\">删除列表元素可用迭代器 remove 或 removeIf；后者的 predicate 应只判断当前项，避免回头修改同一集合。对 Collections.synchronizedList 遍历，要在包装器要求的同一对象上同步整个遍历；只认为每次 next 调用已经自动受保护会遗漏整体一致性。若需要锁外处理大量数据，可在锁内建立约定好的快照，再在锁外做耗时工作。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>单线程增强 for 中直接 list.remove 为什么也会报错？</li><li>Iterator.remove 可以随便调用吗？</li><li>没有 ConcurrentModificationException 是否说明线程安全？</li><li>CopyOnWriteArrayList 与 ConcurrentHashMap 的迭代有什么不同？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>迭代修改须遵守具体迭代器协议；fail-fast 尽力发现误用，快照固定结构，弱一致允许部分并发变化，都不自动构成事务。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-order-equality",
+          "q": "有序容器怎样同时定义顺序、去重和优先级？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>哈希容器按 equals 判重，树容器按比较结果定位，LinkedHash 维护遇见或访问顺序，优先队列只保证队头优先。</p><p class=\"md-p\">容器里的“顺序”和“相等”要一起回答：HashSet 用哈希与 equals 判重，TreeSet/TreeMap 用比较结果识别等价键，LinkedHash 系列维护遇见或访问顺序。PriorityQueue 则只保证队头优先，遍历它不等于得到全局排序结果。</p><p class=\"md-p\">TreeMap 用有序树组织键，常用 get/put/remove 为 O(log n)，并支持 floor、ceiling、subMap 等导航和范围视图。TreeSet 以类似有序映射的方式管理元素。</p><p class=\"md-p\">为什么两个不 equals 的对象也可能只留下一个？因为排序比较为 0，会被视为同一位置。比较规则应与 equals 一致，才符合一般 Set/Map 的契约直觉。例如只按年龄比较来保存“所有用户”，同龄用户可能被合并；若要全保留，可以在年龄之后用稳定唯一标识打破平局，或者改用排序 List。</p><p class=\"md-p\">TreeMap 具体以红黑树组织有序映射。红黑树先满足二叉搜索树的排序关系，再把节点标红或黑：根为黑，空叶子按黑色处理，红节点不能有红孩子，从同一节点到各个空叶子的路径具有相同黑节点数。这些约束把高度限制在对数级，而不是要求左右子树处处一样高。插删后通过旋转与重新着色恢复约束；旋转保持中序的排序关系。比较器本身如果昂贵，一次比较的成本还要乘进操作复杂度。</p><p class=\"md-p\">自然顺序下 TreeMap/TreeSet 通常不接收 null 键；明确支持 null 的比较器可以改变这一点。HashSet/HashMap 可接收 null，并不能推广到所有 Set/Map。EnumSet 和 EnumMap 对枚举键域有专门表示，适合状态标记或枚举映射，比为了所有场景都统一 HashMap 更能表达约束。</p><p class=\"md-p\">LinkedHashMap 默认按插入顺序，更新已有映射通常不把它当新插入；开启 accessOrder 后，成功访问可能调整链表，因此 get 也可能成为影响迭代顺序的结构修改。可通过 removeEldestEntry 制定容量淘汰，但一个 LRU 还需要清楚的并发、过期、加载去重和失败策略。若面试明确禁止 LinkedHashMap，不能用它冒充手写哈希表加双向链表。</p><p class=\"md-p\">PriorityQueue 常见实现是数组二叉堆。父子关系维护局部堆序，堆顶是当前最小元素，offer/poll 通常 O(log n)，peek O(1)，contains 和 remove(Object) 一般 O(n)。迭代和 toArray 不承诺按优先级排序；要求完整有序输出时，持续 poll 或复制后显式排序。相同比较优先级的元素不保证 FIFO，若业务需要稳定次序，应附加序号。</p><p class=\"md-p\">取最大 K 项时维护大小不超过 K 的最小堆：堆顶是最容易淘汰的候选，遇到更大值再替换。若反而使用最大堆，删除队头会把最需要保留的最大值丢掉。保持重复还是按不同值排名要先确认；K=0、K&gt;n、负 K、极值和空输入都应有明确行为。</p><p class=\"md-p\">“有序且线程安全”先问是哪种顺序：排序导航可考虑 ConcurrentSkipListMap；插入或访问顺序可对 LinkedHashMap 采用统一锁与快照接口；多键事务又需要额外业务同步。并发容器名称不会自动解决所有顺序要求。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>TreeSet 与 TreeMap 的关系是什么？和 HashSet 有什么不同？</li><li>对象明明不 equals，放 TreeSet 为什么只剩一个？</li><li>LinkedHashMap 能否做 LRU？get 算不算修改？</li><li>为什么求最大的 K 个数要用最小堆？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>哈希容器按 equals 判重，树容器按比较结果定位，LinkedHash 维护遇见或访问顺序，优先队列只保证队头优先。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-concurrent-collections",
+          "q": "并发集合保护哪些状态，哪些复合操作仍不安全？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>并发集合保护自己的结构和规定操作；元素内部状态、跨调用操作和多键业务约束仍需额外协议。</p><p class=\"md-p\">并发集合能保护自己的结构，并保证规定操作的并发语义。它不会自动保护三件事：元素内部状态、多次调用拼成的操作、跨多个键的业务约束。回答“线程安全吗”时，要先说明问的是哪一层。</p><p class=\"md-p\">Hashtable 是较早的同步映射实现，常用方法围绕同一对象监视器同步，不接受 null 键和值；单次方法同步不把多个方法组成的业务自动变成一个事务。Collections.synchronizedMap 也要求所有访问通过同一包装器，并按文档同步遍历。不要保留裸 map 再从另一条路径绕过锁。</p><p class=\"md-p\">Hashtable 的同步之外还要说明结构。OpenJDK 21 使用桶数组与 Entry 链处理碰撞，默认初始容量为 11、负载因子为 0.75；按 (hash &amp; 0x7fffffff) % table.length 定位，常见增长为旧容量的两倍加一，并处理数组上限。它不采用 HashMap 的二次幂掩码和树桶方案。良好散列、单次 hashCode/equals 成本有界时查找常用期望 O(1) 描述，严重碰撞仍可能线性扫描；同步保证和查找复杂度是两回事。</p><p class=\"md-p\">ConcurrentHashMap 不接收 null。针对某个键的成功更新，与之后报告该更新结果的读取之间有相应 happens-before 关系；读通常不需要获取更新使用的桶锁。其含义不是“读永远只能读旧值”或“读不能看到正在被别人更新的数据”，而是按规定发布完整有效的映射值。与此同时，整个表并没有自动形成一致快照，size/isEmpty 等聚合结果不能直接用来保证精确资源准入。</p><p class=\"md-p\">if (!map.containsKey(k)) map.put(k,v) 的问题在两次调用之间：检查完没有，不代表写入前别人仍没写。要表达“没有才放入”，应使用 putIfAbsent；按旧值更新可用 replace 的条件版本，按键计算可用 compute/merge。</p><p class=\"md-p\">换成原子方法后，仍有两条边界：回调要短小，不能递归更新同一 map、做长期阻塞 I/O，或假定失败重试绝无副作用；map 中的 value 也未必安全。比如 ConcurrentHashMap&lt;K,ArrayList&lt;V&gt;&gt; 不会保护 List.add，可以选择不可变值整体替换、受控的值锁，或合适的并发值容器。</p><p class=\"md-p\">JDK 7 的 ConcurrentHashMap 使用 Segment 分段设计；OpenJDK 8 以后采用 CAS、桶级同步与协助扩容等机制。空桶安装等短路径与桶内复合更新不是同一种同步成本。不能把整个实现叫“完全无锁”，也不能把旧 concurrencyLevel 参数说成所有版本的最大并行线程数。CAS 重试、树桶同步、迁移与计数的完整算法属于并发专题，应用选型首先依赖 API 契约。</p><p class=\"md-p\">CopyOnWriteArrayList 的有效结构修改通常建立新数组并发布，读取避免与写者在同一数组上争用，迭代器得到稳定快照。少量监听器注册、频繁遍历的场景很合适；写入频繁、列表很大、快照持有很久时，复制和旧数组保留会增加内存与 GC 成本。线程安全仅覆盖列表结构，可变监听器对象内部仍需自己的协议。</p><p class=\"md-p\">缓存不是一个 ConcurrentHashMap 就够了。要设最大容量、过期策略、加载失败语义、并发加载去重和统计口径。把所有用户历史永久塞进去，即使每次操作正确，也可能因无限增长失败。需要范围查询时，哈希表也不会凭线程安全自动获得排序能力。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>HashMap、Hashtable、ConcurrentHashMap 怎样比较？</li><li>CopyOnWriteArrayList 为什么适合读多写少？</li><li>containsKey 后 put 为什么仍会竞态？</li><li>读取时有其他线程写入，怎样保证读到的结果正确？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><h2 class=\"md-h md-h2\" id=\"add-own-algo-own-java-collections-q-own-java-concurrent-collections\">算法练习补充：HashMap、Hashtable 与 ConcurrentHashMap 怎么比较？</h2><h2 class=\"md-h md-h2\">HashMap、Hashtable 与 ConcurrentHashMap 怎么比较？</h2><p class=\"md-p\">HashMap 是普通哈希容器，Hashtable 的同步操作共用实例锁，ConcurrentHashMap 提供明确的原子并发操作。先回答需要保护哪一次操作，再按具体 JDK 版本展开桶、链表、树和扩容机制。若要求两个键一起满足一条业务规则，还要另外说明谁来协调这两个更新。</p><p class=\"md-p\">HashMap 允许一个 null 键及 null 值，不提供同步与迭代顺序保证；Hashtable 拒绝 null 键和值，其公开同步操作围绕同一个实例锁。一次调用安全不自动组成一次业务事务：containsKey 后再 put 是两个操作，要一起加锁，或者选择有明确原子合同的接口。HashMap 的 fail-fast 只是尽力发现结构修改，不能作为并发安全机制。</p><p class=\"md-p\">ConcurrentHashMap 拒绝 null 键和值，提供 putIfAbsent、compute、merge 等原子更新。对同一键的原子更新不等于多个键之间的事务；遍历也不是全表同一时刻的快照。计算回调应短小，避免耗时 I/O 或递归修改当前映射。计数可用 merge，但跨用户总额度需要额外协调，不能把线程安全 Map 当成业务不变量的证明。</p><h3 class=\"md-h md-h3\">JDK 7 和 JDK 8 的区别怎么讲准确？</h3><p class=\"md-p\">JDK 7 的 HashMap 是数组加链表，所示旧版扩容代码把节点插到新桶头部，会改变桶内顺序。无锁并发修改本就没有安全保证；某些交错扩容可以把 next 接成环，但“每次并发都会死循环”同样不成立。不要把复现某个历史竞态当作规范允许的用法。</p><p class=\"md-p\">JDK 8 的对应实现加入树桶，扩容时将原链按 (hash &amp; oldCapacity) 分到原下标和原下标加 oldCapacity，并维持各组相对顺序。常量为树化阈值 8、扩容拆分时退链阈值 6、最小树化表容量 64；实际触发还取决于插入路径和当前链长，不能脱离代码只背“第 8 个一定变树”。容量不足 64 时，长链通常先触发扩容。链表改尾插、增加树桶都没有让 HashMap 成为线程安全容器。</p><p class=\"md-p\">哈希分散良好时，单键操作期望 O(1)；单次扩容需要迁移已有条目，不能说每次操作最坏 O(1)。树桶改善冲突，但同 hash、不可比较且难以判序的键仍需谨慎分析查找路径。容量取 2 的幂使取桶能用位掩码，也让翻倍时只需看新增的一位；因此应混合高位信息，避免低位规律造成大量冲突。更换散列函数能缓解碰撞，却不能拆散同一个真实热点 key 的业务负载。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-algo-manual-guide\">练习前提与自测范围</a></li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>并发集合保护自己的结构和规定操作；元素内部状态、跨调用操作和多键业务约束仍需额外协议。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-atomic-value-removal",
+          "q": "如何线程安全地按值整批删除映射，并保证失败时不删一半？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>所有访问用同一把锁，在锁内构造保留映射的新表，全部比较成功后才替换引用，才能同时实现整批互斥和结构回滚。</p><p class=\"md-p\">先问清楚：调用者能不能看到“只删了一半”的状态？如果只能看到整批删除前或删除后，就要让所有读写遵守同一原子边界。ConcurrentHashMap 的弱一致遍历，单独满足不了这个要求。</p><p class=\"md-p\">先做最简单的互斥方案：封装私有 LinkedHashMap，让 get、put、批量删除和快照创建都使用同一把锁，不泄漏可变视图。只要求整批互斥、不要求异常回滚时，可以在锁内用 entrySet 迭代器删除。</p><p class=\"md-p\">再加一个条件：比较到一半时 equals 抛异常。已经删掉的映射不会自动回来，所以这个方案不能保证全有或全无。接下来要解决的，是失败前如何保持原表不变。</p><p class=\"md-p\">LockedValueMap 的做法是：先在锁内筛选新表，全部成功后才替换引用。</p><ol class=\"md-list\"><li>保持原表不动，遍历原映射，把不匹配目标值的条目放进新的 LinkedHashMap。</li><li>全部比较和建表完成后，一次替换字段。其他线程始终受同一把锁阻挡，只能看到旧表或新表。</li><li>如果比较失败，丢弃新表，原映射结构保持不变。</li></ol><p class=\"md-p\">所有字段访问都在锁内，因此不需要额外用 volatile 去补救漏锁路径。</p><p class=\"md-p\">在键的散列良好、hashCode/equals 代价有界时，这个 LinkedHashMap 实现的遍历加建表平均为 O(n)，临时存储为 O(n)，锁持有时间也随数据量增长。对任意值条件又没有反向索引时，必须检查候选映射；若该查询高频，可维护 value→keys 反向索引，但主索引和反向索引要在同一原子边界更新，内存与失败路径更复杂。</p><p class=\"md-p\">如果放宽要求，只需“尽力删除遍历时观察到的匹配条目”，才可以考虑 ConcurrentHashMap 遍历加 remove(key, observedValue)。条件删除能避免误删已经变成不相等新值的条目，但不是全表事务，也可能错过遍历边界外的新映射。</p><p class=\"md-p\">再追问一次：旧值先被替换，后来又变回相等值呢？单靠值相等区分不了 ABA，需要版本号或独立身份。因此，批量期间是否允许新增命中项、是否要求精确返回删除数，都要事先说明。</p><p class=\"md-p\">锁内不能运行任意慢 I/O 或不受控回调。equals/hashCode 应稳定、纯净、不会回调本模块；key/value 如果仍可被外部线程修改，封装容器本身也保护不了那些对象。本例按不可变键和值使用，快照是有序、不可修改的独立容器，元素仍浅共享。代码中的异常测试验证的是映射结构回滚，不是把外部对象的一切副作用回滚。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>设计一个线程安全的模块，批量删除 HashMap 中指定 Value 的所有映射。</li><li>遍历过程中别人更新了 value，能不能误删？</li><li>要同时保留插入顺序，怎么设计？</li><li>删除过程中 equals 抛异常，能否保证没有删掉一半？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><h2 class=\"md-h md-h2\" id=\"add-own-algo-own-java-collections-q-own-java-atomic-value-removal\">算法练习补充：按 value 批量删除与保持 Map 顺序</h2><h3 class=\"md-h md-h3\">按 value 批量删除与保持 Map 顺序</h3><p class=\"md-p\">按 value 删除所有项至少要扫描当前映射；若要求整批原子且比较失败时不能只删一半，就在同一锁中修改私有候选副本，比较全部成功后再提交。</p><p class=\"md-p\">CollectionsLab.ValueMap 用 O(n) 时间和 O(n) 副本空间，换取“全部比较成功才提交删除”的合同，并拒绝键值回调中的重入。它能保护自己的映射，却不能撤销 equals 对外部对象做过的事，因此回调仍应纯净。</p><p class=\"md-p\">若业务只要求逐项条件删除，可以使用 ConcurrentHashMap.remove(key,observedValue)，避免删掉已经变成不同值的映射。但“值相同”不一定是“同一代数据”：需要区分换过一轮的值时，让 observedValue 携带版本。每项各自成功，也不等于整批基于同一个快照完成。</p><p class=\"md-p\">“有序 Map”还要区分插入顺序、访问顺序和键排序。LinkedHashMap 的访问序 get 会改变顺序；TreeMap 按比较器排序。并发键范围查询可选择 ConcurrentSkipListMap，但一段遍历通常不是全表快照；需要一致快照时另行复制或锁住业务边界。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-algo-manual-guide\">练习前提与自测范围</a></li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>所有访问用同一把锁，在锁内构造保留映射的新表，全部比较成功后才替换引用，才能同时实现整批互斥和结构回滚。</p>",
+          "leadType": "authored"
+        }
+      ],
+      "readingNotesHtml": "<h2 class=\"md-h md-h2\" id=\"reading-own-java-study-reference-section-java-0007\">学习基线与复习路线</h2><p class=\"md-p\">Java 基础面试不只问“这个 API 怎么调用”，还会追问“为什么正确、什么时候失效、工程上怎么选”。回答时先讲清类型、对象、容器和资源各自的约定，再用实现机制解释性能与边界。别名、哈希冲突、异常传播和部分读写，是贯穿本书的几条线索。</p><p class=\"md-p\">本书以 Java 21 的语言与标准库为教学基线，涉及 Java 8、17、24 时明确区分版本。讲 HashMap、ArrayList 等内部结构时，指明 OpenJDK 实现，不把实现常数当成所有 JVM 的永久承诺。项目例子中的 NoteWeave 使用 Java 17 与 Spring Boot 3.3.5，不能因此假设已启用 Java 21 的虚拟线程或新集合接口。</p><p class=\"md-p\">可以按对象与类型、字符串、泛型、集合、异常、运行时扩展、输入输出的顺序学习，再做现代 Java 和代码练习。每节先用开头的结论回答主问题，再从“常见问法”里选一个追问；卡住时回到相应机制和例子，不必重背整章。</p><p class=\"md-p\">JVM 的回收器与类加载器体系、JUC 的锁与线程池算法、操作系统的内核 I/O 实现属于进一步专题。本书保留理解当前问题必需的边界，示例不要求依赖外部页面才能读懂。</p><h2 class=\"md-h md-h2\">这册可以怎样复习</h2><p class=\"md-p\">把 Java 基础读成“程序怎样运行、数据怎样表达、失败怎样收尾”这条线。复习网络、并发和数据库时，遇到语言契约上的疑问就回到本册；对象、集合、泛型等仍按各自依赖完整学习。</p><h3 class=\"md-h md-h3\">第一轮：先接通语言与服务端主干</h3><ul class=\"md-list\"><li>01 Java 程序怎样编译和跨平台运行 → 03 封装 继承 多态与重载重写 → 04 接口 抽象类与默认方法</li><li>13 集合接口与选型 → 15 HashMap 的查找 插入与冲突 → 16 HashMap 扩容 树化与容量治理</li><li>22 异常分类 抛出与传播 → 23 finally 资源关闭与异常抑制 → 27 BIO NIO AIO与同步阻塞 → 28 Buffer状态与网络消息边界</li></ul><p class=\"md-p\">先说清接口承诺、集合为什么这样选、阻塞的是谁、资源由谁关闭。类型、对象身份、字符串和泛型若有卡点，回到第02、05—12节补齐，再继续跨册主干，不用等所有实现都背完。</p><h3 class=\"md-h md-h3\">第二轮：让机制服务于一个可解释的案例</h3><ul class=\"md-list\"><li>17 视图 副本与不可修改集合 → 18 迭代 删除与修改检测 → 20 并发集合的使用契约</li><li>25 动态代理 装饰者与调用边界 → 26 SPI与可发现的扩展点 → 29 文件 字符编码与大数据导出 → 30 序列化 兼容性与安全</li><li>34 八组容器与文本实作 → 36 从Java基础落到项目边界</li></ul><p class=\"md-p\">围绕批量读取或导出这类明确假设的任务，先说明最简单的集合和同步调用为什么够用；当数据变大、调用失败或要扩展实现时，再引出流式处理、代理、SPI和资源管理。不要把“用了某个 API”当成已经证明性能或线程安全。</p><h3 class=\"md-h md-h3\">第三轮：用反例和代码守住契约</h3><ul class=\"md-list\"><li>37 教学实现的正确性边界 → 38 运行随书示例 → 39 完整源码与部署文件</li></ul><p class=\"md-p\">按“正常输入→边界输入→异常路径→资源释放”梳理接口合同与验证思路。重点解释副本和视图、equals/hashCode、迭代修改、泛型擦除、异常抑制，以及 Buffer 剩余字节如何影响下一次消息解析。负例为什么不能编译，同样要能说明。</p><h3 class=\"md-h md-h3\">怎样算学会了</h3><p class=\"md-p\">一次回答先给结论和前提，再沿数据或资源生命周期展开。能说清一个失败分支后，回到并发册的任务生命周期、网络册的拆帧和 MySQL 册的 JDBC 资源边界。其余特性、API速查及原生语言对照继续按目录读完。</p><h2 class=\"md-h md-h2\" id=\"reading-own-java-study-reference-section-java-1313\">容器与文本实作入口</h2><p class=\"md-p\">手写代码先固定输入输出、重复值、空值、修改权限与复杂度，再选择 API，否则即使主路径能运行，也可能回答了另一道题。</p><p class=\"md-p\">集合 API 的教学验证应按方法分别检查返回值、状态变化与异常条件；断言只证明所选输入下的合同，不能把零散调用拼接后直接当作完整应用。</p><h2 class=\"md-h md-h2\" id=\"reading-own-java-study-reference-section-java-1407\">常用 API 的返回、修改与异常边界</h2><p class=\"md-p\">API 速查最重要的是同时记住返回值、修改对象和异常边界，而不只是函数名。</p><h3 class=\"md-h md-h3\">数组与列表</h3><p class=\"md-p\">数组以 length 字段读取长度，长度创建后固定。Arrays.copyOf/clone 复制一维内容，Arrays.fill 覆盖指定范围，Arrays.sort 修改传入数组，Arrays.binarySearch 要求预先排序。数组元素越界是异常，不会自动扩容。</p><p class=\"md-p\">List 用 size()，get/set 要已有合法位置，add(index,value) 允许在 size 位置追加。ArrayList 的尾部 add 是均摊 O(1)，中间插删一般 O(n)。Collections.sort/reverse 修改原列表；想保留输入，先复制。List.of 是不可修改列表，不能因为接口上有 add 就假定实现支持。</p><h3 class=\"md-h md-h3\">栈 队列与堆</h3><p class=\"md-p\">单线程两端访问常用 Deque/ArrayDeque。push/pop 操作头部，offerLast/pollFirst 表达队列。remove/pop/element 在空时抛异常，poll/peek 返回特殊值；ArrayDeque 不接受 null。Stack、Vector 是合法的历史类，不是语言禁止，只是新设计通常有更合适的接口与实现。</p><p class=\"md-p\">PriorityQueue 的 offer/poll 维护堆序，peek 看优先队头，迭代不保证排序；null 不允许。PriorityBlockingQueue 有另外的并发与阻塞契约，也不自动提供有界容量，不能只看到“Blocking”就认为具备背压。</p><h3 class=\"md-h md-h3\">映射与集合</h3><p class=\"md-p\">Map 的 put 返回旧值，get 可能返回 null；是否存在要看容器空值约定。entrySet 同时遍历键值，keySet 和 values 是关联视图。compute、merge 等回调的返回 null 含义需要按方法区分，并发原子性也由具体实现决定。</p><p class=\"md-p\">Set.add 返回是否实际添加了新成员，remove 返回是否删除；按值比较必须有正确的 equals/hashCode 或比较器。List→Set 可能去重并改变顺序，Set→List 不会凭空恢复丢失的重复与原顺序。</p><p class=\"md-p\">TreeMap 的 floor/ceiling 提供相邻键，subMap 的边界是否包含要明确。范围视图往往关联原 map；若需要独立结果，复制后再交给调用方。</p><h3 class=\"md-h md-h3\">字符串与转换</h3><p class=\"md-p\">String 与 StringBuilder 都用 length()，计 UTF-16 代码单元。substring 为左闭右开；indexOf 未找到返回 -1；split 接受正则；equals 比内容。StringBuilder.append 修改当前对象并返回自身，toString 得到独立 String 内容。</p><p class=\"md-p\">String[]→Arrays.asList 是定长关联视图，外面再包 ArrayList 才能独立增删。int[]→List&lt;Integer&gt; 要装箱，List&lt;Integer&gt;→int[] 要处理 null。List.toArray(new String[0]) 和 Java 11 起的 toArray(String[]::new) 都可用，不能把无参数 toArray 得到的 Object[] 直接强转成 String[]。</p><p class=\"md-p\">这些操作的完整、可编译组合位于 ApiQuickReference.java。它覆盖数组、列表、范围视图、栈队列、映射遍历、有序导航、优先队列和字符串构建，适合在回答机制之后快速回忆语法。</p>"
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-ca746dd7ee92.json",
+    "snapshotSha": "e7b42ca5624a326e60e0446d28978e69f6409a34e370093ad6c1dba8dbe59225",
+    "liveSha": "e7b42ca5624a326e60e0446d28978e69f6409a34e370093ad6c1dba8dbe59225"
+  },
+  "own-java-exceptions": {
+    "entry": {
+      "id": "own-java-exceptions",
+      "kind": "qa",
+      "mod": "bagu",
+      "part": "Java 基础与工程实践",
+      "cat": "异常传播与资源收尾",
+      "title": "异常传播与资源收尾",
+      "number": "",
+      "source": "自建知识库",
+      "items": [
+        {
+          "id": "q-own-java-exception-propagation",
+          "q": "异常怎样分类、声明和传播，怎样保留失败与取消语义？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>受检与非受检区别在编译器的传播检查；实际抛出在运行期，包装须保留 cause，中断须继续传播或恢复取消信号。</p><p class=\"md-p\">受检与非受检，区别在于编译器是否要求处理或声明；异常真正被抛出，都发生在运行期。throw 是执行抛出的动作，throws 是方法允许传播哪些异常的声明。</p><p class=\"md-p\">异常层次先记住：Throwable 的两个重要直接分支是 Error 和 Exception，RuntimeException 又属于 Exception。</p><p class=\"md-p\">编译器是否检查传播，再按类型分：RuntimeException 及其子类、Error 及其子类是非受检异常；其余 Throwable 异常类型为受检异常。常见受检异常有 IOException、SQLException、ClassNotFoundException、InterruptedException。所谓“编译期异常”并非编译时发生，只是编译器会检查可能的传播路径。</p><p class=\"md-p\">catch(Exception) 不会捕获 Error，但 Error 在语法上并非不能 catch。普通应用面对内存耗尽、链接失败等问题，往往没有可靠恢复条件，不能笼统 catch(Throwable) 后继续当作成功。特定框架可以在严格边界记录或隔离失败，前提是清楚剩余状态是否安全。未捕获异常通常让当前线程执行路径终止，不等于整个 JVM 必然立刻退出。</p><p class=\"md-p\">throw 后面是 Throwable 表达式，throw null 会在执行时抛 NullPointerException。throws 不是运行时动作，不表示每次调用都会失败；受检异常可以在本方法捕获，也可以在允许的位置声明向上传播。异常沿调用链寻找匹配处理器，中途可能执行 finally 和资源关闭。</p><p class=\"md-p\">覆盖方法不能扩大父方法允许的受检异常集合，但可缩小或不声明；返回值可协变，可见性不能收窄。否则调用者按父类型编译时已经制定的处理方式会失效。非受检异常不需要声明，但依然应该在 API 契约中解释有意义的失败条件。</p><p class=\"md-p\">包装异常应保留 cause，例如把底层解析 IOException 转为带业务上下文的异常，同时保留原因。只复制 e.getMessage() 会丢类型、栈和因果关系。日志要包含定位所需的任务标识与异常链，但避免每层重复记录同一错误，也不能把密码、原始令牌和敏感请求体直接拼进异常信息。</p><p class=\"md-p\">选择受检还是运行时异常，应看调用方是否被要求显式面对可恢复分支，以及模块抽象是否需要隐藏底层技术细节，不能一律“全部抛 RuntimeException”。校验失败、资源失败和取消应保持可区分，失败不能转换成空集合后冒充“确实没有结果”。</p><p class=\"md-p\">InterruptedException 能传播时优先传播；不能传播的任务入口通常恢复中断标记并结束当前工作。吞掉中断继续阻塞，会破坏取消协议。Future.get 的 ExecutionException 与反射的 InvocationTargetException 是不同包装，处理时沿正确因果链取出原始失败，不能只判断最外层名字。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>Error、Exception、RuntimeException 的关系是什么？</li><li>“编译期异常”是不是编译时就发生了？</li><li>catch(Exception) 能不能捕获 OutOfMemoryError？</li><li>覆盖方法能否扩大 throws？包装异常为什么保存 cause？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java</li><li>面试</li><li>工程实践</li></ul><h2 class=\"md-h md-h2\" id=\"add-reference-java-exception-api-boundary\">从异常传播走到接口错误契约</h2><p class=\"md-p\">内部保留原因和诊断上下文，到接口边界再映射成稳定错误码与合适的 HTTP 状态。对外提示不要直接暴露 SQL、路径、堆栈和敏感参数；内部用关联 ID 追踪原始错误。未知异常可以统一兜底，但不能把所有失败返回成成功，也不能仅凭一个错误码就承诺重试安全。具体 MVC 出口、校验异常、响应已经提交后的限制，放到同一条 Spring 异常处理主线继续看。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-spring-mvc/q-own-spring-validation\">异常处理、参数校验与响应边界</a></li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>受检与非受检区别在编译器的传播检查；实际抛出在运行期，包装须保留 cause，中断须继续传播或恢复取消信号。</p>",
+          "leadType": "authored"
+        },
+        {
+          "id": "q-own-java-resource-cleanup",
+          "q": "finally 和 try-with-resources 怎样处理返回、关闭与多重失败？",
+          "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>返回表达式先求值，finally 再执行；资源逆序关闭，业务与清理失败须区分主异常、cause 和 suppressed，并注意自抑制边界。</p><p class=\"md-p\">普通 Java 控制流离开 try/catch 时会执行 finally，但进程终止、崩溃或一直停在 try 中时，不能靠它保证清理。资源管理优先用 try-with-resources；业务和关闭都失败时，还要讲清谁是主异常、谁被抑制。</p><p class=\"md-p\">推演 return 与 finally，按“先算返回结果，再执行 finally”的顺序：</p><ul class=\"md-list\"><li>返回 int 时，结果已经算好，finally 再改局部变量不会改变它。</li><li>返回引用时，返回的引用已经确定，但 finally 仍可能修改它指向的对象内容。</li><li>finally 自己 return 或抛异常，会覆盖先前准备返回或传播的结果。</li></ul><p class=\"md-p\">因此一般不要在 finally 中 return。</p><p class=\"md-p\">System.exit 启动 JVM 关闭流程，不承诺展开当前线程栈上的 finally；Runtime.halt 更直接停止，连正常关闭序列也不执行。崩溃、外部强杀、断电或死循环同样不能依赖 finally。需要故障恢复的业务状态，应通过持久化、事务或补偿机制管理，而不是一句“finally 里删临时状态”就算可靠。</p><p class=\"md-p\">try-with-resources 接收 AutoCloseable，按声明的逆序关闭已成功初始化的资源。第二个构造失败时，第一个仍会被关闭；从未成功创建的资源不能被关闭。Java 9 起可使用已存在且 final 或 effectively final 的变量。AutoCloseable.close 不要求所有实现都幂等，不能假定重复调用无害。</p><p class=\"md-p\">业务与关闭都可能失败，可以按发生顺序判断主异常：</p><ul class=\"md-list\"><li>业务先失败、close 再失败：通常保留业务异常为主，把 close 异常放进 suppressed。</li><li>业务正常、关闭失败：逆序关闭中第一个失败成为主异常，后续关闭失败被抑制。</li></ul><p class=\"md-p\">诊断时同时看 cause 和 suppressed。cause 解释“什么导致当前失败”；suppressed 记录“同一次退出中还发生了哪些失败，但没有被选作主要传播结果”。两者不是一回事。</p><p class=\"md-p\">一个不常见但必须知道的边界是“重复抛同一个异常实例”。Throwable.addSuppressed 禁止把对象自身加入其 suppressed 列表，会抛 IllegalArgumentException。try-with-resources 的标准展开会调用 addSuppressed；如果业务和 close 恰好抛出完全相同的 Throwable 对象，可能发生自抑制错误并掩盖原主异常。这不是通常使用方式，因此资源实现应避免复用正在传播的异常实例，但不能把标准语法说成对任何恶意 close 都绝不掩盖主异常。</p><p class=\"md-p\">本书 ResourceLab 的 cleanup helper 用于需要明确控制此边界的教学场景：先记录主异常，逐个逆序执行清理；只有 cleanupFailure != primary 时才加入 suppressed。它还覆盖业务成功但清理失败、多个清理失败、相同对象多次失败，以及正常返回值。不能从这个局部规则推导它可抵抗 JVM 崩溃或所有资源耗尽；如果连附加诊断信息都无法分配，可靠性边界已超出普通异常组合。</p><p class=\"md-p\">资源所有权同样重要：创建资源的组件通常负责关闭，借入的流是否由当前方法关闭应写进契约。关闭最外层包装流通常会关闭其底层流；重复套多个所有者容易造成提前关闭。文件与网络 API 返回的惰性 Stream 也可能持有资源，终止操作完成不等于 close 已自动调用。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>try 返回 1，finally 返回 2，结果是什么？</li><li>finally 改局部变量和改返回对象有什么区别？</li><li>两个资源关闭顺序是什么？初始化第二个资源失败怎么办？</li><li>如果 close 抛出与业务完全同一个 Throwable 对象，会怎样？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+          "sub": "",
+          "mk": false,
+          "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>返回表达式先求值，finally 再执行；资源逆序关闭，业务与清理失败须区分主异常、cause 和 suppressed，并注意自抑制边界。</p>",
+          "leadType": "authored"
+        }
+      ]
+    },
+    "path": "site/notes-58c0-refactor/dist/data/chapters/bagu-2861440a898a.json",
+    "snapshotSha": "7389caa69bfdd7e0ace5a56255836dc84f874dc040400e2993cc025211760389",
+    "liveSha": "7389caa69bfdd7e0ace5a56255836dc84f874dc040400e2993cc025211760389"
+  }
+}

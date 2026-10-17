@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch32",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 扩容 重分片与不停服迁移",
+  "title": "扩容 重分片与不停服迁移",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s8517",
+      "order": 8517,
+      "question": "不停服扩容怎样同时迁移数据和写入权，并保留安全回滚路径？",
+      "shortAnswer": "稳定逻辑槽减少重映射，再通过快照、增量、水位校验和 epoch 交接写权；切流后回滚必须包含新端已产生的写入。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "第32章 扩容 重分片与不停服迁移"
+        },
+        {
+          "type": "paragraph",
+          "text": "扩容需要同时迁移数据和写入权，路由算法只决定哪些键应去哪里；正确方案还要保证旧数据能找到、新写不丢失、过时写者不能继续提交。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：8 个库每库 128 张表为何只用到 128 个组合？负 hash 怎么处理？订单号路由位如何编码？一致性哈希新增节点搬哪一段？切流后怎样回滚？"
+        },
+        {
+          "type": "paragraph",
+          "text": "第一层是稳定键到逻辑槽，第二层是逻辑槽到物理分片。将两层分开，才有机会只移动选中的槽并保持旧 ID 可解释。无论使用取模、范围、一致性哈希还是目录路由，读写、补偿、备份恢复及迁移工具都必须使用同一规则版本。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "分库分表新增若干表时，如何尽量少迁移数据并让用户无感？"
+        },
+        {
+          "type": "paragraph",
+          "text": "在线扩容先减少路由变化，再完成快照、增量、校验和写权交接；算法减少搬迁范围，不能自动搬走数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可能的问法：分库分表新增若干表时，如何尽量少迁移数据并让用户无感？"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "路由算法决定迁移范围"
+        },
+        {
+          "type": "paragraph",
+          "text": "直接hash(key)%N改为%(N+k)会重映射大量键，不只是新节点应承接的少量数据。固定大量逻辑桶，再把桶映射到物理分片，扩容时只选择部分桶移动，键到桶的规则保持不变。理想均匀情况下从N个等容量分片扩到N+k，为均衡大约需将k/(N+k)数据放到新分片，这是目标量级，不是倾斜下保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一致性hash/带虚拟节点可减少成员变化时受影响范围，rendezvous hash也可用于选择稳定所有者；但“路由变化少”不代表数据已经复制、事务已经转移或热点均衡。范围分片可拆热点范围，逻辑桶方案则便于控制迁移单元和灰度速度。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可恢复的在线迁移流程"
+        },
+        {
+          "type": "paragraph",
+          "text": "迁移一只桶，可以沿“旧端仍写、复制追平、交出写权”这条路讲。先记录 source、destination、epoch 和状态；旧片继续作为唯一权威，取得一致快照和日志水位，复制存量，再按序补上更新、删除与版本。核对数量、主键范围、分段校验和、业务汇总，追到可切换水位。复制失败从检查点继续，不能重跑无版本 INSERT 覆盖新值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "交接时可短暂挡住该桶新写，排空旧事务，补齐最后增量，再原子推进路由 epoch。新片接受新 epoch 写入，旧片拒绝或转发旧路由请求；客户端缓存旧路由，也要能识别重定向并按规则重试。若选择双写，则还需持久失败记录、幂等和冲突规则，两个独立写操作不会因都“通常成功”就变成强一致。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "用户无感的限制与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "复制带宽/IO/日志积压须限速，避免拖慢源库；影子读与灰度流量验证结果、p99和错误率。切后保留旧数据只读一段可恢复窗口，确认无旧writer后再按授权回收。回滚路线也要考虑新分片切后产生的写，不能只把路由指回旧库就丢弃新数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试迁移中更新/删除、重复事件、追平后切前崩溃、切换时旧事务提交、客户端持旧路由、双写半成功、回滚和超级热点桶。应用幂等键与业务唯一性要跨迁移保持，避免同一请求在两边成功两次。严格跨桶事务还需与迁移状态协调，不能仅验证单行读取。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "8 库乘 128 表的整数映射"
+        },
+        {
+          "type": "paragraph",
+          "text": "先对跨语言稳定编码后的业务键求 hash，令 slot=Math.floorMod(hash,1024)，再取 db=slot/128、table=slot%128。若同一 hash 分别 %8 与 %128，库号总受表号低 3 位约束，实际只有 128 个组合。Math.abs(Integer.MIN_VALUE) 仍可能为负，不能拿它替代 floorMod。"
+        },
+        {
+          "type": "paragraph",
+          "text": "订单号可保留低 10 位的逻辑槽：orderId=(uniqueSequence<<10)\\|slot。唯一序列需要外部发号协议提供，代码只验证位宽和组合身份；不能覆盖既有 ID 的低位后仍假设唯一。解码时直接 orderId\\&1023L，重新 hash 整个订单号会破坏预埋路由位。2 的幂便于位编码，但不是所有分片方案的要求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下完整程序枚举 1024 槽和三种序列边界，比较错误与正确组合数，并检查负 hash、溢出及重新 hash 的反例。保存为 RoutingDemo.java，使用 Java 21 编译后运行 java RoutingDemo；它不连接数据库或生成生产全局序列。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "components/data/code/RoutingDemo.java",
+          "value": "import java.util.HashSet;\nimport java.util.Set;\n\n/** Java 8+. Pure routing model; no database or production ID service. */\npublic final class RoutingDemo {\n    static final int DATABASES = 8;\n    static final int TABLES_PER_DATABASE = 128;\n    static final int SLOTS = DATABASES * TABLES_PER_DATABASE;\n    static final int SLOT_BITS = 10;\n    static final long SLOT_MASK = SLOTS - 1L;\n\n    static int slotFromHash(int stableHash) {\n        // Fix a shared hash algorithm/encoding before using multiple languages.\n        return Math.floorMod(stableHash, SLOTS);\n    }\n    static int database(int slot) { checkSlot(slot); return slot / TABLES_PER_DATABASE; }\n    static int table(int slot) { checkSlot(slot); return slot % TABLES_PER_DATABASE; }\n    static void checkSlot(int slot) {\n        if (slot < 0 || slot >= SLOTS) throw new IllegalArgumentException(\"invalid slot\");\n    }\n    static long orderId(long uniqueSequence, int slot) {\n        checkSlot(slot);\n        // Production must supply a unique sequence and define exhaustion policy.\n        if (uniqueSequence < 0 || uniqueSequence > (Long.MAX_VALUE >>> SLOT_BITS)) {\n            throw new IllegalArgumentException(\"sequence would overflow positive long\");\n        }\n        return (uniqueSequence << SLOT_BITS) | slot;\n    }\n    static int slotFromOrderId(long orderId) {\n        if (orderId < 0) throw new IllegalArgumentException(\"negative order id\");\n        return (int) (orderId & SLOT_MASK);\n    }\n    static void check(boolean ok, String what) {\n        if (!ok) throw new AssertionError(what);\n    }\n    public static void main(String[] args) {\n        Set<String> oldPairs = new HashSet<String>();\n        Set<String> newPairs = new HashSet<String>();\n        Set<Long> ids = new HashSet<Long>();\n        for (int hash = 0; hash < SLOTS; hash++) {\n            oldPairs.add(Math.floorMod(hash, 8) + \":\" + Math.floorMod(hash, 128));\n            int slot = slotFromHash(hash);\n            newPairs.add(database(slot) + \":\" + table(slot));\n            for (long sequence : new long[] {0, 1, Long.MAX_VALUE >>> SLOT_BITS}) {\n                long id = orderId(sequence, slot);\n                check(slotFromOrderId(id) == slot, \"gene decoding\");\n                check(ids.add(id), \"unique sequence/slot pair must be unique\");\n            }\n        }\n        check(oldPairs.size() == 128, \"old overlapping modulo bug\");\n        check(newPairs.size() == 1024, \"all database/table pairs covered\");\n        for (int hash : new int[] {Integer.MIN_VALUE, -1025, -1024, -1, 0, Integer.MAX_VALUE}) {\n            int slot = slotFromHash(hash);\n            check(slot >= 0 && slot < SLOTS, \"negative hash range\");\n            check(database(slot) * TABLES_PER_DATABASE + table(slot) == slot, \"inverse mapping\");\n        }\n        long example = orderId(1L << 22, 37);\n        check(slotFromHash(Long.hashCode(example)) != 37, \"rehashing can destroy gene\");\n        try {\n            orderId((Long.MAX_VALUE >>> SLOT_BITS) + 1, 0);\n            throw new AssertionError(\"overflow was not rejected\");\n        } catch (IllegalArgumentException expected) { }\n        try {\n            orderId(1, 1024);\n            throw new AssertionError(\"invalid slot was not rejected\");\n        } catch (IllegalArgumentException expected) { }\n        System.out.println(\"PASS old pairs=128, new pairs=1024, unique ID pairs=\" + ids.size());\n        System.out.println(\"PASS negative hashes, exact gene decode, overflow and slot bounds\");\n        System.out.println(\"PASS rehash counterexample: decoded slot=37, rehashed slot=\"\n                + slotFromHash(Long.hashCode(example)));\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一致性哈希怎样确定新增节点的影响"
+        },
+        {
+          "type": "paragraph",
+          "text": "用一个有方向的环表示哈希空间，键交给顺时针第一个节点，每个节点负责 (前驱,自己]。节点位置只是坐标，2^32 个坐标不等于已经创建 2^32 个虚拟节点。碰撞处理、字符编码和哈希算法必须跨语言一致。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-mysql/hash-ring-before.png",
+          "alt": "一致性哈希顺时针后继与 (前驱,本节点] 区间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "图中 node1、node2、node4、node3 按坐标顺时针排列。若在 node2 与 node4 之间增加 node5，只有原来归 node4 的 (node2,node5] 这一段改归 node5，node4 留下 (node5,node4]。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-mysql/hash-ring-after.png",
+          "alt": "新增 node5 仅重映射 (node2,node5]，数据迁移和写权交接仍需协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "多虚拟节点能改善不同物理节点的平均负载，但不保证对抗输入均匀，也不能把同一个热 key 自动拆开。副本数和跨故障域放置是另一层规则；一个单环图没有实现故障恢复。线上增加节点后仍要复制该区间、追增量并完成写权交接。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "切流协议的三道门"
+        },
+        {
+          "type": "paragraph",
+          "text": "切流前先逐一回答三个问题。数据是否齐：旧端仍为唯一权威时，固定快照水位，复制目标桶，连续接上更新、删除和幂等收据。写权是否交清：挡住该桶新写，排空或终止旧事务，追完最后位置，再原子推进目录 epoch。旧客户端怎么走：旧片拒绝写，或转发到新 epoch；读取返回的版本仍须满足该请求的要求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "epoch 不能只贴在请求头里，最终提交方必须验证。旧事务若切换后还能绕过守卫提交，就已经出现两个权威写入口。双写也要持久记录半成功、未知结果和重试修复，不能把两次无共同事务的写叫强一致。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最后把回滚分成切流前后：切流前可丢弃未发布的新副本并重建；切流后新片已经有新写，必须反向同步并校验，或再迁移一轮，不能只把目录指回旧片。保留旧数据提供了恢复材料，却没有自动完成回滚协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "迁移与跨桶事务相遇时，应让协调器理解迁移状态，或在交接前排空相关事务。只验证单条查询能找到数据，无法证明转账、唯一性和幂等在两边同时成立。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-6",
+          "label": "分库分表有哪些常见策略？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-spring-sse-lifecycle",
+  "entryId": "handwrite-68",
+  "expectedOriginalHash": "bc44d5fc4adf5418f57ea77fb47b8180eea5a31190121c3fce10c2c5c37895ef",
+  "title": "SSE、取消、重连与线程上下文",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原 WebSocket 设计题仍是方案题；SSE 也能配普通 HTTP 取消入口。以下补齐 Servlet 异步、持久游标和连接/任务独立生命周期。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "31 HTTP 异步 SSE 与长连接恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "Servlet 异步让原请求线程不用一直等结果，SSE 则把服务端事件持续送给客户端。它们解决等待和展示方式，但后台工作是否阻塞、进度是否持久、缓冲会不会堆满，仍要分别设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：Callable、DeferredResult、SseEmitter 有何区别？打字机效果怎么实现？客户端断开后任务会停止吗？多实例如何推送？"
+    },
+    {
+      "type": "paragraph",
+      "text": "Callable 由 MVC 配置的执行器运行，再把结果异步分派回来；DeferredResult 允许其他线程或外部事件设置结果。两者都需超时、拒绝和异常处理。SseEmitter 在 text/event-stream 响应中发送事件，可携带 event、id 和 data，服务端要合理刷新、心跳并核对代理缓冲与空闲超时。"
+    },
+    {
+      "type": "paragraph",
+      "text": "SSE 适合服务端单向推送，客户端动作仍可走普通 HTTP；需要双向通信时再考虑 WebSocket。两者不能只因为都能保持连接就互换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看断网重连：浏览器 EventSource 可以重新建立连接，却不知道中间漏了哪些事件。要恢复进度，服务端需要稳定事件序号和持久历史，客户端用 Last-Event-ID 或游标请求续读，并约定重放窗口以及游标过期后怎么办。"
+    },
+    {
+      "type": "paragraph",
+      "text": "用户换网导致连接断开，和用户按下取消按钮，是两种业务信号。可恢复研究任务可能在断网后继续；明确取消则要更新任务状态，阻止后续工具执行。连接和任务不能共用一个含糊的“结束”标志。"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接的 onCompletion、onTimeout、onError 应幂等释放订阅和发送任务。发送 IOException 只说明连接出问题，不能证明后台业务没有发生。若要停止工作，还需结合限时等待、取消标记和底层 HTTP 客户端的取消能力，只丢弃 Future 不够。"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端慢会导致写阻塞或缓冲增长。应有有界缓冲、批量发送、允许丢弃的进度事件与不可丢终态事件的区分，以及慢消费者策略。Servlet 的异步写路径仍可能使用阻塞输出执行器；把生产速度无限提高不会让客户端读得更快。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多实例中连接在 A，B 产生事件，需要把事件路由到 A 或通过消息/流存储让 A 拉取。仅存在内存映射不支持进程重启恢复。离线重要消息应持久化，重新连接后按游标拉取，而不是声称 pub/sub 天然保存离线数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：流式能降低总模型计算时间吗？通常主要改善首 token 和用户感知等待，整体生成耗时不一定降低。输出一个 token 就 flush 一次也可能增加开销，应在交互延迟与吞吐间选择批次。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "65 从 SSE 讲到取消与上下文"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设页面已经显示部分进度，随后连接断了。先查断掉的是连接，还是任务、订阅或外部调用也结束了；它们可能各自处在不同状态。再把断网换成用户明确取消，推演哪些层要停止、哪些结果仍需记录，便能接住下面的追问。"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Servlet 异步是否等于无阻塞？原线程可释放，但工作线程和响应写入仍可能阻塞。",
+        "客户端断开是否取消业务？由产品契约决定，长任务可能应继续并允许重连。",
+        "Future 超时是否停止底层 HTTP？不保证，需可取消客户端与实际 deadline。",
+        "Reactor Context 是否与 ThreadLocal 相同？一个按订阅链传播，一个按线程存取，线程切换时不能混用。",
+        "MDC 复制后事务也能复制吗？不能，连接和事务资源不应跨线程共享。",
+        "用户取消后工具迟到成功怎么办？保留实际副作用结果，按任务终态与版本拒绝错误推进，必要时查询或补偿。"
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-spring-reference",
+      "label": "教学版本、运行方法与来源边界"
+    }
+  ]
+}

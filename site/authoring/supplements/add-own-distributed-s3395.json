@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3395",
+  "entryId": "scenario-delay-queue",
+  "expectedOriginalHash": "1e53dc8160059f7b37f2846a4d037678cb90d706df61c3262db7abbba9839b44",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.22 Agent定时兜底和审批超时，RocketMQ延迟消息与Redis过期通知有何区别"
+    },
+    {
+      "type": "paragraph",
+      "text": "延迟消息可可靠唤醒到期检查，Redis过期通知不能作为唯一任务账；审批取消和续期仍须按版本裁决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：审批超时怎样兜底；RocketMQ延迟消息与Redis过期通知有什么区别；旧超时消息晚到怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "区分RocketMQ 4.x延迟等级与5.0定时时间戳，审批业务到期以持久状态为准。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先落业务到期事实，再选触发器"
+    },
+    {
+      "type": "paragraph",
+      "text": "审批记录保存deadline、状态、version及提醒/升级责任，提交审批与定时事件同事务/outbox。到期消息表示需要检查，不等于直接审批通过/驳回；处理时按数据库时间、当前截止值和状态CAS，已经处理、撤回或改期则旧事件无效。taskId+scheduleVersion防重，提醒、业务关单和升级告警各有独立动作ID。"
+    },
+    {
+      "type": "paragraph",
+      "text": "定时消息负责及时唤醒，数据库扫描负责找回漏掉的责任。扫描按 (status,deadline,id) 小批取到期未完成记录，和消息消费者调用同一个幂等处理函数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "扫描可以弥补漏触发与停机，但两条路径竞争时只能产生一次合法状态转换，不能各写一套业务规则。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis过期事件没有可靠工作队列语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "键空间通知走Pub/Sub，订阅端断线期间事件不会补发；默认需显式启用通知。expired在实际发现并删除过期键时触发，不保证TTL刚到零立刻通知；Cluster事件是节点局部，需要相应订阅覆盖。回调里看到key已没了也拿不到原值，因此工单内容不能只藏在即将删除的key里。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使订阅永不断线，回调进程收到后、业务提交前退出也会漏处理；添加重试不能恢复从未收到的事件。它适合唤醒/缓存失效等允许漏通知的优化，关键超时必须依赖持久dueAt和可扫描责任，不能称“Redis快所以更可靠”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "RocketMQ如何延后可见"
+    },
+    {
+      "type": "paragraph",
+      "text": "4.x经典客户端用delayTimeLevel选择预设延迟等级，Broker在内部延迟存储/调度路径暂存，再到期恢复目标topic/queue使消费者可见；不是生产线程sleep。5.0文档提供delivery timestamp和DELAY topic，消息先进入计时存储，到期转入普通可消费存储，消费仍需确认与失败重投。"
+    },
+    {
+      "type": "paragraph",
+      "text": "5.0该文档默认时间范围24小时、默认调度粒度1秒；毫秒时间戳格式不意味着精确毫秒执行。过往/超范围时间如何处理按对应SDK/Broker核验，不能把4.x等级表说成所有5.x的限制。多年任务可放业务DB，临近允许窗口再投递；取消/改期先以业务version作最终裁决，不依赖能从Broker物理删除定时消息。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "持久性、积压与验证"
+    },
+    {
+      "type": "paragraph",
+      "text": "Broker重启可恢复定时状态的前提是相应存储/复制配置成立；确认丢失会重复，存储故障、超保留期或消费者一直失败仍可能导致未完成。大量同刻到期会晚执行，记录计划到期、实际可见、消费开始和业务提交四个时间，区分调度迟到与消费积压。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验收订阅断线、到期前后进程退出、审批已完成才收到旧消息、并发消息与DB扫描、改期、Broker恢复以及同秒突发。只需提醒时可容忍短暂延迟，但任何自动业务写都必须再次校验资格；没有Redis/RocketMQ实服测试，第7.1节给调度结构和恢复深解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "7.1 高性能延迟任务系统怎样兼顾精度、持久性与扩展"
+    },
+    {
+      "type": "paragraph",
+      "text": "高可靠延迟调度用持久任务状态保存责任，时间索引或时间轮只加速发现，到期后再校验当前业务状态并幂等执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：高性能延迟任务如何设计；时间轮是否保证任务不丢；过期取消与执行并发怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "延迟任务须分别定义触发精度、允许迟到、持久性、取消和扩展目标。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态机与权威数据"
+    },
+    {
+      "type": "paragraph",
+      "text": "持久记录taskId、type、payloadRef、dueAt、status、scheduleVersion、attempt、leaseUntil、ownerEpoch和结果。状态可为SCHEDULED→CLAIMED→DONE，失败转RETRY或DEAD，取消产生新版本/终态。创建业务与创建延迟任务应同库事务或outbox衔接，避免订单存在但关单任务未创建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "到期的含义是“有资格执行”，通常不是保证某个纳秒正好完成。统一用 UTC 时间戳，业务时区只负责算 dueAt；时钟偏差、停机和积压都会造成晚执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真正执行时，还得读取权威业务状态和截止条件。不能因为队列说到期了，就直接释放库存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "多层调度降低全量扫描成本"
+    },
+    {
+      "type": "paragraph",
+      "text": "远期任务放持久索引，按(shard,status,dueAt,taskId)范围批量加载临近时间窗；近期可放最小堆、分层时间轮或按时间桶结构。堆插入/删除O(log N)，时间轮常有较低摊销开销但槽粒度、级联和同槽突发决定精度/尾延迟，不能说任何操作永远O(1)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按taskId/租户分片由调度owner领取，批量向有界执行队列投递，worker按任务成本和下游容量并发。一个热点时刻百万任务到期仍需足够处理能力，应做业务允许的抖动、分片、批处理与过期积压优先级；时间轮不能创造CPU/下游吞吐。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "领取、重复与恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "领取需数据库条件更新/锁或等价原子机制，只有到期、未完成且版本匹配的任务获得租约；同一旧owner过期后继续运行时，资源端用epoch或业务版本拒绝旧写。taskId+scheduleVersion作为执行幂等范围，取消/改期后的旧队列消息读取新状态后丢弃，避免误执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调度恢复要处理“效果已经发生，完成状态还没写”的窗口。进程此时崩溃，恢复后可能重跑；能把效果和完成状态放进同一事务，就一起提交，外部效果则依靠幂等键、结果查询或补偿。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重启后扫描过期租约与应到未完成任务，按持久 dueAt 重建近期调度结构。删除队列消息不代表业务取消成功，取消和执行并发时的规则也必须明确。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "中间件选择和限界"
+    },
+    {
+      "type": "paragraph",
+      "text": "可复用支持定时消息的MQ，但时间范围、精度、取消能力、排序及重投须按版本核对；RocketMQ 5.0文档有时间范围限制，不能承诺任意多年定时任务都直接放Broker。Redis ZSet以dueAt为score能查到期候选，但读取和移除/领取要原子且有处理中的持久恢复表；只ZPOPMIN后执行，进程退出会丢任务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验收到期边界、时钟回拨、重启、领后崩溃、效果成功响应丢失、改期/取消竞态、同秒海量到期和毒任务。统计调度延迟=开始时间−dueAt、执行时间、成功/重试及最老积压。第11.2节的真实H2领取/epoch/检查点测试支撑领取模型，不能冒充完整高性能调度压测。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

@@ -1,0 +1,462 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-distributed-ch08",
+  "kind": "qa",
+  "module": "design",
+  "part": "分布式系统工程",
+  "category": "业务资格与交易状态",
+  "title": "业务资格与交易状态",
+  "tags": [
+    "分布式系统",
+    "故障边界"
+  ],
+  "questions": [
+    {
+      "id": "q-own-distributed-seat-priority",
+      "order": 0,
+      "question": "10万人抢1000个座位，怎样实现长途优先并保持高可用",
+      "shortAnswer": "长途优先必须先定义公平受理窗口和排序规则，再在区间不重叠约束下分配座位，不能用先到先得替代。",
+      "commonPhrasings": [
+        "10万人抢1000个座位，怎样实现长途优先并保持高可用",
+        "10万人抢1000个座位怎么设计",
+        "怎样保证长途优先",
+        "相邻区间能否复用同一座位"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "8.1 10万人抢1000个座位，怎样实现长途优先并保持高可用"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：10万人抢1000个座位怎么设计；怎样保证长途优先；相邻区间能否复用同一座位。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "10万人争1000座，长途按站间实际距离计算。本例采用有限受理窗口结束后按路程降序、同长按序号排序，不抢占已确认订单；最大载客数或最大收益是不同目标。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么先到先得不能保证长途优先"
+        },
+        {
+          "type": "paragraph",
+          "text": "要保证长途优先，先问清能不能等一批请求再分配。如果最后一个座位已经不可撤销地确认给先来的短途用户，后来长途就没座了。不知道未来请求时，“立即确认且不撤销”和“所有未来长途优先”，一般不能同时满足。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此要明确是批次内优先、长途配额、发售阶段优先，还是候补或改签。Redis DECR 只扣一个数字，不会表达长途优先，规则必须进入准入与分配协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "座位库存不是一个总数，而是一组站间区间。同座在 A→B→C→D 上，可以卖 A→B 和 B→D，却不能同时卖 A→C 和 B→D；占用的是半开区间[from,to)里的站间段。"
+        },
+        {
+          "type": "paragraph",
+          "text": "按实际公里优先时，相同站数也可能不同距离。批量连座、多车厢和换乘，又是额外约束，不能默认这套区间模型已经解决。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "系统链路与权威预留"
+        },
+        {
+          "type": "paragraph",
+          "text": "入口静态页/CDN、身份和活动校验、按用户/车次限流，可靠受理后返回requestId与“排队中”。10万人是竞争者，只有被批准的有限预留进入订单交易；限制工作队列和消费者并发，不能让十万连接同时抢数据库同一行。按车次/日期/席别拆分，不同列车可独立处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "调度器在受理窗口关闭后计算优先顺序，尝试为每个请求找到覆盖所有区间段均空闲的座位。权威库在一个事务中登记requestId/订单、验证并占用该座位的所有段、写预留截止时间及outbox；同座段唯一约束或串行座位状态机防重叠出售。跨分片座位/段须另有事务协议；缓存只预筛，不能以缓存成功代替售票资格。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Java 条件化算法与不变量"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下可运行算法是一个窗口内的“长途优先、首个可用座位”策略，每个请求只要任一所需段已被占用就不能选该座位。它不宣称最大化售票人数或总票款；局部贪心和这些全局最优化问题不同。重复requestId且内容完全相同被合并，不同内容报冲突；输出seat=-1表示该窗口候补。"
+        },
+        {
+          "type": "paragraph",
+          "text": "BitSet标记座位已占站间段，检查与设置在本地串行完成，所以接受后不与更早接受请求重叠。分布式部署必须将这一步放在同一权威事务/单写者内并持久化；本地数据结构不能抵御进程丢失。输入拷贝后排序，不改调用方列表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整 Java 教学实现"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下Java 21代码包含可直接执行的边界测试。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "016/TicketAllocator.java",
+          "value": "import java.util.*;\n\n/** A finite admission window, longest physical route first. Not an online optimal solver. */\npublic final class TicketAllocator {\n    public record Request(String id, int from, int to, long sequence) {}\n    public record Assignment(String id, int seat) {}\n    public static List<Assignment> allocate(long[] stationKm, int seats, List<Request> input) {\n        Objects.requireNonNull(stationKm);\n        Objects.requireNonNull(input);\n        if (stationKm.length < 2 || seats < 0 || stationKm[0] < 0)\n            throw new IllegalArgumentException(\"stations/seats\");\n        for (int i = 1; i < stationKm.length; i++)\n            if (stationKm[i] <= stationKm[i - 1]) throw new IllegalArgumentException(\"distance\");\n        Map<String, Request> unique = new HashMap<>();\n        for (Request r : input) {\n            if (r == null || r.id() == null || r.id().isBlank() || r.from() < 0 ||\n                r.from() >= r.to() || r.to() >= stationKm.length || r.sequence() < 0)\n                throw new IllegalArgumentException(\"request\");\n            Request old = unique.putIfAbsent(r.id(), r);\n            if (old != null && !old.equals(r)) throw new IllegalArgumentException(\"id conflict\");\n        }\n        List<Request> sorted = new ArrayList<>(unique.values());\n        sorted.sort(Comparator.<Request>comparingLong(r -> stationKm[r.to()] - stationKm[r.from()])\n                .reversed().thenComparingLong(Request::sequence).thenComparing(Request::id));\n        BitSet[] occupied = new BitSet[seats];\n        for (int i = 0; i < seats; i++) occupied[i] = new BitSet(stationKm.length - 1);\n        List<Assignment> result = new ArrayList<>();\n        for (Request r : sorted) {\n            int chosen = -1;\n            for (int seat = 0; seat < seats; seat++) {\n                int conflict = occupied[seat].nextSetBit(r.from());\n                if (conflict < 0 || conflict >= r.to()) {\n                    occupied[seat].set(r.from(), r.to());\n                    chosen = seat;\n                    break;\n                }\n            }\n            result.add(new Assignment(r.id(), chosen)); // -1 means waitlisted in this window\n        }\n        return List.copyOf(result);\n    }\n    private static void check(boolean ok) { if (!ok) throw new AssertionError(); }\n    private static void invalid(Runnable r) {\n        try { r.run(); throw new AssertionError(\"expected invalid\"); }\n        catch (IllegalArgumentException expected) { }\n    }\n    public static void main(String[] args) {\n        long[] km = {0, 5, 30, 100};\n        var shortFirst = new Request(\"short\", 0, 1, 0);\n        var longLater = new Request(\"long\", 0, 3, 1);\n        var a = allocate(km, 1, List.of(shortFirst, longLater));\n        check(a.equals(List.of(new Assignment(\"long\", 0), new Assignment(\"short\", -1))));\n        var b = allocate(km, 1, List.of(new Request(\"left\", 0, 1, 0), new Request(\"right\", 1, 3, 1)));\n        check(b.stream().allMatch(x -> x.seat() == 0));\n        check(allocate(km, 1, List.of(longLater, longLater)).size() == 1);\n        check(allocate(km, 0, List.of(longLater)).getFirst().seat() == -1);\n        invalid(() -> allocate(km, 1, List.of(new Request(\"bad\", 2, 2, 0))));\n        invalid(() -> allocate(km, 1, List.of(longLater, new Request(\"long\", 0, 1, 1))));\n        invalid(() -> allocate(new long[]{0, 0}, 1, List.of()));\n        var equal = allocate(km, 1, List.of(new Request(\"b\", 0, 3, 2), new Request(\"a\", 0, 3, 1)));\n        check(equal.getFirst().id().equals(\"a\"));\n        List<Request> many = new ArrayList<>();\n        for (int i = 0; i < 100_000; i++) many.add(new Request(\"r\" + i, 0, 3, i));\n        var big = allocate(km, 1000, many);\n        check(big.stream().filter(x -> x.seat() >= 0).count() == 1000);\n        check(big.size() == 100_000);\n        check(big.stream().filter(x -> x.seat() >= 0).map(Assignment::seat).distinct().count() == 1000);\n        // Randomized independent occupancy validation and input permutation determinism.\n        Random random = new Random(7123);\n        for (int run = 0; run < 100; run++) {\n            List<Request> rs = new ArrayList<>();\n            Map<String, Request> byId = new HashMap<>();\n            for (int i = 0; i < 30; i++) {\n                int f = random.nextInt(3), t = f + 1 + random.nextInt(3 - f);\n                Request r = new Request(\"x\" + i, f, t, i); rs.add(r); byId.put(r.id(), r);\n            }\n            var expected = allocate(km, 4, rs);\n            Collections.shuffle(rs, random); check(expected.equals(allocate(km, 4, rs)));\n            boolean[][] busy = new boolean[4][3];\n            for (Assignment x : expected) if (x.seat() >= 0) {\n                Request r = byId.get(x.id());\n                for (int s = r.from(); s < r.to(); s++) { check(!busy[x.seat()][s]); busy[x.seat()][s] = true; }\n            }\n        }\n        System.out.println(\"PASS TicketAllocator: 9 boundary/scale scenarios + 100 randomized invariants\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "失败恢复、复杂度与测试"
+        },
+        {
+          "type": "paragraph",
+          "text": "若N请求、S座位、M站间段，排序O(N log N)；最坏逐请求扫描S座位并查询位图，保守上界O(N·S·M)，按位图机器字扫描可降低常数/块数，空间O(N+S·M)。热点大线路可维护区间索引、可用座位集合或按段位图相交，但复杂结构也必须保留同一个权威占用条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "预留未支付到期只释放仍为HELD的该预留，支付/释放竞争用状态机裁决，晚到支付按明确业务协议处理。节点接管使用epoch阻止旧调度器提交，受理记录可重放，用户用同requestId查询结果。高可用不意味着所有故障时继续售票：权威不确定时可接受候补/只读，不能盲卖。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试覆盖长短优先、相邻区间复用、重复/冲突ID、零座位、非法区间/距离、同长顺序、10万请求争1000座以及100轮随机不重叠与输入重排确定性检查。结果恰有1000个全程请求获不同座位。这是单机逻辑与规模边界测试，没有真实10万并发连接、MySQL事务或售票集群压测。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-coupon-rights",
+      "order": 1,
+      "question": "优惠券怎样防超发和重复核销",
+      "shortAnswer": "领券以库存和领取资格原子预留，核销以券实例状态条件更新，取消与退款不得重复增加发行额度。",
+      "commonPhrasings": [
+        "优惠券怎样防超发和重复核销",
+        "优惠券怎样防超发",
+        "怎样防重复核销",
+        "退款后券能否再用"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "8.7 优惠券怎样防超发和重复核销"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：优惠券怎样防超发；怎样防重复核销；退款后券能否再用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "券批次发行库存与用户持券是不同资源，领取、核销、过期、退单和可否返还需分别建状态。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "发放额度和领取资格"
+        },
+        {
+          "type": "paragraph",
+          "text": "CouponBatch定义总发行额度、时间、领取上限和适用规则；IssuedCoupon定义couponId、owner、批次、有效期、状态/版本。每次领取携带requestId，权威事务中条件减少可发量、增加已发数、创建用户券、写领取结果和outbox；任一步失败整体回滚。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一人限领一张可UNIQUE(batchId,userId)，允许最多K张则需要对应资格计数行used<=K−qty的条件更新，不能只unique(userId)禁止其他批次。Redis预筛/队列削峰降低数据库竞争，最终数据库额度和资格仍裁决；不把Bloom阳性作为拒绝合法领取的最终依据。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "占用与核销的状态机"
+        },
+        {
+          "type": "paragraph",
+          "text": "下单使用券时校验持有人、适用商品/门槛、币种/优惠计算和有效期，从UNUSED条件转RESERVED(orderId,version)；付款成功只把同订单预留转REDEEMED，取消只释放同订单的RESERVED，重复回调不二次释放。两个订单并发抢同张券最多一个预留成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "退单是否退券、是否延长有效期、过期券怎么处理，都由产品规则决定。用独立退款事件和 version，防止旧取消把后来重新占用的券改回 UNUSED。"
+        },
+        {
+          "type": "paragraph",
+          "text": "发放量和可再次使用的用户券数不是一个计数。核销后通常不返还发行配额，否则可能无限增发；只有业务明确允许，才能这样设计。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "故障和对账"
+        },
+        {
+          "type": "paragraph",
+          "text": "跨服务下单与券占用用可靠命令/预留接口、幂等、状态查询及超时释放，释放前核对支付事实；重投只复用同操作ID。对账发行额度守恒、每券唯一归属、同券有效预留/核销订单数和补偿责任。测试最后一张券竞争、多件领取、同人不同批次、精确过期、支付取消竞态、退款旧事件和缓存丢失。落地时应将业务实际状态与上述不变量逐项对应，再验证每条允许迁移。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-order-boundaries",
+      "order": 2,
+      "question": "电商下单中订单、库存、支付、购物车、短信、积分和优惠券怎样划分同步与异步",
+      "shortAnswer": "订单和库存资格属于当前成功承诺，短信积分等可异步但需持久义务，支付和优惠券按各自状态机衔接。",
+      "commonPhrasings": [
+        "电商下单中订单、库存、支付、购物车、短信、积分和优惠券怎样划分同步与异步",
+        "电商下单哪些同步哪些异步",
+        "购物车删除失败怎么办",
+        "短信失败是否回滚订单"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "8.16 电商下单中订单、库存、支付、购物车、短信、积分和优惠券怎样划分同步与异步"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：电商下单哪些同步哪些异步；购物车删除失败怎么办；短信失败是否回滚订单。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "以稀缺商品先预留、付款后确认为常见契约，同步等待与跨库原子提交是不同概念。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "决定同步性的标准是成功承诺"
+        },
+        {
+          "type": "paragraph",
+          "text": "先定义返回“已受理”“待支付订单已创建”或“支付已完成”。若承诺待支付订单可付款，就需可靠创建orderId、冻结价格/优惠方案、完成必要资格/库存/券预留，或明确仍在处理中不能支付。只把消息塞进内存就返回下单成功没有可恢复事实。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同库时订单、条件预留、请求去重与outbox一起事务提交；跨服务用幂等预留接口和持久Saga/TCC状态推进，失败释放已持有资源并持续重试补偿。某一步响应超时先查原operationId，不能把未知当失败直接返库存。接口可异步受理整条流程，但界面必须等待查询到权威READY才进入下一承诺。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "六个操作逐项回答"
+        },
+        {
+          "type": "paragraph",
+          "text": "创建订单：通常同步保存可查询的唯一订单和当时价格/规则快照，承受不住可异步受理后返回同taskId。扣库存：区分下单预留和付款确认，稀缺商品先条件预留，付款后HELD→CONSUMED；并非付款再重复扣一次。支付：客户端拉起支付不等于已付款，真实渠道回调/主动查询经验签、金额币种归属校验后幂等推进，不能在本地长事务持锁等待用户。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除购物车通常是订单成功后的便利操作，可以异步，不应卡住核心交易。事件要带本次购买的购物车行 ID、版本和数量。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果用户同时给相同 SKU 新加数量，就不能把整项无条件删除，只能条件清理当时买走的部分，冲突时保留或重新计算。清理失败记录重试，订单不因此回滚。"
+        },
+        {
+          "type": "paragraph",
+          "text": "短信通常在提交 outbox 后异步发送，处理平台限额、幂等 sendId、失败分类和回执核对。“订单成功”不代表“短信已到”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "积分一般按支付或履约规则异步入账，用唯一积分操作和流水防重，退款以关联原单的冲正事件处理。但若积分用于本次抵现，它就是必须预留或扣减的核心资源，不能先给折扣，再随意异步试扣。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "优惠券不是统一归类为通知"
+        },
+        {
+          "type": "paragraph",
+          "text": "用已有券抵扣订单：校验持有人、适用品类/门槛、币种、有效期和叠加规则，UNUSED→RESERVED(orderId)的结果必须在承诺折后可付款前确定；付款后核销，取消只释放该订单的预留，旧取消不得释放已被后来订单占用的券。券服务跨库同样需可查询预留和补偿。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“下单赠一张券”可在业务完成后可靠异步发放，状态对用户可查询；若宣传成功即券到账，则要等实际发券确认或清楚标注待发。购买券本身、使用券、营销赠券是三类不同操作。退单退券是否延长有效期、积分何时回收由产品规则决定，不能统一做INCR。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Outbox、顺序与对账贯穿全链"
+        },
+        {
+          "type": "paragraph",
+          "text": "订单状态和同版本事件同事务，事件带eventId、orderId、version、业务类型与必要快照；消费者inbox与自身效果同事务，完成才ACK，永久失败进入可恢复待办。每个下游独立订阅/进度，不能一个消费者处理短信后把积分事件责任也删除。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同订单按状态/版本防乱序，购物车、积分等投影可独立延迟；支付事实不能被关单事件覆盖。定期核对订单/预留/支付/积分/券各自不变量和最老未完成状态，查明差异后用幂等补偿，不按总额相等就随意调账。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "举例与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "下单O创建、库存和券预留成功，响应丢失后重试返回O；用户付款渠道已成功但回调晚到，系统核对支付再确认资源，购物车清理、短信和积分各走可靠事件。若关单已经释放资源，晚到支付按退款/人工核实规则处理，不复活已经售出的库存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试购物车被同时修改、券同被两单占用、付款/过期竞态、消息重复/倒序、短信永久拒绝和积分冲正重复。复用库存/账务模型只证明局部不变量。"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-distributed-lottery",
+      "order": 3,
+      "question": "汽车摇号系统如何设计并验证公平抽样",
+      "shortAnswer": "公平摇号需要先冻结可审计候选集合，再用合适随机源无放回抽样，并记录可核对的输入和过程。",
+      "commonPhrasings": [
+        "汽车摇号系统如何设计并验证公平抽样",
+        "汽车摇号如何设计",
+        "怎样验证等概率",
+        "取模随机数有什么偏差"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "8.18 汽车摇号系统如何设计并验证公平抽样"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法：汽车摇号如何设计；怎样验证等概率；取模随机数有什么偏差。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "适用条件"
+        },
+        {
+          "type": "paragraph",
+          "text": "教学模型固定为冻结N个合格且唯一申请人、等概率无放回选K人；不代表任何地区真实政策或资格判断。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "冻结候选集合与规则"
+        },
+        {
+          "type": "paragraph",
+          "text": "申请服务校验身份/资格并按本轮摇号规则唯一去重，截止后生成不可变候选快照，记录drawId、规则版本、截止点、N/K、排序及快照hash。审核撤销/异议要有正式更正版而不是抽到一半悄悄删人；公开结果用脱敏申请标识，私密身份在独立受权查询中核验。"
+        },
+        {
+          "type": "paragraph",
+          "text": "摇号结果不是超时就可以再抽。状态可设为 CREATED→FROZEN→DRAWING→COMMITTED→PUBLISHED，只有冻结输入才能启动，同 drawId 同时只能有一个合法 epoch 产出最终结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "随机结果可靠保存、唯一提交后，才发布或通知。响应丢失就查已有结果，不能反复抽到满意；取消和递补规则也必须事先规定。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "等概率无放回的具体算法"
+        },
+        {
+          "type": "paragraph",
+          "text": "复制唯一申请ID数组a；第i步在[i,N)均匀选择j，交换a[i]和a[j]，前K项为有序中奖名单。第i步剩余N−i个人，每个选择概率1/(N−i)，任意指定有序K元组概率为1/[N(N−1)…(N−K+1)]；一个无序集合有K!种顺序，所以每个K人集合概率同为1/C(N,K)，每人中奖概率K/N。"
+        },
+        {
+          "type": "paragraph",
+          "text": "复制与资格去重O(N)时间/空间，部分洗牌O(K)；若输入超大可用水塘抽样O(N)时间/O(K)选取空间，但仍要保存冻结输入证据和处理均匀有界随机数。不能用随机比较器sort，也不能abs(randomInt)%bound造成偏差/最小负数问题；Java使用SecureRandom.nextInt(bound)这种有界接口。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "随机性、公信力与持久提交"
+        },
+        {
+          "type": "paragraph",
+          "text": "密码学随机源能防预测，却防不住操作者反复重抽、改名单或挑 seed。可以事前承诺规则、快照和程序版本，再采用独立公开随机来源，或多方承诺揭示协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同时限制启动、重启权限，保留不可篡改审计。协议还要考虑最后一方拒绝揭示、随机源不可用，以及届时采用什么替代规则。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为可复核必须固定算法及随机字节到整数的转换，保留足够抽取审计证据或在政策允许时公布seed；不同Java provider默认SecureRandom不是跨机器同seed必同序列的规范。透明证明算法均匀不证明输入资格真实、操作员诚实或随机源绝对无偏，这些是不同控制面。"
+        },
+        {
+          "type": "paragraph",
+          "text": "结果表对(drawId,applicantId)唯一、中奖人数K、抽样输入hash/规则/随机来源/程序hash绑定，结果manifest与发布outbox同事务；大结果可先写不可变分片再原子提交manifest引用。发布失败重发同版本，不能重抽。迁移/备份恢复不得让已提交drawId被重复使用。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可执行验证与边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "UniformLottery遍历N=0…7每个K的全部选择路径，检查每个无序集合恰有K!路径；另测重复/空ID、负K/K>N、非法随机返回、输入不被修改，并实际用SecureRandom对10000选123校验唯一与成员资格。共16370个断言。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这证明所列小规模路径计数和算法不变量，不是随机源安全审计/蒙特卡洛公平证明。程序只实现抽样核心，没有资格审核、结果数据库、分布式抢占或公开随机仪式；生产需额外测同时启动、保存结果后进程退出、发布重试、K=0/K=N和权重政策变更。加权抽样必须另定义概率规则，不能复用本证明宣称仍符合未知政策。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java实现"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下代码可独立运行；其测试不代表外部服务联调。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "020/UniformLottery.java",
+          "value": "import java.security.SecureRandom;\nimport java.util.*;\nimport java.util.function.IntUnaryOperator;\n\n/** Sampling core only. Eligibility, draw persistence and public audit are separate protocols. */\npublic final class UniformLottery {\n    public static List<String> choose(List<String> eligible, int k, IntUnaryOperator boundedRandom) {\n        Objects.requireNonNull(eligible); Objects.requireNonNull(boundedRandom);\n        if (k < 0 || k > eligible.size()) throw new IllegalArgumentException(\"k\");\n        List<String> a = new ArrayList<>(eligible);\n        Set<String> distinct = new HashSet<>();\n        for (String id : a) if (id == null || id.isBlank() || !distinct.add(id))\n            throw new IllegalArgumentException(\"invalid or duplicate applicant\");\n        for (int i = 0; i < k; i++) {\n            int bound = a.size() - i, r = boundedRandom.applyAsInt(bound);\n            if (r < 0 || r >= bound) throw new IllegalArgumentException(\"random out of range\");\n            Collections.swap(a, i, i + r);\n        }\n        return List.copyOf(a.subList(0, k));\n    }\n    public static List<String> chooseSecurely(List<String> eligible, int k) {\n        SecureRandom rng = new SecureRandom();\n        return choose(eligible, k, rng::nextInt);\n    }\n    private static int checks;\n    private static void check(boolean ok) { checks++; if (!ok) throw new AssertionError(); }\n    private static void bad(Runnable r) {\n        try { r.run(); throw new AssertionError(\"expected rejection\"); }\n        catch (IllegalArgumentException expected) { checks++; }\n    }\n    private static void enumerate(int n, int k, int at, int[] choices, Map<List<String>, Integer> counts) {\n        if (at == k) {\n            List<String> ids = new ArrayList<>(); for (int i = 0; i < n; i++) ids.add(\"A\" + i);\n            int[] pos = {0}; List<String> winners = choose(ids, k, b -> choices[pos[0]++]);\n            check(new HashSet<>(winners).size() == k);\n            List<String> key = new ArrayList<>(winners); Collections.sort(key);\n            counts.merge(List.copyOf(key), 1, Integer::sum); return;\n        }\n        for (int r = 0; r < n - at; r++) { choices[at] = r; enumerate(n, k, at + 1, choices, counts); }\n    }\n    private static int factorial(int n) { int f = 1; for (int i = 2; i <= n; i++) f *= i; return f; }\n    public static void main(String[] args) {\n        for (int n = 0; n <= 7; n++) for (int k = 0; k <= n; k++) {\n            Map<List<String>, Integer> counts = new HashMap<>(); enumerate(n, k, 0, new int[k], counts);\n            check(counts.size() == factorial(n) / factorial(k) / factorial(n-k));\n            for (int multiplicity : counts.values()) check(multiplicity == factorial(k));\n        }\n        bad(() -> choose(List.of(\"A\", \"A\"), 1, b -> 0));\n        bad(() -> choose(List.of(\"A\"), -1, b -> 0));\n        bad(() -> choose(List.of(\"A\"), 2, b -> 0));\n        bad(() -> choose(List.of(\"A\"), 1, b -> b));\n        bad(() -> choose(List.of(\" \"), 0, b -> 0));\n        List<String> ids = new ArrayList<>(); for(int i=0;i<10000;i++)ids.add(\"A\"+i);\n        List<String> copy = List.copyOf(ids), draw = chooseSecurely(ids, 123);\n        check(draw.size()==123 && new HashSet<>(draw).size()==123 && ids.containsAll(draw));\n        check(ids.equals(copy));\n        System.out.println(\"PASS UniformLottery: \" + checks + \" checks; exhaustive n<=7 all k, each subset k! paths, invalid inputs, real SecureRandom 10000 choose123 invariants; no statistical/security audit claim\");\n    }\n}\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-distributed-guide",
+          "label": "源手册版本、证据与运行边界"
+        }
+      ],
+      "tags": [
+        "分布式系统"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

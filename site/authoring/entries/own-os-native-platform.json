@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "id": "own-os-native-platform",
+  "kind": "doc",
+  "module": "syntax",
+  "part": "OS完整实验与运行时对照",
+  "category": "完整源码与语义边界",
+  "title": "原生对照：平台同步与语言边界",
+  "source": "操作系统与 Linux 面试复习手册",
+  "sections": [
+    {
+      "id": "section-os-bcf203ec858e",
+      "title": "原生语言对照五 平台边界",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "原生语言对照五 平台边界"
+        }
+      ]
+    },
+    {
+      "id": "section-os-88e0ae45bbf8",
+      "title": "C++ Java Python和Go的并发与运行时差异怎样比较",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "C++ Java Python和Go的并发与运行时差异怎样比较"
+        },
+        {
+          "type": "paragraph",
+          "text": "比较时先看执行流怎样映射到OS线程，再看对象和资源由谁管理。C++11提供线程与同步接口，Java还由JVM协调，Python要区分GIL及构建，Go由runtime调度goroutine；这些差异都不能替代业务同步与容量设计。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "C++和Java都能使用内核线程并行"
+        },
+        {
+          "type": "paragraph",
+          "text": "C++11有std::thread、mutex、condition_variable和atomic，常见实现映射OS线程；RAII管理资源，数据竞争可能导致未定义行为，不能靠程序某次没错证明安全。C++20协程提供挂起/恢复语言机制，但标准本身并不替应用选择事件循环、线程池或网络运行时。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java平台线程通常映射OS线程，JMM定义可见性/有序性，GC处理内存生命周期但不解决业务竞争。Java21虚拟线程正式化，由JVM调度大量等待型任务到载体线程，不会提高CPU核数。Java21部分synchronized阻塞场景可能固定载体；JDK24的JEP491改变了此问题，不能把21的限制永久推广。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Python和Go需要说明具体执行模型"
+        },
+        {
+          "type": "paragraph",
+          "text": "传统CPython线程受GIL限制Python字节码并行，I/O与释放GIL的原生扩展例外；多进程可绕过同一解释器GIL，但有传输和内存代价。asyncio是协作式异步编排，await不代表创建线程；可选free-threaded构建又有不同能力与扩展兼容性。详见Python有多线程吗 GIL为何存在 Lock与RLock怎样选择 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnCL7228jCj8854pwkTL7Bkh)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Go的goroutine由运行时调度，G表示goroutine，M表示OS线程，P表示执行Go代码所需的调度资源，GOMAXPROCS约束可同时执行Go代码的P数量，而非总goroutine或OS线程数。网络轮询、系统调用和抢占机制帮助重叠等待；channel是通信同步原语，不是OS进程队列。Go有GC和逃逸分析，Java也有GC但分配/JIT/收集器设计不相同。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "跨语言共同的工程约束"
+        },
+        {
+          "type": "paragraph",
+          "text": "共享状态都需要正确同步和所有权，异步调用都要处理错误、期限、取消、排队和下游容量。任务很小可能被调度/序列化成本淹没；I/O占主导时限制并发往往比更换语言更重要。不能说C++必定最快、Java必定重线程、Go自动无锁或Python永远不能并行。"
+        }
+      ]
+    },
+    {
+      "id": "section-os-0d9fbf1112b2",
+      "title": "Windows常见锁和同步对象有哪些 怎样选择进程内与跨进程机制",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Windows常见锁和同步对象有哪些 怎样选择进程内与跨进程机制"
+        },
+        {
+          "type": "paragraph",
+          "text": "先确定同步范围和目的：进程内互斥可用Critical Section，读写共享可评估SRW，跨进程互斥需Mutex等真正可共享对象。通知、许可计数和条件等待分别有Event、Semaphore和Condition Variable，不能都当同一种锁。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "相关追问"
+        },
+        {
+          "type": "list",
+          "ordered": true,
+          "items": [
+            "Windows 中有哪些锁？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "进程内短临界区与读写锁"
+        },
+        {
+          "type": "paragraph",
+          "text": "CRITICAL_SECTION用InitializeCriticalSection、Enter/TryEnter/Leave和最终Delete管理。同一线程可递归进入，但必须对称退出；只能在一个进程内使用，不能靠把结构体映射到另一个进程就跨进程。它可在竞争时自旋再等待，不能概括为永远不进入内核；也没有严格FIFO和abandoned通知保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SRWLOCK支持Shared与Exclusive两种模式，适合读多写少的短共享访问，InitializeSRWLock或SRWLOCK_INIT初始化，Acquire/Release成对。它仅进程内、非公平/FIFO，独占不可递归，共享递归也有死锁风险，不支持持共享锁直接升级独占；需要升级时释放后重取并重新验证状态，而不能假定原读值未变。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "Mutex是可等待句柄并可跨进程"
+        },
+        {
+          "type": "paragraph",
+          "text": "CreateMutex/CreateMutexEx创建，OpenMutex打开适当命名对象，或通过合法句柄继承/复制共享同一对象；WaitForSingleObject等等待并取得所有权，ReleaseMutex由拥有线程释放，最后CloseHandle释放本方句柄。支持递归拥有，释放次数须匹配。命名对象仍有命名空间与访问控制，名字相同不是绕过权限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "等待需区分WAIT_OBJECT_0、WAIT_TIMEOUT、WAIT_FAILED及WAIT_ABANDONED。后者表示取得了被死亡拥有者遗弃的mutex，但受保护状态可能半写，要恢复/作废数据，不能当普通成功继续。它不自动回滚业务，也不保证FIFO。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "通知和计数不都叫互斥锁"
+        },
+        {
+          "type": "paragraph",
+          "text": "Semaphore维护0到最大值的许可，适合限制资源数，ReleaseSemaphore不要求当前线程是某个拥有者。Event表达状态通知，manual-reset可保持有信号并放行多个等待者，auto-reset通常放行一个等待者后复位；重复SetEvent不等同累计任意条消息。等待数据时仍需队列/谓词，避免用PulseEvent等脆弱时序拼协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Condition Variable配Critical Section或SRW，SleepConditionVariableCS/SRW原子释放关联锁并等待，返回前再取得锁；需while检查谓词以应对虚假/被别的线程抢先消费的唤醒。WakeConditionVariable/WakeAll不负责保存业务条件。Interlocked系列提供原子操作及相应内存顺序契约，适合简单状态，不自动保护多个字段组成的事务。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "选择和验证边界"
+        },
+        {
+          "type": "paragraph",
+          "text": "进程内短互斥可优先Critical Section或合适标准库mutex，读多写少可评估SRW；跨进程使用真正共享资源加Mutex等有明确契约的对象；阶段通知用Event，容量用Semaphore，条件等待配锁和谓词。所有方案都要统一锁顺序、缩短临界区、避免持锁等待依赖自己的线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实际项目还要测取消、拥有者死亡、关闭句柄时机和访问拒绝。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "OS/Linux主线与版本边界"
+    },
+    {
+      "entryId": "own-java-modern",
+      "questionId": "q-own-java-cross-language-contracts",
+      "label": "Java基础：跨语言契约"
+    }
+  ]
+}

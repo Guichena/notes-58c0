@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-ba3955c6893776",
+  "entryId": "q-own-jvm-memory",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "c70fd86584fcae278fe7c12cb6aec679080a36d96f9532b0c80ca0e28aa92c55",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "虚拟内存怎样优化 C++申请内存怎样写才有完整生命周期"
+    },
+    {
+      "type": "paragraph",
+      "text": "内存优化先缩小活跃工作集和无用保留，再改善分配与访问局部性；C++动态分配还必须落实异常路径的资源所有权。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "对于内存管理这一块，你有什么可以说的？虚拟内存怎么优化？"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "C++ 去申请一个内存块用什么代码命令？"
+    },
+    {
+      "type": "paragraph",
+      "text": "局部变量是申请在哪个内存空间的？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先定位哪一层占用或失效"
+    },
+    {
+      "type": "paragraph",
+      "text": "虚拟空间、RSS、匿名页、文件页、共享页、页表与容器计费并非同一指标。虚拟页表怎样翻译地址 分段与段页式的准确区别 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnLSHQUfL2io8u2CByp54Asg)解释页表/TLB/缺页，进程地址空间怎样分布 百万个局部元素会放在哪里 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcn7vtxM8jEvSrLGWt4EbsQ3b)解释代码/数据/栈/堆与局部对象。仅看到VSZ很大不能断定泄漏，释放后RSS不降也可能分配器保留；需要结合生命周期、峰值、驻留、缺页与回收压力观察。"
+    },
+    {
+      "type": "paragraph",
+      "text": "优化可以减小真实活跃工作集、限制缓存/队列、释放不再需要的引用、提高数据局部性和批量访问，减少过多碎片/小分配或无谓复制。大量小映射增加管理开销，随机跨页可能压TLB；线程栈/本地库等非堆内存也要入预算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "页与映射策略有代价"
+    },
+    {
+      "type": "paragraph",
+      "text": "顺序文件访问可用合理预读或madvise/fadvise提示；确实不再用的范围可按API语义释放/给回收建议，但某些discard操作会丢掉私有匿名内容，不能随手用于仍有业务数据的区域。大页可能降低TLB压力，却有内存粒度、碎片、分配/压缩和NUMA代价，需测具体负载。"
+    },
+    {
+      "type": "paragraph",
+      "text": "映射大文件可按窗口访问，进程间共享只读数据或COW可节省重复页；写多后COW成本会变化。NUMA放置与首次触碰影响访问成本。不要把禁swap、drop_caches、锁住全部内存当默认优化，更不能宣称用户态能随意清空其他进程TLB。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "C++优先让拥有者自动收尾"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通可变长度数组优先std::vector<int> v(n)，独占堆数组可用std::unique_ptr<int[]>，C++14起可make_unique<int[]>(n)；若手写new int[n]{}需匹配delete[]，单对象new T配delete。malloc返回原始存储，需检查失败和大小乘法溢出，再正确构造非平凡对象；free不调用其析构，不可与new/delete交叉配对。"
+    },
+    {
+      "type": "paragraph",
+      "text": "局部vector对象本身与其元素缓冲可能处于不同区域，静态局部对象和被优化到寄存器的局部量又不同，不能回答所有局部变量都固定在栈。new成功只说明当前分配契约成功，需求分页/系统回收与后续触碰还有OS层条件；不能用大申请失败测试替业务预算设计。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "示例使用边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "只使用很小的内存，没有强制OOM或探测宿主最大内存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真实优化应一次改变一项，在正确性不变前提下比较吞吐/尾延迟、RSS峰值、fault与回收指标。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "allocate.cpp 完整实现"
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "label": "allocate.cpp",
+      "value": "#include <cassert>\n#include <cstdlib>\n#include <iostream>\n#include <limits>\n#include <memory>\n#include <new>\n#include <stdexcept>\n#include <vector>\nstd::size_t checked_bytes(std::size_t count){\n    if(count>std::numeric_limits<std::size_t>::max()/sizeof(int))throw std::length_error(\"size overflow\");\n    return count*sizeof(int);\n}\nint main(){\n    constexpr std::size_t n=10;\n    std::vector<int> automatic_owner(n,0);assert(automatic_owner.size()==n);\n    auto array=std::make_unique<int[]>(n); // C++14; unique_ptr itself is C++11.\n    for(std::size_t i=0;i<n;++i)assert(array[i]==0);\n    int* raw=new int[n]{};raw[9]=42;assert(raw[9]==42);delete[] raw;\n    auto c_storage=std::unique_ptr<void,decltype(&std::free)>(std::malloc(checked_bytes(n)),&std::free);\n    if(!c_storage)throw std::bad_alloc();\n    // Raw storage has not constructed a general C++ object: use placement new.\n    int* item=::new(c_storage.get())int(7);assert(*item==7);\n    bool overflow=false;\n    try{(void)checked_bytes(std::numeric_limits<std::size_t>::max());}catch(const std::length_error&){overflow=true;}\n    assert(overflow);\n    std::cout<<\"PASS vector/unique array/new-delete array/malloc-placement construction/overflow; no forced OOM\\n\";\n}\n\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Linux怎么查内存占用 free top RSS PSS与容器指标怎样对齐"
+    },
+    {
+      "type": "paragraph",
+      "text": "虚拟大小、RSS、PSS、Java堆和cgroup计费是不同口径，排内存问题必须把工作集、共享页、堆外资源与容器限制对齐。"
+    },
+    {
+      "type": "paragraph",
+      "text": "诊断时应同时记录目标PID、时间窗口、运行时版本和资源限制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "list",
+      "ordered": true,
+      "items": [
+        "linux相关"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "linux怎么查内存占用情况"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先看机器是否真的有内存压力"
+    },
+    {
+      "type": "paragraph",
+      "text": "free -h快速看总量、used/free、available和swap，available是考虑部分可回收内存后的估计，Linux为了缓存让free较低很常见，不能看free低就判泄漏。cat /proc/meminfo进一步区分匿名、文件缓存、slab、swap等，vmstat 1观察持续换入换出、运行/阻塞和CPU状态，首行与后续时间窗口别混读。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还可看/proc/pressure/memory反映任务因内存压力停顿的时间比例；大RSS但没有持续压力与频繁swap，不一定是故障。df -h查磁盘容量，不是RAM；free输出也不是某个JVM堆的精确已用量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "定位进程与映射"
+    },
+    {
+      "type": "paragraph",
+      "text": "top或ps -eo pid,comm,rss,vsz --sort=-rss定位大驻留进程；ps的RSS/VSZ通常以KiB显示，top可按配置改变显示单位。VSZ是虚拟地址规模，RSS是驻留页规模，线程共享地址空间，不能把top -H每行同进程RSS再累加当进程总量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对目标PID读/proc/PID/status、maps与smaps_rollup，或pmap -x PID查看映射分布。smaps的PSS把共享页按共享者比例分摊，私有干净/脏页与文件/匿名映射帮助判断来源；RSS加总会重复计算共享页。proc统计有成本与权限限制，一些快速计数可能近似，取样时进程还在变化。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "容器和语言运行时分别核对"
+    },
+    {
+      "type": "paragraph",
+      "text": "容器内排 OOM，要找到目标进程真正所属的 cgroup，再读它的 memory.current、memory.max、memory.stat、memory.events，必要时加上 swap 指标。不能默认所有环境都是同一路径，也不能默认都用 v2。"
+    },
+    {
+      "type": "paragraph",
+      "text": "memory.current 可能计入同组其他进程和被计费缓存，不能与某一个进程 RSS 一一对应。oom/oom_kill 的变化结合平台事件，可以支持内核杀进程的判断；应用分配异常和人工终止仍要另外区分。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java用已有授权诊断条件下的jcmd/JFR/堆信息区分堆与非堆，NMT若启用可看部分原生分配；Go看heap/alloc/GC与原生/cgo，Python看对象保留/本地扩展。栈与堆有什么区别 栈溢出 内存耗尽和泄漏怎样排查 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnt2AnoLKQvP6cAB6u3YEFAc)给完整路径，不把RSS大直接等同某语言GC失效。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "看趋势和生命周期再定位"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定PID、时间窗口、流量和部署版本，比较冷启动、稳定负载、峰值后回落的曲线。GC后存活堆持续增长可查强引用链；堆稳定而RSS增长可查线程栈、映射、直接缓冲、原生分配、分配器保留与碎片。线程/连接/队列数同步上涨往往比一个静态内存数字更有解释力。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-jvm-memory-budget",
+  "targetOrigin": "authored"
+}

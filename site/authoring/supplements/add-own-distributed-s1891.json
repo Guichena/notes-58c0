@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s1891",
+  "entryId": "scenario-distributed-lock",
+  "expectedOriginalHash": "4fcf26241493c26d834dee80799e3217aad3a90ae180a516abbec94d2d040f86",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.1 Redis 之外怎样实现分布式锁，高性能与正确性如何取舍"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库、etcd和ZooKeeper都能实现分布式协调，但过期持有者必须在受保护资源端被版本或fencing拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：不用Redis怎样做分布式锁；共识锁为什么还要fencing；高性能锁怎样降低竞争。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "先区分减少重复工作的效率锁与保护不可恢复副作用的正确性约束，再选择协调机制。涉及etcd锁API时以v3.5为例，ZooKeeper锁配方以3.9.3为例。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据库、etcd和ZooKeeper的实现路径"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库中，短事务可SELECT FOR UPDATE锁资源行，再在同事务完成业务；锁随事务结束，适合本就归属该库的数据。另建唯一锁表时，唯一键只保证同时插入冲突，还需所有者、租约、释放条件与恢复，不能留下永久占用记录。跨很长网络调用持数据库锁会耗尽连接并放大死锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "etcd可用lease绑定锁键并用事务/并发库争用，同名锁有明确所有权键；在etcd事务内可比较所有权后更新同一存储中的数据。ZooKeeper常用临时顺序节点，最小序号取得锁，其余监听直接前驱，减少全员唤醒；会话过期释放临时节点，但客户端本身可能仍在运行。获取请求响应丢失时应查本例申请节点，不能无条件重建多个排队节点。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么换成共识服务仍需保护目标资源"
+    },
+    {
+      "type": "paragraph",
+      "text": "共识锁能裁决锁记录，却不能把失联的客户端远程杀掉。A 持锁后长暂停，租约或会话失效，B 拿到锁；A 醒来后，仍可能去写外部文件或数据库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以在提交副作用时，资源端要原子核对单调 epoch、业务版本，或使用自身事务和唯一约束。先查锁还在，再远程写，中间仍然可能失权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "三个 ID 分工不同：随机 owner token 防误删，fencing token 区分新旧授权，requestId 防同一代次重复生效，不能拿一个替另一个。"
+    },
+    {
+      "type": "paragraph",
+      "text": "token 单调性还要跨故障切换和恢复成立。共识存储从备份恢复，可能改变代际假设，因此需要隔离旧客户端和明确恢复协议。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "性能优化不能破坏不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "先缩小锁粒度与临界区，把无副作用的计算放到锁外，再条件提交；能用乐观版本、原子库存条件或单分区串行执行就不必加额外分布式锁。高竞争时大量轮询占用锁服务，采用有界等待、退避抖动、监听/通知或按key排队；避免一个全局锁串行所有用户。"
+    },
+    {
+      "type": "paragraph",
+      "text": "租约越短故障恢复越快但误失效越多，越长越影响可用性；续租必须验证owner，失败后停止派新动作，不能假定看门狗永不暂停。公平锁、可重入、可中断和超时取消都会增加协议复杂度。批量/本地缓存授权只在允许的范围/期限内使用，并要防越权消费。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "选型与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "同库短交易优先数据库约束；协调元数据、主节点选举可评估etcd/ZooKeeper；Redis可用于允许重复计算的租约优化，但关键副作用仍有目的端防线。评价p50/p99获取延迟、竞争/持锁时长、服务端负载、故障恢复与误失效率，不能只比正常网络下吞吐。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试A暂停、B接管、A旧写；获取成功回包丢失；释放重复；租约边界；网络分区；多锁逆序；资源端不支持fencing。若目的端既不能原子校验代际又不能幂等，而副作用不可撤销，就不能对任意暂停宣称严格互斥。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.9 怎样实现公平且可重入的分布式锁"
+    },
+    {
+      "type": "paragraph",
+      "text": "公平可重入分布式锁需持久有序申请、owner身份与重入计数，同时用租约接管和资源端fencing处理旧持有者。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：怎样实现公平分布式锁；怎样可重入；前驱失联与超时取消怎么处理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "公平指活跃申请者按权威入队次序获得首次授权，可重入仅属于同一被认证owner。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "权威排队、owner和重入计数"
+    },
+    {
+      "type": "paragraph",
+      "text": "owner应包含client/processBootId及线程或显式逻辑任务ID，避免线程ID跨JVM重复、重启继承旧权。元数据包含lockKey、owner、depth、grantEpoch和会话/租约；同owner再次请求在确认仍拥有本代授权后原子depth++，非owner进入有序等待队列，释放depth--到0才真正让出。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个可选实现是ZooKeeper临时顺序节点：每次首次申请创建携带requestId的节点，读取排队列表，最小节点成为候选，其余监听直接前驱，避免惊群。前驱在安装watch前已删除时重新检查列表，不能永远等待不存在节点。创建响应未知要按本例requestId查是否已建，不能重复占多个队位。重入计数及本地多线程竞争仍需客户端锁保护，session失效须清空本地ownership。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "公平和活性必须处理异常"
+    },
+    {
+      "type": "paragraph",
+      "text": "超时/取消需要删除自己的排队节点，删除响应未知时查询并阻止迟到授权使用；原持有者失联由会话过期释放队位，连接暂断则停止发新副作用并等待确认。只有监听而不重新核验自己是否队首会在竞争/重连中错误获取。"
+    },
+    {
+      "type": "paragraph",
+      "text": "公平排队不等于固定时间内一定拿到锁。可重入持有者在别人排队时仍可再次进入同一临界区，否则递归调用可能死锁；但这也会延长别人的等待。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要限制临界区、最大递归和等待，监控队龄。持有者会话正常却永久不释放，仍能阻塞系统；读到队首后、真正访问外部资源前，也可能已经失去会话。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "资源端fencing和事务边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "授权给单调grantEpoch，目标数据库/存储在与效果同一个原子操作中验证当前有效代际，拒绝旧owner恢复后的写；随机owner防误删、epoch防旧写、requestId防重放三者分工不同。单靠ZooKeeper临时节点或Redis续期不能杀掉旧进程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "尤其要检查“数据库事务在加锁前开始，解锁在提交前”的顺序：解锁后事务若尚未提交，新持有者可能读到旧值并做出错误决策；在快照隔离下，拿到锁也不自动刷新已经建立的旧快照。锁必须覆盖所需读取、修改和提交边界。结构应当取得锁→执行并结束受保护事务→释放锁，提交异常也进入明确恢复；Spring代理事务结束可能发生在方法返回之后，因此方法内finally unlock未必在commit之后。可用外层锁包裹TransactionTemplate，且数据库自身条件/唯一约束仍保底。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与实现边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试A入队后B、A重入depth2只释放一次、非owner释放、前驱消失竞态、申请响应丢失、取消与授权竞争、session过期旧写、新boot重用threadId、commit前解锁以及服务端恢复。实现生产分布式锁还需要会话状态机和服务端一致性测试；ZooKeeper或Redis集群的失联、接管与旧授权恢复必须实际验证，不能把单JVM ReentrantLock当分布式实现。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

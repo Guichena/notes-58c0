@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2977",
+  "entryId": "own-mq-kafka",
+  "expectedOriginalHash": "873ff7af686d506a2e7308e71a3f5102ee26a0fa81e4b31320bae5389e76e55b",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.9 日志分区并发处理怎样提交offset，为什么不能只说一个消费者"
+    },
+    {
+      "type": "paragraph",
+      "text": "并行处理只能提交已完整完成的连续消费前缀，不能用最大已完成offset跳过仍失败的较早消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：并行消费怎样提交offset；一个消费者多线程是否安全；分区撤销时未完成任务怎么办。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "采用带分区进度的日志模型说明，不假定所有日志系统都是Kafka；消费并发与提交顺序分开控制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "读取者、处理者和提交者是三个职责"
+    },
+    {
+      "type": "paragraph",
+      "text": "并行处理可以，提交进度不能越过没做完的消息。一个分区可由当前拥有者读取，把任务交给有界工作池；工作线程只上报已持久完成的事件，再由单一进度维护者按实际交付序列计算连续完成前缀并提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "比如交付 A、B、C，C 先结束，也不能跨过没完成的 A/B。否则重启从 C 之后读，前两条就永远漏掉了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单消费者实例仍可能内部多线程完成乱序；反之很多消费者实例各自拥有不同分区可安全横向扩展。关键是同分区的所有权协议、按协议维护进度与外部效果幂等，而非整个集群只有一个实例。单实例宕机停服且限制吞吐，需备用接管和持久offset。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "顺序、背压与接管"
+    },
+    {
+      "type": "paragraph",
+      "text": "安全提交 offset，不代表业务执行顺序也安全。比如旧余额事件晚完成，仍可能覆盖新余额。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要求同实体有序时，按 entityKey 路由固定分区或串行子队列；保存每实体版本或源位置，或者把有依赖的事件串行执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "有失败事件阻塞前缀时限制总体在途数量，暂停继续读取/派发而保持协议所需心跳。毒消息只有在可靠隔离并明确是否允许跳过依赖后才能推进，打日志不能代替持久责任。接管更新epoch，迟到旧回调不得修改新水位；旧任务可能已对数据库生效，仍需inbox/版本fencing，忽略回调不等于取消副作用。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "诊断与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "记录partition、eventId、交付序列、start/end、ownerEpoch、候选及确认offset，重建哪个未完成项被越过。测试逆序完成、稀疏位置、提交响应未知、分区迁移、旧任务恢复和下游事务提交后退出。落地时用实际中间件的分区归属和提交语义验证该恢复方案。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mq-safe-offset-prefix",
+  "targetOrigin": "authored"
+}

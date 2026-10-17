@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-155",
+  "entryId": "155",
+  "expectedOriginalHash": "7f95d5907f72173db4cfbc2053f781fc7bb30ebee972e91311fbb6afeb5189a7",
+  "title": "算法练习补充：缓存与最小栈：把多个追问组合进同一个合同",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "缓存与最小栈：把多个追问组合进同一个合同"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "O(1) 最小栈"
+    },
+    {
+      "type": "paragraph",
+      "text": "每次入栈同时保存“截至这一层的最小值”，出栈时该层快照一起消失，重复最小值自然正确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "push(2), push(1), push(1), pop() 后最小值仍为 1。压栈、弹栈、读栈顶与读最小值均为摊还 O(1)，空间 O(n)；底层 ArrayDeque 偶尔扩容，所以不能把每次 push 都承诺为严格最坏 O(1)。空栈查询或弹出抛 NoSuchElementException。若题目不允许辅助栈，可讨论差值编码，但 int 差值必须扩展到 long，否则边界值会溢出；这里选择更直接的完整实现。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "LFU 如何做到频率最少、同频率最旧？"
+    },
+    {
+      "type": "paragraph",
+      "text": "用一个 key 到节点的哈希表，再用一个频率到双向链表桶的哈希表，配合最小频率变量，就能在期望 O(1) 时间完成访问和淘汰。每个缓存节点只属于一个频率桶，节点自身保存桶内前后指针，删除与追加不需要桶内哈希表。容量上限为 C 时，最多 C 个节点和 C 个非空频率桶，辅助空间 O(C)，不计算 key/value 本身的大小。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以沿一个 key 的访问过程记 LFU：新项从频率 1 开始；成功 get，或者 put 覆盖已有 key，都算一次访问。访问时把节点从旧频率桶摘下，接到下一频率桶末尾，因此桶内顺序就是该频率下的最近使用顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要淘汰时，找最小频率桶，再取其中最早加入的 key。只有旧最小频率桶被清空，最小频率才向下一层推进；插入新项时则重置为 1。容量为 0 就不保存，null key 和 null value 都拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面是单线程教学 LFU。频率使用 long，到 Long.MAX_VALUE 后继续访问会在修改状态前报 ArithmeticException，避免饱和后把长期使用次数不同的项错误归为同频。实际缓存可以明确采用衰减或近似频率策略，但那已不是无限期精确 LFU。哈希查找按期望复杂度分析；两个顶层哈希表扩容时，单次操作仍可能出现抖动，因此包含扩容的更新按期望摊还 O(1) 理解。LFU 关注频率，LRU 关注最近一次访问，热点迁移时 LFU 的历史包袱是重要取舍。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "批量淘汰 LRU 的 n 个尾部节点"
+    },
+    {
+      "type": "paragraph",
+      "text": "循环摘除 n 个最旧节点，并同步删除每个 key 的哈希映射即可；只改链表会留下“已经淘汰却还能查到”的幽灵项。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里把最旧节点放在 head，最新节点放在 tail，命名与某些实现相反但语义一致。evict(n) 返回实际删除数量，n 超过当前大小时清空，n<0 拒绝。每个节点的摘链与哈希删除期望 O(1)，总时间 O(min(n,size))，不扫描所有桶或所有缓存项。实现使用自写双向链表与 HashMap，没有调用 LinkedHashMap；如果限制连 HashMap 都不能用，还必须提供哈希桶、冲突处理和扩容的实现，单纯换一个链表不够。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "泛型、TTL 与线程安全，能组合在同一个 LRU 中吗？"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以：泛型节点保存 key/value，双向链表维护访问顺序，独立到期索引找过期项，把全部状态变更放进同一把锁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "访问顺序和到期顺序是两件事：不同 key 的 TTL 可以不同，get 又会改变访问顺序，所以“最久没访问”不一定“最早到期”。这份代码用 TreeMap 按 deadline 找到期桶，同一时刻到期的节点放在桶内双向链表中。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读写前先清理所有已到期项；容量仍满时，才淘汰有效项中的 LRU。边界是 now>=deadline：get 不续期，覆盖 put 才重设 TTL。固定 TTL 构造参数回答“所有 KV 同过期时长、最多 N 对、满时先清过期项”；额外的 put 参数再支持逐项时长。"
+    },
+    {
+      "type": "paragraph",
+      "text": "泛型并不表示可以接收 null：这里明确拒绝 null key/value，因此 Optional.empty 只表示缺失或过期。put(key,value,0) 会删除旧值且不保留新值。容量为 0 也不存储。时钟通过 LongSupplier 注入，要求整个实例观察到非递减的逻辑时间；时钟单位和 TTL 单位一致，加法超出 long 范围就拒绝。墙钟回拨不能直接用于该合同；生产系统可用受控的单调时钟适配，若直接使用 nanoTime 还要按差值与回绕条件设计，不能以简单 deadline 比较替代。"
+    },
+    {
+      "type": "paragraph",
+      "text": "get 虽然叫查询，命中后也要改访问顺序，所以它同样是写操作。synchronized 覆盖查询、过期清理、摘链、追加、淘汰和到期索引更新，不能把其中的链表移动放到锁外。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这把锁保护的是缓存结构。返回的 V 仍是对象引用，并非深拷贝；调用方无锁修改共享可变 V，并不会因此变安全。传入的 clock 也应快速、无重入副作用，不能在持锁时做耗时 I/O。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设容量上限为 C，操作开始时有 D 个不同到期时间。每个缓存节点同时带有访问链和到期桶链的两组独立指针，所有桶合计只链接当前有效节点；顶层哈希表、TreeMap、节点及桶占用 O(C) 辅助空间，不计算调用方 key/value 本身的大小。无过期删除时，TreeMap.firstKey 仍需沿左分支定位最早到期桶，因此 get 的期望时间为 O(1+log(D+1))，不能报 O(1)。写入、覆盖及单项淘汰也包含 O(1+log(D+1)) 的索引维护。若本次先清理 e 个节点、涉及 b 个到期桶，清理期望耗时 O(1+e+(b+1)log(D+1))；桶内摘链为 O(1)，不扫描历史容量。evict(n) 在此基础上再淘汰 r=min(n,清理后大小) 个有效节点，总时间为期望 O(1+e+(b+r+1)log(D+1))。keysOldestFirst 还需与清理后节点数成正比的复制时间与结果空间。无 TTL 的 BatchLru 不维护到期索引，其批量淘汰仍是 O(r)。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "最近 100 个玩家"
+    },
+    {
+      "type": "paragraph",
+      "text": "若“最近”指到达顺序中的最近 100 个不同玩家，用有序集合在每次见到玩家时先删除旧位置、再追加到末尾即可。"
+    },
+    {
+      "type": "paragraph",
+      "text": "查最近列表时倒序输出，更新期望 O(1)、完整列表 O(100)，状态最多 100 项。这个合同与“最近 100 次事件，允许同一玩家重复”不同，后者用容量 100 的队列即可；与“过去五分钟有事件的玩家”也不同，后者必须按时间过期。如果按事件时间而事件会迟到，还要明确 watermark、允许迟到范围与结果回撤，不能把到达顺序冒充事件时间。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.function.LongSupplier;\n\npublic final class InterviewCaches {\n    private InterviewCaches() {}\n    public static final class MinStack {\n        private record Entry(int value,int minimum) {}\n        private final Deque<Entry> stack=new ArrayDeque<>();\n        public void push(int value){stack.push(new Entry(value,stack.isEmpty()?value:Math.min(value,stack.peek().minimum)));}\n        public int pop(){return stack.remove().value;}\n        public int peek(){return stack.element().value;}\n        public int minimum(){return stack.element().minimum;}\n        public boolean isEmpty(){return stack.isEmpty();}\n    }\n    /** Single-threaded LFU, LRU tie-break, get and overwrite both count as access. */\n    public static final class Lfu<K,V> {\n        private final int capacity;\n        private final Map<K,Entry> entries=new HashMap<>();\n        private final Map<Long,Bucket> buckets=new HashMap<>();\n        private long minimum;\n        private final class Entry {\n            final K key;V value;long frequency=1;Entry before,after;\n            Entry(K key,V value){this.key=key;this.value=value;}\n        }\n        private final class Bucket {\n            Entry first,last;\n            void append(Entry e){e.before=last;if(last==null)first=e;else last.after=e;last=e;}\n            void unlink(Entry e){if(e.before==null)first=e.after;else e.before.after=e.after;if(e.after==null)last=e.before;else e.after.before=e.before;e.before=e.after=null;}\n            boolean isEmpty(){return first==null;}\n        }\n        public Lfu(int capacity){if(capacity<0)throw new IllegalArgumentException(\"capacity\");this.capacity=capacity;}\n        public Optional<V> get(K key){Objects.requireNonNull(key);Entry e=entries.get(key);if(e==null)return Optional.empty();promote(e);return Optional.of(e.value);}\n        public void put(K key,V value){\n            Objects.requireNonNull(key);Objects.requireNonNull(value);Entry e=entries.get(key);\n            if(e!=null){promote(e);e.value=value;return;}\n            if(capacity==0)return;\n            if(entries.size()==capacity){Bucket bucket=buckets.get(minimum);Entry oldest=bucket.first;bucket.unlink(oldest);entries.remove(oldest.key);if(bucket.isEmpty())buckets.remove(minimum);}\n            Entry added=new Entry(key,value);entries.put(key,added);buckets.computeIfAbsent(1L,x->new Bucket()).append(added);minimum=1;\n        }\n        private void promote(Entry e){\n            long next=Math.addExact(e.frequency,1); // reject before mutation instead of silently saturating LFU\n            Bucket old=buckets.get(e.frequency);old.unlink(e);\n            if(old.isEmpty()){buckets.remove(e.frequency);if(minimum==e.frequency)minimum=next;}\n            e.frequency=next;buckets.computeIfAbsent(next,x->new Bucket()).append(e);\n        }\n        public int size(){return entries.size();}\n    }\n    /** Handwritten doubly-linked LRU list plus HashMap; synchronized complete operations. */\n    public static final class TtlLru<K,V> {\n        private final class Entry {final K key;V value;long deadline;Entry before,after,expiryBefore,expiryAfter;Entry(K key,V value,long deadline){this.key=key;this.value=value;this.deadline=deadline;}}\n        private final int capacity;private final long defaultTtl;private final LongSupplier clock;\n        private final Map<K,Entry> map=new HashMap<>();\n        private final NavigableMap<Long,ExpiryBucket> expiry=new TreeMap<>();\n        private final class ExpiryBucket {\n            Entry first,last;\n            void append(Entry e){e.expiryBefore=last;if(last==null)first=e;else last.expiryAfter=e;last=e;}\n            void unlink(Entry e){if(e.expiryBefore==null)first=e.expiryAfter;else e.expiryBefore.expiryAfter=e.expiryAfter;if(e.expiryAfter==null)last=e.expiryBefore;else e.expiryAfter.expiryBefore=e.expiryBefore;e.expiryBefore=e.expiryAfter=null;}\n            boolean isEmpty(){return first==null;}\n        }\n        private Entry oldest,newest;private boolean haveTime;private long lastTime;\n        public TtlLru(int capacity,long ttl,LongSupplier clock){if(capacity<0||ttl<0)throw new IllegalArgumentException(\"capacity/ttl\");this.capacity=capacity;this.defaultTtl=ttl;this.clock=Objects.requireNonNull(clock);}\n        private long now(){long t=clock.getAsLong();if(haveTime&&t<lastTime)throw new IllegalArgumentException(\"clock moved backward\");haveTime=true;lastTime=t;return t;}\n        public synchronized Optional<V> get(K key){Objects.requireNonNull(key);purge(now());Entry e=map.get(key);if(e==null)return Optional.empty();unlink(e);append(e);return Optional.of(e.value);}\n        public synchronized void put(K key,V value){put(key,value,defaultTtl);}\n        public synchronized void put(K key,V value,long ttl){\n            Objects.requireNonNull(key);Objects.requireNonNull(value);if(ttl<0)throw new IllegalArgumentException(\"ttl\");\n            long time=now(),deadline=Math.addExact(time,ttl);purge(time);\n            Entry existing=map.get(key);if(existing!=null)remove(existing);\n            if(ttl==0||capacity==0)return;\n            if(map.size()==capacity)remove(oldest);\n            Entry e=new Entry(key,value,deadline);map.put(key,e);append(e);expiry.computeIfAbsent(deadline,x->new ExpiryBucket()).append(e);\n        }\n        /** Returns number removed; expired entries are purged first and are not counted in evict(n). */\n        public synchronized int evict(int n){if(n<0)throw new IllegalArgumentException(\"n\");purge(now());int count=0;while(count<n&&oldest!=null){remove(oldest);count++;}return count;}\n        public synchronized int size(){purge(now());return map.size();}\n        public synchronized List<K> keysOldestFirst(){purge(now());List<K> out=new ArrayList<>();for(Entry e=oldest;e!=null;e=e.after)out.add(e.key);return List.copyOf(out);}\n        private void purge(long time){while(!expiry.isEmpty()&&expiry.firstKey()<=time){ExpiryBucket due=expiry.pollFirstEntry().getValue();while(!due.isEmpty()){Entry e=due.first;due.unlink(e);map.remove(e.key);unlink(e);}}}\n        private void remove(Entry e){map.remove(e.key);unlink(e);ExpiryBucket bucket=expiry.get(e.deadline);bucket.unlink(e);if(bucket.isEmpty())expiry.remove(e.deadline);}\n        private void unlink(Entry e){if(e.before==null)oldest=e.after;else e.before.after=e.after;if(e.after==null)newest=e.before;else e.after.before=e.before;e.before=e.after=null;}\n        private void append(Entry e){e.before=newest;if(newest==null)oldest=e;else newest.after=e;newest=e;}\n    }\n    /** Pure LRU batch deletion O(number removed), with no TTL index. */\n    public static final class BatchLru<K,V> {\n        private final int capacity;private final Map<K,Node<K,V>> map=new HashMap<>();private Node<K,V> head,tail;\n        private static final class Node<K,V>{final K key;V value;Node<K,V> prev,next;Node(K k,V v){key=k;value=v;}}\n        public BatchLru(int capacity){if(capacity<0)throw new IllegalArgumentException(\"capacity\");this.capacity=capacity;}\n        public Optional<V> get(K key){Objects.requireNonNull(key);Node<K,V> n=map.get(key);if(n==null)return Optional.empty();unlink(n);append(n);return Optional.of(n.value);}\n        public void put(K key,V value){Objects.requireNonNull(key);Objects.requireNonNull(value);Node<K,V> n=map.get(key);if(n!=null){n.value=value;unlink(n);append(n);return;}if(capacity==0)return;if(map.size()==capacity)evict(1);n=new Node<>(key,value);map.put(key,n);append(n);}\n        public int evict(int n){if(n<0)throw new IllegalArgumentException(\"n\");int count=0;while(count<n&&head!=null){Node<K,V> old=head;unlink(old);map.remove(old.key);count++;}return count;}\n        public int size(){return map.size();}\n        private void unlink(Node<K,V> n){if(n.prev==null)head=n.next;else n.prev.next=n.next;if(n.next==null)tail=n.prev;else n.next.prev=n.prev;n.prev=n.next=null;}\n        private void append(Node<K,V> n){n.prev=tail;if(tail==null)head=n;else tail.next=n;tail=n;}\n    }\n    /** Most recent distinct players in arrival order, newest first. */\n    public static final class RecentPlayers<K> {\n        private final int capacity;private final LinkedHashSet<K> players=new LinkedHashSet<>();\n        public RecentPlayers(int capacity){if(capacity<0)throw new IllegalArgumentException(\"capacity\");this.capacity=capacity;}\n        public void seen(K player){Objects.requireNonNull(player);players.remove(player);if(capacity==0)return;players.add(player);if(players.size()>capacity)players.remove(players.iterator().next());}\n        public List<K> newestFirst(){List<K> out=new ArrayList<>(players);Collections.reverse(out);return out;}\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

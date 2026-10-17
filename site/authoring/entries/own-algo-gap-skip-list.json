@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-skip-list",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "手写简单跳表：搜索路径、随机塔高、插入删除与验证",
+  "questions": [
+    {
+      "id": "q-own-algo-skip-list",
+      "question": "手写简单跳表：搜索路径、随机塔高、插入删除与验证",
+      "shortAnswer": "跳表用多层稀疏索引加速一条有序链表。查找从最高层向右，直到下一个 key 不再小于目标，再下楼。插入先记住每层前驱 update，随机确定塔高并逐层接链；删除沿同一组前驱跨过目标，最后收缩空顶层。底层始终保存全部有序节点。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "手写简单跳表：搜索路径、随机塔高、插入删除与验证"
+        },
+        {
+          "type": "paragraph",
+          "text": "跳表用多层稀疏索引加速一条有序链表。查找从最高层向右，直到下一个 key 不再小于目标，再下楼。插入先记住每层前驱 update，随机确定塔高并逐层接链；删除沿同一组前驱跨过目标，最后收缩空顶层。底层始终保存全部有序节点。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可能的问法"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "跳表怎么实现？手撕一个简单跳表。",
+            "手写查找、插入和删除，并说明随机塔高、范围查询、排名增强及并发版本的边界。"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "输入、输出与前提"
+        },
+        {
+          "type": "paragraph",
+          "text": "跳表每层跳过若干下层节点，通过随机高度保持期望对数搜索。下面是完整 Java int→int 映射：重复 key 更新 value，单线程，p=1/2，最多 32 层，null 表示链尾；head 的 key 不参与比较，因此 int 极值也是合法键。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么这样做"
+        },
+        {
+          "type": "paragraph",
+          "text": "每层链表严格递增，层l包含的节点也是层l−1的子序列，同一业务节点只存一份key/value，next数组存多个前向指针。查找状态p始终是目标key之前已到达的最大候选；若右邻key仍小于目标可安全跳过它及所有更小节点，不能跨到大于等于目标的位置。下楼后继续细化，底层右邻若等于key即命中，否则不存在。"
+        },
+        {
+          "type": "paragraph",
+          "text": "插入先按这条搜索路径记录before[l]。若底层右邻已同key，只更新value且不增加size、不重新抽塔高。新节点高度从1开始，每次独立半概率提升，最多32；高于现有levels的那些前驱是head。每层先new.next=before.next再before.next=new，保留后续链。只改变局部指针，不复制整层链表或重排节点。"
+        },
+        {
+          "type": "paragraph",
+          "text": "删除也先记录各层前驱，底层没有目标则返回false；若有，目标高度内每一层都将before.next改成target.next。最高层空了就levels--直到非空或底层1，防止遗留无用层。这里没有后向指针/span/rank，所以不宣称支持O(log n)按排名访问；如需Redis式排名，需要为跨越数量维护span并额外验证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "理想几何提升P(height≥k)=p^(k−1)，单节点期望前向指针数为1/(1−p)，p=1/2约2；n节点预期总指针O(n)，并非每个节点都复制log n份值。层数约log_(1/p)n，每层预期横走常数量，因此平均查/增/删O(log n)，不提供确定最坏界：随机层全落低层时可退化O(n)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最高层固定L时更精确地说搜索期望界含O(L+n/2^(L−1))项，不能让n无限增长却仍断言常数L给普遍对数保证。本代码L=32用于可在Java内存表示的int规模节点；若泛化无限规模，应按规模增加上限。教学对象next数组按实际塔高分配，插入/删除的before数组固定32，省去了复杂泛型数组告警。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并发版需要明确节点如何安全发布、删除标记与帮助清理、以及节点何时可以回收；只给 next 加 volatile 不能构成正确的无锁跳表。本实现是单线程版本。例如，LevelDB 的跳表采用随机层高，依赖其写同步与读并发约束，以及 arena 生命周期管理；Java 的 ConcurrentSkipListMap 使用另一套并发机制，不能把这里的单线程实现当作它们的替代。选择并发库时应检查其线性化与迭代语义；用于持久化存储时，还要分析页局部性、WAL、恢复和范围扫描，不能只凭层数类比 B+ 树。"
+        },
+        {
+          "type": "paragraph",
+          "text": "范围查询先从高层向下定位第一个不小于下界的节点，再沿底层顺序扫描至上界；若输出 k 项，在独立随机提升且层数上限适当的前提下，期望时间为 O(1+log(n+1)+k)，不能只报 O(log n)。当前 SimpleSkipList 只实现点查、插入和删除，没有提供范围或排名 API。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若有序集合采用哈希索引加跳表的双索引设计，哈希表负责按 member 定位 score，期望 O(1)；有序索引按 (score,member) 的稳定总序排列，负责范围访问，更新分数时先删除旧排序项、再插入新项，期望 O(1+log(n+1))。两份索引必须在同一个原子操作内保持一致，不能在集合中直接修改参与比较的 score。按排名跳跃还需维护跨越节点数 span，不是所有跳表天然具有 O(log n) 的排名查询。Redis 的具体布局还取决于版本、集合规模和配置阈值，小集合可使用紧凑编码，不能把上述双索引模型当成所有实例的固定布局。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "例子与推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "插入10、30，再插20：保存各层位于20之前的前驱，底层接成10→20→30；20若随机升层，只在其实际高度内接入，不改没有20的更高层。删20把这些层同时跨过去。"
+        },
+        {
+          "type": "paragraph",
+          "text": "跳表与 TreeMap 差分插入、覆盖、删除和查询；周期检查每层有序、塔节点与底层对象身份一致、size 一致。最后删除全部节点，检查高度回落，再补 int 极值与空表。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度与正确性"
+        },
+        {
+          "type": "paragraph",
+          "text": "独立几何随机提升且层上限适当时操作期望O(log n)，最坏O(n+L)；期望节点指针O(n)，最坏O(nL)，此实现L=32。搜索额外O(1)，修改前驱数组O(L)，不把所有概率情况写成确定log n。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界、反例与追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "若要允许重复值，应明确key→count或(key,唯一序号)总序，删除一个与删除所有不能混淆。"
+        },
+        {
+          "type": "paragraph",
+          "text": "自测检查有序关系、层高、索引指针和查询结果；概率高度界来自分析，不能用有限次测试代替。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java实现与自测"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\n\n/** Single-threaded int-to-int map, geometric p=1/2 towers, not a concurrent map. */\npublic final class SimpleSkipList {\n    private static final int MAX_LEVEL = 32;\n    private static final class Node {\n        final int key; int value; final Node[] next;\n        Node(int key, int value, int level) { this.key=key; this.value=value; next=new Node[level]; }\n    }\n    private final Node head = new Node(0,0,MAX_LEVEL);\n    private final Random random;\n    private int levels=1, size;\n    public SimpleSkipList(Random random) { this.random=Objects.requireNonNull(random); }\n    public int size() { return size; }\n    public OptionalInt get(int key) {\n        Node p=head;\n        for (int l=levels-1;l>=0;l--) while (p.next[l]!=null && p.next[l].key<key) p=p.next[l];\n        p=p.next[0];\n        return p!=null && p.key==key ? OptionalInt.of(p.value) : OptionalInt.empty();\n    }\n    public boolean put(int key,int value) {\n        Node[] before=new Node[MAX_LEVEL]; Node p=head;\n        for (int l=levels-1;l>=0;l--) {\n            while (p.next[l]!=null && p.next[l].key<key) p=p.next[l];\n            before[l]=p;\n        }\n        Node old=p.next[0];\n        if (old!=null && old.key==key) { old.value=value; return false; }\n        int height=1;\n        while (height<MAX_LEVEL && random.nextBoolean()) height++;\n        if (height>levels) {\n            for (int l=levels;l<height;l++) before[l]=head;\n            levels=height;\n        }\n        Node x=new Node(key,value,height);\n        for (int l=0;l<height;l++) { x.next[l]=before[l].next[l]; before[l].next[l]=x; }\n        size++; return true;\n    }\n    public boolean remove(int key) {\n        Node[] before=new Node[MAX_LEVEL]; Node p=head;\n        for (int l=levels-1;l>=0;l--) {\n            while (p.next[l]!=null && p.next[l].key<key) p=p.next[l];\n            before[l]=p;\n        }\n        Node x=p.next[0];\n        if (x==null || x.key!=key) return false;\n        for (int l=0;l<x.next.length;l++) before[l].next[l]=x.next[l];\n        while (levels>1 && head.next[levels-1]==null) levels--;\n        size--; return true;\n    }\n    private void verify(TreeMap<Integer,Integer> oracle) {\n        List<Node> bottom=new ArrayList<>();\n        Iterator<Map.Entry<Integer,Integer>> expected=oracle.entrySet().iterator();\n        for (Node n=head.next[0];n!=null;n=n.next[0]) {\n            if (!expected.hasNext()) throw new AssertionError(\"extra node\");\n            Map.Entry<Integer,Integer> e=expected.next();\n            if (n.key!=e.getKey() || n.value!=e.getValue()) throw new AssertionError(\"contents\");\n            bottom.add(n);\n        }\n        if (expected.hasNext() || size!=oracle.size()) throw new AssertionError(\"size\");\n        for (int l=0;l<MAX_LEVEL;l++) {\n            Node p=head.next[l];\n            for (Node n:bottom) if (n.next.length>l) {\n                if (p!=n) throw new AssertionError(\"tower identity\");\n                p=p.next[l];\n            }\n            if (p!=null) throw new AssertionError(\"extra tower\");\n        }\n        if (levels>1 && head.next[levels-1]==null) throw new AssertionError(\"empty top level\");\n    }\n    public static void main(String[] args) {\n        SimpleSkipList map=new SimpleSkipList(new Random(1386));\n        TreeMap<Integer,Integer> oracle=new TreeMap<>(); Random r=new Random(1391);\n        for (int t=0;t<30000;t++) {\n            int key=t==0?Integer.MIN_VALUE:t==1?Integer.MAX_VALUE:r.nextInt(2001)-1000;\n            if (t<2 || r.nextBoolean()) {\n                int v=r.nextInt(); boolean inserted=!oracle.containsKey(key); oracle.put(key,v);\n                if (map.put(key,v)!=inserted) throw new AssertionError();\n            } else if (map.remove(key)!=(oracle.remove(key)!=null)) throw new AssertionError();\n            Integer v=oracle.get(key);\n            if (!map.get(key).equals(v==null?OptionalInt.empty():OptionalInt.of(v))) throw new AssertionError();\n            if (t%33==0) map.verify(oracle);\n        }\n        map.verify(oracle);\n        for (int key:new ArrayList<>(oracle.keySet())) { map.remove(key); oracle.remove(key); }\n        map.verify(oracle);\n        if (map.levels!=1 || map.remove(0) || map.get(0).isPresent()) throw new AssertionError();\n        System.out.println(\"PASS 30000 operations vs TreeMap; all tower identity/order invariants; updates/extremes/full deletion/top shrink\");\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-bg-redis-3-5",
+  "entryId": "bg-redis-3",
+  "expectedOriginalHash": "5e1a3a1eaf9fe172844504df186132c86b25e82bb0c3f957b065307266e726d9",
+  "title": "容量预算、十亿数据与内存碎片诊断",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读边界：1G/999M、十亿数据与固定 QPS 均是题设或估算输入，不是 Redis 的通用容量、写入余量或延迟保证。需计入对象、索引、复制缓冲、COW、碎片及部署限制。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "容量 淘汰与内存碎片"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 容量要按实际分配、进程驻留和故障峰值一起规划；过期、淘汰、异步释放与碎片整理解决的是不同问题。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1G 内存用了 999M 还能写吗"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能只凭“1G 已用 999M”判断能否写入，必须确认计量单位、maxmemory 与系统硬限、当前策略及命令是否会被 OOM 检查拒绝。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试官可能这样问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Redis 内存只有 1G，已经存了 999M，还能存吗？",
+        "maxmemory 是不是进程内存的硬上限？",
+        "删除了大量 Key，为什么 RSS 没降？",
+        "noeviction 会不会拒绝所有读写？",
+        "volatile 策略下，一个 Key 都没设 TTL，会发生什么？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先确认说的是哪一种内存"
+    },
+    {
+      "type": "paragraph",
+      "text": "1G 可能指物理内存、容器限制或 Redis maxmemory；999M 可能指 value 总量、used_memory 或 RSS。GB/MB 的十进制口径与 GiB/MiB 的二进制口径也不同。条件没对齐时，不能直接相减后说“还剩 1M”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "INFO memory 中，used_memory 反映 Redis 经分配器分配的内存；value 总字节还没包含 Key、对象头、哈希桶、节点等开销。used_memory_rss 是操作系统观察到的常驻内存，还受分配器保留页等因素影响。删除 Key 后 used_memory 下降，不代表 RSS 立即归还。检查 maxmemory、mem_not_counted_for_evict、allocator 指标，同时对照容器 limit 和宿主机余量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "maxmemory 是 Redis 用于控制内存和淘汰的阈值，不是整个进程、fork 子进程和操作系统全部占用的硬上限。用于淘汰比较的口径还会扣除部分复制/AOF 相关缓冲；这些内存不是从机器上消失了。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写入、对象编码转换、字典 rehash、客户端输出缓冲、迁移和 fork 后 COW 都可能形成额外峰值。maxmemory 不能贴着物理或容器上限配置，再指望淘汰保证进程一定不被杀。留多少余量应按实际负载、持久化、副本、恢复和故障演练测量。本节的淘汰判断以普通主节点为主；Redis 7.2 副本默认 replica-ignore-maxmemory yes，通常由主节点淘汰后传播删除，副本仍须单独监控实际内存，不能假定它会按同一阈值自动自救。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "写入结果有哪些分支"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果当前计入的内存尚在预算内，小写入可能成功；若需要回收且 allkeys 或 volatile 策略有合格候选，Redis 可以淘汰后继续处理。noeviction 不为 maxmemory 淘汰，volatile 没有可用 TTL 候选也可能腾不出空间，相应受 OOM 限制的写命令会报错。已过期键清理可能释放空间，但“很快就要过期”的对象不能提前当成空闲容量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能把临界状态解释成全部读写停机：读命令及某些可释放内存的操作仍可执行。但是“写入的结果会变小”也不等于命令必然获准，例如 SET 在 Redis 7.2 属于可能增内存、会受 denyoom 检查的命令，不会先精算新旧值差再保证缩值 SET 放行。应核对具体命令标志及执行时的内存状态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "检查与命令执行不是逐字节的硬隔离，某次大结果或写入仍可能造成暂时超限；不能承诺最后一个大值一定恰好按剩余字节被拒绝。反过来，即使低于 maxmemory，也可能遭遇操作系统 OOM、容器 kill、持久化拒写或网络失败。Redis 返回 OOM 与系统杀进程是不同层级的故障。"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量验证要覆盖小/大 value、不同编码、TTL 候选比例、峰值写入、rehash、输出缓冲、COW 和副本积压，同时观察命中、淘汰、OOM、p99 和真实机器余量。治理可以缩短 Key、减少冗余字段、拆大对象或合理分片，但应分别测内存和请求成本；没有单位与实际命令，不能给“1G/999M”问题一个确定数值结论。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "十亿条数据是否适合全部放进 Redis"
+    },
+    {
+      "type": "paragraph",
+      "text": "十亿条不是选型的充分条件，先计算真实单条成本、副本与峰值，再按访问比例、延迟、恢复目标和预算决定全内存、冷热分层或其他存储。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试官可能这样问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "主从和 Cluster 存十亿条数据有什么缺点，怎样优化？",
+        "加副本能不能解决存不下的问题？",
+        "数据有多大，需要多少台机器？",
+        "Codis、Pika 或其他 Redis 兼容存储优化了哪一层？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "单条多一个字节也会影响总量"
+    },
+    {
+      "type": "paragraph",
+      "text": "当 N = 10^9 时，每条多 1 字节就是约 1 GB 十进制容量。假设 Key 为 32 B、value 为 256 B、平均元数据与分配开销为 96 B，则基础数据集约为 384 GB，即约 357.6 GiB。96 B 不是 Redis 的固定开销，必须按实际类型、编码、Key 长度、allocator、字典负载及 MEMORY USAGE 抽样校准。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果每份数据一主两副本、总共存三份，则基础量约为 1.152 TB 十进制，还没有加 COW、迁移、缓冲、碎片与空闲容量。副本分别保存所属分片的数据副本，不能把副本数量当成唯一数据容量的增加。仅给十亿条而没有单条大小、热数据比例、QPS、持久化要求和预算，就不能算出确定机器数量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "主从复制可以扩展读能力与提供故障恢复副本，Sentinel 协助监控和切换，但不把一个唯一数据集拆开。Cluster 多主分片才把不同 Key 分到不同主节点。选主分片数时，每节点可用预算要扣除系统、缓冲、故障迁移与持久化余量，同时检查 CPU、网络和热点，而不是总字节除以物理 RAM 就上线。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个超大或超热 Key 仍属于一个槽；增加其他主节点不会自动拆开它。槽数量均匀也不等于内存与请求量均匀。需要拆分时，要重新设计访问、TTL、聚合和原子性边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先减少真正需要常驻的内容"
+    },
+    {
+      "type": "paragraph",
+      "text": "优先缓存热点和昂贵回源结果，冷数据留在权威数据库或对象存储。压缩长 value、减少重复字段和过长 Key、使用合适的紧凑编码或小 Hash，都可能减少内存；代价包括压缩解压 CPU、聚合 Key 变大，以及 TTL、热度和原子操作粒度变化。不能盲目提高 listpack 阈值，也不能把所有对象合并成一个巨型 Hash。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 和淘汰控制可重建数据的增长，负缓存或维护可靠的 Bloom 减少无效查询，按 ID 或租户分片后持续监测倾斜。容量减少是否值得，要看命中率、回源成本与 p99，不能只报节省了多少字节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "十亿条数据的全量复制、备份恢复和 resharding 可能耗时很长。应预估迁移带宽、复制落后、磁盘空间和恢复期间的回源压力，分批迁移并核对条数、版本与关键数据，设置回滚和停止条件。正常 GET 很快，不代表节点重建或整库恢复能满足 RTO。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验证需要覆盖大小 value、编码转换、热冷读写、压缩和淘汰开销、新增分片、节点故障与全量恢复；副本不是历史备份，误删会传播，恢复路线应有独立备份或权威重建依据。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "第三方方案各解决什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Codis 是代理式分片架构，客户端连 Proxy，由代理路由到后端组，Dashboard 与协调存储管理元数据。它可以简化客户端分片感知，却增加代理容量、额外一跳、元数据组件与运维成本；跨分片命令、Lua、事务和迁移语义需要逐项核对。Codis 不会让每条记录在 Redis 中的固有内存成本自动降低，也不能只因项目存在就判断适合当前生产。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pika 相关官方仓库当前以 PikiwiDB 展示，其公开实现说明使用 RocksDB 与多粒度缓存，走 Redis 协议及常见结构兼容、冷热分层的方向。SSD/磁盘承载更多冷数据可以改善 RAM 成本，但缓存 miss、LSM 写放大、compaction、复制持久化和延迟特征都不同；协议兼容不能代替命令、事务和故障兼容测试，也不能保证无改动迁移后维持相同 p99。"
+    },
+    {
+      "type": "paragraph",
+      "text": "另一条路线是让关系型、宽列或 LSM 存储承载权威数据，Redis 仅存热点索引与结果。按点读、范围查询、更新频率、多 Key 事务、可丢窗口及运维能力回放真实负载后再选。不存在通用的“达到十亿条就必须换框架”临界线；介绍方案也不等于声称自己部署过它。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "内存碎片率高怎样排查和治理"
+    },
+    {
+      "type": "paragraph",
+      "text": "先把分配器碎片、保留页和进程额外开销分开，再选择回收页、主动整理或容量调整；一个高 ratio、一次淘汰或一条 PURGE 都不能独自说明问题解决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试官可能这样问"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "Redis 内存碎片率高，可能是什么原因，如何排查？",
+        "淘汰了很多 Key，为什么内存没还给操作系统？",
+        "MEMORY PURGE 与 activedefrag 的区别是什么？",
+        "碎片率超过 1.5 就必须重启吗？",
+        "UNLINK 能不能顺便整理碎片？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同时看比例 绝对字节和历史峰值"
+    },
+    {
+      "type": "paragraph",
+      "text": "mem_fragmentation_ratio 约为 used_memory_rss / used_memory，包含分配器外部碎片、保留页，以及代码、栈、共享库等进程开销，不是纯碎片比例。小数据集的分母很小，固定开销就可能使比例超过 1.5；应同时看 mem_fragmentation_bytes、历史峰值、容器与宿主机余量，不能看到阈值就直接重启。"
+    },
+    {
+      "type": "paragraph",
+      "text": "先看已分配的字节落在多少活跃页里：allocator_frag_ratio = allocator_active / allocator_allocated，差值 allocator_frag_bytes 反映活跃页与已分配字节之间的外部碎片。allocator_allocated 自身已经包含按大小类取整的内部浪费，不能直接当成业务 payload 的总和。"
+    },
+    {
+      "type": "paragraph",
+      "text": "再看分配器留住了多少驻留内存：allocator_rss_ratio = allocator_resident / allocator_active，配套字节差主要反映分配器驻留与活跃页之间的开销和可释放页。最后看分配器以外的进程开销：rss_overhead_bytes 是进程 RSS 与 allocator_resident 的差。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这样分层，才知道要处理的是稀疏活跃页、保留页还是其他开销。具体字段是否存在、口径是什么，仍要按 Redis 版本、平台和分配器核对。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如，假设分配量由历史 10 GiB 降到 2 GiB，而 RSS 仍为 8 GiB，二者相差 6 GiB；这只是诊断例子。应区分稀疏活跃页、可归还保留页和其他进程开销，不能把 6 GiB 全叫作同一种碎片，也不能保证继续 DEL 就能降 RSS。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ratio 小于 1 也不是“负碎片赚了内存”：可能涉及 swap、采样时点与统计口径，要结合进程和系统状态判断。如果 Redis 的活跃内存被换出，后续缺页反而会带来严重延迟。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "淘汰与碎片整理不是同一动作"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 Redis 7.2 常见的 jemalloc 构建为例，分配器按大小类别管理空间。不同大小对象生命周期交错，value 频繁变长变短、编码转换、扩容以及大量删除/过期，都可能留下有活对象占着的稀疏页。申请字节向大小类取整产生内部浪费，页里存在不能整页归还的空洞属于外部碎片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "淘汰只决定删哪些业务 Key，内存先交回分配器，可用于后续分配；它不负责把其他活对象搬到一起。长期存活的小对象分散在不同页时，删掉一部分对象不一定释放整页。UNLINK/lazyfree 主要把昂贵释放从主线程移到后台，不能等同于碎片压缩或立即降低 RSS。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还应排除不是碎片的内存：客户端输出缓冲、复制 backlog、AOF 缓冲、字典 rehash 双表、fork/COW 和待异步释放积压。maxmemory 不覆盖进程与子进程所有 RSS，容器 OOM 时不能只看用于淘汰的内存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "从只读观测开始"
+    },
+    {
+      "type": "paragraph",
+      "text": "按时间线收集 INFO memory/persistence/stats、MEMORY STATS、mem_allocator、lazyfree_pending_objects、命中与淘汰计数、写入大小分布、RSS/cgroup 和 swap。抽样 Key 的类型、基数、编码及内存，避免线上 KEYS 或无节制全量扫描。"
+    },
+    {
+      "type": "paragraph",
+      "text": "观察比例与绝对浪费是否持续，是否紧随批量删除、value 尺寸抖动或 fork。若只是短时历史峰值后的分配器保留，需要与持续活跃页碎片分开处理；若缓冲仍在增长，应先解决慢客户端、复制落后或积压，不能只调整 defrag。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "PURGE 回收页 主动整理搬动活对象"
+    },
+    {
+      "type": "paragraph",
+      "text": "MEMORY PURGE 尝试清理分配器脏页，使其可以被回收；官方实现目前针对 jemalloc，其他分配器上是无害的空操作。命令可能较慢，不会搬走仍然存活的碎块。返回 OK 不证明 RSS 降到了目标，应比较前后绝对字节、系统余量与 p99，再决定是否继续。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真实活跃页碎片较高、且构建支持时，可考虑 activedefrag。Redis 7.2 要求使用随 Redis 源码提供、具备相应能力的 jemalloc 构建；它增量重新分配可整理对象并修复引用，消耗主执行路径的时间、CPU 和内存带宽，不是一个独立后台线程无成本清理所有内存。jemalloc 的后台页回收线程与 Redis 主动碎片整理是不同机制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "配置应区分最低绝对浪费 active-defrag-ignore-bytes、启动比例 active-defrag-threshold-lower、达到最大 effort 的比例 active-defrag-threshold-upper，以及 active-defrag-cycle-min/max。Redis 7.2 配置给出的默认参考分别为 100mb、10、100、1 和 25；其中比例阈值按百分数表达，effort 是目标 CPU 百分比，不能直接把它们当成 mem_fragmentation_ratio 的 1.5 阈值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "主动整理默认关闭。需要时先确认实际构建与配置，再做受控灰度，观察整理进度、CPU、p99 和碎片字节变化，避免把 effort 直接拉满。当前实例是否支持、能回收多少、是否值得开启，必须由实际观测决定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "长期治理与重启边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "减少巨型 value、无必要的尺寸抖动和重复序列化，选择合适的紧凑编码，并为复制、fork、迁移与整理留余量。Key 拆得越细，元数据可能越多；结构修改应带着真实负载验证内存、延迟与兼容迁移。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果最终需要滚动重启或从权威库重建，应先备份、检查副本追平和持久化状态、确认故障域与切换条件，预估冷缓存回源，按分片逐步切换并准备回滚。不能用 FLUSHALL 清线上数据来“治碎片”，尤其不能在 Redis 是唯一事实来源时任意删库。优化的验收是服务可用、内存余量改善且延迟与数据保证可接受，不能只看 ratio 变小。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ],
+  "questionId": "5"
+}

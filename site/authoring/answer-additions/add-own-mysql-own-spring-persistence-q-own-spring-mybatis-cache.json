@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-own-spring-persistence-q-own-spring-mybatis-cache",
+  "entryId": "own-spring-persistence",
+  "expectedOriginalHash": "b904d4ba8e2f1d99f398f066ea22582594910ebf4d64b611f8b27083dab56700",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "7. 一级、二级缓存为什么可能读到旧值"
+    },
+    {
+      "type": "paragraph",
+      "text": "MyBatis 一级缓存通常属于 SqlSession，二级缓存属于 namespace 区域，二者都不是数据库自动按表维护的一致性缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一级缓存先看“是不是同一个 SqlSession、同一个缓存键”。默认 SESSION 的键包含 MappedStatement、SQL、参数、RowBounds 和环境，不只是 SQL 文本；命中还可能复用对象引用，修改返回对象会影响后续读取。update、commit、rollback、close、clearCache 及 flushCache 设置会影响清理。STATEMENT 限制顶层语句之间复用，但嵌套映射仍可能用内部局部状态；useCache=false 主要控制二级缓存，不等于关闭一级。"
+    },
+    {
+      "type": "paragraph",
+      "text": "二级缓存先要全局允许，再在 namespace 声明。默认标准实现为 LRU、1024 项、无默认定时刷除；可读写模式默认用序列化复制隔离对象。1024 数的是条目或对象，不是字节，一项大列表也可能很大。readOnly=true 共享对象时，调用方必须不修改它。序列化复制也不是安全检查：不能接收不可信远程缓存字节，还要评估类型与 JEP 290 过滤策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交与失效再单独看。事务性缓存先暂存结果和清理动作，提交后按相应路径发布；close 不总发布，脏会话回滚与只读会话结束走法不同。另一个 namespace、原生 JDBC 或其他服务更新同一张表，不会因表名相同就自动清掉这里的缓存。cache-ref 可共享区域，却扩大失效范围，仍不提供跨系统严格一致性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "即使做了事务性失效，也可能有旧查询最后才返回、在失效后回填。需要时应使用权威版本、可靠失效水位，或绕过敏感结果缓存，而不能把“提交时清过一次”当作后来结果必新的证明。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MyBatis-Spring 的 SqlSessionTemplate 和事务同步会改变实际 session 生命周期，无外层事务的两个 Service 调用不能想当然认为共享一级缓存。SqlSession 不应随意跨线程。对于权限、余额、审批状态等敏感数据，不能拿旧缓存作唯一裁决；高更新关联查询慎开二级缓存。数据库 RR 快照本身也可能继续读旧版本，clearCache 只清框架缓存，不会刷新已建立的数据库快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面完整 MyBatisLab.java 同时包含绑定对照、foreach 观测、两个 namespace、useCache=false 对照、prepare 计数和配置入口。save/run 的最小依赖为 JDK 21 与 org.mybatis:mybatis:3.5.19。把已由你现有构建系统取得的该 JAR 放入 classpath，运行 javac --release 21 -cp mybatis-3.5.19.jar MyBatisLab.java，然后 java -cp .:mybatis-3.5.19.jar MyBatisLab。Windows 把 classpath 分隔符改为分号。main 只检查 BoundSql，不借连接、不访问数据库；不是缓存集成测试。factory 接收调用方 DataSource，只有业务调用实际查询时才需要数据库驱动和连接。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "components/application/code/MyBatisLab.java",
+      "value": "import java.sql.Connection;\nimport java.util.*;\nimport java.util.concurrent.ArrayBlockingQueue;\nimport java.util.concurrent.atomic.AtomicInteger;\nimport javax.sql.DataSource;\nimport org.apache.ibatis.annotations.*;\nimport org.apache.ibatis.datasource.unpooled.UnpooledDataSource;\nimport org.apache.ibatis.executor.statement.StatementHandler;\nimport org.apache.ibatis.mapping.*;\nimport org.apache.ibatis.plugin.*;\nimport org.apache.ibatis.session.*;\nimport org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;\n\npublic final class MyBatisLab {\n    private MyBatisLab() {}\n    public interface BindingMapper {\n        @Select(\"SELECT id FROM binding_users WHERE tenant_id=#{tenant} AND username=#{name} ORDER BY id\")\n        List<Long> find(@Param(\"tenant\") long tenant, @Param(\"name\") String name);\n        // Deliberately incomplete: no MyBatis property mapping for the raw '?'.\n        @Select(\"SELECT id FROM binding_users WHERE username=?\")\n        List<Long> rawQuestionMark(@Param(\"name\") String name);\n        @Select(\"<script>SELECT id FROM binding_users WHERE tenant_id=#{tenant} AND id IN \"\n              + \"<foreach collection='ids' item='item' open='(' separator=',' close=')'>\"\n              + \"#{item}</foreach> ORDER BY id</script>\")\n        List<Long> byIds(@Param(\"tenant\") long tenant, @Param(\"ids\") List<Long> ids);\n    }\n    @CacheNamespace(size=64)\n    public interface Cached {\n        @Select(\"SELECT name FROM cache_person WHERE tenant=#{tenant} AND id=#{id}\")\n        String name(@Param(\"tenant\") long tenant, @Param(\"id\") long id);\n        @Select(\"SELECT name FROM cache_person WHERE tenant=#{tenant} AND id=#{id}\")\n        @Options(useCache=false)\n        String localOnly(@Param(\"tenant\") long tenant, @Param(\"id\") long id);\n        @Select(\"SELECT id FROM cache_person WHERE tenant=#{tenant} AND name=#{name}\")\n        Long byName(@Param(\"tenant\") long tenant, @Param(\"name\") String name);\n        @Update(\"UPDATE cache_person SET name=#{name} WHERE tenant=#{tenant} AND id=#{id}\")\n        int rename(@Param(\"tenant\") long tenant, @Param(\"id\") long id, @Param(\"name\") String name);\n    }\n    public interface OtherNamespace {\n        @Update(\"UPDATE cache_person SET name=#{name} WHERE tenant=#{tenant} AND id=#{id}\")\n        int rename(@Param(\"tenant\") long tenant, @Param(\"id\") long id, @Param(\"name\") String name);\n    }\n    public record Entry(String sql, List<String> properties) {}\n    @Intercepts(@Signature(type=StatementHandler.class, method=\"prepare\",\n            args={Connection.class,Integer.class}))\n    public static final class SqlCapture implements Interceptor {\n        private final ArrayBlockingQueue<Entry> entries = new ArrayBlockingQueue<>(64);\n        private final AtomicInteger prepares = new AtomicInteger();\n        @Override public Object intercept(Invocation invocation) throws Throwable {\n            StatementHandler handler = (StatementHandler) invocation.getTarget();\n            BoundSql b = handler.getBoundSql();\n            List<String> names = new ArrayList<>();\n            for (ParameterMapping p : b.getParameterMappings()) names.add(p.getProperty());\n            prepares.incrementAndGet();\n            entries.offer(new Entry(b.getSql(), List.copyOf(names))); // Full queue drops diagnostics only.\n            return invocation.proceed(); // Preserve execution and exception behavior.\n        }\n        public List<Entry> snapshot() { return List.copyOf(entries); }\n        public int prepares() { return prepares.get(); }\n    }\n    public record Setup(SqlSessionFactory factory, SqlCapture capture) {}\n    public static Setup factory(DataSource source, boolean secondLevel, LocalCacheScope scope) {\n        Configuration c = new Configuration(new Environment(\"teaching\",\n                new JdbcTransactionFactory(), Objects.requireNonNull(source)));\n        c.setCacheEnabled(secondLevel); c.setLocalCacheScope(scope);\n        c.setDefaultStatementTimeout(2);\n        c.addMapper(BindingMapper.class); c.addMapper(Cached.class); c.addMapper(OtherNamespace.class);\n        SqlCapture capture = new SqlCapture(); c.addInterceptor(capture);\n        return new Setup(new SqlSessionFactoryBuilder().build(c), capture);\n    }\n    private static void check(boolean ok) { if (!ok) throw new AssertionError(); }\n    public static void main(String[] args) {\n        // Building BoundSql does not call getConnection; this URL is never used.\n        DataSource unused = new UnpooledDataSource(\"com.mysql.cj.jdbc.Driver\",\n                \"jdbc:mysql://127.0.0.1:3306/unused\", \"unused\", \"unused\");\n        Setup setup = factory(unused, true, LocalCacheScope.SESSION);\n        Configuration c = setup.factory().getConfiguration();\n        String prefix = BindingMapper.class.getName() + \".\";\n        BoundSql good = c.getMappedStatement(prefix + \"find\")\n                .getBoundSql(Map.of(\"tenant\",1L,\"name\",\"O'Neil\"));\n        check(good.getParameterMappings().size() == 2);\n        check(!good.getSql().contains(\"O'Neil\"));\n        BoundSql raw = c.getMappedStatement(prefix + \"rawQuestionMark\")\n                .getBoundSql(Map.of(\"name\",\"O'Neil\"));\n        check(raw.getParameterMappings().isEmpty());\n        BoundSql loop = c.getMappedStatement(prefix + \"byIds\")\n                .getBoundSql(Map.of(\"tenant\",1L,\"ids\",List.of(1L,2L)));\n        check(loop.getParameterMappings().size() == 3);\n        for (int i=1;i<3;i++)\n            check(loop.hasAdditionalParameter(loop.getParameterMappings().get(i).getProperty()));\n        check(setup.capture().prepares()==0);\n        System.out.println(\"PASS BoundSql mapping inspection; no connection or cache integration\");\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "真实数据库路径需要以下完整表。分别在同 session 重复查询、另一连接更新、clearCache、commit/rollback、另 namespace 写入、同 namespace 提交后，观察结果和 prepare 计数；SIMPLE 下的这些观察不能外推到 REUSE/BATCH。还应验证提交前另一 session 未命中、提交后命中、同 namespace DML 提交失效、写回滚不发布新值、useCache=false 仍可命中 L1、租户参数区分、绑定注入样式字符串后结果不变及异常传播。这些是待执行的集成检查条件，没有数据库结果时不能报缓存测试通过。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "code/ch35/fence-148.sql",
+      "value": "CREATE TABLE binding_users (\n  tenant_id BIGINT NOT NULL, id BIGINT NOT NULL,\n  username VARCHAR(200) NOT NULL, PRIMARY KEY(tenant_id,id)\n) ENGINE=InnoDB;\nCREATE TABLE cache_person (\n  tenant BIGINT NOT NULL, id BIGINT NOT NULL,\n  name VARCHAR(200) NOT NULL, PRIMARY KEY(tenant,id)\n) ENGINE=InnoDB;\nINSERT INTO binding_users VALUES(1,1,'O''Neil');\nINSERT INTO cache_person VALUES(1,1,'before');\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "q-own-spring-mybatis-cache",
+  "targetOrigin": "authored"
+}

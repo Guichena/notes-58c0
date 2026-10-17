@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-mysql-ch13",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "数据库与缓存",
+  "category": "MySQL 手册 · 从真实查询分布推导索引",
+  "title": "从真实查询分布推导索引",
+  "source": "用户自有 MySQL 与数据库系统设计面试手册（2026-10-15 快照）",
+  "tags": [
+    "MySQL",
+    "SQL",
+    "Java"
+  ],
+  "questions": [
+    {
+      "id": "q-own-mysql-s5131",
+      "order": 5131,
+      "question": "千万用户中的“姓王女性”与 status/age 查询怎样按真实分布设计索引？",
+      "shortAnswer": "先固定比较规则、投影和运算符，再比较等值前缀加范围、覆盖与回表；行数本身不能推出唯一索引或性能收益。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "一千万用户：姓王的女性"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设查询语义为 username LIKE '王%' AND gender='F'，并且用户名的前缀确实代表业务要找的姓氏，候选 (gender,username) 可以先固定性别，再限定名字前缀。它不是因为 gender 区分度高，而是等值在前、范围在后。若大量核心查询只有用户名，(username,gender) 或独立 username 索引也值得比较。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果用户名称是昵称，姓氏未必等于第一个汉字；复姓、别名、国际姓名、Unicode 归一化都可能改变需求。应先明确是字符串前缀还是结构化姓氏。年龄只有在过滤、覆盖或排序上有明确价值才追加，不应为了“字段都出现过”建一个巨大索引。"
+        },
+        {
+          "type": "paragraph",
+          "text": "章末数据含王小红、王明、李王、单字王、年龄 NULL 及名字 NULL。匹配女性且前缀王的行是 1、4、5；李王不是前缀匹配，NULL 名字不匹配。数据只证明结果边界，不证明一千万规模的性能。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "SELECT id,age FROM user WHERE status=0 AND age>12"
+        },
+        {
+          "type": "paragraph",
+          "text": "在 id 是 InnoDB 主键的前提下，(status,age) 先固定状态，再定位年龄开区间，二级记录自带主键信息，通常可以覆盖 id 和 age。无需为了覆盖 id 再无条件重复追加同一主键列。若 id 不是主键，需重新判断覆盖。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不能把 >12 改成 >=12；NULL 年龄不匹配。原查询没有 ORDER BY，不能假设页面顺序或“最年轻的前几名”。若业务后来增加 ORDER BY id，需要重新比较访问方式，不是已经覆盖就天然免排序。"
+        },
+        {
+          "type": "paragraph",
+          "text": "与 (status,age) 比较时，(age,status) 往往先扫描 age>12 再过滤状态；两个单列索引可能只选其一或采用 Index Merge，不能视为联合索引的等价替代。若 age>12 已经极窄，或大量其他查询只查年龄，替代路径仍可能更合算，应放回整个工作负载评估。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "姓王女性的边界数据"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 surname.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/query/code/surname.sql",
+          "value": "CREATE TABLE users_probe(id INTEGER PRIMARY KEY,username VARCHAR(100),gender VARCHAR(12),age INTEGER);\nCREATE INDEX ix_gender_name ON users_probe(gender,username,id);\nINSERT INTO users_probe VALUES(1,'王小红','F',20),(2,'王明','M',21),\n (3,'李王','F',30),(4,'王','F',40),(5,'王莉','F',NULL),(6,NULL,'F',25);\nSELECT id FROM users_probe WHERE gender='F' AND username LIKE '王%' ORDER BY username,id;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-3",
+          "label": "联合索引里的最左前缀原则怎么理解？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-mysql-s5147",
+      "order": 5147,
+      "question": "七千万到八千万用户的昵称分页和精确爱好计数应怎样分别建访问路径？",
+      "shortAnswer": "昵称等值列表需要稳定游标与明确判等规则，精确计数需要独立聚合访问路径；两项需求不能靠同一条万能索引或模糊字符串包含来代替。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "七千万到八千万用户：两项独立需求"
+        },
+        {
+          "type": "paragraph",
+          "text": "七八千万用户也要先拆成两种访问，本题原本没有租户条件。按 nickname 等值找用户，可建 nickname 索引，但先问昵称是否唯一、要一人还是全部同名、是否分页。user_id 若为 InnoDB 主键，昵称二级条目会携带它，可用于同名用户按 user_id 稳定遍历；取其他未覆盖列通常还要回表。大小写、重音和字符集判等先定清楚，不能 LIMIT 1 就说已经找全同名用户。模糊查询则需另作分析。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再看爱好人数：如果每人仅一个 single_hobby，另建 single_hobby 索引并 COUNT(*)，服务的是另一个独立入口。(nickname,single_hobby) 并不能因此高效支持没有昵称条件的爱好统计。即使查询可覆盖，精确计数仍须处理匹配集合并遵守事务可见性，不是 O(1) 读一份全局元数据。"
+        },
+        {
+          "type": "paragraph",
+          "text": "只有业务后来引入租户隔离时，才扩展为 (tenant_id,nickname,user_id) 与 (tenant_id,single_hobby,user_id)，查询绑定已授权租户。分页首屏也别凭空加 user_id>0：有符号 BIGINT 可以有负数和零。章末同名 ID 是 −1、0、1、2，页大小 2，首屏应取 −1、0，再用真实末项 0 作游标取 1、2。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若一人可有多个爱好，采用 membership 表，主键 (tenant_id,hobby_id,user_id) 防重复关系，反向索引 (tenant_id,user_id,hobby_id) 服务查看某用户的爱好。复合外键保持租户边界。既然关系唯一，统计某爱好 COUNT(*) 就不必再用 DISTINCT 去掩盖重复建模。若允许重复历史记录，则必须重新定义“当前用户数”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "大匹配集合且高频实时精确统计可能成本很高。可选按事件维护计数、异步汇总或缓存，但需要定义增删幂等、回补、对账及 as-of 时间。近似去重结构和过期缓存不能冒充题目要求的精确全量人数；若用户接受近似或延迟，应把契约明确改掉再优化。行数达到八千万不自动意味着必须分库，要看热点、磁盘、工作集和恢复目标。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "昵称分页与精确爱好计数"
+        },
+        {
+          "type": "paragraph",
+          "text": "保存为 user_indexes.sql。"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "label": "components/query/code/user_indexes.sql",
+          "value": "-- Portable teaching model. MySQL: choose an explicit charset/collation.\n-- Original question has NO tenant filter and has two independent access patterns.\nCREATE TABLE original_search_user(user_id BIGINT PRIMARY KEY,\n nickname VARCHAR(100) NOT NULL,single_hobby VARCHAR(100));\nCREATE INDEX ix_original_nickname ON original_search_user(nickname);\nCREATE INDEX ix_original_hobby ON original_search_user(single_hobby);\nINSERT INTO original_search_user VALUES(-1,'same',NULL),(0,'same',NULL),\n (1,'same','hiking'),(2,'same','music'),(3,'other','hiking'),(4,'none',NULL);\n-- First page has no previous row: no invented minimum/sentinel predicate.\nSELECT user_id,nickname FROM original_search_user\n WHERE nickname='same' ORDER BY user_id LIMIT 2;\n-- 0 is the REAL last user_id returned above, not a universal initial value.\nSET @last_nickname_id=0;\nSELECT user_id,nickname FROM original_search_user\n WHERE nickname='same' AND user_id>@last_nickname_id ORDER BY user_id LIMIT 2;\nSELECT COUNT(*) FROM original_search_user WHERE single_hobby='hiking';\n-- Separate extension: tenant-scoped users and optional many-to-many hobbies.\nCREATE TABLE search_user(tenant_id BIGINT NOT NULL,user_id BIGINT NOT NULL,\n nickname VARCHAR(100) NOT NULL,single_hobby VARCHAR(100),PRIMARY KEY(tenant_id,user_id));\nCREATE INDEX ix_user_nickname ON search_user(tenant_id,nickname,user_id);\nCREATE INDEX ix_user_single_hobby ON search_user(tenant_id,single_hobby,user_id);\nCREATE TABLE user_hobby(tenant_id BIGINT NOT NULL,hobby_id BIGINT NOT NULL,user_id BIGINT NOT NULL,\n PRIMARY KEY(tenant_id,hobby_id,user_id),\n FOREIGN KEY(tenant_id,user_id) REFERENCES search_user(tenant_id,user_id));\nCREATE INDEX ix_user_hobbies ON user_hobby(tenant_id,user_id,hobby_id);\nINSERT INTO search_user VALUES(7,-1,'same',NULL),(7,0,'same',NULL),\n (7,1,'same','hiking'),(7,2,'same','music'),(7,3,'other','hiking'),\n (8,1,'same','hiking'),(7,4,'none',NULL);\nINSERT INTO user_hobby VALUES(7,10,1),(7,10,3),(7,20,1),(8,10,1);\nSELECT user_id,nickname FROM search_user\n WHERE tenant_id=7 AND nickname='same' ORDER BY user_id LIMIT 2;\n-- The preceding tenant page also ends at the actual user_id 0.\nSET @last_nickname_id=0;\nSELECT user_id,nickname FROM search_user\n WHERE tenant_id=7 AND nickname='same' AND user_id>@last_nickname_id ORDER BY user_id LIMIT 2;\n-- Exact one-hobby count, not metadata or an approximate/expired counter.\nSELECT COUNT(*) FROM search_user WHERE tenant_id=7 AND single_hobby='hiking';\n-- Membership PK prevents duplicate relationships for this count.\nSELECT COUNT(*) FROM user_hobby WHERE tenant_id=7 AND hobby_id=10;\n"
+        }
+      ],
+      "followUps": [],
+      "related": [
+        {
+          "entryId": "own-mysql-guide",
+          "label": "版本、练习前提与验证边界"
+        },
+        {
+          "entryId": "bg-mysql-5",
+          "label": "深分页为什么慢？常见优化思路有哪些？"
+        }
+      ],
+      "tags": [
+        "MySQL"
+      ],
+      "mustKnow": false
+    }
+  ]
+}

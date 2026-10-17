@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-b43ed5e80127ca34",
+  "entryId": "handwrite-61",
+  "expectedOriginalHash": "5a57491529101df8ca41781d75932a8413eb9e4481bad5511be57c9466fd455c",
+  "title": "跨册场景补充：删除成功之后怎样阻止旧缓存复活",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "删除成功之后怎样阻止旧缓存复活"
+    },
+    {
+      "type": "paragraph",
+      "text": "缓存侧保存最低可接受版本 floor，失效事件单调推进它，回填时原子拒绝低于 floor 或当前缓存版本的值。 这保证的是已知失效版本之后不倒退；事件未到、屏障丢失和落后副本仍需单独处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设数据库是事实来源，一个实体每次成功写入都会增加业务 version。这里的 version 不是墙上时钟；并发更新必须在数据库内串行递增或用等价的单实体顺序机制生成。同一实体同一 version 必须对应相同业务内容，删除也须有版本化的失效语义；不能让两个不同结果共用一个版本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "先做一条确定性的反例时序"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 读者 R 缓存未命中，从数据库读出 v7，把结果暂存在进程里，暂停。"
+    },
+    {
+      "type": "paragraph",
+      "text": "2. 写者 W 提交 v8，并成功删除缓存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "3. R 恢复，SET v7 并设置 10 分钟 TTL。"
+    },
+    {
+      "type": "paragraph",
+      "text": "4. 新读者命中 v7。删除成功和 TTL 存在都没有阻止旧值回填。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把 R 暂停到第二次删除之后，同样能反驳“固定睡 500ms 就一定正确”。TTL 从旧值实际写入时开始计算；如果读者可无限暂停，就不能从数据库提交时刻推出固定陈旧上界。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "一个有边界的版本屏障设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "为实体保留两个同槽 key：cache:{entity}:floor 存已知最低可接受版本，cache:{entity}:data 存 version 和 payload。写者在数据库同一事务中写业务 v8 与失效事件；事件消费者在 Redis 中原子推进 floor 到 max(floor,8)，并删除版本低于 floor 的 data。回填脚本拒绝 version<floor，也拒绝覆盖更高 data 版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "floor 不跟随 data 的普通 TTL 一起消失。否则 data 一过期，旧读者又可以在空槽中复活旧值。若担心 floor 无限增长，需要有证明过的回收条件，例如所有旧读者已过最大生存期且不会从旧副本读；不能仅凭“这个 key 很久没人访问”删除屏障。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面回填脚本是实验实现：version 被限定为 0 到 2^53-1 的整数，TTL 为 1 到 86,400,000 毫秒；真实 BIGINT 版本若超出这个范围，应改成不会损失精度的编码和比较方式。"
+    },
+    {
+      "type": "code",
+      "language": "lua",
+      "label": "backend-scenarios 原语言代码 L1271–1306（完整围栏，未执行）",
+      "value": "-- KEYS[1]=cache:{entity}:floor, KEYS[2]=cache:{entity}:data\n-- ARGV[1]=version, ARGV[2]=payload, ARGV[3]=ttlMillis\nif #KEYS ~= 2 or #ARGV ~= 3 then\n  return redis.error_reply('expected 2 keys and 3 arguments')\nend\nlocal function version(raw)\n  if type(raw) ~= 'string' or not string.match(raw, '^%d+$') then\n    return nil\n  end\n  local n = tonumber(raw)\n  if not n or n < 0 or n > 9007199254740991 or n ~= math.floor(n) then\n    return nil\n  end\n  return n\nend\nlocal v = version(ARGV[1])\nlocal ttl = tonumber(ARGV[3])\nif not v then return redis.error_reply('invalid version') end\nif not ttl or ttl < 1 or ttl > 86400000 or ttl ~= math.floor(ttl) then\n  return redis.error_reply('invalid ttl')\nend\n-- Complete reads/validation before writes; wrong key types also fail here.\nlocal rawFloor = redis.call('GET', KEYS[1])\nlocal rawOld = redis.call('HGET', KEYS[2], 'v')\nlocal floor = -1\nlocal old = -1\nif rawFloor then floor = version(rawFloor) end\nif rawOld then old = version(rawOld) end\nif not floor or not old then return redis.error_reply('bad stored version') end\nif not rawOld and redis.call('EXISTS', KEYS[2]) == 1 then\n  return redis.error_reply('data hash has no version')\nend\nif v < floor or v < old then return 0 end\nredis.call('HSET', KEYS[2], 'v', string.format('%.0f', v), 'payload', ARGV[2])\nredis.call('PEXPIRE', KEYS[2], ttl)\nreturn 1\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "配套失效脚本如下；先完成读取与校验，再推进屏障并清理旧数据。相同实体的两个 key 必须使用相同 Cluster hash tag。"
+    },
+    {
+      "type": "code",
+      "language": "lua",
+      "label": "backend-scenarios 原语言代码 L1312–1342（完整围栏，未执行）",
+      "value": "-- KEYS[1]=cache:{entity}:floor, KEYS[2]=cache:{entity}:data\n-- ARGV[1]=eventVersion\nif #KEYS ~= 2 or #ARGV ~= 1 then\n  return redis.error_reply('expected 2 keys and 1 argument')\nend\nlocal function version(raw)\n  if type(raw) ~= 'string' or not string.match(raw, '^%d+$') then\n    return nil\n  end\n  local n = tonumber(raw)\n  if not n or n < 0 or n > 9007199254740991 or n ~= math.floor(n) then\n    return nil\n  end\n  return n\nend\nlocal event = version(ARGV[1])\nif not event then return redis.error_reply('invalid event version') end\nlocal rawFloor = redis.call('GET', KEYS[1])\nlocal rawOld = redis.call('HGET', KEYS[2], 'v')\nlocal floor = -1\nlocal old = -1\nif rawFloor then floor = version(rawFloor) end\nif rawOld then old = version(rawOld) end\nif not floor or not old then return redis.error_reply('bad stored version') end\nif not rawOld and redis.call('EXISTS', KEYS[2]) == 1 then\n  return redis.error_reply('data hash has no version')\nend\nlocal nextFloor = math.max(floor, event)\nredis.call('SET', KEYS[1], string.format('%.0f', nextFloor))\nif old < nextFloor then redis.call('DEL', KEYS[2]) end\nreturn nextFloor\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "两种脚本都显式区分“键不存在”和“已有内容无法解析”；后者必须报错，不能被默认值悄悄掩盖。Redis 脚本执行会阻塞其他命令，因而可提供单 Redis 执行域内的不可穿插性；运行期失败没有数据库式自动回滚，资源耗尽等故障也须在目标部署测试。它不会把数据库操作一起变为同一个事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可在专用测试实例执行下列命令验证核心时序，勿指向已有业务 key："
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "label": "backend-scenarios 原语言代码 L1350–1357（完整围栏，未执行）",
+      "value": "redis-cli --eval cache-fill.lua 'cache:{lab1}:floor' 'cache:{lab1}:data' , 7 old 60000\n# 预期 1\nredis-cli --eval cache-invalidate.lua 'cache:{lab1}:floor' 'cache:{lab1}:data' , 8\n# 预期 8\nredis-cli --eval cache-fill.lua 'cache:{lab1}:floor' 'cache:{lab1}:data' , 7 late-old 60000\n# 预期 0\nredis-cli --eval cache-fill.lua 'cache:{lab1}:floor' 'cache:{lab1}:data' , 9 new 60000\n# 预期 1\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "补测 floor='abc'、data.v='abc'、负版本、超范围版本、小数版本、非法 TTL、错误 key 类型和哈希缺少 v 字段，预期均报错且不发生后续业务写入。这些命令需要在专用 Redis 实例验证，Java 状态模型不能替代 Lua 引擎与故障切换测试。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "这个设计确实保证什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "在屏障未丢失、写入均经过脚本的前提下：某实体的 v8 失效事件一旦在 Redis 执行完，之后回填 v7 会被拒绝；乱序到达 v6 事件不会把 floor 降低。这个局部不变量比“等待一个经验时间再删”容易验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这道版本屏障还留着两个窗口。数据库刚提交 v8、失效事件尚未到 Redis 时，读者仍可能命中旧缓存；即使 v7 被拒绝回填，从落后副本读到它的请求仍可能把 v7 返回用户。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，页面展示可以采用最终一致方案，支付资格和库存最终判断要走明确的权威读取/事务路径。用户写后立刻读时，可以携带所需最低版本，由读取路径等待副本追上或回主库。练习时同时检查“写不进缓存”和“不能返回用户”两个判断，不能只做前一个就声称写后读已成立。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "故障注入与预期"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 暂停 R，推进 floor=8，再恢复 v7 回填：拒绝，缓存不得变旧。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- v9 回填后重放 v8、v6 失效事件：不得回退。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 业务提交后、发送失效事件前崩溃：outbox 扫描/CDC 恢复后应继续推进屏障，见事务发件箱与消息恢复设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 清空/丢失 floor 后再恢复旧读者：旧值可能被接受。这是恢复协议未覆盖的边界，不能把它写成已解决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Redis 超时：结果未知，按相同版本重试是安全的；仍要区分“脚本没执行”和“执行成功但响应丢了”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 异步复制及故障切换可能丢已确认写；WAIT 增加已确认副本数，不能单独升级为强一致存储。因此强要求场景需把恢复代际、旧读者隔离或权威校验列入协议，不能仅换成 Redis Cluster 就宣称屏障永不丢。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：事件积压超过 TTL 是不是自动安全？不是，落后副本和迟到回填可能持续制造旧数据。监控应包括事件最大年龄、数据库/缓存版本差、回填拒绝率和副本延迟，并明确何时临时绕过缓存。"
+    }
+  ]
+}

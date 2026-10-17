@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s2255",
+  "entryId": "own-mysql-ch36",
+  "expectedOriginalHash": "e64d874f1d96f073461c0c1c6014eb7add32b8d40306f823889ff74e3d8c23e8",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "4.10 最终写数据库时选分布式锁还是Spring事务，夹着其他操作怎么办"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库不变量优先用约束和事务保护，跨进程竞争按需加协调，外部调用则用持久步骤协议而非长事务包住网络。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：分布式锁与Spring事务怎么选；事务中调用远程接口安全吗；只有锁能否保证多行原子。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁协调竞争者，事务维护同一提交域中的原子性与隔离；二者解决不同层次问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先用数据归属决定最小正确边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "若不变量完全在一个数据库，例如库存不为负、同请求只生效一次，优先条件UPDATE、唯一约束和短事务，把读取判断与写入放在恰当隔离/行锁范围。Spring声明式/编程式事务只是驱动所选事务管理器，它并不自动协调Redis、远程HTTP和另一库。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分布式锁可减少多个实例重复准备、协调非数据库资源，但只有所有写路径遵守协议且资源端拒绝旧授权才有相应保证；同DB事务仍应承担最终正确性。只在Java synchronized不能互斥其他JVM，只加Redis锁也不能回滚一半已写的多行。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "其他调用放哪里"
+    },
+    {
+      "type": "paragraph",
+      "text": "无副作用且耗时的计算尽量事务外进行，再在事务里按版本核验并短提交；远程调用不能在长DB锁内无限等待，否则连接/锁被占满。先远程扣款后DB失败需要状态查询/补偿，先DB成功后远程失败需要可靠待办，outbox/Saga/TCC各有适用条件，详见第4.3节及第4.4节。"
+    },
+    {
+      "type": "paragraph",
+      "text": "锁要包住真正的事务结束，而不是只包住方法体。外层先拿锁，在 TransactionTemplate 回调或另一个被代理的事务方法中完成事务，确认 commit/rollback 已结束，再 unlock。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若在 @Transactional 方法的 finally 中先解锁，代理通常之后才提交，就露出了窗口。外层已有事务时，还要核对传播行为，不能认为内层返回就必定提交。异步线程也不会自动继承传统线程绑定事务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "落地判据与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问业务是否能用唯一键/CAS即可、临界区能否缩短、是否要求公平/可重入、外部API有无幂等查询及故障时能否接受中间态。测试锁失效、commit前解锁、远程超时但已生效、事务回滚、并发版本冲突和无锁旁路写；选型依据具体业务约束。公平锁与会话/fencing见第4.9节，事务传播与连接绑定完整解释可复用现有Spring章节。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mysql-s6833",
+  "targetOrigin": "authored"
+}

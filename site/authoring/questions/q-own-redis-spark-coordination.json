@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "bg-redis-8",
+  "id": "q-own-redis-spark-coordination",
+  "order": 150,
+  "question": "SparkSession 复用和 Redis vcore 预留怎样界定资源所有权？",
+  "shortAnswer": "会话共享计算上下文不等于共享所有配置；资源借还、租约与权威分配各自定义，Redis 扩容不会自动并行化一份全局预算。",
+  "commonPhrasings": [
+    "会话池怎样处理归还失败与旧持有者？"
+  ],
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "SparkSession 复用与 Redis 资源协调"
+    },
+    {
+      "type": "paragraph",
+      "text": "SparkSession 复用的收益来自重用仍然存活的 Spark 应用与底层资源；Redis 可以保存会话目录、租约和预算，不能把一个运行中的 driver 对象变成可跨进程迁移的缓存值。要把会话隔离、资源所有权和配额原子性分别讲清楚。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“为什么复用 SparkSession”“哪些底层资源可复用”“Redis 如何扩容”“Lua 怎样避免 vcore 超卖”是逐层深入的连续问题。以下以经典 Spark 3.5.7 API 和一个假设的会话池设计说明机制，收益数字与个人实现需依据实际项目。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一 会话共享上下文 但不等于共享所有配置"
+    },
+    {
+      "type": "paragraph",
+      "text": "SparkSession 是 DataFrame、Dataset 和 SQL 的入口。多个 session 可以共享同一个 SparkContext，进而使用同一应用的调度、executor 和缓存数据。newSession 隔离 SQL 配置、会话临时视图及注册函数等会话状态，同时共享底层 SparkContext 和缓存；全局临时视图等共享设施仍可能被其他会话访问，不能把 newSession 当成租户安全沙箱。"
+    },
+    {
+      "type": "paragraph",
+      "text": "builder.getOrCreate 可能取得已有 active/default session，不保证每次都得到干净对象。即使 API 类型支持序列化，也不能把一个 SparkSession 写入 Redis，再让任意进程反序列化来接管同一活 driver。远程复用应该通过拥有该应用的服务或明确的远程协议进行，Redis 目录里保存的是可验证的句柄，而非活资源本身。"
+    },
+    {
+      "type": "paragraph",
+      "text": "冷启动可能包括申请资源、启动 executor、分发依赖、JIT、初始化元数据和建立连接。大量短查询、依赖与配置相容且允许共享资源时，复用可能减少启动开销；长任务本来就占满集群时，缓存几个 session 不一定改善吞吐。应比较冷启动与热启动首次响应、资源利用率、p95/p99、等待时间和失败恢复，不能只凭“复用”推断固定提升倍数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "二 会话池要有借用归还和资源所有者"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种方案是按租户、权限和配置指纹划分会话池，每次独占借用，或在共享 context 上建立隔离的 session。并发修改同一 session 的 conf、临时视图、UDF、当前数据库等内容会产生污染，因此归还时要清理任务局部属性和临时内容；失败、取消或无法确认清理完成的会话应隔离或重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "共享 session 的单个请求不能在 finally 中随意 stop 或 close；在经典 API 中它会停止底层 SparkContext，影响其他使用者。关闭职责应属于应用或池的生命周期管理者。强隔离租户还要通过独立应用、进程、凭据和数据权限建立边界，SQL 会话隔离不等于操作系统资源隔离。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并发查询需要有界排队、超时和可追踪的 job group 取消。FAIR 调度池可帮助分配并发作业的资源，但不能制造更多 executor，也不能承诺任意任务按时完成。请求超时只表示调用方不再等待，回收资源前还要确认作业已经取消或结束，不能假设 HTTP 连接断开就停止计算。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "三 Redis 目录和 vcore 预留只是协调层"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 目录可保存 sessionId、driver 端点、拥有者代际、租户、配置指纹、空闲或忙碌状态和租约。申请时原子完成资格检查与占用，并使用 requestId 去重。租约续期、归还和回收都要核对同一拥有者及代际，避免旧 worker 把新租约释放。"
+    },
+    {
+      "type": "paragraph",
+      "text": "租约过期说明协调层没有及时收到续约，不说明实际 driver 或作业已经停止。回收者应向资源所有者或调度器核验，再按持久请求状态对账。多个 session 共享一套 executor 时，还必须按实际占用与调度模型记账，不能每创建一个 newSession 就当作新增了一套 vcore，也不能每归还一个 session 就释放整套底层资源。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果要“检查剩余额度足够，再扣减”，这两步必须在同一原子边界。单独 DECRBY 只保证一次减法原子，不保证减后非负。Lua 可以完成检查、请求去重和预留；脚本应先验证参数、类型和数值范围，再修改数据，运行错误不会自动撤销已执行写入。多键方案还要遵守 Cluster 同槽限制。"
+    },
+    {
+      "type": "paragraph",
+      "text": "WATCH 加 MULTI/EXEC 可以通过乐观校验实现同样的条件更新目标，但要处理冲突重试与限次退避；单个原子命令仅在它恰好表达完整业务约束时才可替代。分布式锁把检查和更新串行化，但增加租约、过期、旧拥有者及故障恢复问题。Redis Functions 可以组织服务端逻辑，并不把外部 Spark 调度变成 Redis 事务。JVM 内的 CAS、synchronized 只协调同一进程内共享状态，不能约束其他服务实例。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 预留完成，只说明协调层留了预算；Spark 的真实资源申请仍可能失败、超时，或已经成功但响应丢失。可以用持久请求状态推进“预留、申请中、运行中、待核查、释放”：明确失败，才按幂等协议归还；结果未知，先查调度器；真正结束，只释放一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果没有查询或去重能力，就保守保留待核查状态。不能把 TTL 到期当成任务已经结束：旧任务可能还占着资源，新任务却又拿到了同一份预算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "还要考虑 Redis 预留记录在重启或切主后回退：旧任务可能仍占用资源，而新主上的余额已经变大。Lua 原子性和 WAIT 都不能单独证明额度永不超卖。若总量绝不能突破，应由具备相应一致性与持久性的权威调度器或账本执行最终配额检查；恢复期间先暂停新分配，核对仍在运行和结果未知的请求，再重建可用余额。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "四 Redis 扩容不等于扩大一份全局预算的并行度"
+    },
+    {
+      "type": "paragraph",
+      "text": "主从复制增加副本，读副本还要考虑复制延迟；Sentinel 负责监控和故障转移，这两者都不是写数据自动分片。Redis Cluster 把键映射到 16384 个槽，再将槽分配给不同主节点，通过迁槽扩大整体容量。扩容时客户端需正确处理拓扑变化和 MOVED、迁移阶段的 ASK 等重定向，不能只新增机器却不迁移槽和流量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "会话目录可按 session 或资源池分散，单份全局 vcore 余额仍是同一键或同槽数据，可能继续成为热点。若拆成每资源池预算，可以提高并行度，但要设计总预算分配、跨池借用和归还，不能各自复制一个“总余额”后独立扣减。扩展的是分片后的工作，不是凭机器数量消除全局不变量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试中的项目难点可围绕冷启动、会话污染、共享生命周期、取消和超时回收、跨系统未知结果展开。若没有实际 SparkSession 项目经历，就把它作为系统设计题讲清楚；已有 NoteWeave 恢复与异步任务经验可以帮助理解状态推进，却不能替代真实 Spark 部署、池大小、版本和收益事实。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-java-validation-reference",
+  "kind": "doc",
+  "module": "syntax",
+  "part": "Java 完整示例",
+  "category": "Java 教学资料",
+  "title": "教学实现边界与运行说明",
+  "tags": [
+    "Java21",
+    "完整示例"
+  ],
+  "sections": [
+    {
+      "id": "section-java-1439",
+      "title": "37 教学实现的正确性边界",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "教学实现应把简化之处写进契约，能运行只说明被测试的行为成立，真正的替代方案还需满足完整 API、故障模型和性能要求。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "手写哈希表怎样与JDK比较"
+        },
+        {
+          "type": "paragraph",
+          "text": "MiniHashMap.java 使用私有数组与单向节点链，支持 get、put、remove、containsKey、size 和容量观察，允许 null 键和值，要求键稳定，且仅用于单线程。容量取 2 的幂，负载因子固定为 0.75，并设置明确的教学容量上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "插入先查已有键，命中只替换 value；新键超过阈值时先扩容，再计算新索引。迁移每个节点前保存 next，否则重接链后可能丢失尚未遍历部分。它用缓存的 hash 和新掩码重分桶，没有再次调用每个键的 hashCode。删除要分别处理桶头和中间节点，并且只有确实找到时减 size。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试用大量同桶键与负哈希分布，和 HashMap 对相同的确定操作序列比对返回值、成员关系和 size。null 映射与未命中分开验证，更新已有键不应提前扩容。随机序列是确定种子的补充，不代替边界与不变量推理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它没有树桶、fail-fast 迭代、Map 的完整默认方法与视图、可配置负载因子、序列化兼容、LinkedHash 扩展钩子和 JDK 级容量策略。长碰撞链仍可能 O(n)，扩容迁移使用头插也不意味着提供并发安全。面试要求与 JDK 比较时，这些差距是具体答案，不能笼统说“实现基本一样”。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "资源和协议为什么测试失败路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "ResourceLab.java 验证主异常、多个关闭异常、逆序关闭、资源初始化失败和同一 Throwable 对象的自抑制边界。自定义 helper 的约定是保留第一个主失败，并尝试所有清理；正常返回只有在清理也成功时才交付。此 helper 不替代所有 AutoCloseable 场景，更不替代进程故障恢复。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FrameDecoder.java 在每一个可能的头部或载荷切分点重新组合两帧，也逐字节输入，覆盖空帧、超限、负长度、畸形 UTF-8 和 EOF 残片。其 feed 消费传入 ByteBuffer 的 position；本次调用内发现错误时整个调用抛异常，不交付该次尚未返回的结果列表，并让解析器进入失败态。调用方需要独立决定连接关闭与错误应答。部分写测试使用受控通道返回 0 或只写两个字节，说明重试必须保存游标；它不是远端网络集成测试。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SerializationLab.java 的输入是自生成 DTO 字节，展示格式恢复与边界拒绝。一个外层帧内约定一个 Message，本例未实现通用对象流复用、恶意类隔离或全协议兼容协商。公网上更应优先采用明确数据模式的协议，而不是因示例有 filter 就开放任意原生对象流。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这个反序列化方法只读取并校验首个对象，不会因为它后面还附有其他字节就自动拒绝整帧。因此“每个外层帧只有一个 Message”目前是调用协议的前提，不能当作该方法已经强制验证的性质；需要严格单对象帧时，还要设计并验证帧内剩余数据的拒绝规则，不能通过反序列化任意第二个对象来试探，因为那可能先执行额外对象的恢复逻辑。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "代理与SPI需要完整部署结构"
+        },
+        {
+          "type": "paragraph",
+          "text": "RuntimeLab.java 包含接口、目标、RUNTIME 注解和代理 handler，验证身份方法、默认方法、声明内外的异常及 private 方法读取。角色字符串是教学参数，真实系统必须从可信认证上下文产生，不能让请求者直接提交“reader”就获得权限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "SPI 的文件包括 TextCodec.java、UpperCodec.java、ServiceLoaderLab.java 和 服务提供者声明。配置文件必须复制到运行时 classpath 根目录下的 META-INF/services，只有接口与实现源码而没有描述文件时，消费者不会按这个 classpath 机制发现提供者。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "编译失败也是类型契约的一部分"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/negative-java 里的六个小文件故意不能编译，分别验证泛型不变、不可重现泛型数组、abstract 与 final 冲突、覆盖扩大受检异常、null 重载歧义和捕获变量被修改。它们不参与正例构建，运行脚本单独确认编译器拒绝。"
+        },
+        {
+          "type": "paragraph",
+          "text": "C/C++ 例子在 qualifiers.cpp 和 typeof.c，对应 C++20 与 C23。两个负例检查不能经指向 const 的指针写入，也不能给 const 指针重新赋值。没有通过强转执行 const 写入或制造数据竞争来“测试”未定义行为，因为未定义行为的一次输出没有证明价值。"
+        }
+      ]
+    },
+    {
+      "id": "section-java-1475",
+      "title": "38 运行随书示例",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "随书代码只使用 Java 标准库和 C/C++ 标准库，Java 教学目标为 21，不需要 Maven、Gradle、数据库、网络账户或第三方依赖。"
+        },
+        {
+          "type": "paragraph",
+          "text": "将 reader.md、assets、code 和 run-tests.sh 保持在同一目录，准备 Java 21 运行时及编译器模块，C/C++ 部分准备支持 C++20、C23 的 GCC 工具链。在 Bash 中进入本书目录后运行："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "value": "bash run-tests.sh\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "脚本创建 build 目录，编译正例，复制 SPI 配置，运行各 main，再单独编译预期失败的负例。它不会运行项目仓库、启动服务或访问网络。若只学习 Java，可直接编译 code/java 下的全部正例并复制 code/resources，再执行需要的主类："
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "value": "mkdir -p build/classes\nfind code/java -name '*.java' | sort > build/java-sources.txt\njava -m jdk.compiler/com.sun.tools.javac.Main -encoding UTF-8 -d build/classes @build/java-sources.txt\ncp -R code/resources/. build/classes/\njava -cp build/classes ApiCookbook\njava -cp build/classes ResourceLab\njava -cp build/classes demo.ServiceLoaderLab\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "常规完整 JDK 也可以把编译命令的 java -m jdk.compiler/com.sun.tools.javac.Main 换成 javac。模块缺失时需要完整 JDK；仅有 java 可执行文件不保证具备编译能力。跨版本编译应使用匹配工具链与 --release，并在对应运行时验证，不要把 Java 21 的一次运行当 Java 8 或 17 的实机结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "练习时先修改一个边界：让 key 变可变、把 list 变成 Arrays.asList、把字节片段截断、让 cleanup 抛同一个异常，然后预测哪条契约失败，再运行对应例子。最后再回答复杂度与工程取舍。能说清失败为什么发生，比只记住一行正确 API 更有用。"
+        }
+      ]
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-java-source-reference",
+      "label": "完整教学源码"
+    }
+  ]
+}

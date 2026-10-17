@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-5-2",
+  "entryId": "bg-mysql-5",
+  "expectedOriginalHash": "4fda4025b1e4aebf05ecbced1eb51e27e62ff03d2b7fc9f3c7148bd992739462",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第12章 LIKE、NULL、OR 与所谓索引失效"
+    },
+    {
+      "type": "paragraph",
+      "text": "“索引失效”至少包含不能形成有效范围、优化器因成本不选、以及索引虽被扫描但没减少工作量三种情况，必须分开解释。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问：列上函数、隐式转换、LIKE、OR、IN、NULL 哪些不用索引？为什么建了索引还全表扫描？SELECT * 有什么影响？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先给五类原因，再说明反例"
+    },
+    {
+      "type": "paragraph",
+      "text": "“我会检查谓词能否对应索引里的排序值，参数类型和排序规则是否一致，复合键能否限定有效前缀，候选比例与回表成本是否过高，以及排序、覆盖、统计是否让另一条路径更便宜。函数、前置通配符和转换是常见线索，但不是见到某个语法就断言任何索引都不能用。”"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "函数与计算，先保护语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通 name 索引按 name 值排序，LENGTH(name)=6 一般不能直接按结果定位。LENGTH 统计字节，CHAR_LENGTH 统计字符，在 utf8mb4 下汉字可能占多字节；把二者互换会改变结果。若这种表达式非常重要，可以评估函数索引或生成列索引，表达式类型、长度、确定性和 MySQL 版本限制要明确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "id+1=10 可能妨碍按普通 id 索引定位。在类型和溢出语义允许的前提下可写 id=9，但不能把任何列运算都无条件移项。例如溢出、浮点、时区转换、NULL 都可能使所谓等价改写不等价。日期列的 YEAR(ts)=2026 常可改成时间区间，前提是固定时区、字段类型与边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "参数类型和比较规则"
+    },
+    {
+      "type": "paragraph",
+      "text": "phone 是 VARCHAR 时，用字符串参数比较，如 phone='1300000001'。phone=1300000001 可能触发数值比较，使带前导零或其他文本形式参与相等，普通字符串排序不能直接表达这种数值等值范围。它不是简单等同于显式 CAST(phone AS SIGNED)，溢出和非数字字符串规则也不能忽略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接两表时，类型、字符集、排序规则不一致也可能引入转换，既影响结果又影响路径。应优先规范模型和绑定类型，不能通过强行 CAST 到另一种类型来“救索引”却改变业务身份。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "LIKE 看第一个固定前缀"
+    },
+    {
+      "type": "paragraph",
+      "text": "在适用的字符集和比较规则下，LIKE 'abc%' 可由固定前缀形成候选范围，再检验完整 LIKE。LIKE '%abc'、LIKE '%abc%' 没有起始固定前缀，普通 B-tree 一般不能这样直接定位，但可能做覆盖索引扫描。LIKE 'a_c%' 至少有固定起始 a，后续 _ 仍需通配判断。参数、转义字符、大小写/重音排序规则和 NULL 都会影响匹配。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把样本固定为 abc、abcd、xabc、abXc、ABC、NULL：在大小写敏感比较下，LIKE 'abc%' 匹配 abc、abcd，LIKE '%abc' 匹配 abc、xabc，LIKE '%abc%' 匹配前三者；abXc 不满足这三种模式。ABC 是否匹配取决于实际排序规则，NULL 的 LIKE 结果为 UNKNOWN。要找字面量 % 或 _，应使用明确的转义约定，例如 LIKE 'a!_%' ESCAPE '!' 表示以字面量 a_ 开头，不能直接把用户输入当作通配模式。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不要手写 name>='abc' AND name<'abd' 后删掉 LIKE，复杂排序规则下这个推导未必与原谓词等价。全文检索有分词、停用词与相关性语义，不是任意子串的无损替代。手机号后缀等特定需求可以设计反转生成列，任意包含搜索则要按业务考虑专用索引或检索系统，并保留结果语义与权限。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "NULL、IN、NOT IN"
+    },
+    {
+      "type": "paragraph",
+      "text": "B-tree 可以保存 NULL 并服务适用的 IS NULL 查询。col=NULL 的结果是 UNKNOWN，不是判空；col IS NULL 才表达判空。col>常量 不会选中 NULL。可空 UNIQUE 的重复 NULL 语义要单独理解。"
+    },
+    {
+      "type": "paragraph",
+      "text": "IN 列表可以展开多个等值访问；列表中 NULL 不会让其他匹配值消失，但不匹配且含 NULL 时结果可能 UNKNOWN。NOT IN 子查询若含 NULL，常导致与“排除已有值”直觉不同的结果；可考虑正确关联的 NOT EXISTS，并确认对左侧 NULL 的预期，不能机械替换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "空 IN() 不是合法 MySQL 列表语法；应用应把空集合明确处理成“不匹配任何行”等约定，不能删除过滤条件后查询全表。列表 IN 与 IN 子查询也不完全同类：子查询可能采用半连接、物化等计划，重复值、NULL 和相关条件都要保留，不能照搬列表大小的经验。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "OR 的瓶颈与安全改写"
+    },
+    {
+      "type": "paragraph",
+      "text": "先看 id=1 OR age=18。如果只有 id 有索引，age 这一支仍可能要求大范围扫描，优化器就可能直接全表扫；两支都有索引时，可以考虑 Index Merge union，但也不是必选。"
+    },
+    {
+      "type": "paragraph",
+      "text": "想拆成两次查询，先处理重叠：原 OR 每条原始行只出现一次，直接 UNION ALL 会重复；改成 UNION 又按投影列去重，可能把两个不同原始行错误合并。设两支为 P、Q，可以让第一支取 P，第二支取 Q AND (P IS NOT TRUE)，两支才互斥。这里特意不用 NOT P：P 为 UNKNOWN、Q 为 TRUE 的行也应保留，而 NOT P 仍是 UNKNOWN，会把它丢掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若还带 ORDER BY 和 LIMIT，两支还必须使用相同全序，并证明局部 Top-K 能合并成全局结果。完整推导见第14章“OR、排序和 LIMIT 10 的完整推导”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "分支拆分和取完整行也必须保持同一结果视图；不能把一条查询拆成几个独立 READ COMMITTED 请求后仍宣称严格等价。完整的 Top-K 证明与同一快照边界见“OR、排序和 LIMIT 10 的完整推导”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "函数、转换、LIKE 与 OR 的完整实验"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 predicates.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/predicates.sql",
+      "value": "SET NAMES utf8mb4;\nCREATE TABLE t_user (\n  id BIGINT PRIMARY KEY,\n  name VARCHAR(50) NOT NULL,\n  phone VARCHAR(20) NOT NULL,\n  age INT NOT NULL,\n  a INT NOT NULL, b INT NOT NULL, c INT NOT NULL,\n  KEY ix_name (name), KEY ix_phone (phone), KEY ix_abc (a,b,c)\n) ENGINE=InnoDB;\nINSERT INTO t_user VALUES\n  (1,'Robert','1300000001',18,1,2,3),\n  (9,'Ada','01300000001',20,1,4,5),\n  (10,'张三','1300000002',18,2,2,3);\n-- 后文 WHERE 示例均可放在 SELECT * FROM t_user 后运行。\nEXPLAIN SELECT * FROM t_user WHERE a=1 AND b=2;\nEXPLAIN SELECT * FROM t_user WHERE b=2;\nEXPLAIN SELECT * FROM t_user WHERE name LIKE '%bert';\nEXPLAIN SELECT * FROM t_user WHERE id=1 OR age=18;\n-- 普通 name 索引通常不能直接按 LENGTH(name) 的结果定位\nSELECT * FROM t_user WHERE LENGTH(name) = 6;\n-- 需区分字节长度 LENGTH 和字符长度 CHAR_LENGTH。\n-- 匹配的函数索引或生成列索引可能支持表达式条件，需看执行计划。\n-- 列上运算可能使普通索引不能直接用于定位\nSELECT * FROM t_user WHERE id + 1 = 10;\n-- 类型与溢出语义允许时，可改写为：\nSELECT * FROM t_user WHERE id = 9;\n-- 假设 phone 是字符串列；用字符串参数保持类型一致\nSELECT * FROM t_user WHERE phone = '1300000001';\n-- phone = 1300000001 会触发数值比较，通常不能借字符串索引直接查找。\n-- 这不是精确等价于 CAST(phone AS SIGNED)：应依实际类型转换规则判断。\nselect * from t_user where id = 1 or age = 18;\n\nSELECT id FROM t_user WHERE phone=1300000001 ORDER BY id;\nSELECT id, LENGTH(name),CHAR_LENGTH(name) FROM t_user ORDER BY id;\nEXPLAIN SELECT * FROM t_user WHERE name LIKE 'Rob%';\nEXPLAIN SELECT * FROM t_user WHERE name LIKE 'R_b%';\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "2"
+}

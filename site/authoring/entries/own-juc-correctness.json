@@ -1,0 +1,446 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-juc-correctness",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 并发与 JUC",
+  "category": "并发正确性、生命周期与安全发布",
+  "title": "并发正确性、生命周期与安全发布",
+  "tags": [
+    "Java",
+    "JUC",
+    "Java21教学"
+  ],
+  "questions": [
+    {
+      "id": "q-own-juc-thread-safety",
+      "order": 45,
+      "question": "线程安全究竟保证什么？",
+      "shortAnswer": "线程安全保证多个线程按允许的方式同时使用一个对象时，仍满足它对外承诺的业务契约。它不是“用了锁”的同义词，也不能只用“原子性、可见性、有序性”三个名词代替分析。",
+      "commonPhrasings": [
+        "什么是线程安全",
+        "多个线程读写同一个变量怎么办",
+        "不可变对象是否安全",
+        "线程安全容器里的对象是否也安全",
+        "单例 Bean 能否放可变成员"
+      ],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "1 先把并发问题说清楚"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程安全保证多个线程按允许的方式同时使用一个对象时，仍满足它对外承诺的业务契约。它不是“用了锁”的同义词，也不能只用“原子性、可见性、有序性”三个名词代替分析。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以扣库存为例，共享的是 count，对外承诺的是 count 不得小于零。假设只剩一件商品，两个请求都先检查到有货，再各自扣减，就可能超卖。因此需要保护的操作是“检查库存并扣减”这一整段；分别给读和写加锁，仍然会在两段之间留下插入另一个请求的机会。"
+        },
+        {
+          "type": "paragraph",
+          "text": "换成并发容器也要重新找边界。集合保护自己的操作，不会顺带保护其中可变订单对象的字段；同样，两个 AtomicInteger 各自更新成功，不代表“两个余额总和不变”。面试里遇到“这个类是线程安全的”，下一句应落到具体业务：我组合调用了哪些方法，它们合起来承诺什么？"
+        },
+        {
+          "type": "paragraph",
+          "text": "安全性关注“坏事不会发生”，例如不超卖、不乱序。活性关注“好事最终能发生”，例如消费者最终拿到元素、取消后线程能退出。一个把所有线程永远堵住的实现可能没有错误输出，却不能称为可用方案。线性化要求每次操作可看作在调用与返回之间某个瞬间生效；这有助于解释并发 get、put、扣减的先后，但不意味着跨多个方法自动形成事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "避免共享通常是最简单的方案：局部值、不可变快照、分区所有权、消息传递。确实共享时再选同一把锁、原子状态转换或契约匹配的并发容器。ThreadLocal 只隔离线程到值的绑定，把同一个可变对象分别放进两个线程的 ThreadLocal，仍然是共享对象。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-lost-update",
+      "order": 59,
+      "question": "为什么 count 自增一千次会少于一千？",
+      "shortAnswer": "共享的 count++ 是读取、计算和写回三个逻辑动作，两个线程可以用同一个旧值分别计算，后写回的结果覆盖先前更新。A 读到 0，B 读到 0，B 写 1，A 再写 1，两次操作最终只增加一次；这已经足以说明问题，不需要先假设缓存失效或编译器重排。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "共享的 count++ 是读取、计算和写回三个逻辑动作，两个线程可以用同一个旧值分别计算，后写回的结果覆盖先前更新。A 读到 0，B 读到 0，B 写 1，A 再写 1，两次操作最终只增加一次；这已经足以说明问题，不需要先假设缓存失效或编译器重排。"
+        },
+        {
+          "type": "paragraph",
+          "text": "修复一是同一把锁包住整个自增；修复二是 AtomicInteger.incrementAndGet。把字段改为 volatile 只加强单次读写的内存语义，不能把读改写合并。局部变量自增可能编译为 iinc，共享字段则有另一组字节码，判断安全性不能靠“某行恰好有几条字节码”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试时既要比较最终总量，也要安排一个受控交错，确定展示两个参与者都先读旧值、再各自写回。反例测试证明这个交错可以导致错误；修复的正确性仍来自原子操作契约。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-concurrency-parallelism",
+      "order": 67,
+      "question": "并发 并行 同步和异步？",
+      "shortAnswer": "并发是多个任务在同一时间段推进，并行是某一时刻真正同时执行，同步与异步则描述调用与结果完成的关系。单核也可以并发；异步调用也可能由单个事件循环处理；创建更多线程不会增加 CPU 核心数。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "并发是多个任务在同一时间段推进，并行是某一时刻真正同时执行，同步与异步则描述调用与结果完成的关系。单核也可以并发；异步调用也可能由单个事件循环处理；创建更多线程不会增加 CPU 核心数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "进程提供地址空间和资源隔离，线程是进程内的执行流，线程间通常共享堆及进程资源，每条线程有自己的执行栈、寄存器状态和线程本地绑定。进程中的某条线程出现未处理 Java 异常，通常结束该线程，并非必然结束整个 JVM；本地代码破坏内存、进程被终止等情况是另一层问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“线程更多为什么反而变慢”要沿着一次执行解释。平台线程的创建和切换会涉及运行时及操作系统；换出时要保存执行状态，换入时再恢复，还可能损失缓存局部性。如果线程主要争抢同一把锁，增加线程没有增加有效计算，却可能增加等待与切换。"
+        },
+        {
+          "type": "paragraph",
+          "text": "具体成本取决于平台、负载和工作集，不能给所有机器固定一个纳秒数；中断处理、进入内核态、线程切换也不是同一件事。实际优化先看有效计算、等待和竞争各占多少，再决定控制并发度、缩短临界区、批量处理还是减少共享。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-thread-lifecycle",
+      "order": 79,
+      "question": "六种线程状态与 start run join？",
+      "shortAnswer": "Java 的 Thread.State 有 NEW、RUNNABLE、BLOCKED、WAITING、TIMED_WAITING、TERMINATED；它是 Java 的观察模型，不能直接替换操作系统的进程状态表。RUNNABLE 包含可运行及正在运行，某些本地 I/O 等待也不能仅凭这一枚举作出完整诊断。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "2 线程生命周期和合作取消"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 的 Thread.State 有 NEW、RUNNABLE、BLOCKED、WAITING、TIMED_WAITING、TERMINATED；它是 Java 的观察模型，不能直接替换操作系统的进程状态表。RUNNABLE 包含可运行及正在运行，某些本地 I/O 等待也不能仅凭这一枚举作出完整诊断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先沿“创建、启动、结束”区分几个名字。new Thread 只创建 Java 对象；start 才启动新的执行流并安排调用 run，而且同一 Thread 只能 start 一次。直接调用平台 Thread 的 run 只是普通方法调用，任务仍在调用线程运行；Java 21 虚拟 Thread 直接调用 run 则不执行其任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Runnable 和 Callable 描述要做的任务：前者没有返回值，后者可以返回结果、抛受检异常。FutureTask 把任务执行与结果状态连起来。线程池进一步管理这些任务由谁执行、怎样复用线程，但不会另造一套线程语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "BLOCKED 专指等待进入对象监视器，ReentrantLock 的停放等待通常是 WAITING 或 TIMED_WAITING。无期限 wait、join、park 可以等待；sleep、有期限 wait、join、parkNanos 可以计时等待。状态是瞬间快照，看到 WAITING 不等于发生故障。"
+        },
+        {
+          "type": "paragraph",
+          "text": "A 启动 B 后，若要求“B 真正结束才能继续”，最直接用 B.join。若 B 在方法中途 countDown，门闩只证明它到过那个位置，后面仍可能继续运行或失败。Future 完成也不等于线程池 worker 结束，worker 还会复用去执行下一项任务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，“先等 N 条线程全部终止，再启动第 N+1 条线程”要逐一 join，并观察前序任务的失败。先明确等的是阶段事件、任务结果还是线程终止，才不会把数到 N 个事件误当成整个阶段成功。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面的协调入口先启动全部前序线程，再在总预算内逐一等待真正终止；收集失败后才决定是否启动后继。N=0 时后继自然可以运行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/ThreadPhasesLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class ThreadPhasesLab {\n    static void afterAll(List<Runnable> prerequisites, Runnable successor) throws Exception {\n        AtomicReference<Throwable> error = new AtomicReference<>();\n        List<Thread> threads = new ArrayList<>();\n        for (int n = 0; n < prerequisites.size(); n++)\n            threads.add(Checks.thread(\"phase-\" + n, error, prerequisites.get(n)));\n        try {\n            for (Thread thread : threads) thread.start();\n            long start = System.nanoTime(), budget = TimeUnit.SECONDS.toNanos(5);\n            for (Thread thread : threads) {\n                long remaining = budget - (System.nanoTime() - start);\n                if (remaining <= 0 || !thread.join(java.time.Duration.ofNanos(remaining)))\n                    throw new TimeoutException(\"predecessors did not terminate\");\n            }\n            Checks.rethrow(error);\n            Thread next = Checks.thread(\"successor\", error, successor);\n            next.start(); threads.add(next); Checks.join(next); Checks.rethrow(error);\n        } finally {\n            for (Thread thread : threads) if (thread.isAlive()) thread.interrupt();\n            // Bounded cleanup request; a task ignoring interruption may outlive this teaching scope.\n            for (Thread thread : threads) if (thread.isAlive()) thread.join(100);\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        AtomicInteger completed = new AtomicInteger();\n        afterAll(List.of(completed::incrementAndGet, completed::incrementAndGet),\n                () -> Checks.that(completed.get() == 2, \"all predecessors terminated\"));\n        AtomicBoolean zero = new AtomicBoolean(); afterAll(List.of(), () -> zero.set(true));\n        Checks.that(zero.get(), \"zero predecessors\");\n        AtomicBoolean shouldNotRun = new AtomicBoolean();\n        try {\n            afterAll(List.of(() -> { throw new IllegalArgumentException(\"predecessor\"); }), () -> shouldNotRun.set(true));\n            throw new AssertionError(\"failure hidden\");\n        } catch (AssertionError expected) { Checks.that(expected.getCause() instanceof IllegalArgumentException, \"recorded worker failure\"); }\n        Checks.that(!shouldNotRun.get(), \"failed predecessor blocks successor\");\n        System.out.println(\"ThreadPhasesLab OK\");\n    }\n}\n",
+          "label": "code/ThreadPhasesLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-cooperative-interruption",
+      "order": 144,
+      "question": "interrupt 是请求 不是强制终止？",
+      "shortAnswer": "interrupt 发出合作取消请求，线程是否及时退出，取决于它执行的 API 和代码是否响应。不要使用 Thread.stop 破坏对象不变量，也不要把“取消按钮”直接等同于杀线程。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "interrupt 发出合作取消请求，线程是否及时退出，取决于它执行的 API 和代码是否响应。不要使用 Thread.stop 破坏对象不变量，也不要把“取消按钮”直接等同于杀线程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "看取消为什么没有生效，可以从请求到响应逐段追。interrupt 发出请求后，wait、sleep、join 等通常会抛 InterruptedException，并清除中断标记。能声明这个异常的方法通常向上传播；不能传播的线程入口可以恢复标记并结束。如果捕获后继续无限循环，相当于代码自己忽略了取消。"
+        },
+        {
+          "type": "paragraph",
+          "text": "isInterrupted 只读取标记；Thread.interrupted 读取并清除当前线程标记，检查时不要无意吃掉信号。LockSupport.park 是另一条路径：它可以因中断返回，却不抛 InterruptedException，也不自动清除标记。调用者仍要按自己的结束协议决定下一步。"
+        },
+        {
+          "type": "paragraph",
+          "text": "等待进入 synchronized 不能像 lockInterruptibly 一样因中断退出获取；一个一直执行 CPU 循环且不检查取消的任务也不会被 interrupt 魔法终止。对阻塞 I/O 要了解具体客户端的超时和取消契约，有时关闭调用者拥有的资源能唤醒等待，但不能随意关闭其他任务共享的连接。无法合作终止的独立工作可考虑进程隔离，其结果仍须按失败和补偿协议处理。"
+        },
+        {
+          "type": "paragraph",
+          "text": "暂停与取消要分开。下载暂停通常保存进度并进入可恢复状态，取消通常进入终态。线程的 suspend/resume 可能在持锁时冻结执行者，不适合业务暂停；用受同一锁保护的 paused 状态和条件等待，并确保 cancel 能唤醒暂停者。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-condition-waiting",
+      "order": 156,
+      "question": "wait sleep notify 和 park 的区别？",
+      "shortAnswer": "wait 用于等待对象状态，释放的是调用对象的监视器，返回前必须重新获得它；sleep 只暂停当前线程，不释放已持有的锁。notify 不交出锁，也不保证被选中的等待者立即执行。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "wait 用于等待对象状态，释放的是调用对象的监视器，返回前必须重新获得它；sleep 只暂停当前线程，不释放已持有的锁。notify 不交出锁，也不保证被选中的等待者立即执行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以消费者等队列非空为例：先持锁检查，空就 wait；醒来并重新获得锁以后，再检查队列，确实有元素才取走。完整顺序是“持锁，while 条件不满足就等待，醒来后重新检查，修改状态，再通知”。这里的 while 不只是防虚假唤醒：即使通知是真的，元素也可能已经被另一个消费者拿走。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再看通知对象。如果生产者等“不满”、消费者等“非空”，却共用一个 wait 集合，notify 可能只叫醒当前仍不能推进的同类线程。notifyAll 更容易保持活性，但会带来更多无效唤醒。选哪种通知，必须能解释被唤醒者为什么有机会推进。"
+        },
+        {
+          "type": "paragraph",
+          "text": "LockSupport 为每条线程维护至多一个许可。unpark 先于 park 时，这一个许可可被后续 park 消耗；多次 unpark 不累加成计数信号量。park 返回可能来自许可、中断、超时或虚假返回，因此必须循环检查由 volatile、锁等正确发布的条件。它不要求先持有监视器，也不自动释放已有业务锁。AQS 把停放能力与队列、状态重试结合起来，而不是单靠 park/unpark 建立完整同步器。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-happens-before",
+      "order": 168,
+      "question": "happens before 怎样完成证明？",
+      "shortAnswer": "happens-before 定义跨线程可见性和顺序约束，证明应沿着程序顺序和同步边建立，不能用“墙钟上先执行了”替代。JMM 规定允许观察到哪些结果，并不要求某种固定缓存结构或每次写入都立即到达 DRAM。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "3 JMM 可见性与安全发布"
+        },
+        {
+          "type": "paragraph",
+          "text": "happens-before 定义跨线程可见性和顺序约束，证明应沿着程序顺序和同步边建立，不能用“墙钟上先执行了”替代。JMM 规定允许观察到哪些结果，并不要求某种固定缓存结构或每次写入都立即到达 DRAM。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常用规则是同一监视器释放先于后续获取；同一 volatile 的写先于同步顺序中后续读；start 先于被启动线程中的动作；线程动作先于另一线程成功检测到其终止；以及传递性。线程中断与检测到中断之间也有相应同步规则。默认初始化及类初始化还有各自保证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "拿 data=42、ready=true 这次交接来走一遍。写线程先写 data，再写 volatile ready；读线程先确认读到这个发布动作后的 ready，再读 data。写者内部的程序顺序，把 data 写接到 ready 写；volatile 写读边，把两个线程接起来；读者内部的程序顺序，再接到 data 读。三段连起来，才能解释为何能看到已发布的 data。"
+        },
+        {
+          "type": "paragraph",
+          "text": "现在只改一个条件：若先写 ready 再写 data，data 写就不在这条发布链之前；若读者根本不读 ready，就缺少跨线程的同步边；若发布后继续无同步地修改 data，原来的链也没有覆盖新修改。说 happens-before 时应指出具体的写与读，不能只报出使用了 volatile。"
+        },
+        {
+          "type": "paragraph",
+          "text": "提交任务前的动作 happens-before 执行器中的任务动作；Future 所代表计算中的动作 happens-before 通过 get 获取结果后的动作。BlockingQueue 中放入对象前的动作也会发布给之后移除或访问该元素的线程。它们解决交接前的状态可见性，交接之后双方继续修改同一个对象仍需要所有权协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "没有数据竞争的正确同步程序可按顺序一致的方式理解，但“每个字段的操作都无数据竞争”不等于复合业务正确。两个独立 volatile 字段仍可能分别来自不同版本。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-volatile-final",
+      "order": 182,
+      "question": "volatile 和 final 各解决什么？",
+      "shortAnswer": "volatile 适合发布状态或替换引用，final 主要约束赋值并提供构造完成后的特殊初始化安全保证；两者都不会把可变对象图自动变成不可变事务。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "volatile 适合发布状态或替换引用，final 主要约束赋值并提供构造完成后的特殊初始化安全保证；两者都不会把可变对象图自动变成不可变事务。"
+        },
+        {
+          "type": "paragraph",
+          "text": "volatile 读写具有相应内存效果，volatile long/double 的单次访问也必须原子。普通 long/double 的非 volatile 访问在规范层面存在允许拆分的历史边界，不能只用当前某台 64 位机器的表现代替规范。即使单次访问原子，读取、检查、扣减仍是复合操作。"
+        },
+        {
+          "type": "paragraph",
+          "text": "追问“volatile 底层怎么做”，先说规范要求，再说如何实现。JMM 规定它的可见性与排序约束；编译器据此限制代码移动，再为目标 CPU 选择满足要求的读写、内存屏障或带排序效果的指令。换了 CPU，实现指令可以变，Java 层的契约不能随之缩水。"
+        },
+        {
+          "type": "paragraph",
+          "text": "release 发布前序写、acquire 约束后续读，可以帮助理解部分边界；但完整 volatile 契约还包含同步顺序要求，不能等同于任意一对 acquire/release。x86 与 ARM 所需的指令未必相同，编译器也可能合并冗余屏障。因此不能背成每次固定插入四条指令，更不能说每次 volatile 都锁住总线或立即刷回 DRAM。"
+        },
+        {
+          "type": "paragraph",
+          "text": "final 字段在正确构造、构造期间 this 不逃逸的条件下有初始化安全语义；它引用的对象或数组在构造完成前写入的相关状态也有受规范约束的保证。这不能推广为任意普通字段都安全发布，更不能保护构造完成后的修改。实际工程仍优先通过类初始化、volatile、锁、并发队列等清晰渠道发布整个对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "record 的组件字段是 final，但组件若为 List 或 Map，引用指向的内容仍可能改变。构造快照时要防御性复制，嵌套元素也要明确不可变性。不可变对象带来容易共享和一致读取的好处，代价是构造和复制；高频更新巨大对象图时要评估粒度。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-atomic-snapshots",
+      "order": 196,
+      "question": "两个 volatile 字段为什么会混版？",
+      "shortAnswer": "把同版字段放进不可变对象，通过一次根引用替换发布，并让读者只捕获一次引用，才能自然得到版本一致的快照。分别把 revision 和 route 声明为 volatile，不能阻止读者观察到“新 revision 加旧 route”。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "把同版字段放进不可变对象，通过一次根引用替换发布，并让读者只捕获一次引用，才能自然得到版本一致的快照。分别把 revision 和 route 声明为 volatile，不能阻止读者观察到“新 revision 加旧 route”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这是顺序一致执行下也存在的反例：写者先写 revision=2，再写 route=green，读者插在两次写之间。快照设计把两个字段一起构造好，发布前是完整旧版，发布后是完整新版。读者若连续调用两次 state.get，再分别取字段，仍可能重新拼成混版。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单写者整版替换用 volatile 引用即可；多写者读旧版后各自 set 会丢更新，可用锁或 CAS 检查旧根并重算。CAS 的重算函数必须无外部副作用，否则重复发送消息或扣减外部资源。快照一致允许请求继续使用旧快照；要求变更后禁止旧版提交时，还要在提交点验证版本。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/SnapshotDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicReference;\n\n/** 可见的字段仍可组成错误版本；一次发布、一次取引用才能得到一致快照。 */\npublic final class SnapshotDemo {\n    private static int assertions;\n    private static void check(String name, boolean ok) {\n        if (!ok) throw new AssertionError(name);\n        assertions++;\n        System.out.println(\"PASS \" + name);\n    }\n    private static void await(CountDownLatch gate) throws InterruptedException {\n        if (!gate.await(5, TimeUnit.SECONDS)) throw new AssertionError(\"gate stuck\");\n    }\n    private static final class SplitConfig {\n        volatile int revision = 1;\n        volatile String route = \"blue\";\n    }\n    // 两个字段都是值；若换成 List/Map 等可变对象，还需要防御性复制。\n    private record Config(int revision, String route) {\n        Config {\n            if (revision < 1 || route == null) throw new IllegalArgumentException();\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        ExecutorService writer = Executors.newSingleThreadExecutor();\n        CountDownLatch halfWritten = new CountDownLatch(1);\n        CountDownLatch finishSplit = new CountDownLatch(1);\n        CountDownLatch prepared = new CountDownLatch(1);\n        CountDownLatch publish = new CountDownLatch(1);\n        try {\n            SplitConfig split = new SplitConfig();\n            Future<?> broken = writer.submit(() -> {\n                split.revision = 2;\n                halfWritten.countDown();\n                try { await(finishSplit); }\n                catch (InterruptedException ex) { Thread.currentThread().interrupt(); return; }\n                split.route = \"green\";\n            });\n            await(halfWritten);\n            check(\"两个 volatile 字段仍可能组成混合版本\",\n                    split.revision == 2 && split.route.equals(\"blue\"));\n            finishSplit.countDown(); broken.get(5, TimeUnit.SECONDS);\n            check(\"写完后才成为完整新版本\",\n                    split.revision == 2 && split.route.equals(\"green\"));\n\n            AtomicReference<Config> state = new AtomicReference<>(new Config(1, \"blue\"));\n            Config captured = state.get(); // 每次业务读取只抓一个引用。\n            int firstReadRevision = state.get().revision();\n            Future<?> update = writer.submit(() -> {\n                Config next = new Config(2, \"green\"); // 在发布前完成构造和校验。\n                prepared.countDown();\n                try { await(publish); }\n                catch (InterruptedException ex) { Thread.currentThread().interrupt(); return; }\n                state.set(next); // 整个配置版本的线性化点。\n            });\n            await(prepared);\n            check(\"构造完成并不等于已经发布\", state.get() == captured);\n            publish.countDown(); update.get(5, TimeUnit.SECONDS);\n            Config current = state.get();\n            check(\"旧读者保留一致旧版本\",\n                    captured.revision() == 1 && captured.route().equals(\"blue\"));\n            check(\"新读者获得一致新版本\",\n                    current.revision() == 2 && current.route().equals(\"green\"));\n            check(\"版本切换只改变根引用\", current != captured);\n            String secondReadRoute = state.get().route();\n            check(\"分别 get 两次仍能把两个版本拼在一起\",\n                    firstReadRevision == 1 && secondReadRoute.equals(\"green\"));\n            boolean invalid = false;\n            try { new Config(0, \"bad\"); } catch (IllegalArgumentException ex) { invalid = true; }\n            check(\"非法配置在发布前被拒绝\", invalid && state.get() == current);\n        } finally {\n            finishSplit.countDown(); publish.countDown();\n            writer.shutdownNow();\n            if (!writer.awaitTermination(5, TimeUnit.SECONDS)) throw new AssertionError(\"writer alive\");\n        }\n        System.out.println(\"ASSERTIONS \" + assertions);\n    }\n}\n",
+          "label": "code/SnapshotDemo.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-juc-singleton-publication",
+      "order": 288,
+      "question": "线程安全单例如何解释到位？",
+      "shortAnswer": "双重检查单例要同时解决两个问题：对象只初始化一次，以及其他线程拿到的对象已被正确发布。volatile 根引用负责安全发布，同一监视器中的第二次检查负责阻止重复初始化。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "双重检查单例要同时解决两个问题：对象只初始化一次，以及其他线程拿到的对象已被正确发布。volatile 根引用负责安全发布，同一监视器中的第二次检查负责阻止重复初始化。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设 A、B 都在锁外读到 null。A 先拿锁、构造并发布，B 随后拿锁时必须再检查一次，才知道不用重建。这就是内层检查的作用；外层检查则让初始化后的调用尽量不用加锁。两个检查与 volatile 各有职责，不能只记下一个代码形状。"
+        },
+        {
+          "type": "paragraph",
+          "text": "初始化持有者模式利用内部类首次主动使用时的类初始化完成延迟加载，饿汉模式利用所属类初始化完成提前创建。Holder 初始化失败后，对应类会进入错误状态，并非每次访问都重新尝试；DCL 构造失败但尚未发布时，后续调用可能重试。不能脱离完整实现断言所有单例都必须 volatile。"
+        },
+        {
+          "type": "paragraph",
+          "text": "单例范围通常是一个定义类加载器中的类身份，不是整台机器或分布式系统唯一；单例内部的可变计数、缓存仍要同步。需要明确销毁、注入替身或多租户隔离时，容器管理的组件常比全局静态对象更可控。"
+        },
+        {
+          "type": "paragraph",
+          "text": "code/PublicationLab.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class PublicationLab {\n    static final class Dcl {\n        private static volatile Dcl instance;\n        final int answer;\n        private Dcl() { answer = 42; }\n        static Dcl get() {\n            Dcl local = instance;\n            if (local == null) {\n                synchronized (Dcl.class) {\n                    local = instance;\n                    if (local == null) instance = local = new Dcl();\n                }\n            }\n            return local;\n        }\n    }\n    static final class HolderSingleton {\n        private HolderSingleton() {}\n        private static final class Holder {\n            static final HolderSingleton INSTANCE = new HolderSingleton();\n        }\n        static HolderSingleton get() { return Holder.INSTANCE; }\n    }\n    static final class LockedCounter {\n        private int value;\n        synchronized void increment() { value++; }\n        synchronized int value() { return value; }\n    }\n    public static void main(String[] args) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(2);\n        try {\n            AtomicInteger broken = new AtomicInteger();\n            CountDownLatch bothRead = new CountDownLatch(2), release = new CountDownLatch(1);\n            Callable<Void> splitIncrement = () -> {\n                int old = broken.get();\n                bothRead.countDown();\n                Checks.await(release);\n                broken.set(old + 1); // Atomic get/set do not make their composition atomic.\n                return null;\n            };\n            Future<Void> a = pool.submit(splitIncrement), b = pool.submit(splitIncrement);\n            Checks.await(bothRead); release.countDown();\n            Checks.get(a); Checks.get(b);\n            Checks.that(broken.get() == 1, \"two read-modify-write operations lost one update\");\n            AtomicInteger atomic = new AtomicInteger();\n            LockedCounter locked = new LockedCounter();\n            Set<Dcl> identities = ConcurrentHashMap.newKeySet();\n            List<Future<?>> work = new ArrayList<>();\n            for (int t = 0; t < 2; t++) work.add(pool.submit(() -> {\n                for (int i = 0; i < 500; i++) {\n                    atomic.incrementAndGet(); locked.increment();\n                    Dcl value = Dcl.get();\n                    Checks.that(value.answer == 42, \"initialized value\");\n                    identities.add(value);\n                    Checks.that(HolderSingleton.get() == HolderSingleton.get(), \"holder identity\");\n                }\n            }));\n            for (Future<?> f : work) Checks.get(f);\n            Checks.that(atomic.get() == 1000 && locked.value() == 1000, \"both fixes\");\n            Checks.that(identities.size() == 1, \"one DCL instance\");\n            System.out.println(\"PublicationLab OK\");\n        } finally { Checks.stop(pool); }\n    }\n}\n",
+          "label": "code/PublicationLab.java"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-juc-reference",
+          "label": "完整运行支持与版本边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-algo-gap-dijkstra",
+  "kind": "qa",
+  "module": "algo",
+  "part": "算法练习",
+  "category": "补充算法合同",
+  "title": "朴素 Dijkstra 与堆优化的区别",
+  "questions": [
+    {
+      "id": "q-own-algo-dijkstra",
+      "question": "朴素 Dijkstra 与堆优化的区别",
+      "shortAnswer": "朴素版本每轮扫描所有未确定顶点，取当前距离最小者；堆版本把这个“取最小”操作交给优先队列，两者使用同一个非负边权证明。",
+      "blocks": [
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "朴素 Dijkstra 与堆优化的区别"
+        },
+        {
+          "type": "paragraph",
+          "text": "朴素版本每轮扫描所有未确定顶点，取当前距离最小者；堆版本把这个“取最小”操作交给优先队列，两者使用同一个非负边权证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最小暂定距离顶点一旦确定，就不可能再经其他未确定顶点得到更短路径，因为后续边权均非负。零权、自环和平行边允许，负权边拒绝；不可达使用 Optional.empty，而非一个可能与合法路径长度冲突的巨大常数。下面采用邻接表保存边，但选择下一顶点时仍完整线性扫描，因此是朴素 O(V²+E) 时间、O(V+E) 存储。若采用 V×V 邻接矩阵，存储变为 O(V²)，还应对平行边保留最小权。"
+        },
+        {
+          "type": "paragraph",
+          "text": "堆优化版本见本章 DijkstraExact：懒惰堆需要跳过过期距离，成本按实际堆条目计。两个版本都用 BigInteger 避免 long 路径累加溢出；上述时间只计大整数加法与比较次数，位成本另计。稠密图上朴素扫描可能更合适，不能只因没有堆就断言总是更慢。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\n\n/** Dense-selection Dijkstra: no heap, exact distances, nonnegative directed multigraph. */\npublic final class DijkstraDense {\n    private DijkstraDense() {}\n    public record Edge(int from, int to, long weight) {}\n    public static List<Optional<BigInteger>> distances(int n, List<Edge> input, int source) {\n        if (n <= 0 || source < 0 || source >= n) throw new IllegalArgumentException(\"vertices/source\");\n        Objects.requireNonNull(input);\n        List<List<Edge>> adjacency = new ArrayList<>();\n        for (int i = 0; i < n; i++) adjacency.add(new ArrayList<>());\n        for (Edge edge : input) {\n            Objects.requireNonNull(edge);\n            if (edge.from < 0 || edge.from >= n || edge.to < 0 || edge.to >= n || edge.weight < 0)\n                throw new IllegalArgumentException(\"nonnegative edge with valid endpoints required\");\n            adjacency.get(edge.from).add(edge);\n        }\n        BigInteger[] distance = new BigInteger[n];\n        boolean[] settled = new boolean[n];\n        distance[source] = BigInteger.ZERO;\n        for (int round = 0; round < n; round++) {\n            int closest = -1;\n            for (int v = 0; v < n; v++) {\n                if (!settled[v] && distance[v] != null &&\n                    (closest < 0 || distance[v].compareTo(distance[closest]) < 0)) closest = v;\n            }\n            if (closest < 0) break;\n            settled[closest] = true;\n            for (Edge edge : adjacency.get(closest)) {\n                BigInteger candidate = distance[closest].add(BigInteger.valueOf(edge.weight));\n                if (distance[edge.to] == null || candidate.compareTo(distance[edge.to]) < 0)\n                    distance[edge.to] = candidate;\n            }\n        }\n        List<Optional<BigInteger>> result = new ArrayList<>();\n        for (BigInteger value : distance) result.add(Optional.ofNullable(value));\n        return List.copyOf(result);\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "自测用 Floyd 全点对算法作为独立参考，包含零权、自环、平行边、不可达、负边拒绝和超过 long 最大值的路径总和。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\n\npublic final class DijkstraDenseTest {\n    private static int checks;\n    private static void check(boolean condition) { checks++; if (!condition) throw new AssertionError(); }\n    private static void verify(int n, List<DijkstraDense.Edge> edges) {\n        BigInteger[][] floyd = new BigInteger[n][n];\n        for (int i = 0; i < n; i++) floyd[i][i] = BigInteger.ZERO;\n        for (DijkstraDense.Edge e : edges) {\n            BigInteger w = BigInteger.valueOf(e.weight());\n            if (floyd[e.from()][e.to()] == null || w.compareTo(floyd[e.from()][e.to()]) < 0)\n                floyd[e.from()][e.to()] = w;\n        }\n        for (int k = 0; k < n; k++) for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {\n            if (floyd[i][k] == null || floyd[k][j] == null) continue;\n            BigInteger via = floyd[i][k].add(floyd[k][j]);\n            if (floyd[i][j] == null || via.compareTo(floyd[i][j]) < 0) floyd[i][j] = via;\n        }\n        for (int source = 0; source < n; source++) {\n            List<Optional<BigInteger>> actual = DijkstraDense.distances(n, edges, source);\n            for (int v = 0; v < n; v++) check(actual.get(v).equals(Optional.ofNullable(floyd[source][v])));\n            try { actual.add(Optional.empty()); throw new AssertionError(); }\n            catch (UnsupportedOperationException expected) { checks++; }\n        }\n    }\n    public static void main(String[] args) {\n        Random random = new Random(0xdda117L);\n        for (int test = 0; test < 1200; test++) {\n            int n = 1 + random.nextInt(10);\n            List<DijkstraDense.Edge> edges = new ArrayList<>();\n            for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) {\n                if (random.nextBoolean()) edges.add(new DijkstraDense.Edge(i, j, random.nextInt(20)));\n                if (random.nextInt(7) == 0) edges.add(new DijkstraDense.Edge(i, j, random.nextInt(3)));\n            }\n            verify(n, edges);\n        }\n        verify(4, List.of(new DijkstraDense.Edge(0, 1, Long.MAX_VALUE),\n                          new DijkstraDense.Edge(1, 2, Long.MAX_VALUE)));\n        for (DijkstraDense.Edge e : List.of(new DijkstraDense.Edge(0,1,-1),new DijkstraDense.Edge(2,0,1))) {\n            try { DijkstraDense.distances(2, List.of(e), 0); throw new AssertionError(); }\n            catch (IllegalArgumentException expected) { checks++; }\n        }\n        try { DijkstraDense.distances(0, List.of(), 0); throw new AssertionError(); }\n        catch (IllegalArgumentException expected) { checks++; }\n        System.out.println(\"DijkstraDenseTest PASS \" + checks);\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "图的额外条件：剪枝、一般图直径与方向状态"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "保留指定终点的 DAG，如何安全删除其余上游？"
+        },
+        {
+          "type": "paragraph",
+          "text": "只保留“从给定起点可达”且“能够到达某个保留终点”的节点，以及两个端点都保留的边。"
+        },
+        {
+          "type": "paragraph",
+          "text": "先沿正向图从起点集合搜索，再沿反向图从保留终点搜索，取两个可达集合的交集。0→1→2 与 1→3 共用上游 1；只保留终点 2 时，删 3，仍必须保留 0、1、2。不能从要删的终点反向一路删除，误伤共享祖先。"
+        },
+        {
+          "type": "paragraph",
+          "text": "为什么端点都在交集的边一定能保留？从某起点到其起点的路径，加上这条边，再加上其终点到保留终点的路径，构成一条所需路径；DAG 前提排除了拼接中的回路问题。实现接受编号 0 到 n-1 的图，给定起点必须入度为 0，保留终点必须出度为 0，并用拓扑检查拒绝任何环，连与目标无关的环也不忽略。空起点或空保留集合得到空结果；一个孤立节点同时是指定起点和终点时保留。平行边按输入中的物理边保留。时间与空间都是 O(V+E)。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "连通块、成环与直径，能否两次 BFS 一把解决？"
+        },
+        {
+          "type": "paragraph",
+          "text": "无向图的连通块可以搜索得到，成环可以用并查集判断，但一般无权图的精确直径需要考虑每个节点的最短路；两次 BFS 的直径保证只适用于树。"
+        },
+        {
+          "type": "paragraph",
+          "text": "树中任意两点路径唯一，可以证明从任意点到达的最远点是某条直径的端点，再从它搜索得到直径。带环图没有这一保证，不能因一些样例可用就推广。当前通用实现对每个节点 BFS，在各连通块内取最短路距离的最大值，时间 O(V(V+E))、空间 O(V+E)，返回每个分量的节点、直径与一对端点。空图有 0 个连通块，孤立点直径为 0；断连图不悄悄赋一个有限“全局直径”，而是逐分量返回。"
+        },
+        {
+          "type": "paragraph",
+          "text": "并查集处理每条无向物理边：若两端已经属于同一集合，这条边闭合了一个环。代码允许自环与平行边，它们分别形成长度 1 与长度 2 的多重图环；如果题目只讨论简单图，应先明确排除它们。带权图应改为相应最短路算法，负权无向边还会引入负环意义的问题，不能沿用无权 BFS。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从任意坐标开始顺时针螺旋，第一次出界就停止"
+        },
+        {
+          "type": "paragraph",
+          "text": "按右、下、左、上移动，步数依次为 1、1、2、2、3、3……，一旦下一步越界立即停止。"
+        },
+        {
+          "type": "paragraph",
+          "text": "起点先输出。3×3 矩阵从左上角开始，访问 (0,0),(0,1),(1,1),(1,0) 后下一步出界，直接结束；不会绕到外面再重新进入矩阵，也不要求把矩阵所有格子输出。这个合同与“允许越界继续走，直到访问全部格子”的版本不同。代码返回坐标，打印元素时逐个取 matrix[row][column] 即可。时间 O(实际输出数)，除结果列表外 O(1) 空间；初始坐标必须有效。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "连连看最多两个拐点"
+        },
+        {
+          "type": "paragraph",
+          "text": "搜索状态要同时包含格子位置和进入方向，用继续直行的代价 0、改变方向的代价 1，做 0-1 BFS 找最少拐弯数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "只按格子标记 visited 会丢掉“以更合适方向到达同一点”的方案。两个端点必须是不同位置、非空且图案相同；中间只能通过空格。初始化起点的四种方向为 0，表示第一次选择方向不算拐弯，后续代价超过 2 就不扩展。每个方向状态保留最少转弯数，陈旧队列项跳过。"
+        },
+        {
+          "type": "paragraph",
+          "text": "纸上记录同一格的四个方向状态，并分别写目前最少拐弯数。下一步向右时，从右向状态继续代价为 0，从上向状态改方向代价为 1；只存格子的一个 visited 无法保留这两个不同的后续选择。"
+        },
+        {
+          "type": "paragraph",
+          "text": "能否绕棋盘外侧是题目必须给出的规则。接口用 allowOutside 明确选择；允许时加一圈空边界，足以表示直线段向外绕过后返回的至多两拐点路径。四方向状态数量是 O(行×列)，边数同阶，因此时间与空间均为 O(行×列)。如果题目还限制总步数或要输出具体连线，再加对应距离/前驱状态，不以转弯数替代路径长度。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "地铁路线同时考虑时间、距离和换乘"
+        },
+        {
+          "type": "paragraph",
+          "text": "把状态扩展为“当前站点、当前线路”，沿线路移动累加运行成本，切换线路累加换乘成本，再按明确目标求最短路。"
+        },
+        {
+          "type": "paragraph",
+          "text": "只有站点这个状态不够：同样到达站 A，乘坐不同线路会导致下一步换乘等待时间不同。最小时间可以用边权“运行时间+适用的换乘时间”；若优化的是最少换乘再最短时间，用 (换乘数,时间) 的字典序距离，而不是随便给换乘乘一个未经证明的大常数。时间与距离是不同目标，需确认优先级、预算约束或权重，不能说一个方案天然同时最优。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所有静态成本非负时，可以使用本章完整 Dijkstra 实现。为每条线路上的站建立状态；同一站的线路状态之间建立换乘边；起点用超级源连接可乘线路，终点任一线路状态都是候选。比如 A-B 在线路 1 上耗时 3，B-C 在线路 2 上耗时 4，B 换乘耗时 5，这条路线耗时是 12 而不是 7。首次上车是否收费、步行换站和换乘方向是否对称，都必须分别建边。若等待时间取决于到站时刻，则变成时刻表/时间依赖最短路，需校验 FIFO 等条件，不能继续把动态等待当成固定边权。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\n\npublic final class GraphVariants {\n    private GraphVariants() {}\n    public record Edge(int from,int to) {}\n    public record Pruned(List<Integer> vertices,List<Edge> edges){public Pruned{vertices=List.copyOf(vertices);edges=List.copyOf(edges);}}\n    private static void vertex(int n,int v){if(v<0||v>=n)throw new IllegalArgumentException(\"vertex outside graph\");}\n    private static List<List<Integer>> lists(int n){if(n<0)throw new IllegalArgumentException(\"negative n\");List<List<Integer>> g=new ArrayList<>();for(int i=0;i<n;i++)g.add(new ArrayList<>());return g;}\n    /** Preserve exactly the vertices/edges on a supplied-source -> retained-sink path. */\n    public static Pruned pruneDag(int n,List<Edge> supplied,Set<Integer> starts,Set<Integer> sinks){\n        Objects.requireNonNull(supplied);Objects.requireNonNull(starts);Objects.requireNonNull(sinks);\n        List<Edge> edges=new ArrayList<>(supplied);List<List<Integer>> out=lists(n),in=lists(n);int[] degree=new int[n];\n        for(Edge e:edges){Objects.requireNonNull(e);vertex(n,e.from);vertex(n,e.to);out.get(e.from).add(e.to);in.get(e.to).add(e.from);degree[e.to]=Math.addExact(degree[e.to],1);}\n        for(int s:starts){vertex(n,s);if(degree[s]!=0)throw new IllegalArgumentException(\"start must have indegree zero\");}\n        for(int s:sinks){vertex(n,s);if(!out.get(s).isEmpty())throw new IllegalArgumentException(\"retained endpoint must be a sink\");}\n        int[] remaining=degree.clone();Deque<Integer> ready=new ArrayDeque<>();for(int i=0;i<n;i++)if(remaining[i]==0)ready.add(i);int visited=0;\n        while(!ready.isEmpty()){int u=ready.remove();visited++;for(int v:out.get(u))if(--remaining[v]==0)ready.add(v);}\n        if(visited!=n)throw new IllegalArgumentException(\"cycle in DAG input\");\n        boolean[] forward=reachable(out,starts),backward=reachable(in,sinks),keep=new boolean[n];List<Integer> vertices=new ArrayList<>();\n        for(int i=0;i<n;i++)if(keep[i]=forward[i]&&backward[i])vertices.add(i);\n        List<Edge> kept=new ArrayList<>();for(Edge e:edges)if(keep[e.from]&&keep[e.to])kept.add(e);\n        return new Pruned(vertices,kept);\n    }\n    private static boolean[] reachable(List<List<Integer>> g,Set<Integer> seeds){boolean[] seen=new boolean[g.size()];Deque<Integer> q=new ArrayDeque<>();for(int x:seeds){seen[x]=true;q.add(x);}while(!q.isEmpty()){int u=q.remove();for(int v:g.get(u))if(!seen[v]){seen[v]=true;q.add(v);}}return seen;}\n    public record Component(List<Integer> vertices,int diameter,int first,int second){public Component{vertices=List.copyOf(vertices);}}\n    public record UndirectedAnalysis(boolean containsCycle,List<Component> components){public UndirectedAnalysis{components=List.copyOf(components);}}\n    /** Unit-weight undirected multigraph; self-loop/parallel-edge cycles count as cycles. */\n    public static UndirectedAnalysis analyzeUndirected(int n,List<Edge> edges){\n        Objects.requireNonNull(edges);List<List<Integer>> g=lists(n);int[] parent=new int[n],size=new int[n];for(int i=0;i<n;i++){parent[i]=i;size[i]=1;}boolean cycle=false;\n        for(Edge e:edges){Objects.requireNonNull(e);vertex(n,e.from);vertex(n,e.to);g.get(e.from).add(e.to);g.get(e.to).add(e.from);int a=find(parent,e.from),b=find(parent,e.to);if(a==b)cycle=true;else{if(size[a]<size[b]){int t=a;a=b;b=t;}parent[b]=a;size[a]+=size[b];}}\n        List<Component> result=new ArrayList<>();boolean[] seen=new boolean[n];\n        for(int source=0;source<n;source++)if(!seen[source]){\n            int[] firstDistances=bfs(g,source);List<Integer> group=new ArrayList<>();for(int i=0;i<n;i++)if(firstDistances[i]>=0){seen[i]=true;group.add(i);}\n            int diameter=0,first=source,second=source;\n            for(int u:group){int[] distance=bfs(g,u);for(int v:group)if(distance[v]>diameter){diameter=distance[v];first=u;second=v;}}\n            result.add(new Component(group,diameter,first,second));\n        }\n        return new UndirectedAnalysis(cycle,result);\n    }\n    private static int find(int[] p,int x){while(p[x]!=x){p[x]=p[p[x]];x=p[x];}return x;}\n    private static int[] bfs(List<List<Integer>> g,int source){int[] d=new int[g.size()];Arrays.fill(d,-1);d[source]=0;Deque<Integer> q=new ArrayDeque<>();q.add(source);while(!q.isEmpty()){int u=q.remove();for(int v:g.get(u))if(d[v]<0){d[v]=Math.addExact(d[u],1);q.add(v);}}return d;}\n    public record Cell(int row,int column) {}\n    /** Start included; east, south, west, north; stop at the FIRST attempted exit. */\n    public static List<Cell> spiralUntilFirstExit(int rows,int columns,int row,int column){\n        if(rows<=0||columns<=0||row<0||row>=rows||column<0||column>=columns)throw new IllegalArgumentException(\"dimensions/start\");\n        List<Cell> out=new ArrayList<>();out.add(new Cell(row,column));int[] dr={0,1,0,-1},dc={1,0,-1,0};long r=row,c=column,length=1;int direction=0;\n        for(;;){for(int twice=0;twice<2;twice++){for(long step=0;step<length;step++){r+=dr[direction];c+=dc[direction];if(r<0||r>=rows||c<0||c>=columns)return out;out.add(new Cell((int)r,(int)c));}direction=(direction+1)%4;}length++;}\n    }\n    private record TurnState(int row,int column,int direction,int turns) {}\n    /** 0 means empty. Equal nonzero endpoints can be linked through empties with <=2 bends. */\n    public static boolean linkWithAtMostTwoBends(int[][] board,Cell start,Cell end,boolean allowOutside){\n        Objects.requireNonNull(board);Objects.requireNonNull(start);Objects.requireNonNull(end);int rows=board.length,cols=rows==0?0:Objects.requireNonNull(board[0]).length;\n        for(int[] a:board)if(a==null||a.length!=cols)throw new IllegalArgumentException(\"rectangular board\");\n        if(start.row<0||start.row>=rows||start.column<0||start.column>=cols||end.row<0||end.row>=rows||end.column<0||end.column>=cols)throw new IllegalArgumentException(\"endpoint\");\n        if(start.equals(end)||board[start.row][start.column]==0||board[start.row][start.column]!=board[end.row][end.column])return false;\n        int pad=allowOutside?1:0,R=Math.addExact(rows,2*pad),C=Math.addExact(cols,2*pad),sr=start.row+pad,sc=start.column+pad,er=end.row+pad,ec=end.column+pad;\n        int[][][] best=new int[R][C][4];for(int[][] line:best)for(int[] a:line)Arrays.fill(a,3);\n        Deque<TurnState> q=new ArrayDeque<>();for(int d=0;d<4;d++){best[sr][sc][d]=0;q.add(new TurnState(sr,sc,d,0));}\n        int[] dr={-1,1,0,0},dc={0,0,-1,1};\n        while(!q.isEmpty()){\n            TurnState state=q.removeFirst();if(state.turns!=best[state.row][state.column][state.direction])continue;\n            if(state.row==er&&state.column==ec)return true;\n            for(int d=0;d<4;d++){\n                int r=state.row+dr[d],c=state.column+dc[d],turns=state.turns+(d==state.direction?0:1);\n                if(r<0||r>=R||c<0||c>=C||turns>2||turns>=best[r][c][d])continue;\n                boolean endpoint=r==er&&c==ec;\n                boolean outside=r<pad||r>=rows+pad||c<pad||c>=cols+pad;\n                if(!endpoint&&!outside&&board[r-pad][c-pad]!=0)continue;\n                best[r][c][d]=turns;TurnState next=new TurnState(r,c,d,turns);if(d==state.direction)q.addFirst(next);else q.addLast(next);\n            }\n        }\n        return false;\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "测试用枚举全部 DAG 路径确定应保留的物理边，用 Floyd 全点距离对照一般图直径，用枚举 0、1、2 个拐点的所有直线连接对照连连看；这些参考算法与被测实现采取不同的组织方式。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.util.*;\npublic final class GraphVariantsTest {\n    static long checks;\n    static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|NullPointerException e){return;}throw new AssertionError(\"invalid accepted\");}\n    public static void main(String[] args){\n        Random random=new Random(20261017);\n        for(int z=0;z<2000;z++){\n            int n=random.nextInt(8);List<GraphVariants.Edge> edges=new ArrayList<>();int[] indegree=new int[n],outdegree=new int[n];\n            for(int i=0;i<n;i++)for(int j=i+1;j<n;j++)if(random.nextBoolean()){edges.add(new GraphVariants.Edge(i,j));indegree[j]++;outdegree[i]++;}\n            Set<Integer> starts=new HashSet<>(),sinks=new HashSet<>();for(int i=0;i<n;i++){if(indegree[i]==0&&random.nextBoolean())starts.add(i);if(outdegree[i]==0&&random.nextBoolean())sinks.add(i);}\n            Set<Integer> vertices=new TreeSet<>();Set<Integer> edgeIds=new HashSet<>();for(int s:starts)enumerate(n,edges,s,sinks,new ArrayList<>(List.of(s)),new ArrayList<>(),vertices,edgeIds);\n            List<GraphVariants.Edge> kept=new ArrayList<>();for(int i=0;i<edges.size();i++)if(edgeIds.contains(i))kept.add(edges.get(i));\n            var pruned=GraphVariants.pruneDag(n,edges,starts,sinks);eq(pruned.vertices(),new ArrayList<>(vertices));eq(pruned.edges(),kept);\n            List<GraphVariants.Edge> undirected=new ArrayList<>();for(int i=0;i<random.nextInt(15)&&n>0;i++)undirected.add(new GraphVariants.Edge(random.nextInt(n),random.nextInt(n)));\n            var analysis=GraphVariants.analyzeUndirected(n,undirected);int[][] d=new int[n][n];for(int i=0;i<n;i++){Arrays.fill(d[i],1000);d[i][i]=0;}\n            for(var e:undirected)if(e.from()!=e.to())d[e.from()][e.to()]=d[e.to()][e.from()]=1;\n            for(int k=0;k<n;k++)for(int i=0;i<n;i++)for(int j=0;j<n;j++)d[i][j]=Math.min(d[i][j],d[i][k]+d[k][j]);\n            boolean[] seen=new boolean[n];int components=0;for(int i=0;i<n;i++)if(!seen[i]){components++;List<Integer> group=new ArrayList<>();int diameter=0;for(int j=0;j<n;j++)if(d[i][j]<1000){seen[j]=true;group.add(j);}for(int u:group)for(int v:group)diameter=Math.max(diameter,d[u][v]);var component=analysis.components().get(components-1);eq(component.vertices(),group);eq(component.diameter(),diameter);eq(d[component.first()][component.second()],diameter);}\n            eq(analysis.components().size(),components);eq(analysis.containsCycle(),undirected.size()>n-components);\n        }\n        for(int z=0;z<1500;z++){\n            int rows=1+random.nextInt(4),cols=1+random.nextInt(4);int[][] board=new int[rows][cols];for(int[] row:board)for(int c=0;c<cols;c++)row[c]=random.nextInt(3);\n            var start=new GraphVariants.Cell(random.nextInt(rows),random.nextInt(cols));var end=new GraphVariants.Cell(random.nextInt(rows),random.nextInt(cols));\n            for(boolean outside:new boolean[]{false,true})eq(GraphVariants.linkWithAtMostTwoBends(board,start,end,outside),bruteLink(board,start,end,outside));\n        }\n        eq(GraphVariants.spiralUntilFirstExit(3,3,0,0),List.of(new GraphVariants.Cell(0,0),new GraphVariants.Cell(0,1),new GraphVariants.Cell(1,1),new GraphVariants.Cell(1,0)));\n        eq(GraphVariants.spiralUntilFirstExit(3,3,1,1).size(),9);eq(GraphVariants.spiralUntilFirstExit(1,1,0,0).size(),1);\n        eq(GraphVariants.pruneDag(4,List.of(new GraphVariants.Edge(0,1),new GraphVariants.Edge(1,2),new GraphVariants.Edge(1,3)),Set.of(0),Set.of(2)).vertices(),List.of(0,1,2));\n        bad(()->GraphVariants.pruneDag(2,List.of(new GraphVariants.Edge(0,1),new GraphVariants.Edge(1,0)),Set.of(),Set.of()));\n        bad(()->GraphVariants.pruneDag(2,List.of(new GraphVariants.Edge(0,1)),Set.of(1),Set.of(1)));\n        bad(()->GraphVariants.pruneDag(2,List.of(new GraphVariants.Edge(0,1)),Set.of(0),Set.of(0)));\n        bad(()->GraphVariants.analyzeUndirected(1,List.of(new GraphVariants.Edge(0,1))));bad(()->GraphVariants.spiralUntilFirstExit(0,1,0,0));\n        bad(()->GraphVariants.linkWithAtMostTwoBends(new int[][]{{1},{1,2}},new GraphVariants.Cell(0,0),new GraphVariants.Cell(1,0),true));\n        System.out.println(\"GraphVariantsTest PASS \"+checks);\n    }\n    static void enumerate(int n,List<GraphVariants.Edge> edges,int u,Set<Integer> sinks,List<Integer> path,List<Integer> used,Set<Integer> vertices,Set<Integer> edgeIds){if(sinks.contains(u)){vertices.addAll(path);edgeIds.addAll(used);}for(int i=0;i<edges.size();i++)if(edges.get(i).from()==u){var e=edges.get(i);path.add(e.to());used.add(i);enumerate(n,edges,e.to(),sinks,path,used,vertices,edgeIds);path.remove(path.size()-1);used.remove(used.size()-1);}}\n    static boolean bruteLink(int[][] board,GraphVariants.Cell a,GraphVariants.Cell b,boolean outside){\n        if(a.equals(b)||board[a.row()][a.column()]==0||board[a.row()][a.column()]!=board[b.row()][b.column()])return false;\n        int pad=outside?1:0;\n        if(segment(board,a,b,a,b))return true;\n        List<GraphVariants.Cell> points=new ArrayList<>();for(int r=-pad;r<board.length+pad;r++)for(int c=-pad;c<board[0].length+pad;c++)points.add(new GraphVariants.Cell(r,c));\n        for(var p:points)if(segment(board,a,p,a,b)){if(segment(board,p,b,a,b))return true;for(var q:points)if(segment(board,p,q,a,b)&&segment(board,q,b,a,b))return true;}\n        return false;\n    }\n    static boolean segment(int[][] board,GraphVariants.Cell a,GraphVariants.Cell b,GraphVariants.Cell source,GraphVariants.Cell target){\n        if(a.row()!=b.row()&&a.column()!=b.column())return false;int dr=Integer.compare(b.row(),a.row()),dc=Integer.compare(b.column(),a.column()),r=a.row(),c=a.column();\n        for(;;){var p=new GraphVariants.Cell(r,c);if(r>=0&&r<board.length&&c>=0&&c<board[0].length&&board[r][c]!=0&&!p.equals(source)&&!p.equals(target))return false;if(r==b.row()&&c==b.column())return true;r+=dr;c+=dc;}\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "Dijkstra：非负权最短路、松弛证明与精确可还原路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "Dijkstra 每次确定当前最小的有效暂定距离；非负边权保证以后绕路不会再缩短它。实现先令源点距离为 0，其余未知，再从最小优先队列取候选，对出边尝试 dist[u]+w 是否改善 dist[v]，改善就记录前驱边并入堆。"
+        },
+        {
+          "type": "paragraph",
+          "text": "它适用于固定非负代价的路线、网络延迟和状态图最短成本；负权不满足这份贪心证明，不能把它当通用负权最短路。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "可能的问法"
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "Dijkstra 能解决什么问题，为什么要求非负边权？",
+            "松弛和“确定最近未确定顶点”为什么正确？怎样恢复路径并避免距离溢出？"
+          ]
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "输入、输出与前提"
+        },
+        {
+          "type": "paragraph",
+          "text": "图用0..V−1顶点编号，允许有向边、平行边、自环、零权边和不连通；每条边是非负long整数。无向图要显式加入两个方向。求一个源点到所有顶点的最短总边权，并还原其中一条边路径。权重总和可能超过long，完整Java用BigInteger；Optional.empty表示不可达，合法Long.MAX_VALUE距离不会误判不可达。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "为什么这样做"
+        },
+        {
+          "type": "paragraph",
+          "text": "先区别最短边数与最小总权：若所有边权相同，BFS层次就是最短路；权重不同则不能先到先得。例s→a=10、s→b=1、b→a=1，直接到a不如经b总长2。Dijkstra的优先级必须是从源点累计距离，不能只按最后一条边权，更不是Prim用最小跨割边求生成树。"
+        },
+        {
+          "type": "paragraph",
+          "text": "松弛含义是把当前已知到u的真实可行路径接上u→v，得到另一条真实可行路径。所以所有有限dist都是实际路径的长度上界，只有找到更短路径才减小；前驱保存发生改善的完整边及输入位置，平行边权不同也不会只留下顶点而丢掉选的是哪条边。源点0是空路径，源点到自己的输出路径长度为0且边表为空。"
+        },
+        {
+          "type": "paragraph",
+          "text": "贪心正确性可用切分证明：设当前最小有效候选u存在更短最优路径，从源点沿它走，找到第一个尚未确定的点y及其已确定前驱x。x被处理时已经松弛x→y，因此dist[y]不大于这条最优路径到y的长度；剩余y到u边权全非负，故dist[y]≤最优dist[u]<当前dist[u]，与u是最小候选矛盾。归纳得到每次确定的距离正确。零权允许等号，不破坏证明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java PriorityQueue没有高效decreaseKey接口，remove(Object)是线性查找；本实现使用不可变State(vertex,distance)，每次改善放入新条目，旧条目留堆。弹出时若条目distance与当前dist[vertex]不相等就跳过，这叫过期条目过滤；不能漏掉它，否则反复扫描旧出边会破坏简单复杂度保证。只在严格更短时更新，相等不入堆也不改前驱，避免零权环引发无尽等值更新或前驱循环。"
+        },
+        {
+          "type": "paragraph",
+          "text": "所有有效点按非降距离取出，边权非负，每个顶点的最终有效出队最多一次，每条可达出边只在该次展开处理一次；每次成功松弛最多新增一个堆项，堆项总数O(E+1)。前驱指向当时已有效展开的点，严格改善规则下零权边也不会形成前驱环。pathTo从目标逐边回溯到源点，再反转，是迭代实现，10万顶点长链也不需要递归栈。"
+        },
+        {
+          "type": "paragraph",
+          "text": "距离用 BigInteger，不拿 Long.MAX_VALUE 充当无穷：边权本来就可以等于该值，两条这样的边相加会超过 long。私有数组以 null 表示未知，对外用 Optional；比较器不做距离相减。若已知 V 与最大边权 W，也可先证明路径与松弛计算不会溢出，再用 long 和独立 reachable 标记。"
+        },
+        {
+          "type": "paragraph",
+          "text": "建图先检查全部边的端点和非负权，包括源点不可达区域的边；合同明确拒绝任意负权。负边为什么失效：s→a=2、s→b=5、b→a=−10，按最小候选先确定a=2后还会被b改成−5，贪心性质已破坏。本程序因此直接拒绝，而不是靠某次运行碰巧找到答案。一般带负边可考虑Bellman-Ford并检测可达负环；DAG可拓扑序松弛。存在可达负环且可通往目标时可能根本没有有限最短值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "应用先做建模：道路交叉口为顶点、行驶时间/距离为非负边；服务拓扑节点间链路延迟为边；游戏状态和合法移动作为图，移动代价非负且状态有限。一个源查询所有点可一次运行；多个源求到最近源可加一个零权超级源；只求一个终点时，可以在该终点有效出队时提前结束，不能在第一次入堆时结束。代码当前完整求所有点，不额外宣称实现早停或多源API。"
+        },
+        {
+          "type": "paragraph",
+          "text": "边权必须在一次计算中固定、可相加且与历史路径无关。动态路况需要一致快照或动态算法；剩余油量、换乘次数等约束要进入状态。接口只返回一条最短路径，不保证指定字典序，也不计数全部路径；有零权环时，最短走法甚至可能无限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "和不同实现复杂度区分：本懒删除普通堆可能存O(E)条目，因此堆因子是log(E+1)；任意平行边多重图不能偷换logV。若简单图E≤V²，logE=O(logV)，才常写O((V+E)logV)。索引堆decreaseKey每点一项可做到O((V+E)logV)与O(V)堆；稠密图不用堆、每轮扫描未确定点可O(V²)，不应因为堆看起来高级就宣称永远更快。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "例子与推演"
+        },
+        {
+          "type": "paragraph",
+          "text": "0→1=10，0→2=1，2→1=1：先0，再2把1从10改为2，新条目2先于旧条目10弹出，旧条目最终跳过。"
+        },
+        {
+          "type": "paragraph",
+          "text": "可生成小型非负有向多重图，以独立 Floyd–Warshall 核对所有源点与目标距离，再检查恢复出的每条边。覆盖零权环、平行边、自环、不可达点、Long.MAX_VALUE 合法边权及两倍该值的路径距离；不可达区域的负边也必须拒绝，长链用于检查迭代路径恢复。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "复杂度与正确性"
+        },
+        {
+          "type": "paragraph",
+          "text": "按常数权值操作计，建图/初始化O(V+E)，成功松弛入堆O(E+1)，总O(V+E log(E+1))，保存邻接表O(V+E)、距离前驱O(V)、懒堆最坏O(E+1)，不能说只有O(V)堆。BigInteger最大位长B的加法/比较另计O(B)上界，相应总O(V+EB log(E+1))加图构造，数字存储O((V+E)B)位量级；非负最短简单路径最多V−1边，long边界使B=O(64+log(V+1))。一条路径还原O(路径边数)时间和输出空间。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "边界、反例与追问"
+        },
+        {
+          "type": "paragraph",
+          "text": "基于整数非负权的精确实现；若换double，NaN/Infinity/舍入和比较合同必须重新设计。"
+        },
+        {
+          "type": "paragraph",
+          "text": "索引堆可以为每个顶点只保留一个当前条目；本节使用 Java 普通堆和 BigInteger，过期条目会暂时保留，因此堆空间与数值位成本必须按本实现另算。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整Java实现与自测"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "原文代码（本次未执行）",
+          "value": "import java.math.BigInteger;\nimport java.util.*;\n\n/** Directed nonnegative long-weight multigraph; distances use exact BigInteger. */\npublic final class DijkstraExact {\n    public record Edge(int from, int to, long weight) {}\n    public record Step(int inputIndex, Edge edge) {}\n    private record State(int vertex, BigInteger distance) {}\n    public static final class Result {\n        private final int source;\n        private final BigInteger[] distances;\n        private final Step[] predecessor;\n        private Result(int source, BigInteger[] distances, Step[] predecessor) {\n            this.source = source; this.distances = distances; this.predecessor = predecessor;\n        }\n        public Optional<BigInteger> distanceTo(int v) { checkVertex(v, distances.length); return Optional.ofNullable(distances[v]); }\n        public Optional<List<Step>> pathTo(int v) {\n            checkVertex(v, distances.length);\n            if (distances[v] == null) return Optional.empty();\n            List<Step> path = new ArrayList<>();\n            for (int at=v; at!=source;) { Step s=predecessor[at]; if(s==null)throw new AssertionError(\"broken predecessor\"); path.add(s); at=s.edge.from; }\n            Collections.reverse(path); return Optional.of(List.copyOf(path));\n        }\n    }\n    private static void checkVertex(int v, int n) { if(v<0 || v>=n)throw new IllegalArgumentException(\"vertex\"); }\n    public static Result shortest(int n, List<Edge> edges, int source) {\n        if(n<0)throw new IllegalArgumentException(\"n\");checkVertex(source,n);Objects.requireNonNull(edges);\n        List<List<Step>> graph=new ArrayList<>(n);for(int i=0;i<n;i++)graph.add(new ArrayList<>());\n        int edgeIndex=0;\n        for(Edge input:edges) { Edge e=Objects.requireNonNull(input);checkVertex(e.from,n);checkVertex(e.to,n);if(e.weight<0)throw new IllegalArgumentException(\"negative edge\");graph.get(e.from).add(new Step(edgeIndex++,e)); }\n        BigInteger[] dist=new BigInteger[n]; Step[] prev=new Step[n];\n        PriorityQueue<State> pq=new PriorityQueue<>(Comparator.comparing(State::distance).thenComparingInt(State::vertex));\n        dist[source]=BigInteger.ZERO;pq.add(new State(source,BigInteger.ZERO));\n        while(!pq.isEmpty()) {\n            State s=pq.remove();if(!s.distance.equals(dist[s.vertex]))continue;\n            for(Step step:graph.get(s.vertex)) {\n                Edge e=step.edge;BigInteger candidate=s.distance.add(BigInteger.valueOf(e.weight));\n                if(dist[e.to]==null || candidate.compareTo(dist[e.to])<0) {\n                    dist[e.to]=candidate;prev[e.to]=step;pq.add(new State(e.to,candidate));\n                }\n            }\n        }\n        return new Result(source,dist,prev);\n    }\n    private static int checks;\n    private static void verify(int n,List<Edge> edges) {\n        BigInteger[][] d=new BigInteger[n][n];for(int i=0;i<n;i++)d[i][i]=BigInteger.ZERO;\n        for(Edge e:edges) {BigInteger w=BigInteger.valueOf(e.weight);if(d[e.from][e.to]==null || w.compareTo(d[e.from][e.to])<0)d[e.from][e.to]=w;}\n        for(int k=0;k<n;k++)for(int i=0;i<n;i++)for(int j=0;j<n;j++)if(d[i][k]!=null && d[k][j]!=null){BigInteger via=d[i][k].add(d[k][j]);if(d[i][j]==null || via.compareTo(d[i][j])<0)d[i][j]=via;}\n        for(int s=0;s<n;s++) {Result r=shortest(n,edges,s);for(int v=0;v<n;v++) {\n            if(!Objects.equals(d[s][v],r.distanceTo(v).orElse(null)))throw new AssertionError(\"Floyd mismatch\");\n            Optional<List<Step>> p=r.pathTo(v);if(p.isPresent()!=(d[s][v]!=null))throw new AssertionError();\n            if(p.isPresent()){int at=s;BigInteger sum=BigInteger.ZERO;Set<Integer> seen=new HashSet<>();seen.add(s);for(Step x:p.orElseThrow()) {if(!edges.get(x.inputIndex).equals(x.edge) || x.edge.from!=at)throw new AssertionError();at=x.edge.to;if(!seen.add(at))throw new AssertionError(\"cycle\");sum=sum.add(BigInteger.valueOf(x.edge.weight));}if(at!=v || !sum.equals(d[s][v]))throw new AssertionError();}\n            checks++;\n        }}\n    }\n    public static void main(String[] args) {\n        Random random=new Random(2221);\n        for(int trial=0;trial<2000;trial++){int n=1+random.nextInt(8);List<Edge> edges=new ArrayList<>();for(int i=0,m=random.nextInt(n*n*2+1);i<m;i++)edges.add(new Edge(random.nextInt(n),random.nextInt(n),random.nextInt(7)));verify(n,edges);}\n        verify(5,List.of(new Edge(0,1,Long.MAX_VALUE),new Edge(1,2,Long.MAX_VALUE),new Edge(0,3,10),new Edge(0,3,3),new Edge(3,1,Long.MAX_VALUE),new Edge(3,3,0)));\n        Result extreme=shortest(4,List.of(new Edge(0,1,Long.MAX_VALUE),new Edge(1,2,Long.MAX_VALUE)),0);\n        if(!extreme.distanceTo(1).orElseThrow().equals(BigInteger.valueOf(Long.MAX_VALUE)) || !extreme.distanceTo(2).orElseThrow().equals(BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.TWO)) || extreme.distanceTo(3).isPresent())throw new AssertionError();\n        verify(4,List.of(new Edge(0,1,10),new Edge(0,2,1),new Edge(2,1,1),new Edge(1,3,0),new Edge(3,1,0)));\n        try {shortest(3,List.of(new Edge(1,2,-1)),0);throw new AssertionError();}catch(IllegalArgumentException expected){}\n        try {shortest(2,List.of(new Edge(0,2,1)),0);throw new AssertionError();}catch(IllegalArgumentException expected){}\n        try {shortest(0,List.of(),0);throw new AssertionError();}catch(IllegalArgumentException expected){}\n        if(!shortest(2,new LinkedList<>(List.of(new Edge(0,1,7))),0).distanceTo(1).orElseThrow().equals(BigInteger.valueOf(7)))throw new AssertionError();\n        List<Edge> deep=new ArrayList<>();for(int i=0;i<99999;i++)deep.add(new Edge(i,i+1,1));Result linear=shortest(100000,deep,0);if(linear.pathTo(99999).orElseThrow().size()!=99999)throw new AssertionError();\n        System.out.println(\"PASS 2000 random nonnegative multigraphs and \" + checks + \" all-pair Floyd/path-edge checks; reachable Long.MAX_VALUE and beyond; unreachable/parallel/self/zero-cycle/stale/negative-invalid rejection; 100000-vertex iterative path\");\n    }\n}\n"
+        }
+      ],
+      "related": [
+        {
+          "entryId": "own-algo-manual-guide",
+          "label": "来源与自测边界"
+        }
+      ]
+    }
+  ]
+}

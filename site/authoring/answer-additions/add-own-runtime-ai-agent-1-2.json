@@ -1,0 +1,297 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-runtime-ai-agent-1-2",
+  "entryId": "ai-agent-1",
+  "questionId": "2",
+  "expectedOriginalHash": "bd890624cfe7f9287ee7a4711954b9d2e9e8426821246ba486fab018c0dd6440",
+  "title": "Agent Runtime：完整机制、失败时序与验证边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "13 工具结果怎样返回 才不会破坏下一轮决策"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试回答： 工具结果应与原调用 ID 对应，使用 Provider 规定的工具结果事件或角色，再转成统一内部结果。内容包含业务状态、数据或产物引用、版本、错误码、是否可重试及下一步安全动作。大结果先在源头限量和分页，不能无标记截断，更不能把外部返回文本当成新的授权指令。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一个自包含的调用链"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型请求 read_config(resource=module-c)；执行器从可信会话取得租户和身份，不接受模型指定任意租户；校验 schema 和资源后读取；返回配置 v7 及证据引用。模型据此请求修改限额，但写入先走审批和 CAS。若工具返回 VERSION_CONFLICT，下一轮需要读取新版本并重规划，不是重复旧参数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内部结果可含 status=OK/ERROR/UNKNOWN、call_id、operation_id、observed_version、artifact_ref、error_code、retry_after。API 的 HTTP 200 仅说明协议请求被接受，业务 JSON 仍可能失败或部分成功；结构合法也不保证内容真实。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "结构化报表怎样从模型输出变成可信产物"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定义版本化数据合同，例如 report_id、时间窗、对象、指标值、单位、证据引用、缺失字段和限制；工具原始结果经确定性 adapter 映射到这个合同，保留来源与快照版本。模型只补充允许生成的摘要或分类，不把数据库原值任意改写。模板负责布局，JSON Schema/受限解码负责结构约束，两者可同时使用：模型生成经过验证的数据对象，程序再填入表格、HTML 或报告模板。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输出链路是受限大小/深度的严格 JSON 解析→字段、类型、必填与枚举校验→单位、范围、引用和跨字段业务校验→必要的有界修复→确定性渲染→产物验收。嵌套字段要逐层验证，拒绝重复或未知关键字段、缺失必填、数值越界及把字符串冒充数值；采用的 JSON 库对重复键的行为必须明确。解析成功不证明数据真实，也不能用 eval 执行模型文本。修复只回传最小错误与必要数据，限制次数；仍失败则返回结构化错误或待补充，不能悄悄删掉失败行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "验收检查页数/行数、必需栏目、数值汇总、引用定位、编码与下载文件可读性；包含表格和图片时还要查看最终渲染。最终消息使用已验收的 artifact ID/version/hash，不把“生成了一个路径”当作报告已交付。"
+    },
+    {
+      "type": "paragraph",
+      "text": "输出不是标准 JSON 时先确认合同：合法的纯文本工具结果不必强行改成 JSON，应该带上明确内容类型；约定 JSON 却返回半截、HTML 错误页或不匹配字段，才是协议/解析失败。接入层限制长度和嵌套，校验完整结构，保留受控原始片段及错误路径。模型生成的参数可有限修复并重新校验，不能用正则猜出一个写动作就执行；修复 JSON 也不能补造事实字段、批准状态或下游成功结果。流中参数未完成时继续缓冲或报中断，不把某一块可解析就当整个调用结束。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Role 与协议对应"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能统一把所有结果伪装成用户发言。Chat Completions、Responses 与其他模型接口的工具调用项、结果项和结束原因不同；适配器负责转换，保留多调用关联、错误和完成语义。短期工作状态必须能重建必要的调用与结果配对，否则模型会忘记做过什么，也可能被接口拒绝孤立结果。不要为节省 token 只删调用项保留结果项。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "“给上次的人转5000美元”如何变成安全槽位"
+    },
+    {
+      "type": "paragraph",
+      "text": "模型只能提出候选收款人、金额和币种，并保留原话中的金额片段。“上次”须由有权限的成功交易记录解析，显示日期、收款人及脱敏账户；有多种可能就问清楚，不能把聊天里提过的人当作已确认收款人。金额使用十进制定点契约，分别校验5000与50000、USD与其他币种、最小单位与上限，不能仅相信模型输出的数字字符串。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提交前生成包含收款账户、金额、币种、费用及其他实质条件的预览，按实际产品与渠道要求取得相应确认或用户接管；历史习惯不是本次付款授权。任何实质条件变化都使旧确认失效。执行交给受控交易接口，保留业务幂等键与回执；超时未决进入查询/对账，不再让模型猜测并重发。这里只讲授权和数据契约，不声称示例能执行真实资金转账。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "采购助手只做安全预检时如何设计"
+    },
+    {
+      "type": "paragraph",
+      "text": "若采购助手只负责下单前安全预检，就应输出判定而不执行采购。模型提取采购对象、数量、用途和缺失字段；员工身份、部门、额度及规则来自可信系统。为每个候选内部动作返回 action、decision、reason_codes、missing_fields、required_approver、policy_version，decision 限定为 ALLOWED / DENIED / NEEDS_APPROVAL / NEEDS_INPUT，并附员工能理解的下一步说明。例如查目录允许、未填成本中心需补信息、超授权额度需审批、禁止品类拒绝。已知禁止条件优先，多个缺口仍完整列出；缺信息不能自动判允许。ALLOWED 只是当前快照下的预检结论，不是执行凭证。此接口不下单，不因 JSON 合法就调用采购写接口；以后若增加执行入口，必须重新鉴权、核对版本并获得相应授权。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把问答变成结构化录入，模型和程序怎么交互"
+    },
+    {
+      "type": "paragraph",
+      "text": "以“为模块 C 把并发上限改成 20”为例，模型只提取候选 resourceId、limit、理由和仍缺字段。服务端解析完整 JSON，检查 schema、整数范围、资源归属与当前版本，形成旧值/新值差异预览；当前权限允许且风险政策要求确认时，持久化待批准动作。收到明确批准后再次鉴权，以稳定 operation_id 和预期版本提交。结果以工具角色和对应 call ID 回传，程序保存实际 receipt。禁止模型直接拼 SQL、把未知字段默认为敏感值，或因 JSON 可解析就执行。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对限定领域推荐系统，先做目标与能力范围判断，范围外请求给出边界内说明；“去某网站看看”还需网络目的地策略、数据授权和内容防注入。模型输出违反 schema 可有限修复，越权动作不能通过换 Prompt 重试直到成功。录入成功、回答成功、用户满意是三个验收维度。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同题换问与连续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Tool Response 应该用什么角色（Role）传回大模型？为什么？（tool / function role vs user role）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent在执行过程中，肯定不可避免地要去调用一些工具，这些工具都有固定地入参，需要模型结合上下文去提供，然后在这个过程中，如何去保障工具调用的可靠性？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果工具返回的数据量过大，超过上下文窗口限制，应该如何处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 当外部测评工具返回的原始数据格式，与大模型输入预期格式不匹配时，如何实现数据格式的自动化映射？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 调工具返回脏数据或遭遇提示注入时，如何在 harness 层拦截？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 当Agent拥有大量工具时，如何避免工具描述导致Prompt过长？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 调用工具的流程？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你在 Agent 中写过自定义 Tool 吗？Tool 应该如何注册给大模型？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 里的工具调用是怎么实现的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你当时接触的这个agent，它是怎么知道某轮tool call之后该不该结束的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果让你设计一个agent，如果一轮tool call的返回结果非常非常多，你会怎么设计。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 介绍最近的项目经历。Agent 里面主要涉及到哪些工具？RAG 这块你们是怎么设计的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你对代码开发阶段的agent如何使用 tool、skill 有了解么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如何保证 agent 能完全按照我们的设计使用 tool、skill？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agentic RAG 和被动 RAG 有什么区别？检索结果和工具返回冲突时，以谁为准？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 一个 Agent 需要调用多个工具时，整体执行流程如何设计？如何管理工具调用顺序？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 当一个 Agent 需要调用多个工具时，整体执行流程应该如何设计？如何管理工具调用顺序？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 工具调用流程是什么？客户端是 Agent，服务端是调用的 API"
+    },
+    {
+      "type": "paragraph",
+      "text": "- agent里面你是如何做的风险闭环的，如何判断用户意图"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 对工具调用不作限制，会产生哪些风险？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 是否接入了 Agent 执行轨迹追踪工具，例如 LangSmith？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent工具过多时你是怎么处理的？比如接口数量太多怎么解决？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 是怎么调用你开发的工具的，你的工具实现了什么功能？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 你做的多模态自动标注Agent，如何保证识别精准度？整体工具调用逻辑是怎么设计的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 抛开课程、课题任务，是否自主搭建过完整智能体架构、自研过趣味实用的 AI 小工具？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- Agent 调用 Skill 工具的完整执行流程是什么？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 电商场景设计题：用大模型解决电商业务问题，Prompt 应该怎么设计？如何处理非结构化输出？如何过滤并纠正错误格式的输出？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 员工一句话提出采购需求，助手按照步骤做以下事情："
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 检查请求是否安全"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 检查信息是否完整"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 检查员工是否有权限"
+    },
+    {
+      "type": "paragraph",
+      "text": "1. 告知员工下一步能够做什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "该工具只做一件事：读入一条采购请求和员工信息，判断每个可能用到的内部动作是「可以做」「不可以做」「需要审批」还是「需要补充信息」，并输出一份 JSON 结果和一段给员工看的解释文本。（注意：这里的 JSON 不是让系统立刻执行的下单计划，而是下单前的安全检查结果）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 结构化报告生成：系统生成总结分析报告是怎么实现的？底层是否有模板驱动或约束解码？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 生成格式化例如JSON内容，如何确保AI生成的可靠性（键的准确性，嵌套层级）"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 想要按照结构输出怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 3.多轮补全怎么判断信息已经完整"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 4.如果用户说“给上次汇款的人汇 5000 美元”，系统怎么处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 5.怎么找到用户“上一次汇款的人”？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 6.槽位提取解决了什么问题？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 7.如果大模型生成了错误的币种、金额等信息，怎么拦截？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 8.如果用户本来想转 5000 元，但模型识别成 5 万，怎么防止？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 9.哪些异常自动重试，哪些情况转人工？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用输出不是标准 JSON 怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 模型返回的 JSON 不符合结构要求怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 大模型生成的内容如何与后续工具代码对接？如何约束输出规范？"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-runtime-guide",
+      "label": "学习路线与原手册验证条件"
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-bg-mysql-4-1",
+  "entryId": "bg-mysql-4",
+  "expectedOriginalHash": "747889e852d3d0e6db1263b262d87bed2da2487eba87a4b3d94ad35ef973583b",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "排序与创建方式"
+    },
+    {
+      "type": "paragraph",
+      "text": "CREATE INDEX ix_purchase_listing ON purchase(tenant_id,state,created_at,id) 与对应的 ALTER TABLE ADD INDEX 是两种创建方式，二选一，不能同名执行两次。对 tenant_id 和 state 的单值等值，后面的 created_at、id 可以为同方向排序服务；升序索引也可能反向扫描满足两列都 DESC。混合 ASC/DESC 则需匹配具体键方向或额外排序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 status 是 IN 的多个值，各状态段内部按时间排序，不代表拼起来已是全局时间序。没有 status 条件时，(tenant,status,time,id) 也未必适合租户全部任务按时间取最新。姓名和性别谁在前，不是永远“区分度高的在前”：两列都等值时均可定位组合；还要看是否经常只查姓名、只查性别，以及范围和排序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问应能解释：ICP 与覆盖为什么不等价？IN 多段范围如何处理全局 ORDER BY？为什么统计 rows 少但实际扫描仍很多？回答的最后一步是拿完整数据分布和计划验证，而不是承诺一个万能索引。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "联合索引创建与稳定排序"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 purchase.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/query/code/purchase.sql",
+      "value": "-- Portable fixture. On MySQL use an empty schema with InnoDB as the default engine.\nCREATE TABLE purchase (\n id BIGINT PRIMARY KEY, tenant_id BIGINT NOT NULL,\n state VARCHAR(12) NOT NULL, created_at BIGINT NOT NULL, amount_cents BIGINT NOT NULL\n);\nINSERT INTO purchase VALUES(1,7,'OPEN',100,500),(2,7,'OPEN',200,600),\n (3,7,'CLOSED',200,800),(4,8,'OPEN',200,900),(5,7,'OPEN',200,1000);\nCREATE INDEX ix_purchase_listing ON purchase(tenant_id,state,created_at,id);\n-- MySQL alternative syntax, not a second index to add to this same fixture:\n-- ALTER TABLE purchase ADD INDEX ix_purchase_listing (tenant_id,state,created_at,id);\nSELECT id,created_at FROM purchase\nWHERE tenant_id=7 AND state='OPEN' AND created_at>=100 AND created_at<300\nORDER BY created_at DESC,id DESC LIMIT 2;\n-- Expected id 5 then 2. Inspect actual MySQL plans independently.\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "用户、状态、订单时间：缺运算符时先给分支"
+    },
+    {
+      "type": "paragraph",
+      "text": "只给 userId、status、orderTime 三个名字，还不能决定列序。先把它们变成一条查询：若用户、状态都是等值，时间是范围，而且按时间取最近页，可以比较 (user_id,status,order_time,id)。去掉状态条件，(user_id,order_time,id) 可能更直接；状态改成多个值，各状态段的时间有序却不等于全局时间有序；若排序改为金额，又要比较“先过滤再排序”和“按金额扫描、尽早停止”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的订单表是教学模型。相同思路也可用于资料处理任务或通知轨迹，但不能把假设表改口说成真实项目表。任务列表还多一道业务边界：普通 SELECT 只得到候选，取得执行权要靠另一个原子状态迁移，列表索引不能替代抢占协议。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "1"
+}

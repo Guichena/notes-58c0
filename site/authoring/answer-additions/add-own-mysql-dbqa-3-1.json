@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-dbqa-3-1",
+  "entryId": "dbqa-3",
+  "expectedOriginalHash": "9d227e7127f286750eb24f11b5b2d1e4cc5631fc4d2536f3d0b40b5244319e84",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "order与shop怎样统计每个商家已完成订单的数量和金额，并按总金额降序？"
+    },
+    {
+      "type": "paragraph",
+      "text": "统计每个商家时以商家作 LEFT JOIN 保留侧，把已完成状态放入匹配条件，并用非空订单主键计数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：order与shop怎样统计每个商家已完成订单的数量和金额，并按总金额降序？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设 shop.id 唯一，order.shop_id 关联商家，COMPLETED 表示完成，amount 是同币种的非空最小货币单位；每个商家包括零笔完成订单。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "正确SQL及过滤位置"
+    },
+    {
+      "type": "paragraph",
+      "text": "完整schema、边界数据与查询见shop_totals.sql。以shop为保留侧LEFT JOIN，状态条件写进ON，按商家唯一ID及显示列分组；COUNT(o.id)统计真实订单，COALESCE(SUM(o.amount),0)补零，ORDER BY总金额DESC、商家ID ASC保证并列稳定。order是保留关键字，要用反引号引用，或在真实系统采用orders等非保留名。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目括注WHERE状态过滤不代表应把右表状态无条件移到最外WHERE；那会拒绝NULL扩展行，丢掉无订单或只有未完成订单的商家。若只要求有完成订单的商家，INNER JOIN或该WHERE才合意。也可先在子查询WHERE status过滤并GROUP BY shop_id，再LEFT JOIN聚合结果，避免额外一对多JOIN放大。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这些边界必须写清楚"
+    },
+    {
+      "type": "paragraph",
+      "text": "两个同名同品类商家仍是不同实体，只按name/category分组会混并。COUNT(*)把无匹配的补空行计成1；COUNT(amount)若金额可空又漏掉有效订单，故按非空订单主键计数。金额应使用精确DECIMAL或整数最小单位，不能用浮点累加；跨币种须分别汇总或采用明确汇率快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "题目没指定退款/负金额、订单项还是订单金额与完成时间窗。示例按订单当前状态与整单金额，零金额订单计数仍为1；若一单多行要先回到订单粒度，退款另定净额规则，不能偷偷改成销量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "访问路径与复杂度"
+    },
+    {
+      "type": "paragraph",
+      "text": "片内可比较(shop_id,status)用于每商家关联，或(status,shop_id)先聚合所有已完成订单；加入amount可覆盖但增加写入和空间。全量统计仍需处理参与聚合的数据，大约O(S+参与订单数)，另有商家结果排序O(S log S)，不是加索引后所有报表变成O(log N)。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整代码示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 shop_totals.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/shop_totals.sql",
+      "value": "-- MySQL 8; `order` is reserved, so quote it. Amount is integer minor currency units.\nCREATE TABLE shop(id BIGINT PRIMARY KEY,name VARCHAR(40) NOT NULL,category VARCHAR(40) NOT NULL);\nCREATE TABLE `order`(id BIGINT PRIMARY KEY,shop_id BIGINT NOT NULL,status VARCHAR(16) NOT NULL,amount BIGINT NOT NULL);\nCREATE INDEX ix_order_shop_status ON `order`(shop_id,status);\nINSERT INTO shop VALUES(1,'Same','Food'),(2,'Same','Food'),(3,'Other','Books'),(4,'NoOrders','Books');\nINSERT INTO `order` VALUES(11,1,'COMPLETED',100),(12,1,'COMPLETED',200),(13,1,'OPEN',999),(14,2,'OPEN',900),(15,3,'COMPLETED',0);\nSELECT s.id,s.name,s.category,COUNT(o.id) AS completed_count,\n       COALESCE(SUM(o.amount),0) AS completed_amount\nFROM shop s LEFT JOIN `order` o ON o.shop_id=s.id AND o.status='COMPLETED'\nGROUP BY s.id,s.name,s.category\nORDER BY completed_amount DESC,s.id ASC;\n-- Expected: (1,Same,Food,2,300),(2,Same,Food,0,0),\n--           (3,Other,Books,1,0),(4,NoOrders,Books,0,0).\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "商家侧应覆盖同名不同 ID、没有订单、只有 OPEN 订单、已完成但金额为零和空表。把状态条件放在 WHERE 会删掉没有完成订单的商家，这是可以直接用一行零订单商家证明的语义差异。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "1"
+}

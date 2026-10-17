@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s8168",
+  "entryId": "handwrite-66",
+  "expectedOriginalHash": "e13e788b3931fac12fade5e2e317b19cb6c94346c50364fb6ad49d0779a52f21",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10.8 分片上传扩成多集群后怎样定位分片、正确合并并路由读取"
+    },
+    {
+      "type": "paragraph",
+      "text": "分片上传通过持久manifest定位已确认分片，合并器校验身份大小与hash后原子发布版本，读路径只读完整对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：分片上传多集群怎样定位；怎么避免合并错文件；最终文件从哪读取。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "多集群上传需有上传身份、元数据权威、分片所有者和最终发布协议，文件内容与路由状态不能各自漂移。涉及etcd权威与一致性保证时以v3.6为例。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "统一控制面与集群放置"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建上传时用可信tenant/user生成uploadId，权威元数据保存文件长度/分片方案、状态、placementVersion、ownerCluster、epoch和权限；每片记录partNo、长度、checksum、不可变存储key/version及满足要求的副本位置。网关按uploadId查目录路由，不能每次随机负载均衡后只在所到节点的本地目录找文件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "最简单是一个上传会话固定home cluster，集群内部用复制对象存储，多集群提供分流/容灾；也可各片跨集群放置，但必须保存显式manifest和副本可用性，合并跨区读成本更高。一致性hash能算初始归属，不能替代变更中的placement版本或自动搬运数据。元数据本身要可靠多数/事务裁决，避免两侧都认同自己是上传owner。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "哪些分片才可返回已上传"
+    },
+    {
+      "type": "paragraph",
+      "text": "分片只有达到约定持久条件，才能回“已上传”。先写临时不可变对象，服务端校验实际字节、长度、checksum，达到本地或跨故障域的持久承诺后，再提交确认 part manifest。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对象成功、元数据失败，可能留孤儿，可按上传 ID 核对登记或延后 GC；若元数据先成功、数据却失败，客户端就可能跳过缺片，应避免。响应丢失查同 partNo 的权威回执，不只信客户端进度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "断点查询返回manifest版本、已确认片及其校验信息；并发上传时分页需要快照/版本或明确增量语义，不能将一次不一致分页误当完整集合。若只保证集群内副本，整集群损毁仍可能丢已ACK片；想抵御该故障需在ACK前跨域复制或明确较弱RPO。异步复制滞后不是零数据丢失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "合并是冻结清单再发布不可变版本"
+    },
+    {
+      "type": "paragraph",
+      "text": "complete以upload状态version/epoch做CAS从UPLOADING转COMPLETING，冻结有序manifest并阻止旧attempt覆盖分片。验证1..K集合无缺片/重叠、各片长度、总长与checksum，再按编号流式读取数据，不能按到达时间拼接。分片在不同集群时可汇入目标集群合并或使用存储明确支持的compose接口，其跨bucket/region约束不得臆造。"
+    },
+    {
+      "type": "paragraph",
+      "text": "合并完成的发布点，是完整版本指针生效，不是开始拼文件。先写不可变 finalObjectVersion 并校验，满足读可用与副本条件后，再原子发布为 COMPLETED。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多次 complete 返回同一版本。对象已完成、DB 登记失败，可以按确定身份回查补记，不能重试一次就建第二份业务资产。发布前不暴露半文件，abort 与 complete 由同一状态机裁决。S3 ETag 不必是全文 MD5 只是产品例子，最终按实际 API 校验合同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "故障接管与读取"
+    },
+    {
+      "type": "paragraph",
+      "text": "owner失联后新owner需取得更高epoch，所有元数据提交与目标发布都拒绝旧epoch；若目标存储不能校验epoch，则不可变key加最终指针CAS防旧产物被发布，而外部任意覆盖接口仍要补保护。接管先检查哪些已ACK片确可访问，再恢复合并；不可用片不能假装不存在后宣布完整，等待副本/补传并明确影响。"
+    },
+    {
+      "type": "paragraph",
+      "text": "读取先鉴权，从权威文件版本查可用副本位置，再选择就近集群/受控签名地址；切换后读者要求某版本时不可退回旧文件。Range读取固定同一个对象版本，CDN缓存key含版本；多集群不同副本缺失/落后时回源正确位置或明确失败。文件服务器可提供目录/ACL/上传下载或代理对象存储，它不是仅一台本地磁盘HTTP服务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "成本和验证边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "文件S字节、K片，校验和传输O(S)、manifest O(K)，跨集群合并至少产生相应跨域传输；复制份数与保留临时对象进一步放大成本。按租户限制上传、合并并发和总字节，过期GC先排除在途/已发布引用，不能与迟到完成竞争删正被使用的片。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试ACK后节点/集群失效、元数据/对象任一写失败、分片响应丢、旧owner复活、两次complete竞争、错误分片hash、部分复制、Range中途换版本和GC竞态。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

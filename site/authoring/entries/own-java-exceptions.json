@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-java-exceptions",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 基础与工程实践",
+  "category": "异常传播与资源收尾",
+  "title": "异常传播与资源收尾",
+  "tags": [
+    "Java",
+    "面试",
+    "工程实践"
+  ],
+  "questions": [
+    {
+      "id": "q-own-java-exception-propagation",
+      "order": 771,
+      "question": "异常怎样分类、声明和传播，怎样保留失败与取消语义？",
+      "shortAnswer": "受检与非受检区别在编译器的传播检查；实际抛出在运行期，包装须保留 cause，中断须继续传播或恢复取消信号。",
+      "commonPhrasings": [
+        "Error、Exception、RuntimeException 的关系是什么？",
+        "“编译期异常”是不是编译时就发生了？",
+        "catch(Exception) 能不能捕获 OutOfMemoryError？",
+        "覆盖方法能否扩大 throws？包装异常为什么保存 cause？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "受检与非受检，区别在于编译器是否要求处理或声明；异常真正被抛出，都发生在运行期。throw 是执行抛出的动作，throws 是方法允许传播哪些异常的声明。"
+        },
+        {
+          "type": "paragraph",
+          "text": "异常层次先记住：Throwable 的两个重要直接分支是 Error 和 Exception，RuntimeException 又属于 Exception。"
+        },
+        {
+          "type": "paragraph",
+          "text": "编译器是否检查传播，再按类型分：RuntimeException 及其子类、Error 及其子类是非受检异常；其余 Throwable 异常类型为受检异常。常见受检异常有 IOException、SQLException、ClassNotFoundException、InterruptedException。所谓“编译期异常”并非编译时发生，只是编译器会检查可能的传播路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "catch(Exception) 不会捕获 Error，但 Error 在语法上并非不能 catch。普通应用面对内存耗尽、链接失败等问题，往往没有可靠恢复条件，不能笼统 catch(Throwable) 后继续当作成功。特定框架可以在严格边界记录或隔离失败，前提是清楚剩余状态是否安全。未捕获异常通常让当前线程执行路径终止，不等于整个 JVM 必然立刻退出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "throw 后面是 Throwable 表达式，throw null 会在执行时抛 NullPointerException。throws 不是运行时动作，不表示每次调用都会失败；受检异常可以在本方法捕获，也可以在允许的位置声明向上传播。异常沿调用链寻找匹配处理器，中途可能执行 finally 和资源关闭。"
+        },
+        {
+          "type": "paragraph",
+          "text": "覆盖方法不能扩大父方法允许的受检异常集合，但可缩小或不声明；返回值可协变，可见性不能收窄。否则调用者按父类型编译时已经制定的处理方式会失效。非受检异常不需要声明，但依然应该在 API 契约中解释有意义的失败条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "包装异常应保留 cause，例如把底层解析 IOException 转为带业务上下文的异常，同时保留原因。只复制 e.getMessage() 会丢类型、栈和因果关系。日志要包含定位所需的任务标识与异常链，但避免每层重复记录同一错误，也不能把密码、原始令牌和敏感请求体直接拼进异常信息。"
+        },
+        {
+          "type": "paragraph",
+          "text": "选择受检还是运行时异常，应看调用方是否被要求显式面对可恢复分支，以及模块抽象是否需要隐藏底层技术细节，不能一律“全部抛 RuntimeException”。校验失败、资源失败和取消应保持可区分，失败不能转换成空集合后冒充“确实没有结果”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "InterruptedException 能传播时优先传播；不能传播的任务入口通常恢复中断标记并结束当前工作。吞掉中断继续阻塞，会破坏取消协议。Future.get 的 ExecutionException 与反射的 InvocationTargetException 是不同包装，处理时沿正确因果链取出原始失败，不能只判断最外层名字。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-java-resource-cleanup",
+      "order": 803,
+      "question": "finally 和 try-with-resources 怎样处理返回、关闭与多重失败？",
+      "shortAnswer": "返回表达式先求值，finally 再执行；资源逆序关闭，业务与清理失败须区分主异常、cause 和 suppressed，并注意自抑制边界。",
+      "commonPhrasings": [
+        "try 返回 1，finally 返回 2，结果是什么？",
+        "finally 改局部变量和改返回对象有什么区别？",
+        "两个资源关闭顺序是什么？初始化第二个资源失败怎么办？",
+        "如果 close 抛出与业务完全同一个 Throwable 对象，会怎样？"
+      ],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "普通 Java 控制流离开 try/catch 时会执行 finally，但进程终止、崩溃或一直停在 try 中时，不能靠它保证清理。资源管理优先用 try-with-resources；业务和关闭都失败时，还要讲清谁是主异常、谁被抑制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "推演 return 与 finally，按“先算返回结果，再执行 finally”的顺序："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "返回 int 时，结果已经算好，finally 再改局部变量不会改变它。",
+            "返回引用时，返回的引用已经确定，但 finally 仍可能修改它指向的对象内容。",
+            "finally 自己 return 或抛异常，会覆盖先前准备返回或传播的结果。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "因此一般不要在 finally 中 return。"
+        },
+        {
+          "type": "paragraph",
+          "text": "System.exit 启动 JVM 关闭流程，不承诺展开当前线程栈上的 finally；Runtime.halt 更直接停止，连正常关闭序列也不执行。崩溃、外部强杀、断电或死循环同样不能依赖 finally。需要故障恢复的业务状态，应通过持久化、事务或补偿机制管理，而不是一句“finally 里删临时状态”就算可靠。"
+        },
+        {
+          "type": "paragraph",
+          "text": "try-with-resources 接收 AutoCloseable，按声明的逆序关闭已成功初始化的资源。第二个构造失败时，第一个仍会被关闭；从未成功创建的资源不能被关闭。Java 9 起可使用已存在且 final 或 effectively final 的变量。AutoCloseable.close 不要求所有实现都幂等，不能假定重复调用无害。"
+        },
+        {
+          "type": "paragraph",
+          "text": "业务与关闭都可能失败，可以按发生顺序判断主异常："
+        },
+        {
+          "type": "list",
+          "ordered": false,
+          "items": [
+            "业务先失败、close 再失败：通常保留业务异常为主，把 close 异常放进 suppressed。",
+            "业务正常、关闭失败：逆序关闭中第一个失败成为主异常，后续关闭失败被抑制。"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "诊断时同时看 cause 和 suppressed。cause 解释“什么导致当前失败”；suppressed 记录“同一次退出中还发生了哪些失败，但没有被选作主要传播结果”。两者不是一回事。"
+        },
+        {
+          "type": "paragraph",
+          "text": "一个不常见但必须知道的边界是“重复抛同一个异常实例”。Throwable.addSuppressed 禁止把对象自身加入其 suppressed 列表，会抛 IllegalArgumentException。try-with-resources 的标准展开会调用 addSuppressed；如果业务和 close 恰好抛出完全相同的 Throwable 对象，可能发生自抑制错误并掩盖原主异常。这不是通常使用方式，因此资源实现应避免复用正在传播的异常实例，但不能把标准语法说成对任何恶意 close 都绝不掩盖主异常。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本书 ResourceLab 的 cleanup helper 用于需要明确控制此边界的教学场景：先记录主异常，逐个逆序执行清理；只有 cleanupFailure != primary 时才加入 suppressed。它还覆盖业务成功但清理失败、多个清理失败、相同对象多次失败，以及正常返回值。不能从这个局部规则推导它可抵抗 JVM 崩溃或所有资源耗尽；如果连附加诊断信息都无法分配，可靠性边界已超出普通异常组合。"
+        },
+        {
+          "type": "paragraph",
+          "text": "资源所有权同样重要：创建资源的组件通常负责关闭，借入的流是否由当前方法关闭应写进契约。关闭最外层包装流通常会关闭其底层流；重复套多个所有者容易造成提前关闭。文件与网络 API 返回的惰性 Stream 也可能持有资源，终止操作完成不等于 close 已自动调用。"
+        }
+      ],
+      "tags": [
+        "Java21教学"
+      ],
+      "related": [
+        {
+          "entryId": "own-java-source-reference",
+          "label": "完整教学源码"
+        },
+        {
+          "entryId": "own-java-validation-reference",
+          "label": "实现边界与运行说明"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

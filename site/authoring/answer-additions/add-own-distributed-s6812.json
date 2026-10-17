@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s6812",
+  "entryId": "own-mq-operations",
+  "expectedOriginalHash": "b522902b62d05413b8236ea74971c3f341b29c30d2a9b5704dcf35c0370995a9",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "9.3 广告与用户事件怎样 Join 后按 adId、action、region 聚合"
+    },
+    {
+      "type": "paragraph",
+      "text": "先给广告映射和用户行为稳定身份与事件时间，再处理迟到、重复和维度版本，聚合结果才可重放复原。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：广告与用户事件怎样Join；行为先到怎么办；怎样按adId action region聚合。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "两类事件按servingId关联，再按(adId, action, region)聚合；Kafka到Flink到Redis到OLAP是一种可选实现。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "明确事件身份和关联语义"
+    },
+    {
+      "type": "paragraph",
+      "text": "广告投放事件有servingId、adId及发生时间；用户事件有eventId、servingId、action(click/impression等)、region与eventTime。先确认servingId是否全局唯一且永久对应同一adId、地区按行为发生时还是查询时解释、Dashboard是否按分钟/天窗口、PV还是去重UV。行为聚合应按稳定eventId去重网络重投；同用户两次真实点击可能是两个有效事件，不能默认只算一次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "接入时校验schema与合法action/region，保留原事件和来源偏移。Kafka两条流按servingId分区有助于并行关联，但不同topic之间没有自动全局顺序；用户行为完全可能先于投放映射到达。Kafka重复投递和采集端重发也要按事件身份处理，不能靠join天然消重。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Join选择决定历史正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 servingId 到广告的映射不可变，join 可以先等映射，再补行为。投放流写入 Flink keyed state，行为命中后生成 (adId,action,region,eventId,eventTime)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "行为先到，就放有界待匹配状态，映射到达再补 join。超过等待窗口，要进可追查、可回补的未匹配旁路，不能静默丢失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若servingId映射可变且需要事件发生时归属，应维护有效时间/版本，采用符合该语义的event-time temporal join；拿当前Redis值做lookup可能把历史点击算给新广告。若业务规定两条流只在固定时间差内关联，可用interval join并声明界限。无界普通join可能无限增长状态，TTL必须从最大迟到/回放/业务有效期推导。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis、watermark与窗口"
+    },
+    {
+      "type": "paragraph",
+      "text": "Flink 恢复了 checkpoint，不代表外部 Redis 也回到同一时刻。恢复后重新 lookup，可能读到新映射，导致重放结果变化，因此不可变映射或版本化快照很重要。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 可做低延迟缓存，但不能是唯一、不可重建的事实。映射丢失或 TTL 过期要从持久来源恢复，异步 lookup 也要有超时、并发上限和负缓存策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "watermark表示事件时间推进的估计，不是所有更早事件绝不会再来的保证。定义允许迟到、空闲分区处理与最终封账时间；迟到事件可更新窗口结果或进入修正流。OLAP查询需要知道是临时值还是已封账值，不能把流式结果一律称为最终准确。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "聚合与恢复必须防重复写"
+    },
+    {
+      "type": "paragraph",
+      "text": "按(adId,action,region,windowStart)聚合计数或按业务约定不分窗口；热门广告可先按salt局部计数再二阶段合并，但去重状态、最终窗口和版本需协调。Flink checkpoint保存源进度与算子状态，端到端恰好一次还取决于可重放source及事务/幂等sink，不是“用了Flink”就覆盖Redis和任何OLAP。"
+    },
+    {
+      "type": "paragraph",
+      "text": "写OLAP可采用稳定聚合主键加版本的upsert，或连接器支持的事务提交；如果每次checkpoint恢复都重发“加N”，无去重就重复累加。重算时输出新的结果版本并切换读水位，避免旧批和新批混合。对账比较源事件量、去重后量、未匹配量、窗口输入量和sink最终量。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "案例与验收"
+    },
+    {
+      "type": "paragraph",
+      "text": "servingId=s1映射adA，上海click事件e1先到，映射后到：应缓存后补一次；e1重复投递不再加；后来映射纠正为adB，要按预先规定做历史修正而非隐式改口径。缺映射事件进入可追查旁路，不能凭region或最近广告猜adId。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试乱序、重复、映射变更、超过TTL迟到、checkpoint恢复、sink提交响应丢失和热key。状态规模约与映射保留量+待匹配事件数+去重窗口+聚合基数相关，不能只算Kafka吞吐。Kafka、Flink、Redis与OLAP的连接器、提交和恢复合同还需按具体版本联合验证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "q-own-mq-ad-stream-join",
+  "targetOrigin": "authored"
+}

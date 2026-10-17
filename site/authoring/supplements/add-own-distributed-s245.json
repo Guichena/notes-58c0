@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s245",
+  "entryId": "database-91",
+  "expectedOriginalHash": "3cdd65919639a4aeed78755aeaa70d501c369077487452a25715a2c4a8225a39",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "1.5 怎样实现Master-Slave同步，并防止从节点长期返回旧数据"
+    },
+    {
+      "type": "paragraph",
+      "text": "主从同步要以持久提交日志、连续应用水位和一致快照恢复为基础，读取再按所需新鲜度等待、回主或拒绝。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：怎样实现主从同步；副本一直读到旧数据如何处理；怎样实现读己之写。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "把主从同步限定为单写权威与只读副本。先区分副本返回已提交旧值和读取未提交事务：前者是复制新鲜度问题，后者是事务隔离问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先定义提交与复制协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "主节点给已提交变化分配稳定logIndex/事务身份和leaderEpoch，按确定顺序写持久日志；副本从已持久水位拉取/接收日志，验证来源、epoch、连续序号/内容hash，按同一状态机应用。业务效果与appliedIndex同事务/原子持久边界，防已标进度却未写数据或重放二次效果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ACK应说明“收到”“落盘”“已应用”哪一级；同步等待哪些副本、是否多数确认影响RPO/写延迟和分区可用性。异步主确认后退出可能丢未复制的已确认写，不能仅有两台服务器就承诺零丢。这里不是把任何手写复制自动升级为Raft共识。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "首次同步、断线续传和缺口恢复"
+    },
+    {
+      "type": "paragraph",
+      "text": "装快照要先定义它覆盖到哪个提交水位 S，再补 S 之后的日志。副本先原子安装完整快照，随后应用保留日志；生成快照期间的新写不能漏，也不能重复算。"
+    },
+    {
+      "type": "paragraph",
+      "text": "manifest 要带 schema、epoch、水位、文件列表和 hash，全部校验完成后才切换活跃指针。不能一边覆盖文件，一边向用户提供半份快照。"
+    },
+    {
+      "type": "paragraph",
+      "text": "短断线从lastApplied/持久位置继续；遇缺口停止应用并补拉，日志已被清理则重做完整快照。删除/权限收紧也要传播，不能只复制存在的值。重复日志要核对身份与内容，不能同序号不同payload也当已处理成功。保留长度按最长离线/备份恢复窗口和容量选择。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "故障切换必须先保护写权威"
+    },
+    {
+      "type": "paragraph",
+      "text": "监测到失联只证明不可达，不证明旧主停止。选新主前验证其包含必要已提交前缀，并通过共识/受控故障转移或隔离旧主保证只有一个合法writer；新epoch在写资源和副本侧校验，客户端更新路由/连接。不能简单选offset最大者就证明数据安全。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同步序号、提交索引、leaderEpoch和成员资格不是随便自增数字即可；其合法性来自协调协议。没有多数派或无法隔离旧主时，严格单写应拒绝冲突写，而非两边继续卖同一库存。切换中响应未知的业务请求仍用稳定operationId查结果。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "读新鲜度需要明确策略"
+    },
+    {
+      "type": "paragraph",
+      "text": "读副本之前，先问能接受多旧。允许陈旧读的接口，可以返回副本结果并暴露 appliedIndex、版本和复制延迟；读己之写则带上主提交 token，等副本追到相应已提交前缀才读。"
+    },
+    {
+      "type": "paragraph",
+      "text": "没追上时，在 deadline 内等待、回主，或明确返回暂不可用。写后固定等一秒不能保证故障时也追上，固定读同一个副本也未必永远不倒退。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要求线性一致时，读主也要确认当前合法leader/提交屏障，旧隔离主不能无限服务“最新读”。按产品使用已验证的读索引/租约/同步屏障，不能用异步副本秒级延迟指标冒充强一致。schema、缓存和路由旧数据也可能造成看似同步问题，逐层核对。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一直旧不是靠多等一会儿解决"
+    },
+    {
+      "type": "paragraph",
+      "text": "监控received/durable/applied三类水位差、最老未应用时间、错误/重试、磁盘空间、日志缺口和schema冲突。复制线程停止、毒事务、权限失败或日志保留不足会永久卡住，健康检查需判定可读新鲜度，超限副本摘出相应读池并告警/修复或重建。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不能为“让复制往下跑”跳过未知事务而假装准确；修复需保留原因并对账。数据库未提交脏读是隔离级别问题，与异步副本读到已提交旧版本不同，答题应先澄清原词。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java 模型的能力与边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "ReplicaState Java实现受信已提交前缀的按序应用、重复冲突检查、缺口拒绝、epoch、不可变快照、删除和读水位门槛。它拒绝倒退快照和同前缀不同状态；快照后没有旧日志去重证据时拒绝旧事件并要求上游核实，不悄悄接受。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是内存参考状态机，调用install的协调器必须事先证明快照属于合法完整提交前缀；模型没有选主/多数派、磁盘日志、网络、认证或事务存储，不能作为生产复制服务。测试应覆盖上述边界；生产还须结合真实持久日志、故障转移与快照断电恢复验证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Java 代码 ReplicaState.java"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的Java模型只验证受信提交前缀的应用，不实现选主、网络或持久复制。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "001/ReplicaState.java",
+      "value": "import java.util.*;\n\n/** Certified committed-prefix apply model only. No leader election, consensus, transport or disk journal. */\npublic final class ReplicaState {\n    public record Entry(long epoch,long index,String key,String value) {\n        public Entry {if(epoch<1||index<1||key==null||key.isBlank())throw new IllegalArgumentException();}\n    }\n    public record Snapshot(long epoch,long index,Map<String,String> state) {\n        public Snapshot {if(epoch<1||index<0)throw new IllegalArgumentException();state=Map.copyOf(state);}\n    }\n    private long epoch=1,index;\n    private Map<String,String> state=new HashMap<>();\n    private final Map<Long,Entry> receipts=new HashMap<>();\n    public synchronized boolean apply(Entry e) {\n        Objects.requireNonNull(e);\n        if(e.epoch()!=epoch)throw new IllegalArgumentException(\"wrong leader epoch\");\n        if(e.index()<=index) {\n            Entry prior=receipts.get(e.index());\n            if(prior==null)throw new IllegalStateException(\"old entry below snapshot/retention boundary; revalidate upstream\");\n            if(!prior.equals(e))throw new IllegalArgumentException(\"same index conflict\");\n            return false;\n        }\n        if(e.index()!=Math.addExact(index,1))throw new IllegalStateException(\"log gap\");\n        if(e.value()==null)state.remove(e.key());else state.put(e.key(),e.value());\n        receipts.put(e.index(),e);index=e.index();return true;\n    }\n    /** Only a trusted coordinator may install a verified complete committed snapshot. */\n    public synchronized void install(Snapshot s) {\n        Objects.requireNonNull(s);\n        if(s.epoch()<epoch||s.index()<index)throw new IllegalArgumentException(\"rollback snapshot\");\n        if(s.index()==index&&!s.state().equals(state))throw new IllegalArgumentException(\"same prefix different state\");\n        state=new HashMap<>(s.state());epoch=s.epoch();index=s.index();receipts.clear();\n    }\n    public synchronized String read(String key,long requiredEpoch,long minCommittedIndex) {\n        if(requiredEpoch<1||minCommittedIndex<0)throw new IllegalArgumentException();\n        if(epoch<requiredEpoch||index<minCommittedIndex)throw new IllegalStateException(\"replica not caught up\");\n        return state.get(key);\n    }\n    public synchronized Snapshot snapshot(){return new Snapshot(epoch,index,state);}\n    private static void check(boolean x){if(!x)throw new AssertionError();}\n    private static void rejected(Runnable r){try{r.run();throw new AssertionError();}catch(IllegalArgumentException|IllegalStateException expected){}}\n    public static void main(String[] args) {\n        ReplicaState s=new ReplicaState();Entry first=new Entry(1,1,\"a\",\"one\");\n        check(s.apply(first));check(!s.apply(first));\n        rejected(()->s.apply(new Entry(1,1,\"a\",\"wrong\")));\n        rejected(()->s.apply(new Entry(1,3,\"a\",\"three\")));\n        rejected(()->s.read(\"a\",1,2));check(s.read(\"a\",1,1).equals(\"one\"));\n        Map<String,String> mutable=new HashMap<>();mutable.put(\"a\",\"two\");\n        Snapshot replacement=new Snapshot(2,2,mutable);mutable.put(\"a\",\"tampered\");\n        s.install(replacement);check(s.read(\"a\",2,2).equals(\"two\"));\n        rejected(()->s.apply(new Entry(1,3,\"a\",\"old leader\")));\n        check(s.apply(new Entry(2,3,\"a\",null)));check(s.read(\"a\",2,3)==null);\n        rejected(()->s.install(new Snapshot(3,2,Map.of())));\n        rejected(()->s.install(new Snapshot(3,3,Map.of(\"a\",\"resurrect\"))));\n        s.install(new Snapshot(3,3,Map.of()));\n        rejected(()->s.apply(new Entry(3,3,\"a\",null))); // no dedup proof below snapshot boundary\n        check(s.apply(new Entry(3,4,\"b\",\"four\")));\n        Snapshot copy=s.snapshot();rejected(()->s.read(\"b\",4,4));\n        try{copy.state().put(\"b\",\"bad\");throw new AssertionError();}catch(UnsupportedOperationException expected){}\n        check(s.read(\"b\",3,4).equals(\"four\"));\n        System.out.println(\"PASS ReplicaState: ordered committed apply, exact duplicate/conflict, gap rejection, read watermark, snapshot isolation, stale leader rejection, tombstone deletion, rollback/prefix conflict, retention-boundary rejection. In-memory trusted-prefix model only.\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

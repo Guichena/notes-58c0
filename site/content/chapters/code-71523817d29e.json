@@ -1,0 +1,53 @@
+{
+  "entries": [
+    {
+      "id": "handwrite-64",
+      "number": 19,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第五章：MQ 可靠性与削峰治理",
+      "flat": false,
+      "title": "可靠异步消息链路",
+      "questionHtml": "<p class=\"md-p\">结合你的生产事件触达平台：设计一条可靠消息链路，支持业务事件接入、投递、消费、失败重试、死信隔离、状态回写和补偿扫描，避免消息丢失和重复消费。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题是你的实习经历高概率追问题。面试官会问：消息怎么不丢？重复消费怎么办？消费失败怎么重试？数据库更新成功但 MQ 发送失败怎么办？</p>\n<p class=\"md-p\">必须先明确：分布式系统里很难承诺“绝对只消费一次”。工程上通常做到“至少一次投递 + 消费端幂等 + 可补偿”，对外呈现最终一致。</p>",
+      "knowledge": [
+        "生产端可靠：本地事务 + Outbox，或事务消息/确认机制。",
+        "Broker 可靠：持久化队列、消息持久化、Publisher Confirm。",
+        "消费端可靠：手动 ACK，处理成功再 ACK，失败 NACK/重试。",
+        "幂等：业务唯一键、幂等表、状态机 CAS 更新、去重缓存。",
+        "重试：立即重试、延迟重试、指数退避、最大次数、死信队列。",
+        "补偿：扫描中间态和超时状态，把漏发/漏处理事件重新推进。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐状态机：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">INIT -&gt; SAVED -&gt; PUBLISHED -&gt; CONSUMING -&gt; SUCCESS\n                         \\-&gt; RETRYING -&gt; DEAD\n                         \\-&gt; FAILED_COMPENSATABLE</pre></div></section>\n<p class=\"md-p\">核心设计：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>接入事件时生成全局 <code class=\"tok-inline\">eventId</code>，业务表和 <code class=\"tok-inline\">event_task</code> 表在同一个 MySQL 事务内落库。</li><li>后台发布器扫描 <code class=\"tok-inline\">SAVED</code> 状态事件，发送 MQ。</li><li>开启 Publisher Confirm，确认成功后把状态改为 <code class=\"tok-inline\">PUBLISHED</code>；失败则保留待重试。</li><li>消费者收到消息后先做幂等预占，例如插入 <code class=\"tok-inline\">consumer_log(event_id, consumer)</code> 唯一键。</li><li>业务处理成功后手动 ACK，并把任务状态更新为 <code class=\"tok-inline\">SUCCESS</code>。</li><li>处理失败时按错误类型决定重试或死信；超过最大次数进入 <code class=\"tok-inline\">DEAD</code>，等待人工或补偿任务处理。</li><li>XXL-Job 定时扫描 <code class=\"tok-inline\">SAVED/PUBLISHED/RETRYING/CONSUMING</code> 中超时数据，重新投递或修正状态。</li></ol></div>\n<p class=\"md-p\">幂等预占示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE consume_log (\n    id BIGINT PRIMARY KEY AUTO_INCREMENT,\n    event_id VARCHAR(64) NOT NULL,\n    consumer VARCHAR(64) NOT NULL,\n    status VARCHAR(32) NOT NULL,\n    created_at DATETIME NOT NULL,\n    updated_at DATETIME NOT NULL,\n    UNIQUE KEY uk_event_consumer (event_id, consumer)\n);</pre></div></section>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">public void onMessage(EventMessage msg, Channel channel, long tag) throws IOException {\n    try {\n        boolean first = consumeLog.tryInsert(msg.eventId(), &quot;notify-consumer&quot;);\n        if (!first) {\n            channel.basicAck(tag, false);\n            return;\n        }\n        handleBusiness(msg);\n        consumeLog.markSuccess(msg.eventId());\n        channel.basicAck(tag, false);\n    } catch (RetryableException e) {\n        channel.basicNack(tag, false, false); // 进入重试/死信链路，而不是原队列无限打转\n    } catch (Exception e) {\n        markDeadOrAlert(msg, e);\n        channel.basicAck(tag, false);\n    }\n}</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：如何保证数据库提交和 MQ 发送一致？</strong></p>\n<p class=\"md-p\">分析：先写库再发 MQ 可能发失败，先发 MQ 再写库可能消费者看不到数据。答案：Outbox 模式，业务数据和事件表同事务提交，再由可靠发布器异步发送。</p>\n<p class=\"md-p\"><strong>变体 2：重复消费如何处理？</strong></p>\n<p class=\"md-p\">分析：MQ 重投、消费者超时、ACK 丢失都会重复。答案：消费端按业务唯一键做幂等，状态机更新使用条件更新，例如 <code class=\"tok-inline\">WHERE status IN (...)</code>。</p>\n<p class=\"md-p\"><strong>变体 3：死信队列堆积怎么办？</strong></p>\n<p class=\"md-p\">分析：死信不是垃圾桶，而是故障隔离区。答案：按错误码分类、保留上下文、提供重放工具；对永久失败如参数非法不应无限重试，对临时失败如第三方超时可延迟重试。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "MQ 可靠性与削峰"
+    },
+    {
+      "id": "handwrite-65",
+      "number": 20,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第五章：MQ 可靠性与削峰治理",
+      "flat": false,
+      "title": "优先级调度与削峰去重",
+      "questionHtml": "<p class=\"md-p\">结合你的生产事件平台：设备告警、质检提醒、工单超时等消息同时进入系统。小设备高频上报会挤压关键告警。设计一个支持优先级、去重、限流和降级的调度方案。</p>",
+      "analysisHtml": "<p class=\"md-p\">这是典型业务治理题。面试官看的是你是否能把“消息优先级、队列积压、渠道健康度、滑动窗口去重”串成闭环，而不是只说加 MQ。</p>\n<p class=\"md-p\">核心目标是：关键告警优先触达，低价值重复消息合并或延迟，渠道故障时自动降级，系统整体不被噪声流量压垮。</p>",
+      "knowledge": [
+        "优先级队列：高优先级先消费，但要防止低优先级饥饿。",
+        "滑动窗口去重：同设备同类型短时间内合并。",
+        "自适应限流：根据队列积压、失败率、渠道延迟动态调整速率。",
+        "降级策略：低价值消息延迟、合并、摘要发送或丢弃。",
+        "可观测性：每个事件要有 traceId 和状态流转记录。"
+      ],
+      "answerHtml": "<p class=\"md-p\">推荐设计：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>事件接入后标准化为统一模型：<code class=\"tok-inline\">eventId、bizType、deviceId、priority、dedupKey、deadline、payload</code>。</li><li>去重层根据 <code class=\"tok-inline\">dedupKey = bizType + deviceId + ruleId</code> 做滑动窗口去重。</li><li>调度层按优先级拆队列：P0/P1/P2，消费者按权重轮询，例如 8:3:1，避免低优先级饿死。</li><li>限流层根据渠道健康度动态调整发送速率。</li><li>失败进入重试队列，超过阈值进入死信。</li><li>状态机记录 <code class=\"tok-inline\">RECEIVED、DEDUPED、QUEUED、SENT、ACKED、FAILED、DEAD</code>。</li></ol></div>\n<p class=\"md-p\">滑动窗口去重可以用 Redis：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">SET dedup:{dedupKey} eventId NX EX 60</pre></div></section>\n<p class=\"md-p\">如果 60 秒内重复事件到达，不重复发送，而是更新聚合计数：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">INCR dedup-count:{dedupKey}\nEXPIRE dedup-count:{dedupKey} 60</pre></div></section>\n<p class=\"md-p\">优先级调度伪代码：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">int[] weights = {8, 3, 1};\nQueue&lt;Message&gt;[] queues = new Queue[]{p0, p1, p2};\n\nwhile (running) {\n    for (int i = 0; i &lt; queues.length; i++) {\n        for (int j = 0; j &lt; weights[i]; j++) {\n            Message msg = queues[i].poll();\n            if (msg != null &amp;&amp; rateLimiter.allow(msg.channel())) {\n                send(msg);\n            }\n        }\n    }\n}</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：低优先级一直发不出去怎么办？</strong></p>\n<p class=\"md-p\">分析：纯优先级队列会饥饿。答案：使用加权轮询或 aging 机制，等待时间越长优先级逐步提高。</p>\n<p class=\"md-p\"><strong>变体 2：去重会不会误伤重要告警？</strong></p>\n<p class=\"md-p\">分析：去重维度太粗会漏报。答案：dedupKey 要包含业务类型、设备、规则、严重程度；P0 告警可以只合并展示不抑制触达。</p>\n<p class=\"md-p\"><strong>变体 3：渠道故障如何切换？</strong></p>\n<p class=\"md-p\">分析：短信、企业微信、电话等渠道健康度不同。答案：监控发送延迟和失败率，熔断故障渠道，关键消息升级备用渠道。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "MQ 可靠性与削峰"
+    }
+  ]
+}

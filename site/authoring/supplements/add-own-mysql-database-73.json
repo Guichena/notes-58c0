@@ -1,0 +1,238 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-database-73",
+  "entryId": "database-73",
+  "expectedOriginalHash": "5f649075018aa83786860b7ebec3a01e88c2fa67dbd2b4374d2975a370c1f57e",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "第05章 范式 关系 约束与业务身份"
+    },
+    {
+      "type": "paragraph",
+      "text": "关系建模先回答“一行代表什么、什么不能重复、谁拥有事实”，再选择表、键和索引；能存进去只是起点，并发修改后仍守住不变量才算设计完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：表结构怎么设计？为什么遵守范式又允许冗余？一对多与多对多怎么落表？唯一索引遇到 NULL 怎样处理？为什么常用自增主键？"
+    },
+    {
+      "type": "paragraph",
+      "text": "面试可以按三层展开。第一层是业务事实：账户、课程、歌单项、关注边各有不同身份和生命周期。第二层是数据库约束：主键保护行身份，唯一键保护业务不重复，外键保护引用，CHECK 保护行内取值。第三层才是读写成本：主要查询、写入扇出、热点和演进方式决定索引与必要冗余。数据库约束不是授权策略，知道一个 ID 也不代表有权访问它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "范式示例明确约定“一门课一位老师”，而后面的学生选课题约定“一门课可由多位老师教”。两题的函数依赖不同，必须分别建模，不能共用同一套任课约束。每个标为独立练习的 SQL 文件在自己的空白 schema 中执行；normalization.sql 与 normalization_seed.sql 是同一组，学生总分练习继续使用这组 students/courses。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "如何判断关系是否满足第三范式"
+    },
+    {
+      "type": "paragraph",
+      "text": "问题：关系 Enrollment(student_id, course_id, student_name, course_name, teacher_id, teacher_name, score)，约定一门课由一位老师授课，一个学生在一门课只有一个总成绩。候选键是 (student_id,course_id)，是否满足 3NF？"
+    },
+    {
+      "type": "paragraph",
+      "text": "这张表不满足 3NF，先看一个更早的问题：student_name 只由 student_id 决定，而候选键是 (student_id,course_id)。它依赖候选键的一部分，已经违反 2NF；课程信息也有同样问题。再沿 course_id→teacher_id→teacher_name 看，还存在传递依赖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "判断依据必须来自业务，而不是列名或“用了联合主键”。本题完整依赖是 student_id→student_name，course_id→course_name,teacher_id，teacher_id→teacher_name，以及 (student_id,course_id)→score。逐项检查时，1NF 要求在所选数据域里存单值；2NF 再要求每个非主属性不部分依赖任何候选键。这里的原子性随建模需求而定，字符串还能拆成字符，不代表它违反 1NF。"
+    },
+    {
+      "type": "paragraph",
+      "text": "3NF 的精确定义是：每个非平凡函数依赖 X→A 中，X 是超键，或 A 是主属性，也就是属于至少一个候选键。“消除非主属性对主键的传递依赖”便于入门，但有多个候选键时，不能代替这个定义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按事实所属拆开即可得到 students、courses、teachers、enrollments：学生信息归学生，课程信息归课程，教师资料归教师，成绩归选课关系。于是老师改名只改一处，删除最后一条选课也不会把教师资料删掉。拆完还要检查无损连接和依赖保持，而不是认为表越小越好。下面的完整 DDL 就按这些依赖组织。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 normalization.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/normalization.sql",
+      "value": "CREATE TABLE teachers (\n  teacher_id BIGINT PRIMARY KEY,\n  teacher_name VARCHAR(100) NOT NULL\n) ENGINE=InnoDB;\nCREATE TABLE students (\n  student_id BIGINT PRIMARY KEY,\n  student_name VARCHAR(100) NOT NULL\n) ENGINE=InnoDB;\nCREATE TABLE courses (\n  course_id BIGINT PRIMARY KEY,\n  course_name VARCHAR(100) NOT NULL,\n  teacher_id BIGINT NOT NULL,\n  FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id)\n) ENGINE=InnoDB;\nCREATE TABLE enrollments (\n  student_id BIGINT NOT NULL,\n  course_id BIGINT NOT NULL,\n  score DECIMAL(5,2) NOT NULL,\n  PRIMARY KEY (student_id, course_id),\n  FOREIGN KEY (student_id) REFERENCES students(student_id),\n  FOREIGN KEY (course_id) REFERENCES courses(course_id)\n) ENGINE=InnoDB;\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "最小数据与结果检查"
+    },
+    {
+      "type": "paragraph",
+      "text": "以下数据同时供本章学生总分题使用。更新老师姓名的实验以 ROLLBACK 结束，不改变后续基线。"
+    },
+    {
+      "type": "paragraph",
+      "text": "保存为 normalization_seed.sql。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "components/data/code/normalization_seed.sql",
+      "value": "INSERT INTO teachers VALUES (7,'Teacher A');\nINSERT INTO students VALUES (1,'same'),(2,'same'),(3,'third'),(4,'no scores');\nINSERT INTO courses VALUES (1,'Database',7),(2,'Java',7);\nINSERT INTO enrollments VALUES (1,1,80),(1,2,90),(2,1,100),(2,2,70);\nSELECT e.student_id,s.student_name,c.course_name,t.teacher_name,e.score\nFROM enrollments AS e\nJOIN students AS s ON s.student_id=e.student_id\nJOIN courses AS c ON c.course_id=e.course_id\nJOIN teachers AS t ON t.teacher_id=c.teacher_id\nORDER BY e.student_id,e.course_id;\n-- Expected: four enrollment rows; both courses reference teacher 7.\nSTART TRANSACTION;\nUPDATE teachers SET teacher_name='Teacher B' WHERE teacher_id=7;\nSELECT course_id,teacher_name FROM courses JOIN teachers USING(teacher_id)\nORDER BY course_id;\n-- Expected: both courses show Teacher B.\nROLLBACK;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "推演：老师 7 的姓名从 A 改为 B，只更新 teachers 的一行；两个课程经 teacher_id 关联后都得到 B。若老师可多人授课，course_id→teacher_id 不再成立，应改建 course_teachers 关联表，这说明范式依赖题目契约而非固定答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "边界与测试：重复选课应被复合主键拒绝；不存在学生或课程的成绩应被外键拒绝；同名不同学生不能合并。未指定 ON DELETE 时不能假定删除学生会自动清理选课，应先明确删除策略。范式判断依靠函数依赖；本题的关系重组由上面的 SQL 演示，JDBC 调用还需要参数绑定和资源管理。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "通过冗余字段减少询价多表JOIN时，怎样确定字段、保持一致并验收回滚？"
+    },
+    {
+      "type": "paragraph",
+      "text": "冗余字段要先分清历史快照和当前值副本，再为它明确权威来源、版本及事务或异步维护协议。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：通过冗余字段减少询价多表JOIN时，怎样确定字段、保持一致并验收回滚？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "题意与假设"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 quotation 冗余 supplier_name 为教学例子；如果问题没有给出实际主表和字段，只能先解释设计方法，不能猜出项目改动。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先区分快照与实时副本"
+    },
+    {
+      "type": "paragraph",
+      "text": "供应商改名后，旧询价单上的名字该不该一起变？先回答这一句，才能决定冗余怎样维护。若询价单保存提交时名称，它就是历史快照，不应回写；若页面必须显示当前名称，它就是派生副本，必须跟随权威 supplier 表更新。“数据不一致”有时只是把这两种需求混在一起。"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如 quotation(id,supplier_id,supplier_name_snapshot,amount,version) 中，supplier_id 指向来源，snapshot 只在创建时写。换成 supplier_name_current 时，则同时保存 source_version，便于识别落后。字段选择还要比较高频 JOIN 的成本、值更新频率、大小、复用与正确性要求，不能把全部详情复制进主表。尤其金额、库存这类决策状态，不能为了省 JOIN 就无约束地复制。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "同库事务与跨库投影"
+    },
+    {
+      "type": "paragraph",
+      "text": "两表同一InnoDB实例、同一连接时，可把权威更新和冗余更新放在一个事务中，由undo提供回滚、redo提供恢复、锁/MVCC控制并发。所有写路径须遵守相同协议，更新大量引用行会扩大锁范围、日志和延迟，应评估是否适合异步投影或只读时JOIN。"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨库/跨分片不能把两个独立本地事务当成一个ACID事务。可选择真正分布式事务，或权威库事务+outbox/CDC投影，用实体版本拒绝乱序、重复幂等、失败重试和对账补偿。最终一致视图应标注最大新鲜度目标，关键读回权威；直接“先改A再改B失败重试”在崩溃时会留下无法证明的中间状态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "回滚自动到哪一层，怎样观察"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库只回滚它控制的事务写入。死锁、超时、重复键的回滚范围不同，框架异常是否触发回滚也取决于配置；业务应在失败边界确认事务结束。手写“反向UPDATE”不是普通数据库事务回滚的必要条件，还可能在并发下覆盖别人的新值；跨系统业务补偿则是另一个有幂等和版本条件的流程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "在测试中注入“主表更新后、详情更新前”异常，最终两者应同时旧或同时新；再测试提交应答丢失、CDC乱序、消费者崩溃、超时后残留事务。监控事务错误码、长事务与锁等待、outbox积压、死信、版本差、对账不一致数及修复滞后；日志关联业务ID与事务/事件ID，避免暴露敏感字段。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "优化结果的证据"
+    },
+    {
+      "type": "paragraph",
+      "text": "对比同一数据分布下JOIN与冗余读的p95/p99、扫描行、网络和数据库CPU，同时记录写放大、修改扇出与一致性滞后。不给未经测量的“提速百分比”。当冗余维护成本高于JOIN收益时，正确索引、预计算读模型或保留JOIN可能更合适。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "第一范式有什么意义，业务系统要完全范式化吗，除此之外应掌握哪些数据库理论？"
+    },
+    {
+      "type": "paragraph",
+      "text": "范式通过函数依赖减少更新异常；业务写模型先保护事实，读模型可在有维护协议的前提下做必要冗余。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：第一范式有什么意义，业务系统要完全范式化吗，除此之外应掌握哪些数据库理论？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "原子性要放在所选数据域中讨论"
+    },
+    {
+      "type": "paragraph",
+      "text": "经典1NF强调每个属性位置保存一个域内值，不把重复组或逗号拼接的多值集合当作可正常约束的关系列。例如把一人多个手机号写成一个逗号字符串，会让唯一性、按手机号查找、增删单项和外键约束难以表达；拆为user_phone(user_id,phone)能独立约束每条关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "原子并不意味着任何字符串都要拆成字符；日期有年月日也可作为一个日期域值。现代关系型DBMS支持JSON等复杂类型，所以某表嵌套字段或反规范化不使MySQL突然变成“非关系数据库”。讨论具体schema是否遵守所采用的范式模型，比给整个软件贴真假标签准确。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "范式控制冗余异常，读模型可有明确冗余"
+    },
+    {
+      "type": "paragraph",
+      "text": "依据函数依赖找候选键，2NF消除非主属性对候选键的部分依赖，3NF按“决定项为超键或被决定属性为主属性”判断；本章选课例完整展示更新/删除异常与拆分。拆表还须验证无损连接和依赖保持，不是表越多越正确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务写模型通常先保证事实唯一、约束与更新边界；高频读可用有来源的冗余字段/物化视图。订单下单时地址是历史业务事实，不应随用户当前地址改变，它与复制当前地址造成的无意义冗余不同。缓存/报表副本须定义更新、失败补偿、可接受延迟与对账。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "范式以外用理论解释实际决策"
+    },
+    {
+      "type": "paragraph",
+      "text": "关系代数的选择、投影、连接帮助理解SQL语义和谓词下推；SQL默认多重集、NULL三值逻辑与ORDER BY显式顺序又要求谨慎，不能随意把JOIN当集合并集。代价模型用基数、选择率、IO与内存解释同一查询为何换计划。"
+    },
+    {
+      "type": "paragraph",
+      "text": "事务理论关心冲突可串行化与异常历史，2PL/MVCC是实现路径；恢复理论关心WAL、checkpoint和持久顺序。可分别用同一转账或查询案例讲不变量，而不是空列ACID、CAP等缩写。这些理论分别回答数据结构、事务并发和故障恢复的问题，应结合实例解释。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "面试中的继续追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "软删除为何不能简单写 UNIQUE(tenant,login,deleted)？因为同一个登录名最多只能保留一个 deleted=1 的组合，第二个历史账户仍会冲突。可选择登录名终身不复用，或把当前占用与历史账户分开，或在明确定义空值语义后用生成列约束当前有效身份；无论哪种方案，历史记录仍使用稳定 user_id。"
+    },
+    {
+      "type": "paragraph",
+      "text": "关注关系的基本表应有 follower_id、followee_id、state、version 和稳定请求身份。删除物理行前要考虑迟到关注事件能否复活它；如果需要异步反向列表，保留版本墓碑更容易解释。具体插入、取消与路由的完整时序在分片场景中展开，模型不能只画两个用户外键。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“表是你做的吗”应按实际负责范围回答：约束与 DDL、迁移、接口、索引、运行维护分别是谁完成。可以解释参考设计，但不能把假设数据量、分片表数或性能提升换成过去式。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ]
+}

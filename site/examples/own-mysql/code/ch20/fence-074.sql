@@ -1,0 +1,3 @@
+-- B1：在相关间隙保护下等待，先只执行 INSERT。
+START TRANSACTION;
+INSERT INTO p VALUES (2,15,'new');

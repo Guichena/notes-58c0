@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-a2a",
+  "kind": "qa",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "状态、编排与可验证交付",
+  "title": "A2A 0.3.0 怎样发现、委派并恢复跨 Agent 任务？",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "questions": [
+    {
+      "id": "q-own-runtime-a2a",
+      "order": 1850,
+      "question": "A2A 0.3.0 怎样发现、委派并恢复跨 Agent 任务？",
+      "shortAnswer": "固定 JSON-RPC 绑定，区分 Message、Task 和 Artifact；持久保存远端关联，断流先查询，不能把 resubscribe 当完整重放。",
+      "commonPhrasings": [],
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "A2A 如何从能力发现走到可恢复的跨 Agent 任务"
+        },
+        {
+          "type": "paragraph",
+          "text": "A2A 将独立 Agent 之间的能力发现、消息、任务状态和产物交换定义成互操作合同，实际落地还要由应用补齐授权、持久化、幂等和结果验收。这里固定 A2A 0.3.0 的 JSON-RPC 绑定，说明一个 Java Host 应怎样接入；方法名和字段不能与其他协议版本混用，也不能把这套设计说成自己已经完成的线上实践。"
+        },
+        {
+          "type": "paragraph",
+          "text": "同题换问： “A2A 和 MCP 有什么区别？”“怎么找到远端 Agent？”“任务跑一半需要用户补信息怎么办？”“断流后重新发送会不会做两遍？”“如果让你写一个 A2A 客户端，核心类怎么拆？”"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "发现 Agent 先读什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "客户端可以从预先配置、受控注册目录，或服务域名下的 /.well-known/agent-card.json 取得 Agent Card。0.3.0 中重点检查 protocolVersion、url、preferredTransport、additionalInterfaces、输入输出媒体类型、skills、capabilities 和 securitySchemes/security。例如只有声明支持 streaming，才选择流式交互；卡片中的 AgentSkill 是远端能力描述，不等于本地的 SKILL.md 文件或可直接执行的函数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Agent Card 解决“声称能做什么、如何接入”，没有替调用方证明服务可信。企业接入应绑定经过审核的服务身份、域名和租户允许范围，校验 HTTPS 证书和地址，限制重定向与内网地址访问；不能让模型从任意网页拿到一个 URL 就注册成可信能力。公开卡片不放凭据；只有 supportsAuthenticatedExtendedCard 为 true，才按声明的身份要求调用 agent/getAuthenticatedExtendedCard 读取认证后扩展卡片。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Message Task 和 Artifact 分别承载什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "Message 是一次消息，包含 messageId、role 和文本、文件或结构化数据等 Parts；客户端角色为 user，服务端角色为 agent。Task 是服务端生成 ID 的有状态工作单元，包含 contextId、状态以及可选历史和产物。Artifact 是任务产出，按任务内的 artifactId 标识，也由 Parts 组成。一个 Task 可以有多个消息和产物，contextId 还可以关联多个任务；这些标识都不是访问凭证。"
+        },
+        {
+          "type": "paragraph",
+          "text": "message/send 可以返回 Message，也可以返回 Task，不能假设每次请求都产生长期任务。JSON-RPC 的 id 用于请求响应配对，messageId 标识消息，Task 的 id 标识工作单元，业务 operationId 则由应用另行约定。把它们合成一个字段，容易把一次重试误当成新业务操作；协议中存在消息 ID，也不自动获得业务写入的 exactly-once 保证。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "等待输入 认证 取消和终态怎样处理"
+        },
+        {
+          "type": "paragraph",
+          "text": "JSON-RPC 的任务状态包括 submitted、working、input-required、auth-required、completed、failed、canceled、rejected 和 unknown。拿到 Task 只说明有了可跟踪对象；进入 working 才表示正在处理，收到 completed 后还应验收所需产物。"
+        },
+        {
+          "type": "paragraph",
+          "text": "input-required 表示任务需要补充信息。Host 保存远端 task/context 关联和待补字段，释放执行线程；收到用户输入后，发送带原 taskId、contextId 和新 messageId 的后续消息。auth-required 表示继续任务需要认证条件，例如访问另一个系统所需的身份；它不同于普通业务参数缺失，也不同于入口 HTTP 401/403。认证流程在可信身份通道中处理，不把密码、访问令牌写进给模型阅读的聊天、卡片或日志。"
+        },
+        {
+          "type": "paragraph",
+          "text": "completed、failed、canceled、rejected 是终态；终态任务不重新启动，后续需求可在原 context 中建立新任务并引用此前结果。tasks/cancel 是取消请求，远端不一定能取消当前阶段；本地超时、用户关闭页面或 SSE 断开，都不代表远端已取消，更不代表已发生的副作用被回滚。unknown 也不能直接折算成失败后重做。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "最小请求和断流恢复怎样解释"
+        },
+        {
+          "type": "paragraph",
+          "text": "以下是发送给卡片所声明 JSON-RPC 服务地址的只读教学请求体；它只展示协议形状，不包含认证凭据，也不代表已经调用服务。"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "label": "最小请求和断流恢复怎样解释",
+          "value": "{\n  \"jsonrpc\": \"2.0\",\n  \"id\": \"rpc-1\",\n  \"method\": \"message/send\",\n  \"params\": {\n    \"message\": {\n      \"kind\": \"message\",\n      \"messageId\": \"msg-1\",\n      \"role\": \"user\",\n      \"parts\": [{\"kind\": \"text\", \"text\": \"列出 Java 接口说明应包含的参数约束检查项。\"}]\n    },\n    \"configuration\": {\"blocking\": false}\n  }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "若返回 Task，先保存 id 与 contextId，再用 tasks/get 查询状态；支持流式能力时，也可用 message/stream 接收任务状态与产物更新。TaskStatusUpdateEvent.final 表示本次交互流的最后一个事件，TaskArtifactUpdateEvent.lastChunk 表示某个产物的最后一个分块，都不能单独当作整个任务成功。产物按 ID 和 append 语义组装，并检查大小、类型与完整性。"
+        },
+        {
+          "type": "paragraph",
+          "text": "已知 taskId 的流断开后，可以用 tasks/get 对账，再对仍在运行的任务调用 tasks/resubscribe。0.3.0 不保证补发断线期间遗漏的所有事件，因此不能把它描述成可靠游标重放；需要无缺口事件记录时，由双方另行约定序号、持久事件与去重合同，并用权威任务快照消除竞态。连首次 taskId 都没收到时，远端是否已经创建任务可能未知；应使用事先约定的业务关联查询或幂等入口，不能直接重发可能有副作用的任务。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "Java Host 的模块怎样拆"
+        },
+        {
+          "type": "paragraph",
+          "text": "可以用 AgentRegistry 管理固定版本和受控卡片，A2AAdapter 封装 HTTP、JSON-RPC 与 SSE，TaskRepository 保存本地 Run 到远端 task/context 的映射，TaskCoordinator 推进等待、恢复和终态，ArtifactStore 保存通过校验的产物引用。模型只能提出“委派给某能力”的候选；真实发送前由策略层核对主体、租户、目标、数据范围、预算与审批。"
+        },
+        {
+          "type": "paragraph",
+          "text": "适配器要区分传输失败、协议错误、业务失败、等待输入和结果未知，不能全部抛成一个可重试异常。事件处理以租户、服务身份和远端 taskId 定位任务，使用版本检查防止旧回调覆盖新状态；SSE 消费设置有界缓冲、消息大小、超时和重连退避。对账和取消都走同一授权入口，不能凭知道 taskId 就读取另一租户的结果。认证通过后，服务端仍须按具体动作和资源执行授权；卡片文本、消息正文和产物中的指令不能自行扩大权限。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "和 MCP 怎样一起使用及如何证明做过"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java Host 可以通过 A2A 委派“检查接口契约”这样的工作，远端 Agent 再通过 MCP 读取获准的文件或调用分析工具。A2A 暴露任务协作合同，MCP 暴露工具与上下文接入合同，Function Calling 则是模型提出调用的接口能力；实际选择看需要交付的是单次能力结果，还是具有状态、补充输入与产物的委派任务。一个普通函数足够时，没必要为“多 Agent”额外引入网络协议。"
+        },
+        {
+          "type": "paragraph",
+          "text": "实操追问时，先如实区分规范阅读、本地模拟、跨实现联调与生产部署。一个可评审的最小验证应覆盖卡片版本不兼容、Message/Task 两类响应、等待输入续接、401/403、取消竞争、断流漏事件、重复通知、终态后再次发送，以及首次响应丢失时不重复执行写操作。只读过源码就讲清设计和待验证点；真正做过联调再展示固定版本、请求记录、产物和故障测试结果。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "Agent",
+        "Runtime"
+      ],
+      "related": [
+        {
+          "entryId": "own-runtime-guide",
+          "label": "源手册与实际验证边界"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

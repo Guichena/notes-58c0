@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-spring-proxy-boundaries",
+  "entryId": "handwrite-55",
+  "expectedOriginalHash": "6b395bdec32d64f742539410c685d4f81df45adb7ad9da54719247fa820ef971",
+  "title": "代理、自调用与通知链：完整边界",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "原条目作为入门示例保留。技术纠偏：Boot AOP 通常默认类代理，不能只凭有接口判断；原反射代理示例未解包 InvocationTargetException，以下实验保留原始 cause。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "8 AOP 实际拦截的是什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring AOP 拦截的是经过代理的方法调用。调用方先到代理，代理执行事务、鉴权、限流、计时或审计等增强，再进入受管目标对象；默认不会改写目标类里的所有代码。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：AOP 与 IoC 的关系？JDK 动态代理与 CGLIB 区别？不使用代理能否做 AOP？为什么 final 方法有时仍能拦截？"
+    },
+    {
+      "type": "paragraph",
+      "text": "例如外部调用一个订单服务，先进入代理，再依次经过拦截器，最后到目标方法；返回值和异常沿调用栈向外传回。IoC 负责创建、装配这些对象，AOP 负责决定哪些调用加哪些行为。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把术语放在这条线上：Join point 是可增强的位置，Spring AOP 主要支持方法执行；Pointcut 筛选要增强的位置；Advice 实现增强行为；Advisor 常把匹配规则和行为组合起来。这样就能解释每个组件负责哪一段，而不必孤立背定义。"
+    },
+    {
+      "type": "paragraph",
+      "text": "JDK 动态代理和 CGLIB 的区别，先看代理怎样接住调用："
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "JDK 代理生成一个实现接口的类，接口方法进入 InvocationHandler，再由处理器委派给目标。因此目标实现类的接口方法即使是 final，也仍能先经过接口代理。",
+        "CGLIB 生成目标类的子类，靠覆盖可覆盖的实例方法拦截。final 类不能继承，final/private 方法不能靠覆盖增强，static 也不是实例代理调用。"
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "因此，看到 final 不能马上判断事务失效。要先看实际代理类型，以及调用是否经过它。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常规 Framework 代理选择结合目标接口与 proxyTargetClass 配置，Boot AOP 自动配置通常默认采用类代理。不能只用“有接口就 JDK”判断项目行为。按接口注入能降低与实现类和代理形态的耦合，但这不是所有类型转换错误的万能修复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "AspectJ 的编译期或加载期织入属于另一种实现，支持更广连接点，也能避开代理型自调用限制；它增加构建、类加载和诊断复杂度。字节码织入是被问“不用代理怎么实现”的合理方向，不能把 Spring AOP 默认说成 AspectJ 织入，仅使用 @Aspect 注解并不代表启用了织入。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：反射调用必然绕开代理吗？取决于反射调用的接收者。反射调用代理接口方法仍可进代理链；保存原 target 再调用才可能绕开。计时切面测到的是纯业务时间吗？取决于它在重试、事务、缓存等切面之外还是之内。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "9 为什么自调用失效 怎样修复"
+    },
+    {
+      "type": "paragraph",
+      "text": "目标对象内部的 this 调用没有重新穿过外部代理，所以内部方法新增的事务、限流或异步规则通常不会执行，但外层已经存在的事务可能仍然有效。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：A 调 B，B 上有 @Transactional 为什么没有回滚？增强何时发生？能否注入自己或使用 AopContext？"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部调用 proxy.outer，代理把 outer 委派给 target。outer 的 this 是 target，因此 this.inner 直接执行目标方法。若 outer 没事务，inner 的事务注解不会开事务；若 outer 已开事务，inner 仍在同线程运行，可使用外层绑定连接，但 inner 声明的 REQUIRES_NEW 不会凭空生效。这两个场景要分别推演。"
+    },
+    {
+      "type": "paragraph",
+      "text": "优先修复是按业务边界拆分：编排 Bean 调用另一个事务服务 Bean。只需要一小段数据库原子更新时，TransactionTemplate 能直接表达局部边界。自注入会制造额外依赖环和可读性问题；AopContext.currentProxy 需要配置暴露代理，并让业务依赖框架调用环境。它们是受约束的手段，不该作为所有分层问题的默认答案。"
+    },
+    {
+      "type": "paragraph",
+      "text": "排查时先确认对象来自哪个容器、实际类型是否代理、调用的是哪个引用，再检查方法签名和规则。直接 new、切点不匹配、方法不可覆盖、提前在初始化中调用，都可能呈现“注解写了但无效”。不要只看日志中出现了注解就断言链路正确。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：异步方法自调用会不会异步？代理模式通常不会。重构后是不是一定能回滚？还需要正确事务管理器、同一个受管资源与异常规则。完整 JDK 代理实验在后文同时证明自调用绕过、final 接口实现可委派以及异常 cause 必须保留。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "10 通知顺序怎样改变结果"
+    },
+    {
+      "type": "paragraph",
+      "text": "切面顺序决定“谁包着谁”。优先级高的通知通常先进入、后退出；鉴权、限流、事务和重试换个位置，可能改变被拒绝请求是否占连接，以及副作用执行几次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同类问法：@Before、@After、@AfterReturning、@AfterThrowing、@Around 区别？多个切面谁先执行？重试要放事务里面还是外面？"
+    },
+    {
+      "type": "paragraph",
+      "text": "@Before 在进入目标前执行；@AfterReturning 只针对正常返回；@AfterThrowing 在异常传播时执行；@After 是 finally 语义；@Around 包围后续调用，能够不执行、执行一次甚至多次 proceed。后两种能力很强，也容易让审计漏记、重复扣款或吞掉异常。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同切面可通过 Ordered/@Order 表达，通常较小 order 值更高优先级。不要依赖同一切面内多个同类通知的源码排列顺序。需要严格的完整时序时，一个清楚的 around 或显式拦截链比猜测排序更可靠。事务通知的顺序也可配置，应画出实际链并用测试验证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "拿一次需要重试的订单请求来推演。认证应先完成，限流才能用可信主体构造 key；被拒绝的请求最好不要先占住数据库事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果重试包在事务外，每次尝试才有机会建立独立事务；若在已经 rollback-only 的物理事务里反复尝试，成功执行后也未必能提交。重试范围包含外部副作用时，还必须做幂等。限流放在重试外，是限制用户请求数；放在重试内，是限制真正的尝试次数。先说明要保护哪一种资源，再决定顺序。"
+    },
+    {
+      "type": "paragraph",
+      "text": "继续追问：日志 finally 抛错会怎样？可能覆盖业务异常。清理失败应保留首个失败，附加 suppressed 异常时必须避免对同一个 Throwable 实例自抑制。事务已经提交后审计通知失败，不能再声称所有写入回滚。指标与审计失败是否阻断业务，要事先确定策略。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "52 JDK 代理与自调用"
+    },
+    {
+      "type": "paragraph",
+      "text": "外部调用代理会触发通知，目标内部调用不会重新进入代理；接口代理还能转发 final 实现方法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "程序验证三种调用路径，故意不依赖 Spring。先把 outer 内的 this 调用与外部 inner 调用对照，再检查异常是否仍是原始 IllegalArgumentException。"
+    },
+    {
+      "type": "paragraph",
+      "text": "源文件：code/jdk/ProxyBoundaryLab.java"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.lang.reflect.*;\nimport java.util.*;\n\npublic class ProxyBoundaryLab {\n    public interface Service { String outer(); String inner(); String fail(); }\n    public static final class Target implements Service {\n        public String outer() { return \"outer/\" + this.inner(); }\n        public final String inner() { return \"inner\"; }\n        public String fail() { throw new IllegalArgumentException(\"business failure\"); }\n    }\n    public static void main(String[] args) {\n        List<String> trace = new ArrayList<>();\n        Service target = new Target();\n        Service proxy = (Service) Proxy.newProxyInstance(Service.class.getClassLoader(),\n                new Class<?>[]{Service.class}, (p, method, values) -> {\n                    trace.add(\"before:\" + method.getName());\n                    try {\n                        Object result = method.invoke(target, values);\n                        trace.add(\"return:\" + method.getName());\n                        return result;\n                    } catch (InvocationTargetException wrapper) {\n                        trace.add(\"throw:\" + method.getName());\n                        throw wrapper.getCause();\n                    } finally { trace.add(\"finally:\" + method.getName()); }\n                });\n        require(proxy.outer().equals(\"outer/inner\"));\n        require(trace.equals(List.of(\"before:outer\", \"return:outer\", \"finally:outer\")));\n        trace.clear();\n        require(proxy.inner().equals(\"inner\"));\n        require(trace.equals(List.of(\"before:inner\", \"return:inner\", \"finally:inner\")));\n        trace.clear();\n        try { proxy.fail(); throw new AssertionError(\"expected failure\"); }\n        catch (IllegalArgumentException expected) { require(expected.getMessage().equals(\"business failure\")); }\n        require(trace.equals(List.of(\"before:fail\", \"throw:fail\", \"finally:fail\")));\n        System.out.println(\"PASS JDK proxy: self-call, final implementation, cause preservation\");\n    }\n    static void require(boolean ok) { if (!ok) throw new AssertionError(); }\n}\n",
+      "label": "code/jdk/ProxyBoundaryLab.java"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-spring-reference",
+      "label": "教学版本、运行方法与来源边界"
+    }
+  ]
+}

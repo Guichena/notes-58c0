@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-runtime-durable-code",
+  "kind": "doc",
+  "module": "ai",
+  "part": "Agent Runtime 工程合同",
+  "category": "教学参考与验证边界",
+  "title": "完整教学实现：本地可恢复状态机与有界 DAG",
+  "tags": [
+    "Agent",
+    "Runtime"
+  ],
+  "sections": [
+    {
+      "id": "s-7344",
+      "title": "29 Java 手写题 从可恢复状态机到 DAG 调度",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "阅读口径：以下保留源手册的面试表达、条件设计、版本和教学测试说明；第一人称并不证明本人已实施，原文的测试/PASS 说明不是本批执行结果。本次只做内容与结构验证，未运行教学代码或独立复核产品时效。"
+        },
+        {
+          "type": "heading",
+          "level": 2,
+          "text": "29 Java 手写题 从可恢复状态机到 DAG 调度"
+        },
+        {
+          "type": "paragraph",
+          "text": "面试回答： 先写不变量再写循环：一个时刻只有当前 lease 的所有者能推进；批准绑定动作摘要；副作用发出之前意图已经保存；响应不明不自动重放；依赖没成功不释放子任务；取消和期限阻止新动作。下面用纯 JDK 演示这些机制，便于在白板与本地故障测试中讲透。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "先界定这个教学 Runtime 能保证什么"
+        },
+        {
+          "type": "paragraph",
+          "text": "DurableRuntime 处理一个受批准操作，持久化完整状态帧，用单文件锁阻止第二个本地写者。同步方法只解决同一 JVM 对象的竞争；文件锁与 journal 不替代分布式数据库。journal 的 SHA-256 用于检测损坏，不证明内容来自可信人；目录权限、认证、备份、日志轮换、密钥和跨机复制不在这个小例子中。"
+        },
+        {
+          "type": "paragraph",
+          "text": "FileChannel.force(true) 请求强制写出文件数据/元数据，但这里没有通用目录 fsync、跨平台掉电证明或磁盘故障恢复。撕裂尾帧、校验失败与序号错误直接 fail closed，交由受控恢复处理，不猜测哪个动作已发生。此模型使用外部传入的可信时钟值使测试确定；生产 deadline 要区分本机单调耗时与数据库权威租约时钟，不能让客户端自报时间。"
+        },
+        {
+          "type": "paragraph",
+          "text": "审批保存为状态而不是阻塞一个线程。执行前重新检查身份权限、资源动作摘要、有效期、lease、deadline 和预算。示例动作字符串必须由可信服务端规范化，并包含资源 ID、预期版本和重要参数；不对任意 JSON 原文直接散列后声称等价。资源实际提交还需要下游条件写和幂等保障，本例没有发送真实请求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "重启遇到 DISPATCHED 进入 UNKNOWN。对账确认 APPLIED 才记成功，确认 NOT_APPLIED 才形成明确未应用结果；没有可信查询时保持未知。本例不自动从未知重试，真实系统若要继续，需要一个新的受授权调度决策，并保留原 operation 的审计链。取消后对账发现已应用，仍应如实保留 succeeded 与 cancellation requested 两个事实。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整文件 src/DurableRuntime.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整文件 src/DurableRuntime.java",
+          "value": "import java.io.*;\nimport java.nio.ByteBuffer;\nimport java.nio.channels.FileChannel;\nimport java.nio.channels.FileLock;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.security.MessageDigest;\nimport java.util.*;\n\n/** Teaching implementation: one local journal, one operation, trusted clock/auth. */\npublic final class DurableRuntime implements AutoCloseable {\n    public enum Phase { PENDING, RUNNING, WAITING_APPROVAL, READY, DISPATCHED,\n        UNKNOWN, SUCCEEDED, CANCELLED, FAILED }\n    public enum RemoteState { APPLIED, NOT_APPLIED, UNKNOWN }\n    public record Auth(String tenant, String actor, boolean mayWrite) {}\n    public record View(long sequence, String tenant, String actor, Phase phase,\n        long epoch, String owner, long leaseUntil, long deadline, int remaining,\n        String operation, String digest, long approvalUntil, boolean cancelled,\n        String result) {}\n    private final FileChannel channel;\n    private final FileLock lock;\n    private View state;\n    private boolean poisoned;\n\n    public DurableRuntime(Path path, String tenant, String actor,\n                          long deadline, int maxAttempts) throws Exception {\n        if (tenant.isBlank() || actor.isBlank() || maxAttempts < 1)\n            throw new IllegalArgumentException(\"invalid initial state\");\n        channel = FileChannel.open(path, StandardOpenOption.CREATE,\n                StandardOpenOption.READ, StandardOpenOption.WRITE);\n        FileLock acquired;\n        try { acquired = channel.tryLock(); }\n        catch (RuntimeException | IOException e) { channel.close(); throw e; }\n        if (acquired == null) { channel.close(); throw new IOException(\"journal already owned\"); }\n        lock = acquired;\n        try {\n            recover();\n            if (state == null) {\n                state = new View(0, tenant, actor, Phase.PENDING, 0, \"\", 0,\n                        deadline, maxAttempts, \"\", \"\", 0, false, \"\");\n                save(state);\n            } else if (!state.tenant().equals(tenant) || !state.actor().equals(actor)) {\n                throw new SecurityException(\"journal identity mismatch\");\n            }\n        } catch (Exception e) {\n            try { close(); } catch (IOException cleanup) { e.addSuppressed(cleanup); }\n            throw e;\n        }\n    }\n    public synchronized View view() { return state; }\n    private static boolean terminal(Phase p) {\n        return p == Phase.SUCCEEDED || p == Phase.CANCELLED || p == Phase.FAILED;\n    }\n    private void auth(Auth a) {\n        if (!state.tenant().equals(a.tenant()) || !state.actor().equals(a.actor()) || !a.mayWrite())\n            throw new SecurityException(\"current authorization denied\");\n    }\n    private void live(long now) {\n        if (state.cancelled() || now >= state.deadline() || terminal(state.phase()))\n            throw new IllegalStateException(\"task cannot advance\");\n    }\n    private void lease(String owner, long epoch, long now) {\n        if (!state.owner().equals(owner) || state.epoch() != epoch || now >= state.leaseUntil())\n            throw new IllegalStateException(\"stale lease\");\n    }\n    private View next(Phase p, long epoch, String owner, long leaseUntil,\n                      int remaining, String op, String digest, long approval,\n                      boolean cancelled, String result) {\n        return new View(state.sequence()+1, state.tenant(), state.actor(), p, epoch,\n                owner, leaseUntil, state.deadline(), remaining, op, digest,\n                approval, cancelled, result);\n    }\n    public synchronized long claim(String owner, long now, long leaseMillis) throws Exception {\n        live(now);\n        if (owner.isBlank() || leaseMillis <= 0) throw new IllegalArgumentException(\"bad lease\");\n        boolean eligible = state.phase() == Phase.PENDING || state.phase() == Phase.READY\n                || (state.phase() == Phase.RUNNING && now >= state.leaseUntil());\n        if (!eligible) throw new IllegalStateException(\"not claimable\");\n        long until = Math.min(state.deadline(), Math.addExact(now, leaseMillis));\n        save(next(Phase.RUNNING, state.epoch()+1, owner, until, state.remaining(),\n                state.operation(), state.digest(), state.approvalUntil(), false, \"\"));\n        return state.epoch();\n    }\n    public synchronized void heartbeat(String owner, long epoch, long now,\n                                       long leaseMillis) throws Exception {\n        live(now); lease(owner, epoch, now);\n        if (leaseMillis <= 0) throw new IllegalArgumentException(\"bad lease\");\n        if (state.phase()!=Phase.RUNNING && state.phase()!=Phase.DISPATCHED)\n            throw new IllegalStateException(\"no active work\");\n        save(next(state.phase(), epoch, owner,\n                Math.min(state.deadline(), Math.addExact(now, leaseMillis)), state.remaining(),\n                state.operation(), state.digest(), state.approvalUntil(), false, state.result()));\n    }\n    public synchronized void requestApproval(String owner, long epoch, long now,\n                       String operation, String canonicalAction) throws Exception {\n        live(now); lease(owner, epoch, now);\n        if (state.phase()!=Phase.RUNNING || operation.isBlank() || canonicalAction.isBlank())\n            throw new IllegalStateException(\"invalid proposal\");\n        // Waiting is durable; it does not retain a worker or a thread.\n        save(next(Phase.WAITING_APPROVAL, epoch, \"\", 0, state.remaining(), operation,\n                sha(canonicalAction.getBytes(StandardCharsets.UTF_8)), 0, false, \"\"));\n    }\n    public synchronized void approve(Auth a, String operation, String digest,\n                                      long now, long expiresAt) throws Exception {\n        auth(a); live(now);\n        if (state.phase()!=Phase.WAITING_APPROVAL || !state.operation().equals(operation)\n                || !state.digest().equals(digest) || expiresAt<=now)\n            throw new IllegalStateException(\"approval does not match pending action\");\n        save(next(Phase.READY, state.epoch(), \"\", 0, state.remaining(), operation,\n                digest, Math.min(expiresAt,state.deadline()), false, \"\"));\n    }\n    public synchronized void dispatch(Auth a, String owner, long epoch,\n                                      long now, String canonicalAction) throws Exception {\n        auth(a); live(now); lease(owner,epoch,now);\n        if (state.phase()!=Phase.RUNNING || state.approvalUntil()<=now || state.remaining()<=0\n                || !state.digest().equals(sha(canonicalAction.getBytes(StandardCharsets.UTF_8))))\n            throw new IllegalStateException(\"dispatch rejected\");\n        // WAL intent first. Only after this method returns may caller contact tool.\n        save(next(Phase.DISPATCHED,epoch,owner,state.leaseUntil(),state.remaining()-1,\n                state.operation(),state.digest(),state.approvalUntil(),false,\"\"));\n    }\n    public synchronized void complete(String owner,long epoch,long now,String receipt) throws Exception {\n        lease(owner,epoch,now);\n        if(state.phase()!=Phase.DISPATCHED || receipt.isBlank())\n            throw new IllegalStateException(\"completion rejected\");\n        // Cancellation is not a claim that an already dispatched side effect vanished.\n        save(next(Phase.SUCCEEDED,epoch,\"\",0,state.remaining(),state.operation(),\n                state.digest(),state.approvalUntil(),state.cancelled(),receipt));\n    }\n    public synchronized void loseResponse() throws Exception {\n        if(state.phase()!=Phase.DISPATCHED) throw new IllegalStateException(\"not dispatched\");\n        save(next(Phase.UNKNOWN,state.epoch(),\"\",0,state.remaining(),state.operation(),\n                state.digest(),state.approvalUntil(),state.cancelled(),\"requires reconciliation\"));\n    }\n    public synchronized void requestCancel() throws Exception {\n        if(terminal(state.phase())) return;\n        Phase p = state.phase()==Phase.DISPATCHED || state.phase()==Phase.UNKNOWN\n                ? Phase.UNKNOWN : Phase.CANCELLED;\n        save(next(p,state.epoch(),\"\",0,state.remaining(),state.operation(),state.digest(),\n                state.approvalUntil(),true,p==Phase.UNKNOWN?\"cancelled; remote outcome unknown\":\"cancelled\"));\n    }\n    public synchronized void reconcile(Auth a,RemoteState remote,String receipt) throws Exception {\n        auth(a);\n        if(state.phase()!=Phase.UNKNOWN) throw new IllegalStateException(\"not unknown\");\n        if(remote==RemoteState.UNKNOWN) return;\n        if(receipt.isBlank()) throw new IllegalArgumentException(\"authoritative evidence required\");\n        Phase p = remote==RemoteState.APPLIED ? Phase.SUCCEEDED\n                : (state.cancelled()?Phase.CANCELLED:Phase.FAILED);\n        save(next(p,state.epoch(),\"\",0,state.remaining(),state.operation(),state.digest(),\n                state.approvalUntil(),state.cancelled(),receipt));\n    }\n    public synchronized void recoverDispatched() throws Exception {\n        if(state.phase()==Phase.DISPATCHED) loseResponse();\n    }\n    private void save(View v) throws Exception {\n        if(poisoned) throw new IOException(\"journal is fail-closed after an IO error\");\n        byte[] payload=encode(v);\n        if(payload.length>65_536) throw new IOException(\"state too large\");\n        String frame=Base64.getEncoder().encodeToString(payload)+\" \"+sha(payload)+\"\\n\";\n        ByteBuffer bytes=StandardCharsets.US_ASCII.encode(frame);\n        try {\n            if(channel.size()+bytes.remaining()>8_388_608)throw new IOException(\"journal capacity\");\n            channel.position(channel.size());\n            while(bytes.hasRemaining()) channel.write(bytes);\n            channel.force(true);\n        } catch(IOException e) { poisoned=true; throw e; }\n        state=v;\n    }\n    private void recover() throws Exception {\n        if(channel.size()>8_388_608) throw new IOException(\"demo journal limit\");\n        ByteBuffer b=ByteBuffer.allocate((int)channel.size());\n        channel.position(0);\n        while(b.hasRemaining()) if(channel.read(b)<0) throw new EOFException();\n        String all=new String(b.array(),StandardCharsets.US_ASCII);\n        if(!all.isEmpty() && !all.endsWith(\"\\n\")) throw new IOException(\"torn tail; reconcile before repair\");\n        long expected=0;\n        for(String line:all.split(\"\\n\")) {\n            if(line.isEmpty()) continue;\n            String[] parts=line.split(\" \",-1);\n            if(parts.length!=2) throw new IOException(\"bad frame\");\n            byte[] raw=Base64.getDecoder().decode(parts[0]);\n            if(!sha(raw).equals(parts[1])) throw new IOException(\"checksum mismatch\");\n            View v=decode(raw);\n            if(v.sequence()!=expected++) throw new IOException(\"sequence gap\");\n            state=v;\n        }\n    }\n    private static byte[] encode(View v) throws IOException {\n        ByteArrayOutputStream bytes=new ByteArrayOutputStream();\n        try(DataOutputStream out=new DataOutputStream(bytes)) {\n            out.writeInt(1); out.writeLong(v.sequence());out.writeUTF(v.tenant());out.writeUTF(v.actor());\n            out.writeUTF(v.phase().name());out.writeLong(v.epoch());out.writeUTF(v.owner());\n            out.writeLong(v.leaseUntil());out.writeLong(v.deadline());out.writeInt(v.remaining());\n            out.writeUTF(v.operation());out.writeUTF(v.digest());out.writeLong(v.approvalUntil());\n            out.writeBoolean(v.cancelled());out.writeUTF(v.result());\n        }\n        return bytes.toByteArray();\n    }\n    private static View decode(byte[] bytes) throws IOException {\n        try(DataInputStream in=new DataInputStream(new ByteArrayInputStream(bytes))) {\n            if(in.readInt()!=1) throw new IOException(\"unsupported schema\");\n            View v=new View(in.readLong(),in.readUTF(),in.readUTF(),Phase.valueOf(in.readUTF()),\n                in.readLong(),in.readUTF(),in.readLong(),in.readLong(),in.readInt(),in.readUTF(),\n                in.readUTF(),in.readLong(),in.readBoolean(),in.readUTF());\n            if(in.available()!=0)throw new IOException(\"unexpected bytes\");\n            return v;\n        }\n    }\n    public static String sha(byte[] raw) {\n        try{return HexFormat.of().formatHex(MessageDigest.getInstance(\"SHA-256\").digest(raw));}\n        catch(Exception e){throw new IllegalStateException(e);}\n    }\n    @Override public synchronized void close() throws IOException {\n        IOException failure=null;\n        try { if(lock.isValid())lock.release(); } catch(IOException e){failure=e;}\n        try { channel.close(); } catch(IOException e){if(failure==null)failure=e;else failure.addSuppressed(e);}\n        if(failure!=null)throw failure;\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "有界并行 DAG：正确的 join 比开线程更重要"
+        },
+        {
+          "type": "paragraph",
+          "text": "BoundedDag 的输入是只读、可中断的可信 Callable<String>。先检查重复节点、缺失依赖和环，才执行任何节点；入度归零进入 ready；完成后才释放下游；并发数和总期限有限。CompletionService 避免按提交顺序逐个 get 导致被早提交的慢任务挡住其他完成结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这是进程内调度器，非 durable 工作流。进程被杀后队列会丢，不能拿这个实现冒充第 6 节的分布式方案。Future.cancel(true) 只请求协作中断；不响应中断的任务可继续占线程，因此代码在关闭等待失败时显式报错。对不可信/不可中断执行，应使用独立进程和操作系统限制，本例不会创建外部进程。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程池内部虽使用 JDK 默认工作队列，调度器只提交不超过 parallelism 的活动任务，不预先塞入整个图；节点总数与返回体仍需由接入层做业务限额。结果 Map 是完成结果，不是让任意 Worker 无锁修改的共享业务状态。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整文件 src/BoundedDag.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整文件 src/BoundedDag.java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** In-process, read-only teaching scheduler. Not a durable distributed scheduler. */\npublic final class BoundedDag {\n    public record Node(String id, Set<String> dependencies, Callable<String> action) {\n        public Node { dependencies=Set.copyOf(dependencies);Objects.requireNonNull(action); }\n    }\n    private record Result(String id,String value) {}\n    public static Map<String,String> run(List<Node> input,int parallelism,long timeoutMillis)\n            throws Exception {\n        if(parallelism<1 || timeoutMillis<1 || timeoutMillis>60_000 || input.size()>1000)\n            throw new IllegalArgumentException(\"bounded inputs required\");\n        Map<String,Node> nodes=new LinkedHashMap<>();\n        for(Node n:input) if(n.id().isBlank() || nodes.putIfAbsent(n.id(),n)!=null)\n            throw new IllegalArgumentException(\"duplicate or empty node\");\n        Map<String,Integer> indegree=new HashMap<>();\n        Map<String,List<String>> children=new HashMap<>();\n        for(Node n:input) {\n            indegree.put(n.id(),n.dependencies().size());\n            for(String d:n.dependencies()) {\n                if(!nodes.containsKey(d)) throw new IllegalArgumentException(\"unknown dependency\");\n                children.computeIfAbsent(d,k->new ArrayList<>()).add(n.id());\n            }\n        }\n        // Validate the entire DAG before any side effect or task submission.\n        Map<String,Integer> degrees=new HashMap<>(indegree);\n        ArrayDeque<String> check=new ArrayDeque<>();\n        for(Node n:input) if(degrees.get(n.id())==0) check.add(n.id());\n        int visited=0;\n        while(!check.isEmpty()) {\n            String id=check.remove();visited++;\n            for(String child:children.getOrDefault(id,List.of()))\n                if(degrees.compute(child,(k,v)->v-1)==0)check.add(child);\n        }\n        if(visited!=nodes.size()) throw new IllegalArgumentException(\"cycle\");\n        ArrayDeque<String> ready=new ArrayDeque<>();\n        for(Node n:input)if(indegree.get(n.id())==0)ready.add(n.id());\n        ExecutorService pool=Executors.newFixedThreadPool(parallelism);\n        ExecutorCompletionService<Result> completions=new ExecutorCompletionService<>(pool);\n        List<Future<Result>> futures=new ArrayList<>();\n        Map<String,String> result=new LinkedHashMap<>();\n        long deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeoutMillis);\n        int running=0;\n        Throwable failure=null;\n        try {\n            while(result.size()<nodes.size()) {\n                while(running<parallelism&&!ready.isEmpty()) {\n                    if(deadline-System.nanoTime()<=0)throw new TimeoutException(\"before dispatch\");\n                    String id=ready.remove();Node n=nodes.get(id);\n                    futures.add(completions.submit(()->new Result(id,n.action().call())));\n                    running++;\n                }\n                long remaining=deadline-System.nanoTime();\n                if(remaining<=0)throw new TimeoutException(\"DAG deadline\");\n                Future<Result> future=completions.poll(remaining,TimeUnit.NANOSECONDS);\n                if(future==null)throw new TimeoutException(\"DAG deadline\");\n                Result done=future.get();running--; // Failure prevents downstream readiness.\n                result.put(done.id(),Objects.requireNonNull(done.value()));\n                for(String child:children.getOrDefault(done.id(),List.of()))\n                    if(indegree.compute(child,(k,v)->v-1)==0)ready.add(child);\n            }\n            return Collections.unmodifiableMap(result);\n        } catch(Exception|Error e) {\n            failure=e;throw e;\n        } finally {\n            try {\n                for(Future<Result> f:futures)if(!f.isDone())f.cancel(true);\n                pool.shutdownNow();\n                // Cooperative tasks only. This is not a hard kill or external rollback.\n                if(!pool.awaitTermination(2,TimeUnit.SECONDS))\n                    throw new IllegalStateException(\"worker ignored cancellation\");\n            } catch(Exception cleanup) {\n                if(cleanup instanceof InterruptedException)Thread.currentThread().interrupt();\n                if(failure!=null)failure.addSuppressed(cleanup);else throw cleanup;\n            } finally {\n                if(failure instanceof InterruptedException)Thread.currentThread().interrupt();\n            }\n        }\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "原题变式：分批执行与保留指定终点的路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "任务依赖调度器常追问“哪些节点可同一批执行”。Kahn 算法每轮取当前全部零入度节点形成一个批次，再统一释放下一层。分批是依赖层次，不表示同批任务一定能同时占用资源；实际运行仍受并发配额限制。"
+        },
+        {
+          "type": "paragraph",
+          "text": "另一原题给定 DAG、入度为零的起点集合和需保留的出度为零终点集合，要求删除不保留终点及其上游路径，又不能误删保留终点的共享路径。设 F 是从给定起点正向可达集合，B 是从保留终点沿反向边可达集合，保留 F∩B 及内部边即可。共享祖先能到保留终点就留下，不能按“碰到坏终点就删所有祖先”处理。原题候选人背景为 C++；这里给出 Java 对应实现，未把语言来源改写成 Java 原题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "该实现允许任意显式端点并将零边路径算作可达，这是比原题更一般的接口；应用若要求端点必须为源/汇点，还需验证其入/出度。空起点或空保留集合返回空图。拓扑与双向遍历的图论部分为 O(V+E)；为结果稳定而使用排序结构/批次排序，实际实现还有排序开销，不能把这段代码无条件写成严格线性。空间为 O(V+E)。"
+        },
+        {
+          "type": "heading",
+          "level": 3,
+          "text": "完整文件 src/DagAlgorithms.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "完整文件 src/DagAlgorithms.java",
+          "value": "import java.util.*;\n\npublic final class DagAlgorithms {\n    private static Map<String,Set<String>> validate(Map<String,Set<String>> graph) {\n        Map<String,Set<String>> copy=new TreeMap<>();\n        graph.forEach((k,v)->copy.put(Objects.requireNonNull(k),Set.copyOf(v)));\n        for(var targets:copy.values())if(!copy.keySet().containsAll(targets))\n            throw new IllegalArgumentException(\"unknown node\");\n        return copy;\n    }\n    /** Edges point from prerequisite to dependent. Stable lexicographic batches. */\n    public static List<List<String>> batches(Map<String,Set<String>> graph) {\n        Map<String,Set<String>> g=validate(graph);Map<String,Integer> degree=new TreeMap<>();\n        g.keySet().forEach(n->degree.put(n,0));g.values().forEach(v->v.forEach(n->degree.merge(n,1,Integer::sum)));\n        List<String> ready=new ArrayList<>();for(var entry:degree.entrySet())if(entry.getValue()==0)ready.add(entry.getKey());\n        List<List<String>> result=new ArrayList<>();int count=0;\n        while(!ready.isEmpty()) {\n            result.add(List.copyOf(ready));count+=ready.size();List<String> next=new ArrayList<>();\n            for(String n:ready)for(String to:g.get(n))if(degree.merge(to,-1,Integer::sum)==0)next.add(to);\n            Collections.sort(next);ready=next;\n        }\n        if(count!=g.size())throw new IllegalArgumentException(\"cycle\");return List.copyOf(result);\n    }\n    /** Keep exactly nodes on a path from any start to any end (zero-edge paths count). */\n    public static Map<String,Set<String>> prune(Map<String,Set<String>> graph,Set<String> starts,Set<String> ends) {\n        Map<String,Set<String>> g=validate(graph);batches(g);\n        if(!g.keySet().containsAll(starts)||!g.keySet().containsAll(ends))throw new IllegalArgumentException(\"unknown endpoint\");\n        Map<String,Set<String>> reverse=new TreeMap<>();g.keySet().forEach(n->reverse.put(n,new TreeSet<>()));\n        g.forEach((from,targets)->targets.forEach(to->reverse.get(to).add(from)));\n        Set<String> keep=reachable(g,starts);keep.retainAll(reachable(reverse,ends));\n        Map<String,Set<String>> output=new TreeMap<>();\n        for(String n:keep){Set<String> edges=new TreeSet<>(g.get(n));edges.retainAll(keep);output.put(n,Set.copyOf(edges));}\n        return Collections.unmodifiableMap(output);\n    }\n    private static Set<String> reachable(Map<String,Set<String>> g,Set<String> roots) {\n        Set<String> seen=new HashSet<>(roots);Deque<String> queue=new ArrayDeque<>(roots);\n        while(!queue.isEmpty())for(String n:g.get(queue.remove()))if(seen.add(n))queue.add(n);\n        return seen;\n    }\n}\n"
+        }
+      ]
+    }
+  ]
+}

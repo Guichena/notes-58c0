@@ -1,0 +1,47 @@
+
+    <section><h2>题目</h2><div class="md"><p class="md-p">用户表中可能存在重复邮箱：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">question.txt</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="text">user_account(id, email, created_at)</pre></div></section>
+<p class="md-p">要求删除重复邮箱记录，每个邮箱只保留 <code class="tok-inline">id</code> 最小的一条。</p></div></section>
+    <section><h2>图解</h2></section>
+    <section><h2>问题分析与必备知识点</h2><div class="grid2"><div class="panel span2"><h4><span class="ic">?</span>问题分析</h4><div class="md"><p class="md-p">这题考察去重删除。不能直接 <code class="tok-inline">DELETE FROM user_account WHERE email IN (...)</code>，否则可能把所有重复邮箱都删掉。要明确保留规则，例如保留最小 id 或最早创建时间。</p></div></div><div class="panel span2 tone-accent"><h4><span class="ic">K</span>必备知识点</h4><div class="md"><ul class="bullets"><li>自连接删除。</li><li>窗口函数标号后删除。</li><li>MySQL 8.4 的目标表子查询限制需要真正物化的派生表；本例窗口函数阻止合并，不能推广为任意包一层都安全。</li><li>删除前先 <code class="tok-inline">SELECT</code> 验证，生产环境分批删除。</li></ul></div></div></div></section>
+    <section><h2>参考答案（SQL / 设计）</h2><div class="md"><p class="md-p">自连接写法：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">DELETE u1
+FROM user_account u1
+JOIN user_account u2
+  ON u1.email &lt;=&gt; u2.email
+ AND u1.id &gt; u2.id;</pre></div></section>
+<p class="md-p">窗口函数写法：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">DELETE FROM user_account
+WHERE id IN (
+    SELECT id
+    FROM (
+        SELECT
+            id,
+            ROW_NUMBER() OVER (
+                PARTITION BY email
+                ORDER BY id
+            ) AS rn
+        FROM user_account
+    ) t
+    WHERE t.rn &gt; 1
+);</pre></div></section>
+<p class="md-p">删除后应该增加唯一索引防止再次重复：</p>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="file-label">answer.sql</span></div><button class="copy-button md-copy" type="button">复制代码</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">ALTER TABLE user_account
+ADD UNIQUE KEY uk_email (email);</pre></div></section><p class="md-p">MySQL 8.4/InnoDB：假定 id 是非空唯一主键，邮箱按字段 collation 比较；本题明确把 NULL 视作同一个去重组，自连接使用 NULL 安全等号 &lt;=&gt;，与 PARTITION BY 一致。若 NULL 表示各自未知，应两种方案都排除 NULL。UNIQUE(email) 仍允许多个 NULL。删除与加索引之间必须控制并发写，清理不等于约束已经生效；先备份、核对待删主键，再按获准维护流程执行。此处未运行数据库。</p></div></section>
+    <section><h2>变体与追问</h2><div class="md"><p class="md-p"><strong>变体 1：保留最新一条怎么办？</strong></p>
+<p class="md-p">问题分析：保留规则从最小 id 改为最大 <code class="tok-inline">created_at</code>。</p>
+<p class="md-p">知识点：排序规则、并列处理。</p>
+<p class="md-p">答案：窗口函数中 <code class="tok-inline">ORDER BY created_at DESC, id DESC</code>，删除 <code class="tok-inline">rn &gt; 1</code>。</p>
+<p class="md-p"><strong>变体 2：数据量千万级，直接 delete 会有什么问题？</strong></p>
+<p class="md-p">问题分析：大事务会造成锁时间长、binlog 大、主从延迟。</p>
+<p class="md-p">知识点：分批删除、归档、限速。</p>
+<p class="md-p">答案：先把要删除的 id 写入临时表，然后按主键范围分批删除，每批几千条，并监控主从延迟。</p>
+<p class="md-p"><strong>变体 3：email 允许 NULL，唯一索引怎么处理？</strong></p>
+<p class="md-p">问题分析：MySQL 唯一索引允许多个 NULL。</p>
+<p class="md-p">知识点：NULL 语义、函数索引、业务校验。</p>
+<p class="md-p">答案：如果业务不允许空邮箱，字段设 <code class="tok-inline">NOT NULL</code>；如果允许空但只允许一个，普通 UNIQUE(email) 不够；需另设数据库约束或所有写入口遵守的串行协议，应用先查后写不足以防并发。</p>
+<hr class="md-hr"></div></section>
+    <section><h2>深入补强</h2></section>
+    <section><h2>同章节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

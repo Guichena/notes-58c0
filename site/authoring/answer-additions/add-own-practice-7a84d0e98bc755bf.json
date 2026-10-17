@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-7a84d0e98bc755bf",
+  "entryId": "hwqa-2",
+  "expectedOriginalHash": "135bd8f7cf7ef293772c4a2a419d80b874126ec7378c77787665ea657dda8775",
+  "title": "跨册场景补充：支付与关单同时发生怎样保证库存",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "支付与关单同时发生怎样保证库存"
+    },
+    {
+      "type": "paragraph",
+      "text": "先定义订单、预留和支付事实的权威状态，再让状态变化与库存记账在同一事务内完成。 示例中 WAIT_PAY 只能转 PAID 或 CLOSED，HELD 只能转 CONSUMED 或 RELEASED；关单后晚到的真实扣款建立退款待办，不能复活已经释放的库存。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "业务契约与事务边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "本例是固定库存的设备预订，无补货、部分支付、拆单或部分退货。订单/库存/预留在同一个 MySQL 事务域；跨库时本地原子性不再成立，要另设计协议。Redis 只是入口限流或近似预筛，最终售出资格由数据库决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "到期事件只使订单具备关单条件。支付与关单哪个状态转换先在数据库成功，哪个取得本地业务资格；真实渠道若已扣款、但回调在关单后才到，则保持关单并产生退款待办，不复活已释放库存。实际产品若承诺“截止前渠道已付款一定保留订单”，需采用渠道关单确认/待核实状态，不能使用这个简化的先提交规则。"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付事实与订单资格分开存储：订单关闭不能抹掉真实扣款；退款请求发出也不能立刻写“已退款”。金额、币种、商户订单号和通知真实性须按实际支付渠道验证。本例不绑定某家支付 API，不提供实际付款或退款操作代码。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "三组状态及不变量"
+    },
+    {
+      "type": "paragraph",
+      "text": "订单：WAIT_PAY → PAID 或 CLOSED，终态不能互相覆盖。"
+    },
+    {
+      "type": "paragraph",
+      "text": "预留：HELD → CONSUMED 或 RELEASED，每份预留最多走一个分支。"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付事实：渠道扣款事实单独去重记录；若订单 CLOSED，则进入 REFUND_PENDING，收到可验证退款结果才进入 REFUNDED；未知结果保持待核实。"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存记账：available、held、consumed 均非负，且 available + held + consumed = initial。创建预留把 available 移到 held；支付把 held 移到 consumed；关单把 held 移回 available。这个守恒式限定本例，不把售后退货和补货偷偷算进来。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "创建、支付、关单的事务结构"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "label": "backend-scenarios 原语言代码 L1145–1171（完整围栏，未执行）",
+      "value": "CREATE TABLE s8_stock (\n  sku BIGINT PRIMARY KEY,\n  initial_qty INT NOT NULL,\n  available INT NOT NULL,\n  held INT NOT NULL,\n  consumed INT NOT NULL,\n  CHECK (available>=0 AND held>=0 AND consumed>=0),\n  CHECK (available+held+consumed=initial_qty)\n) ENGINE=InnoDB;\nCREATE TABLE s8_order (\n  id BIGINT PRIMARY KEY,\n  request_id VARCHAR(64) NOT NULL UNIQUE,\n  sku BIGINT NOT NULL,\n  qty INT NOT NULL,\n  status VARCHAR(16) NOT NULL,\n  expire_at DATETIME(6) NOT NULL,\n  version BIGINT NOT NULL,\n  CHECK (qty>0),\n  KEY ix_expire (status,expire_at,id)\n) ENGINE=InnoDB;\nCREATE TABLE s8_reservation (\n  order_id BIGINT PRIMARY KEY,\n  sku BIGINT NOT NULL,\n  qty INT NOT NULL,\n  status VARCHAR(16) NOT NULL,\n  CHECK (qty>0)\n) ENGINE=InnoDB;\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "创建事务：插入唯一 request_id 的订单 → UPDATE stock SET available=available-q,held=held+q WHERE sku=? AND available>=q → 检查恰好更新一行 → 插入 HELD 预留 → 插入 outbox → COMMIT。任一步失败，全部回滚。示例中的 q 为绑定且已验证的正数；相同 request_id 的重复请求读取原结果，不重复扣库存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "支付和关单事务都先 SELECT order WHERE id=? FOR UPDATE，再锁/检查 reservation，再修改 stock；所有代码路径遵循同一顺序。此时通过订单行使两个竞争者串行化，进入者必须在锁内重读状态，不能只信进入事务前的缓存判断。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 支付：去重记录有效渠道扣款事实；若 order=WAIT_PAY 且 reservation=HELD，改 order=PAID、reservation=CONSUMED，并执行 held-=q、consumed+=q；写履约事件 outbox。若 CLOSED，创建唯一退款请求及 outbox，不改变库存；若已 PAID 的同一笔回调，只返回已有结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 关单：在数据库时间已达到 expire_at 且 order=WAIT_PAY 时改 CLOSED。只有将对应 reservation 从 HELD 改为 RELEASED 的那次状态转移才能执行 available+=q、held-=q；写关单事件。若 order 已 PAID，不释放；若 CLOSED，不再加库存。"
+    },
+    {
+      "type": "paragraph",
+      "text": "不可把 UPDATE order WHERE status='WAIT_PAY' 的 0 行结果仍按“成功关闭”执行库存加回；也不可见到 Redis 预扣失败就向数据库无条件补库存，因为原扣减可能已经成功。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "把竞态逐个演算"
+    },
+    {
+      "type": "paragraph",
+      "text": "时序一，支付先成功：WAIT_PAY/HELD → PAID/CONSUMED，随后超时事件到达看见 PAID，退出；库存不会返还。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时序二，关单先成功：WAIT_PAY/HELD → CLOSED/RELEASED，随后有效扣款通知到达，保留 CLOSED 并建立 REFUND_PENDING；退款动作靠稳定 refund_request_id 对接渠道，并查询/重试未知结果。它不会把已经可能卖给另一个人的库存再许诺给旧订单。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时序三，关单事件重复十次：只有第一次 HELD→RELEASED 可以返库存，后九次是读取既有结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时序四，创建事务已提交但 HTTP 响应丢失：客户端使用原 request_id 重试查询，返回同一订单；新 request_id 是新业务请求，不能期待服务器自动知道是同一次意图。"
+    },
+    {
+      "type": "paragraph",
+      "text": "时序五，延迟消息完全没到：按 (status,expire_at,id) 小批量扫描到期订单，逐个执行同一个幂等关单事务。消息提高及时性，扫描负责查漏；不要写两套不同的状态转换逻辑。扫描事务要短，领取任务与执行业务的持锁边界应明确。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "Redis 预扣失败时，不能简单无损切到数据库"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 返回超时只代表客户端不知道结果，不代表没预扣。立即对 Redis 加回可能产生多余库存；立即改走 DB 也可能重复受理。应以稳定请求/预留 ID 查询最终数据库结果，必要时让预筛资格过期并对账；数据库库存条件仍是最后一道约束。"
+    },
+    {
+      "type": "paragraph",
+      "text": "若把 Redis 当唯一库存权威，则必须另外证明复制切换丢写、预扣与投递双写、回滚重复、补货乱序等情况下的守恒式。本例故意不做该承诺。布隆过滤器可减少无效查询，但不能代替唯一约束决定“某用户只能成功一次”。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "对账是可恢复协议的一部分"
+    },
+    {
+      "type": "paragraph",
+      "text": "对账发现记录后，要能决定下一步：过期仍 WAIT_PAY 的订单重新执行关单；CLOSED 却有有效扣款的订单补建或核对退款请求；订单与 reservation 不匹配时告警，并冻结自动改写；outbox 年龄超阈值时检查发布链路。"
+    },
+    {
+      "type": "paragraph",
+      "text": "库存总量守恒后仍要逐订单核对。可以设想一单多放一份、另一单少放一份，总量没有变化，两单却都错了；因此汇总正确不能代替逐单责任检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对账不得盲目修成“多数系统里的值”：数据库事实、渠道扣款事实、缓存投影各有不同权威范围。修复必须重用业务幂等键、留下差异和处理记录；高影响的人工修复要经过业务审批。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "可执行模型与必须补做的集成测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "本书故障状态模型枚举两个支付通知和两个关单触发的 24 种排列，断言无超卖、无重复返还、无 PAID 与 CLOSED 双终态；其中支付后的关单和关单后的支付都覆盖。模型把每个事务视为原子步骤，所以它验证的是状态转换规则，不验证数据库真实锁、隔离级别或崩溃持久性。"
+    },
+    {
+      "type": "paragraph",
+      "text": "真实集成测试还要注入：事务中途断连接；提交成功响应丢失；支付通知重复/乱序；消息延迟；消费者重启；多库存行逆序获取；数据库副本延迟；Redis 预扣结果未知；退款已受理但响应丢失。每个故障都检查订单、预留、库存、支付事实、outbox/inbox 最终状态，不只看接口返回成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "追问：将 order 与 stock 分片到不同库后怎么办？上面的一个本地事务不再适用。可按预留服务状态机和可靠事件拆成 Saga/TCC 类协议，但要明示中间状态、补偿幂等、悬挂/空回滚处理和超时对账；不能用“最终一致”四个字抹掉这些新增义务。"
+    }
+  ],
+  "questionId": "0"
+}

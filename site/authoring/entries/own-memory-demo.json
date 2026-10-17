@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-memory-demo",
+  "kind": "doc",
+  "module": "ai",
+  "part": "Memory 与上下文工程",
+  "category": "实现参考与验证边界",
+  "title": "完整 Java：记忆流转演示",
+  "tags": [
+    "Memory",
+    "完整教学代码"
+  ],
+  "sections": [
+    {
+      "id": "s-1311",
+      "title": "29.2 MemoryFlowDemo.java",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "运行这个入口时，先观察只读目标、已确认厂商与 schema、偏好、工具事件和局部摘要如何进入请求。最近原文 e3 应保留，偏好只作为资料。随后撤销记忆，再用同一旧索引解析，应得到空集合。打印的只是本地请求文本，不调用模型、数据库或远端工具。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "java/MemoryFlowDemo.java",
+          "value": "import java.time.Instant;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Set;\n\n/** One bounded, local, read-only demonstration. No provider or database. */\npublic final class MemoryFlowDemo {\n    public static void main(String[] args) throws InterruptedException {\n        MemoryStoreLesson store = new MemoryStoreLesson();\n        MemoryStoreLesson.Scope scope = new MemoryStoreLesson.Scope(\"tenant1\", \"user1\", \"project1\");\n        MemoryStoreLesson.Auth auth = store.grant(scope); // Trusted application boundary.\n        store.propose(auth, \"style1\", \"技术问题先给结论，再解释前提\",\n                MemoryStoreLesson.Origin.USER_EXPLICIT, null, \"event:user1\");\n        store.approve(auth, \"style1\", 1);\n        List<MemoryStoreLesson.Ref> index = store.indexSnapshot(auth);\n        String contextScope = scope.tenant() + \"/\" + scope.user() + \"/\" + scope.project();\n        ContextCompilerLesson.Conversation conversation = new ContextCompilerLesson.Conversation(\n                contextScope, \"只检查模块 C 的引用，不修改配置\",\n                Map.of(\"mode\", \"READ_ONLY\", \"manufacturer\", \"X\", \"schema\", \"v2\"));\n        conversation.append(\"e1\", List.of(\"user: 继续上次调查，今天只检查。\"));\n        conversation.append(\"e2\", List.of(\"assistant call=read1: 读取 schema 版本\",\n                \"tool call=read1: schema v2，来源 artifact:a1\"));\n        conversation.append(\"e3\", List.of(\"user: 重点看模块 C 的引用缺失。\"));\n        ContextCompilerLesson.Snapshot frozen = conversation.snapshot();\n        ContextCompilerLesson.Summary candidate = new ContextCompilerLesson.Summary(\n                2, Set.of(\"e1\", \"e2\"), frozen.protectedFacts(),\n                \"用户限定只读；工具确认 schema v2。尚未完成引用诊断。来源 e1、e2。\");\n        if (!conversation.publish(frozen.revision(), candidate)) {\n            throw new IllegalStateException(\"snapshot changed; regenerate summary\");\n        }\n        List<ContextCompilerLesson.MemoryView> memories = store.resolve(auth, index,\n                Instant.parse(\"2026-10-11T00:00:00Z\")).stream()\n                .map(item -> new ContextCompilerLesson.MemoryView(contextScope, item.id(),\n                        item.revision(), item.text())).toList();\n        ContextCompilerLesson.Compiled compiled = ContextCompilerLesson.compile(\n                conversation.snapshot(), new ContextCompilerLesson.Budget(4096, 512, 256),\n                memories, text -> text.codePointCount(0, text.length()));\n        System.out.println(compiled.request());\n        System.out.println(\"Measured code points, not provider tokens: \" + compiled.inputUnits());\n        System.out.println(\"Raw units: \" + compiled.rawUnitIds());\n        store.retire(auth, \"style1\", 2, MemoryStoreLesson.Status.REVOKED);\n        if (!store.resolve(auth, index, Instant.parse(\"2026-10-11T00:00:00Z\")).isEmpty()) {\n            throw new AssertionError(\"old index must not revive revoked memory\");\n        }\n        System.out.println(\"Old index after revoke: empty\");\n    }\n}\n"
+        }
+      ]
+    }
+  ]
+}

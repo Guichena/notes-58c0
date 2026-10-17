@@ -1,0 +1,120 @@
+GET /
+
+PUT /interview_docs_v1
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s",
+    "index.translog.durability": "request",
+    "analysis": {
+      "filter": {
+        "tech_synonyms": {
+          "type": "synonym_graph",
+          "synonyms": ["es, elasticsearch", "db, database"]
+        }
+      },
+      "analyzer": {
+        "cjk_mixed": {
+          "type": "custom",
+          "char_filter": ["html_strip"],
+          "tokenizer": "standard",
+          "filter": ["cjk_width", "lowercase", "cjk_bigram"]
+        },
+        "en_index": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase"]
+        },
+        "en_search": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "tech_synonyms"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "_source": {"enabled": true},
+    "properties": {
+      "tenant_id": {"type": "keyword"},
+      "doc_id": {"type": "keyword"},
+      "title": {
+        "type": "text",
+        "analyzer": "cjk_mixed",
+        "search_analyzer": "cjk_mixed",
+        "fields": {"raw": {"type": "keyword", "ignore_above": 256}}
+      },
+      "body": {"type": "text", "analyzer": "cjk_mixed", "store": true},
+      "english": {
+        "type": "text",
+        "analyzer": "en_index",
+        "search_analyzer": "en_search"
+      },
+      "code_id": {"type": "keyword"},
+      "tags": {"type": "keyword"},
+      "price_cents": {"type": "long", "coerce": false},
+      "created_at": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
+      "location": {"type": "geo_point"},
+      "version": {"type": "long", "coerce": false},
+      "deleted": {"type": "boolean"},
+      "authors_object": {
+        "type": "object",
+        "properties": {"name": {"type": "keyword"}, "role": {"type": "keyword"}}
+      },
+      "authors_nested": {
+        "type": "nested",
+        "properties": {"name": {"type": "keyword"}, "role": {"type": "keyword"}}
+      },
+      "metadata": {"type": "object", "enabled": false}
+    }
+  }
+}
+
+POST /interview_docs_v1/_analyze
+{"analyzer":"cjk_mixed","text":"<b>缓存一致性</b> ＥＳ RedisCache","explain":true}
+
+POST /interview_docs_v1/_analyze
+{"analyzer":"en_search","text":"ES database","explain":true}
+
+POST /interview_docs_v1/_analyze
+{"field":"title.raw","text":"RedisCache ES"}
+
+POST /interview_docs_v1/_analyze
+{"field":"code_id","text":"ERR_HTTP_409-v2"}
+
+PUT /interview_docs_v1/_doc/1?refresh=wait_for
+{
+  "tenant_id":"demo",
+  "doc_id":"1",
+  "title":"缓存一致性与 ES",
+  "body":"Elasticsearch 搜索使用索引。",
+  "english":"Elasticsearch database guide",
+  "code_id":"ERR_HTTP_409-v2",
+  "tags":["search","java"],
+  "price_cents":990,
+  "created_at":"2026-10-10T00:00:00Z",
+  "location":{"lat":31.23,"lon":121.47},
+  "version":1,
+  "deleted":false,
+  "authors_object":[{"name":"Alice","role":"writer"},{"name":"Bob","role":"editor"}],
+  "authors_nested":[{"name":"Alice","role":"writer"},{"name":"Bob","role":"editor"}],
+  "metadata":{"arbitrary_key":"kept only in source"}
+}
+
+GET /interview_docs_v1/_search
+{
+  "query":{"bool":{"must":[{"match":{"english":"es"}}],"filter":[{"term":{"tenant_id":"demo"}},{"term":{"deleted":false}}]}},
+  "sort":[{"price_cents":"asc"},{"doc_id":"asc"}],
+  "aggs":{"by_tag":{"terms":{"field":"tags"}}}
+}
+
+GET /interview_docs_v1/_search
+{"query":{"bool":{"filter":[{"term":{"authors_object.name":"Alice"}},{"term":{"authors_object.role":"editor"}}]}}}
+
+GET /interview_docs_v1/_search
+{"query":{"nested":{"path":"authors_nested","query":{"bool":{"filter":[{"term":{"authors_nested.name":"Alice"}},{"term":{"authors_nested.role":"editor"}}]}}}}}
+
+GET /interview_docs_v1/_search
+{"_source":false,"stored_fields":["body"],"docvalue_fields":["price_cents"],"query":{"ids":{"values":["1"]}}}

@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3551",
+  "entryId": "scenario-message-queue",
+  "expectedOriginalHash": "2b01c074aa3ba08b72efac4b13deb67344a8f9e10b1346827ce072f3b011a4de",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.26 没有现成MQ时从头实现有哪些方案，怎样写一个诚实的持久日志核心"
+    },
+    {
+      "type": "paragraph",
+      "text": "从零做MQ先确定可靠性范围，持久日志核心须校验记录边界、刷盘后确认并安全恢复，其他Broker职责逐层补齐。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：没有MQ可以怎样实现；怎样写持久日志核心；断电后如何区分尾写和损坏。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "比较进程队列、数据库任务表和持久日志Broker，Java示例只实现单进程日志核心，不含网络、消费游标、复制或共识。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按需要的保证逐级选择"
+    },
+    {
+      "type": "paragraph",
+      "text": "只需同进程异步且允许重启丢任务，可用有界阻塞队列+worker，明确满队列拒绝/背压；它没有持久受理或跨服务订阅。需要可靠低中等量任务可用DB任务表，业务与待办同事务、索引小批领取、租约/epoch、重试和独立订阅进度，第5.11节已完整解释，不能把轮询删除一行当广播给所有下游。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要高吞吐追加、长保留、独立消费组与回放，再考虑自己做分区日志Broker。代价包括文件恢复、复制、控制面、客户端SDK、升级、观测和安全，不只是ConcurrentLinkedQueue加Socket。按业务强顺序单位分区，不同分区并行，同分区内序号是日志位置而非全局时间。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "存储和生产确认"
+    },
+    {
+      "type": "paragraph",
+      "text": "每个分区将长度、版本、序号、稳定eventId、payload及校验写到segment/WAL，稀疏offset索引支持定位；写满滚段，旧段按保留与订阅契约回收，索引可从日志重建。批写和顺序IO摊低开销，group commit改善吞吐但改变等待窗口。长度在分配缓冲前校验，CRC检测意外损坏而非恶意篡改。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ACK必须定义为内存接受、本地force完成还是已安全复制。单机刷盘不抵御盘毁，多副本需安全选主、epoch、提交水位与恢复规则；仅复制TCP发出去不等于对端持久。生产确认丢失时同eventId重发，去重账应与日志的可恢复状态一起存在；不要先在内存记seen再写文件。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "消费、重试与保留是另一半Broker"
+    },
+    {
+      "type": "paragraph",
+      "text": "工作队列可用持久消息状态+visibility lease，过期重投；日志订阅则每个group独立位置，业务处理后才提交安全连续前缀，异步完成不能跳过洞。owner切换用generation/epoch防旧提交，业务端仍需inbox幂等。ACK丢失导致重投是正常情况。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重试有次数/期限/退避、死信保留原因和恢复责任；严格业务key顺序下前序失败不能任意放行后序。保留策略考虑离线消费者、最老必要offset与容量，不承诺永远等失联group；超过保留窗口明确缺口/重建。消息TTL、队列长度和回放都属于契约，不能静默删后仍显示已完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "网络、集群和运维必须补齐"
+    },
+    {
+      "type": "paragraph",
+      "text": "协议需分帧、请求ID、版本、最大长度、超时、错误类别和背压；认证、topic/租户ACL、TLS、连接与速率配额保障隔离。控制面存topic/partition、成员/leader、策略与版本；数据面负责追加、复制、拉取与确认，二者分开。副本跨故障域、安全成员变更、备份恢复和升级兼容都要演练。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MQ积压仍按第5.15节测λ、μ和B/(μ−λ)，扩消费者受分区/顺序/下游限制。设计先写出故障模型和SLO，再由测试证明局部保证，不能把成熟MQ几行特征表当已完成产品。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java日志核心的准确契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "SegmentJournal在同一类加载器内先串行检查真实路径及文件系统fileKey，再打开唯一通道并获取FileChannel锁；在支持稳定fileKey的本地文件系统和协作调用方假设下，通过真实路径与fileKey登记拒绝相同文件的重复打开。只用tryLock再关闭失败通道不够：某些系统关闭同文件任一通道会释放本JVM的全部原生文件锁。实例synchronized串行追加；frame采用12字节头：4字节长度、4字节长度头CRC、4字节主体CRC；主体包含seq、UTF-8事件ID和payload。恢复必须先核对长度头CRC和范围，再按该长度读取主体并校验。同ID相同payload返回原seq，不同payload拒绝；force(true)返回后才更新内存索引并返回，IO失败后poisoned，必须重开扫描。"
+    },
+    {
+      "type": "paragraph",
+      "text": "日志恢复先校验，再决定能不能截尾。依次检查长度头、完整主体和连续序号，重建索引；在约定的追加撕裂模型下，可以截去不完整尾记录，但完整头或主体校验错误，应拒绝打开且不改文件。"
+    },
+    {
+      "type": "paragraph",
+      "text": "长度字段若不单独校验，损坏后的偏大长度可能把完整已确认记录误当撕裂尾部，这要用回归测试防住。截尾正确性仍依赖错误模型：未完成尾写和已有数据被截断，仅靠字节无法区分；已确认数据真丢了，需要副本或备份检测，示例不声称解决盘毁。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有权假设必须明确：使用支持稳定fileKey和FileLock的普通本地文件；缺少fileKey则拒绝。协作方共用本类的单一类加载器，持有期间不另开/关闭同文件通道，不替换、删除或重绑路径；外部不遵守协议的程序仍能绕过advisory lock。多类加载器、网络文件系统及外部命名空间竞争不在保证内。构造恢复失败先关通道再清登记；正常close先完全释放资源再注销，重复close不能删掉新owner；清理出现IO错误则保留登记并拒绝自动重开。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "测试与未实现范围"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试覆盖并发同ID去重、不同ID顺序、输入输出副本保护、payload冲突、关闭重开、第二frame各截断位置、完整记录CRC损坏拒绝以及长度头位翻转。CRC用于检测意外损坏，不能防恶意同时改内容与校验。FileChannel.force实际调用仍不证明断电与硬件缓存均满足所需耐久合同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "示例最多10000不同ID、单record主体1MiB，达到边界明确拒绝；保存所有payload/ID索引使内存O(日志总字节)，恢复O(文件字节)，追加写O(本条字节)加同步IO/锁等待。没有滚段、稀疏索引、消费游标、过期裁剪、网络、复制/共识，不能当生产MQ或吞吐基准。扩展这些能力需分别写恢复协议与故障测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java代码：SegmentJournal.java"
+    },
+    {
+      "type": "paragraph",
+      "text": "本实现是12字节头格式，与8字节头格式不兼容。它没有magic或显式版本字段，也没有旧格式自动识别和迁移；只允许打开按本格式建立的文件，升级必须在受控离线流程中读取旧格式并生成经校验的新文件。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "008/SegmentJournal.java",
+      "value": "import java.io.*;\nimport java.nio.*;\nimport java.nio.channels.*;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.*;\nimport java.nio.file.attribute.BasicFileAttributes;\nimport java.util.*;\nimport java.util.concurrent.*;\nimport java.util.zip.CRC32C;\n\n/** 12-byte frame header: body length, length CRC32C and body CRC32C; incompatible with 8-byte headers.\n * Bounded cooperating-owner journal on a local FS with stable file keys and FileLock support.\n * One class-loader owns all in-JVM access; no unrelated opens or namespace replacement while owned.\n * Advisory locks are not protection against non-cooperating programs, disk loss or network-FS quirks.\n */\npublic final class SegmentJournal implements AutoCloseable {\n    private static final int MAX_BODY = 1_048_576, MAX_RECORDS = 10_000;\n    private record Entry(long sequence, byte[] payload) { }\n    private record Identity(FileSystem fs, Object key) { }\n    private record Ownership(Path path, Identity identity) { }\n    private record Opened(FileChannel file, FileLock lock, Ownership ownership) { }\n    // Reserve before opening another channel: on POSIX, closing that channel can drop the owner's lock.\n    private static final Map<Path, Ownership> PATH_OWNERS = new HashMap<>();\n    private static final Map<Identity, Ownership> FILE_OWNERS = new HashMap<>();\n    private final FileChannel file;\n    private final FileLock lock;\n    private final Ownership ownership;\n    private final Map<String, Entry> entries = new LinkedHashMap<>();\n    private boolean poisoned, closed;\n    private static Identity identity(Path path) throws IOException {\n        BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);\n        if (!a.isRegularFile() || a.fileKey() == null) throw new IOException(\"regular file with stable fileKey required\");\n        return new Identity(path.getFileSystem(), a.fileKey());\n    }\n    private static synchronized Opened openOwned(Path requested) throws IOException {\n        Path absolute = requested.toAbsolutePath();\n        // Resolve existing symlinks, including parent symlinks; refuse dangling symlinks.\n        Path path = Files.exists(absolute, LinkOption.NOFOLLOW_LINKS) ? absolute.toRealPath()\n                : absolute.getParent().toRealPath().resolve(absolute.getFileName());\n        Identity before = Files.exists(path, LinkOption.NOFOLLOW_LINKS) ? identity(path) : null;\n        if (PATH_OWNERS.containsKey(path) || (before != null && FILE_OWNERS.containsKey(before)))\n            throw new IOException(\"journal already owned in this JVM\");\n        FileChannel channel = null;\n        FileLock acquired = null;\n        try {\n            channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.READ,\n                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);\n            Identity actual = identity(path);\n            if (before != null && !before.equals(actual)) throw new IOException(\"file identity changed during open\");\n            if (FILE_OWNERS.containsKey(actual)) throw new IOException(\"file alias changed during open\");\n            acquired = channel.tryLock();\n            if (acquired == null) throw new IOException(\"journal already owned by another process\");\n            Ownership owner = new Ownership(path, actual);\n            PATH_OWNERS.put(path, owner); FILE_OWNERS.put(actual, owner);\n            return new Opened(channel, acquired, owner);\n        } catch (IOException | RuntimeException | Error e) {\n            if (acquired != null) try { acquired.release(); } catch (IOException cleanup) { e.addSuppressed(cleanup); }\n            if (channel != null) try { channel.close(); } catch (IOException cleanup) { e.addSuppressed(cleanup); }\n            throw e;\n        }\n    }\n    private static synchronized void forget(Ownership owner) {\n        // Only the exact token may remove a reservation; an old close cannot unregister a later owner.\n        if (PATH_OWNERS.get(owner.path()) == owner) PATH_OWNERS.remove(owner.path());\n        if (FILE_OWNERS.get(owner.identity()) == owner) FILE_OWNERS.remove(owner.identity());\n    }\n    public SegmentJournal(Path path) throws IOException {\n        Opened opened = openOwned(path);\n        file = opened.file(); lock = opened.lock(); ownership = opened.ownership();\n        try { recover(); }\n        catch (IOException | RuntimeException | Error e) {\n            try { close(); } catch (IOException cleanup) { e.addSuppressed(cleanup); }\n            throw e;\n        }\n    }\n    private static int crc(byte[] body) { CRC32C c = new CRC32C(); c.update(body, 0, body.length); return (int)c.getValue(); }\n    private void readFully(ByteBuffer b) throws IOException { while (b.hasRemaining()) if (file.read(b) < 0) throw new EOFException(); }\n    private void recover() throws IOException {\n        long at = 0, size = file.size();\n        while (at < size) {\n            if (size - at < 12) { file.truncate(at); file.force(true); break; }\n            file.position(at); ByteBuffer h = ByteBuffer.allocate(12); readFully(h); h.flip();\n            int length = h.getInt(), headerCrc = h.getInt(), expectedCrc = h.getInt();\n            if (crc(ByteBuffer.allocate(4).putInt(length).array()) != headerCrc)\n                throw new IOException(\"header checksum mismatch; do not truncate acknowledged data\");\n            if (length < 12 || length > MAX_BODY) throw new IOException(\"invalid record length\");\n            if (size - at - 12 < length) { file.truncate(at); file.force(true); break; }\n            byte[] raw = new byte[length]; readFully(ByteBuffer.wrap(raw));\n            if (crc(raw) != expectedCrc) throw new IOException(\"checksum mismatch; do not discard confirmed data\");\n            ByteBuffer body = ByteBuffer.wrap(raw); long sequence = body.getLong(); int keyLength = body.getInt();\n            if (keyLength < 1 || keyLength > 1024 || keyLength > body.remaining()) throw new IOException(\"invalid key length\");\n            byte[] key = new byte[keyLength]; body.get(key); String id = new String(key, StandardCharsets.UTF_8);\n            if (id.isBlank() || !Arrays.equals(key, id.getBytes(StandardCharsets.UTF_8))) throw new IOException(\"invalid UTF8 key\");\n            byte[] payload = new byte[body.remaining()]; body.get(payload);\n            if (sequence != entries.size() || entries.containsKey(id) || entries.size() >= MAX_RECORDS) throw new IOException(\"invalid sequence/duplicate/capacity\");\n            entries.put(id, new Entry(sequence, payload)); at += 12L + length;\n        }\n        file.position(file.size());\n    }\n    public synchronized long append(String id, byte[] input) throws IOException {\n        if (poisoned || !file.isOpen()) throw new IOException(\"reopen journal after failure/close\");\n        if (id == null || id.isBlank() || input == null) throw new IllegalArgumentException();\n        byte[] key = id.getBytes(StandardCharsets.UTF_8), payload = input.clone();\n        if (!id.equals(new String(key, StandardCharsets.UTF_8)) || key.length > 1024 || payload.length > MAX_BODY - 12 - key.length) throw new IllegalArgumentException(\"record too large\");\n        Entry old = entries.get(id);\n        if (old != null) {\n            if (!Arrays.equals(old.payload(), payload)) throw new IllegalArgumentException(\"same event different payload\");\n            return old.sequence();\n        }\n        if (entries.size() >= MAX_RECORDS) throw new IOException(\"bounded journal full; admission rejected\");\n        long sequence = entries.size(); ByteBuffer body = ByteBuffer.allocate(12 + key.length + payload.length);\n        body.putLong(sequence).putInt(key.length).put(key).put(payload); byte[] raw = body.array();\n        ByteBuffer frame = ByteBuffer.allocate(12 + raw.length).putInt(raw.length)\n                .putInt(crc(ByteBuffer.allocate(4).putInt(raw.length).array())).putInt(crc(raw)).put(raw); frame.flip();\n        try {\n            while (frame.hasRemaining()) file.write(frame);\n            file.force(true); // ACK may be issued only after this returns; hardware/FS durability assumptions remain.\n            entries.put(id, new Entry(sequence, payload)); return sequence;\n        } catch (IOException e) { poisoned = true; throw e; }\n    }\n    public synchronized int size() { return entries.size(); }\n    public synchronized byte[] get(String id) { Entry e = entries.get(id); return e == null ? null : e.payload().clone(); }\n    @Override public synchronized void close() throws IOException {\n        if (closed) return;\n        closed = true;\n        IOException failure = null;\n        try { if (lock.isValid()) lock.release(); } catch (IOException e) { failure = e; }\n        try { file.close(); } catch (IOException e) { if (failure == null) failure = e; else failure.addSuppressed(e); }\n        // Close fully before unregistering: a new owner's channel must never precede this channel's close.\n        // On a cleanup error retain the reservation (fail closed); no automatic reopen guarantee then.\n        if (failure != null) throw failure;\n        forget(ownership);\n    }\n    private static void check(boolean b) { if (!b) throw new AssertionError(); }\n    private static byte[] bytes(String s) { return s.getBytes(StandardCharsets.UTF_8); }\n    public static void main(String[] args) throws Exception {\n        Path dir = Path.of(args[0]); Files.createDirectories(dir); Path main = dir.resolve(\"main.log\");\n        if (Files.exists(main)) throw new IllegalArgumentException(\"fresh test directory required\");\n        try (SegmentJournal j = new SegmentJournal(main)) {\n            byte[] v = bytes(\"payload\"); check(j.append(\"tenant/event\", v) == 0); v[0] = 0;\n            check(Arrays.equals(j.get(\"tenant/event\"), bytes(\"payload\")));\n            try { j.append(\"tenant/event\", bytes(\"changed\")); throw new AssertionError(); } catch (IllegalArgumentException expected) { }\n            try (var pool = Executors.newFixedThreadPool(8)) {\n                List<Future<Long>> fs = new ArrayList<>();\n                for (int i = 0; i < 30; i++) fs.add(pool.submit(() -> j.append(\"same\", bytes(\"same\"))));\n                for (Future<Long> f : fs) check(f.get() == 1);\n                fs.clear(); for (int i = 0; i < 30; i++) { final int n = i; fs.add(pool.submit(() -> j.append(\"different/\"+n, bytes(\"v\"+n)))); }\n                Set<Long> ids = new HashSet<>(); for (Future<Long> f : fs) ids.add(f.get()); check(ids.size() == 30 && j.size() == 32);\n            }\n            boolean rejected = false;\n            try (SegmentJournal other = new SegmentJournal(main)) { other.size(); } catch (OverlappingFileLockException | IOException expected) { rejected = true; }\n            check(rejected);\n        }\n        try (SegmentJournal j = new SegmentJournal(main)) {\n            check(j.size() == 32 && j.append(\"same\", bytes(\"same\")) == 1);\n            byte[] copied = j.get(\"same\"); copied[0] = 0; check(Arrays.equals(j.get(\"same\"), bytes(\"same\")));\n            for (String badId : List.of(\" \", \"x\".repeat(1025), String.valueOf((char)0xD800))) {\n                try { j.append(badId, new byte[0]); throw new AssertionError(); } catch (IllegalArgumentException expected) { }\n            }\n            try { j.append(\"too-big\", new byte[MAX_BODY]); throw new AssertionError(); } catch (IllegalArgumentException expected) { }\n            check(j.append(\"租户/空内容\", new byte[0]) == 32);\n        }\n        try (SegmentJournal j = new SegmentJournal(main)) { check(j.size() == 33 && j.get(\"租户/空内容\").length == 0); }\n        Path sample = dir.resolve(\"sample.log\"); long prefix;\n        try (SegmentJournal j = new SegmentJournal(sample)) { j.append(\"a\", bytes(\"one\")); prefix = Files.size(sample); j.append(\"b\", bytes(\"two\")); }\n        byte[] complete = Files.readAllBytes(sample);\n        for (int cut = (int)prefix; cut < complete.length; cut++) {\n            Path p = dir.resolve(\"cut-\"+cut+\".log\"); Files.write(p, Arrays.copyOf(complete, cut));\n            try (SegmentJournal j = new SegmentJournal(p)) { check(j.size() == 1 && Files.size(p) == prefix); check(j.append(\"b\", bytes(\"two\")) == 1); }\n        }\n        Path bad = dir.resolve(\"corrupt.log\"); byte[] corrupt = complete.clone(); corrupt[corrupt.length - 1] ^= 1; Files.write(bad, corrupt);\n        boolean rejected = false; try (SegmentJournal j = new SegmentJournal(bad)) { j.size(); } catch (IOException expected) { rejected = expected.getMessage().contains(\"checksum\"); }\n        check(rejected && Files.size(bad) == complete.length);\n        System.out.println(\"PASS SegmentJournal: force-before-return, stable replay after reopen, 30 duplicate racers once, 30 unique writers, payload conflict/copy, exclusive lock, all partial-tail cuts recovered, complete-record CRC corruption rejected. No power-loss/replication/network test.\");\n    }\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ]
+}

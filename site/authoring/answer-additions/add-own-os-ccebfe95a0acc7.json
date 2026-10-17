@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "id": "add-own-os-ccebfe95a0acc7",
+  "entryId": "own-tools-skill",
+  "title": "OS/Linux：完整机制、实验与工程边界",
+  "expectedOriginalHash": "2991893ca53f4516e462298aea9e95022e8691b1cb18668b7ab9582a4783ed61",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本补充来自操作系统与 Linux 手册，完整保留各题的运行时、版本、输入、失败与生命周期条件。以下是教学机制与示例，不是个人项目经历或实测性能承诺；跨语言代码按其原生契约理解。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Agent session临时文件该放主服务还是skill进程 怎样决定删除时机"
+    },
+    {
+      "type": "paragraph",
+      "text": "主服务负责session与产物元数据的权威生命周期，skill执行器负责其执行工作目录。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "相关追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "10.session里的临时文件存主服务还是skill进程服务，要不要删，删什么时候删"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "按生命周期和访问者选存储位置"
+    },
+    {
+      "type": "paragraph",
+      "text": "主服务负责session与产物元数据的权威生命周期，skill执行器负责其执行工作目录。短命、只有一次skill用的中间文件宜放执行器独占目录；需要跨skill/跨重试复用的输入输出可放受控共享存储或对象存储，再传不可变产物ID/版本而非随意宿主路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "“存主服务”不应解释成把所有大文件读进主进程堆。主服务与skill分布在不同机器时，本地路径不是远程可用句柄；经授权的下载/上传或受控卷要有大小、校验和、租户边界、到期与失败协议。热替换执行器不能让仍被旧任务使用的文件突然消失。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先发布完成产物 再回收临时空间"
+    },
+    {
+      "type": "paragraph",
+      "text": "为session、执行attempt和代次分别分配唯一目录/产物标识，状态可为WRITING、READY、IN_USE、RETIRED、DELETED。写入先落临时名字，成功关闭并核验长度/校验和后，通过同文件系统原子rename或存储端条件提交发布READY；不让消费者读半成品。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消或执行结束后，先停止新领取并等待该attempt的使用者排空/确认终止，再把目录移入待回收状态。要留给用户下载或下游消费的正式结果按单独保留政策存储；失败调试产物也应有明确、最小必要的保留期，不能一概结束即删或一概永不删。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "TTL只是兜底 不是活跃引用的证明"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 到了，不代表文件已经没人用。慢任务可能仍在读写，RPC 断线也不说明远端进程停止。回收前要用状态机、租约或心跳、代次核对当前 owner，reaper 只处理自己负责且确认为非活跃的对象。"
+    },
+    {
+      "type": "paragraph",
+      "text": "旧 attempt 迟到的清理请求，不能删掉同 session 的新 attempt。分布式场景只靠内存引用计数，也跨不过崩溃，需要持久状态和重启对账。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Linux unlink打开文件只去掉该目录项；所有硬链接名已移除、打开FD/映射等仍存引用也释放后，相关存储才可回收，不代表仍在运行的任务被停止；换平台删除语义也可能不同。不能通过删除路径解决僵尸进程、泄漏的FD或外部对象存储产物。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "避免路径和权限成为攻击入口"
+    },
+    {
+      "type": "paragraph",
+      "text": "任务只能操作自己分配的根目录和产物ID。仅做字符串前缀检查不足以抵抗../、符号链接替换与TOCTOU；Linux可在受控dirfd下用openat2的解析限制等方式约束路径，清理器不跟随不可信链接，不接受任意绝对路径。"
+    },
+    {
+      "type": "paragraph",
+      "text": "配额分别限制总字节、文件数/inode、单产物和输出日志，秘密不写可复用镜像或长期日志。跨租户不能靠目录名约定隔离；执行器权限、挂载范围及共享对象授权都要落实。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "怎样验收这套方案"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试正常成功、写一半崩溃、RPC超时后旧进程仍活、取消与完成竞争、热更新、重复清理、磁盘满、同名不同代次及重启后孤儿目录扫描。必须验证不删活文件、不返回半成品、配额有效、重复清理安全和最终能回收。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java端可用try-with-resources保证流关闭，用受约束的Path/文件API表达局部操作；远程生命周期和崩溃恢复仍需上述协议，finally并不能覆盖kill -9和宿主掉电。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-study-guide",
+      "label": "全册路线与教学边界"
+    }
+  ],
+  "questionId": "q-own-tools-hot-reload",
+  "targetOrigin": "authored"
+}

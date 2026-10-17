@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-network-scenario-rpc-framework",
+  "entryId": "scenario-rpc-framework",
+  "expectedOriginalHash": "ccad810e861943865c52eefc57faac6ec23813a5e5cc3bbbce8d5b84762f580c",
+  "title": "网络手册：协议机制、适用条件与设计边界",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "应用重连的指数退避与内核 RTO 分开回答"
+    },
+    {
+      "type": "paragraph",
+      "text": "应用第 k 次连续失败可用 min(cap, base × 2^k) 作为等待上限，k 从 0 开始。base=0.5 秒、cap=30 秒时，未随机化序列为 0.5、1、2、4、8、16、30、30 秒。很多客户端同一时刻失败，即使使用纯指数也可能同步重试，所以还要 jitter，例如在 0 到当前上限内均匀随机；只在半上限到上限间随机则是另一种分布。"
+    },
+    {
+      "type": "paragraph",
+      "text": "设总 deadline、总尝试预算、连续失败限制，遵守服务端适用的 Retry-After。参数错误、认证失败不按临时网络错误无限重试；等待期间必须允许取消。连接刚成功就断开时，不能每次成功都立即清零而导致持续高频，可用稳定时间门槛或跨连接限速。恢复连接后还要恢复订阅或查询业务结果，不能盲重放可能已成功的写入。心跳负责何时判失活，退避负责何时再尝试；它们又与 TCP RTO、CSMA/CD 的退避分别属于不同层次。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A16　RPC、序列化与有界 Java 调用链"
+    },
+    {
+      "type": "paragraph",
+      "text": "RPC 是把远程调用组织成接口的抽象，HTTP 是可承载它的协议；工程质量取决于类型契约、资源预算和失败语义，而不是调用看起来多像本地方法。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见换问：RPC 和 HTTP 有什么区别？为什么不用直接 Socket？Spring 和 Socket 怎么选？五个节点要建几个连接？一个节点很慢但没宕机怎么办？Java 对象如何传到 Python？接口突然变慢如何自适应限流？十万条任务怎样批量调用？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一次远程调用比方法调用多了什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "典型链路是 stub/代理 → 参数校验与序列化 → 服务发现与负载均衡 → 连接获取 → TLS 与认证 → 请求发送 → 服务端排队和执行 → 响应解码。各阶段都可能占用期限。gRPC 常通过 HTTP/2 承载，RPC 并不天然排斥 HTTP；普通 JSON/HTTP 也可以表达 RPC 风格操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "远程超时表达的是“我没按时拿到结果”，不是“对方一定没执行”。对方可能根本没收到，也可能仍在执行，甚至已经提交，只是响应丢失；这和本地异常能看到当前调用栈的情况不同。"
+    },
+    {
+      "type": "paragraph",
+      "text": "所以订单、扣款等远程操作要有业务幂等、状态查询和不确定结果处理。TCP 可靠性只解决传输的一部分，不能替你确认事务结果。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spring 是框架体系，Socket 是网络端点抽象，二者不是同层互斥项。Spring MVC 处理 HTTP，Spring 也支持 WebSocket，底层仍依赖网络端点。若实际是在比较请求响应、SSE、WebSocket 和自定义 TCP，应先把问题说准确。自定义 Socket 让你承担分帧、版本、TLS、认证、背压与重连等责任；只有明确需要这种控制时才值得，分帧实现见 T10（https://my.feishu.cn/wiki/IBIsw3LiEifgaOkFnrCcquA1nQH#doxcnscZbuw68LczSu2kC4g7Msm）。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "五个节点与连接池怎样估算"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接策略可以是每客户端覆盖全部节点、选择子集或按需懒建。若有 M 个客户端实例、N 个目标节点，每对目标预留 K 条连接，粗略数量可能达到 M×N×K，还要考虑灰度、重连和多地址。一个逻辑 channel 不保证始终对应一条物理连接，HTTP/2 单连接多流也不意味着并发无限，流限制、连接窗口和服务端队列都可能先到上限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "五个节点之一很慢但健康检查仍通过时，纯轮询会持续把约一部分请求送进尾延迟。可以结合在途请求、延迟、错误率和足够样本做异常摘除或降权，给恢复节点缓慢探测回流。不能只依据一次慢请求永久踢出，也不能把节点摘掉后忽略剩余四个节点的承载能力。"
+    },
+    {
+      "type": "paragraph",
+      "text": "对少数幂等读请求可考虑带预算的延迟对冲，但第二次请求会加负载，第一份“迟到的成功”可能仍消耗资源。写操作不能未经设计就做对冲。取消落败调用也不保证后端已经停止，必须把重复执行风险和资源成本算进去。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "期限、重试和连接复用如何协同"
+    },
+    {
+      "type": "paragraph",
+      "text": "为整体操作建立截止时间，再把剩余预算传给每次尝试和下游。连接超时、读取空闲超时、整体请求超时不是同一计时器。重试需要同时满足可重试故障、幂等或幂等键、剩余期限与重试预算，采用指数退避和抖动，并尊重适用的 Retry-After。"
+    },
+    {
+      "type": "paragraph",
+      "text": "指定一个层次拥有主要重试策略，防止浏览器、网关、服务 A、SDK 各重试三次形成乘法放大。连接池等待也是延迟的一部分，应有限队列和等待期限；连接复用可以节约握手，不会让下游数据库或 CPU 变成无限容量。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java HttpClient 适合复用配置好的客户端对象，避免每个请求都新建连接管理资源。响应使用 InputStream 或流式 BodySubscriber 时，消费、关闭和取消都要有所有者；不能只从方法返回就宣称网络资源释放。调用超时后尚未真正停止的上游请求，可能仍占并发额度。伴读 HttpStreamClientDemo.java 通过仅回环的 HTTP 服务演示类型化流式解析、大小限制、状态分类与关闭边界。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "自适应限流应限制什么"
+    },
+    {
+      "type": "paragraph",
+      "text": "至少区分并发上限 C、到达速率 R、排队容量 B。稳定条件下平均在途量约等于吞吐乘平均停留时间，但尾延迟与突发会使简单均值不足。接口变慢时即使请求率不变，在途量也会增加，因此只做每秒计数可能挡不住资源耗尽。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个教学型 AIMD 控制器在健康且确实饱和的观察窗口缓慢加一，发现持续过载时乘性降低；设上下界、最小样本和冷却期，避免同一过载窗口每个失败都减半。参数错误、权限错误不是容量信号；429、超时、队列等待和服务延迟应根据契约分类。多实例各自自适应不能保证供应商的全局硬配额，仍需全局预算或协调。"
+    },
+    {
+      "type": "paragraph",
+      "text": "permit 要恰好释放一次，并反映实际占用的资源生命周期。如果本地超时却上游仍在工作，立刻把 permit 当作全部资源已回收，可能导致并发失控。AdaptiveLimit.java 演示受控获取、一次释放和反馈；生产还需要真实指标、稳定性验证与故障回退。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "十万条任务不等于十万个 Future"
+    },
+    {
+      "type": "paragraph",
+      "text": "十万条任务要靠有界领取逐步推进，而不是一次创建十万个 Future。先持久化任务，分页或流式领取，用租约、状态和幂等业务键记录处理过程，再由固定数量 worker 配合有界队列消费。"
+    },
+    {
+      "type": "paragraph",
+      "text": "失败分类重试，毒性任务进入人工或隔离处理，重启后回收过期租约。不能把十万条一次塞进线程池或内存 CompletableFuture 列表；队列暂时为空，也不能证明整个批次已经完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "批次进度由成功、永久失败、待处理、执行中等权威计数或可核对状态组成。调用外部接口的并发、每秒配额、成本预算和取消策略单独设限。低优先级批量任务要与在线流量隔离，避免重试风暴拖垮交互请求。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "类型化上游适配比“换个 URL”可靠"
+    },
+    {
+      "type": "paragraph",
+      "text": "不同模型或服务供应商的鉴权、版本头、消息结构、工具调用 ID、终止事件和用量含义可能不同。定义内部的 Start、TextDelta、ToolArgumentsDelta、Usage、Completed、Failed 等类型，把供应商事件显式转换；工具参数未完整收齐并验证前不执行副作用，用量累计快照不能当逐次增量相加。"
+    },
+    {
+      "type": "paragraph",
+      "text": "协议适配器负责语法，业务层负责授权、预算和状态。未知事件可以按兼容策略忽略或记录，关键终态不能靠模糊字符串匹配。具体供应商版本和 Agent 编排独立维护，网络集成回答只承诺已定义且验证过的接口契约。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "多个 Agent 为什么可能不用网络互相调用"
+    },
+    {
+      "type": "paragraph",
+      "text": "Agent 是职责与状态边界，不必是独立服务器。同进程中的 Planner、Worker、Supervisor 可由调度器通过函数/协程、内存队列和显式状态对象交接任务，减少序列化与网络故障处理；它们调用远端模型或工具仍可能使用网络。跨进程可用受控管道等 IPC，跨机或需要独立语言、权限与扩缩容时再选择 HTTP/gRPC、MQ 或专用协议。不能从角色名字推断原项目实际拓扑。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Planner 输出带 taskId、依赖、输入版本和预算的任务，Worker 返回结构化结果与证据，Supervisor 按标准审核并给有限修订；关键操作仍需真实用户授权。消息区分 runId、taskId、attempt、目标、deadline 与结果引用，旧轮次结果不能覆盖新状态。共享可变状态需要单一拥有者或版本控制；短期会话和长期检索记忆各自隔离，向量库不是任务协调锁。题干没有提供调用代码，无法断言当时一定同进程或使用了某种队列。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "JDBC 连 MySQL：接口名字不是线上协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "JDBC 是 Java API。常见 Connector/J 连接把操作编码为经典 MySQL 客户端/服务器协议，经 TCP 传输并可协商 TLS，不是 HTTP 或 UDP；jdbc:mysql: 是驱动 URL 语法，不是线上报文前缀。Unix socket 等扩展要按驱动配置说明，MySQL X Protocol 也不能与经典协议混称。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP 连通后，服务器先发 Initial Handshake，携带能力、挑战数据和认证插件等信息；客户端的 HandshakeResponse 才包含用户名、能力以及插件定义的认证响应。用户名不在 TCP SYN 中，密码也不是统一以明文发送。启用 TLS 时，客户端先发 SSLRequest，在同一 TCP 连接上完成 TLS 握手，再发送 HandshakeResponse；因此敏感认证字段在 TLS 建立后发送。插件选择不同，还可能发生 AuthSwitchRequest 与后续响应。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回答“认证交互几次”要先约定计数单位。忽略 TCP/TLS 握手、不切换插件，且认证插件能直接成功结束时，可以画出服务器 Initial Handshake → 客户端 HandshakeResponse → 服务器 OK 的最简三条 MySQL 协议消息。它不是“三个 TCP 包”或“三个 RTT”，消息可能被分段、合并或重传；驱动初始化会话及后续 SQL 也不在这三条之内。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以 caching_sha2_password 的常见非空密码分支为例，快速认证成功还会在 OK 前发送 AuthMoreData（成功标记 0x03），按上述单位通常是四条；需要完整认证时，服务器用 0x04 要求继续，客户端在已验证的 TLS 中发送密码材料，再收到 OK/ERR。非 TLS 的 RSA 分支还要看客户端是否已有可信公钥，临时索取公钥会增加交互且有身份验证风险，不能为减少配置而无条件接受网络返回的公钥。TLS 升级、插件切换、完整认证与失败分支都会改变消息数；应按实际插件、驱动版本与抓包分层解释，不能给所有连接固定次数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接串示例是 jdbc:mysql://db.example.test:3306/app?sslMode=VERIFY_IDENTITY：db.example.test 是主机，3306 是端口，app 是数据库，问号后是驱动连接属性。VERIFY_IDENTITY 的前提是正确配置可信证书并匹配主机名。PREFERRED 可能允许回退明文，REQUIRED 也不等于完整主机身份校验，按实际驱动版本选择策略。用户名和密码可通过 DataSource、Properties 等受保护配置提供，避免把秘密拼入日志可见 URL。连接池减少重复认证，但归还连接时仍须处理事务与会话状态，建连成功不代表 SQL 授权或事务提交一定成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "名称解析、连接池等待和 TCP 建连的分阶段定位，继续看 T12 完整连接链路（https://my.feishu.cn/wiki/IBIsw3LiEifgaOkFnrCcquA1nQH#doxcnXkQN5IVmzPI2hOUzSn3oyh）；本节负责连接串与 MySQL 应用认证，二者不要重复计算。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "协程与 HTTP/2 多路复用为什么可以同时存在"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP/2 组织连接上的协议流，协程组织程序的执行与等待。等待网络较多时，适当运行时可以挂起逻辑任务，让底层线程推进其他任务；这不增加 CPU 核数，也不会突破数据库连接池和远端容量。普通阻塞库是否会阻塞承载线程，要看运行时和调用方式。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Go goroutine 由 Go 运行时调度，C++20 协程机制本身不附带完整调度器，Java 21 虚拟线程又是具体的 Java 执行模型。不能把三者的实现细节互相套用。并发查询三个后端时，可以用顺序风格组织每个子任务，再统一总期限、异常和取消；共享状态仍需同步，有挂起点不代表没有竞态。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "长任务为什么可能选择 MQ"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果任务可以异步完成、需要削峰、重试和跨重启恢复，消息队列把提交与执行解耦。HTTP 返回已受理和任务 ID，worker 按有界并发处理，再通过查询或流式订阅报告结果。消息确认应与业务持久化边界协调，重复投递要求幂等；只有“发进 MQ”不意味着任务完成。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要立刻获得短小结果、端到端期限很紧或事务控制较直接时，HTTP/RPC 更容易表达。MQ 增加排队、运维、重复与顺序管理成本，不能让慢任务凭空变快。状态保存、取消消息和正在执行任务之间也要有一致的状态机，不能只删队列消息就假定工作已停止。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Java SDK 与原生 HTTP 客户端可以并存"
+    },
+    {
+      "type": "paragraph",
+      "text": "NoteWeave 的 chat/embedding 使用官方 SDK 客户端工厂，而 rerank 使用 Java HttpClient。这样的分工可以保留 SDK 的成熟协议适配，同时让尚未统一的供应商接口有明确适配层。面试时继续说明各自的超时、重试、错误映射、用量和资源关闭策略，不把“项目用了 SDK”扩写为所有外部 HTTP 请求都走同一条实现。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-network-source-guide",
+      "label": "版本与本批未执行声明"
+    },
+    {
+      "entryId": "own-network-transport-code",
+      "label": "网络传输：完整 Java 与跨语言教学程序"
+    },
+    {
+      "entryId": "own-network-application-code",
+      "label": "网络应用：完整 Java、浏览器与安全教学程序"
+    }
+  ]
+}

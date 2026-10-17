@@ -1,0 +1,148 @@
+
+    
+    <div class="qa-toolbar"><span class="lb">答案显示</span><div class="seg" id="qa-mode">
+      <button type="button" data-m="q" class="" title="只看题目，自测后再翻答案">只看题目</button>
+      <button type="button" data-m="lead" class="" title="先看答题提纲：本质一句 + 要点骨架">先答一句</button>
+      <button type="button" data-m="full" class="on">全部展开</button></div>
+      <button type="button" class="btn ghost" data-act="qa-random">抽一题</button>
+      <span class="grow"></span><span class="stat" id="qa-stat"></span></div>
+    <div class="qa-list" data-mode="full"><div class="qa s0" id="q-1" data-key="dbqa-4:0">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">1</span><div class="qa-q">订单支付和关单并发冲突时，乐观锁落到数据库层的主线是什么？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>乐观锁落到库层的本质，是把当前状态写进 where，用条件更新挡住并发状态迁移。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>状态写入 where / 支付成功更新 / 超时关单更新 / 行数判断谓词是否满足，0行再授权回查</p></div><div class="qa-rest"><p class="md-p">支付和关单并发时，我用状态条件更新做主线：把当前订单状态写进 <code class="tok-inline">where</code>，让状态迁移自己带上并发保护。</p>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>支付成功</b>：只允许从 <code class="tok-inline">UNPAID</code> 迁到 <code class="tok-inline">PAID</code>。</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="file-label">query.sql</span></div><button class="copy-button md-copy" type="button">复制</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">update orders
+set status = 'PAID', pay_time = now()
+where order_id = ? and status = 'UNPAID';</pre></div></section>
+<div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>超时关单</b>：只允许从 <code class="tok-inline">UNPAID</code> 迁到 <code class="tok-inline">CLOSED</code>。</li></ol></div>
+<section class="code-card md-code-card"><div class="code-toolbar"><div class="toolbar-left"><span class="file-label">query.sql</span></div><button class="copy-button md-copy" type="button">复制</button></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">update orders
+set status = 'CLOSED', close_time = UTC_TIMESTAMP(6)
+where order_id = ? and status = 'UNPAID'
+  and expire_at &lt;= UTC_TIMESTAMP(6);</pre></div></section>
+<p class="md-p">谁先更新成功，谁完成迁移；另一个操作的 <code class="tok-inline">where</code> 失效，影响行数为 0。0行只说明谓词未满足，可能记录缺失、已终态、未到期或冲突，不能统一当并发失败或重复成功。<i>适用场景</i>：订单支付、超时关单这类明确的状态迁移。</p><div class="qa-end"><p class="md-p sx-pit"><span class="sx-tag pit">易错</span>这已经是一种轻量乐观锁，不一定非要额外加 version 字段。</p></div><p class="md-p">这是单条状态CAS，订单创建、预留库存、支付事实、退款待办和outbox还需同一事务/外部协议。真实扣款晚到已关订单不能抹掉支付事实，应记录并退款/核实，不复活已释放库存。完整条件化推演见 <a href="#/e/hwqa-2">交易链路与一致性手撕</a>。UTC_TIMESTAMP是语句起始时刻，严格截止要明确锁后判定点。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-2" data-key="dbqa-4:1">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">2</span><div class="qa-q">什么时候用状态条件更新就够了，什么时候才需要额外 version 字段？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>状态条件更新看还能不能迁；version 看记录是否被并发改过，两者适用的业务不同。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>状态机用条件更新 / 通用更新用 version / 关心点不同</p></div><div class="qa-rest"><div class="sx-tbl-wrap"><table class="sx-tbl"><thead><tr><th>方式</th><th>真正关心</th><th>适用</th></tr></thead><tbody><tr><td>状态条件更新</td><td>当前是不是还处在允许迁移的状态，不是记录被改了几次</td><td>明确状态机，如 UNPAID -&gt; PAID、UNPAID -&gt; CLOSED、CREATED -&gt; CANCELED</td></tr><tr><td>version 字段</td><td>并发下记录有没有被别人改过</td><td>多个字段可能被不同请求修改，状态不能完整代表并发语义</td></tr></tbody></table></div>
+<p class="md-p">状态条件更新更适合状态机型业务，版本号更适合通用数据并发控制。</p><h2 class="md-h md-h2" id="add-own-mysql-dbqa-4-1">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">MVCC 版本与应用 version 列有什么区别</h3><p class="md-p">应用 version 列常用于条件更新：读到 v 后要求写入时仍等于 v，并把它递增。它检测业务相关修改是否发生，不负责重建历史行，也不知道其他事务在视图建立时是否活动。</p><p class="md-p">隐藏 DB_TRX_ID 由引擎管理，不是可直接拿来当业务版本条件的普通列；事务 ID 不是提交时间。应用 CAS 在实际执行 UPDATE 时仍然需要数据库写锁、日志和事务，不能称为“完全无锁”。</p><p class="md-p">即使每行都有 version，两个事务各自更新不同的行仍可能破坏跨行不变量。相反，如果只要防止一个库存行减成负数，WHERE available&gt;=quantity 的原子扣减就能表达该约束，不必为口号增加版本。但同一个逻辑请求重试是否再次扣减，要另用请求身份与幂等协议判断。</p><h2 class="md-h md-h2">第24章 版本 CAS 热点行与并发状态机</h2><p class="md-p">版本 CAS 把“我读到的前提仍成立”与修改合成一次数据库条件更新；它防止过期覆盖，却不会自动提供业务幂等、跨行不变量或外部系统原子性。</p><h3 class="md-h md-h3">两个线程编辑同一文档</h3><p class="md-p">两个人都读到 id=42、version=7、body=旧。A 带版本 7 写入“甲”并提交，版本变为 8；B 仍带 7 写“乙”，影响 0 行。这个失败是在提醒 B：原先判断的前提已经变了。B 应重新读“甲”并提示冲突，或按明确的字段、操作语义合并，再作为新的逻辑操作提交。只把 expectedVersion 换成 8，原样重放“乙”，仍然会覆盖 A 的修改。</p><p class="md-p">再分别看失败发生在哪里。A 若回滚，就没有成功推进版本，B 之后可能成功；A 若只是丢了 COMMIT 应答，应沿原 request_id 查收据。文档删除后同 ID 重建还可能造成 ABA，应避免复用对象 ID，或让 generation 一起参与 CAS。引擎隐藏的 DB_TRX_ID、ReadView 都不能直接代替这个客户端业务版本。</p><p class="md-p">DocumentCas 把收据 INSERT、文档条件 UPDATE 和结果版本放在同一事务。重复请求要核验 tenant/doc/expected/body，同号不同内容报错。返回旧收据，只能证明那次提交所得版本，不能证明文档现在还停在那里；收据也要保留到允许重放窗口结束，否则清理后的重放可能再次生效。正文替换冲突不通过偷换版本自动重试；即使是数据库死锁重试，也保留原 expected，重新进行业务校验。</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">components/transactions/code/locking/DocumentCas.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">import java.sql.*;
+
+/** Body replacement never retries with a silently refreshed expected version. */
+public final class DocumentCas {
+    private final Db.Source source;
+    public DocumentCas(Db.Source source) { this.source=java.util.Objects.requireNonNull(source); }
+    public record Result(long committedVersion,boolean replayed) {}
+    public static final class Conflict extends SQLException {
+        private static final long serialVersionUID=1L;
+        public Conflict() { super(&quot;missing, inaccessible, deleted, or stale document&quot;); }
+    }
+    private static Result receipt(Connection c,long tenant,long id,long expected,String request,String body)
+            throws SQLException {
+        try (PreparedStatement p=Db.prepare(c,
+                &quot;SELECT doc_id,expected,body,result_version FROM doc_receipt WHERE tenant=? AND request_id=?&quot;)) {
+            p.setLong(1,tenant); p.setString(2,request);
+            try(ResultSet r=p.executeQuery()) {
+                if(!r.next()) return null;
+                if(r.getLong(1)!=id || r.getLong(2)!=expected || !body.equals(r.getString(3)))
+                    throw new IllegalArgumentException(&quot;request ID reused for different operation&quot;);
+                return new Result(r.getLong(4),true);
+            }
+        }
+    }
+    public Result save(long tenant,long id,long expected,String request,String body,boolean failBeforeCommit)
+            throws SQLException {
+        Db.key(request);
+        if(tenant&lt;=0 || id&lt;=0 || expected&lt;0 || expected==Long.MAX_VALUE || body==null || body.length()&gt;4000)
+            throw new IllegalArgumentException(&quot;invalid bounded input&quot;);
+        return Db.transaction(source,c-&gt;{
+            Result old=receipt(c,tenant,id,expected,request,body);
+            if(old!=null) return old;
+            try(PreparedStatement p=Db.prepare(c,
+                    &quot;INSERT INTO doc_receipt(tenant,request_id,doc_id,expected,body,result_version) VALUES(?,?,?,?,?,?)&quot;)) {
+                p.setLong(1,tenant);p.setString(2,request);p.setLong(3,id);
+                p.setLong(4,expected);p.setString(5,body);p.setLong(6,expected+1);
+                try { p.executeUpdate(); }
+                catch(SQLException e) {
+                    if(!Db.duplicate(e)) throw e;
+                    if (!Db.rollback(c, e)) throw e;
+                    Result replay=receipt(c,tenant,id,expected,request,body);
+                    if(replay==null) throw e;
+                    return replay;
+                }
+            }
+            try(PreparedStatement p=Db.prepare(c,
+                    &quot;UPDATE doc SET body=?,version=version+1 WHERE tenant=? AND id=? AND version=?&quot;)) {
+                p.setString(1,body);p.setLong(2,tenant);p.setLong(3,id);p.setLong(4,expected);
+                if(p.executeUpdate()!=1) throw new Conflict();
+            }
+            if(failBeforeCommit) throw new SQLException(&quot;injected before commit&quot;);
+            return new Result(expected+1,false);
+        });
+    }
+}
+</pre></div></div><p class="md-p">若“文档”实际指 Elasticsearch，应另说产品契约。本章对照 Elasticsearch 8.15 系列：保存读取时的 _seq_no 与 _primary_term，更新时传 if_seq_no 和 if_primary_term；它们不是任意业务 version，也不能把普通 _version 当同一种令牌。索引写成功与 refresh 后 search 可见又是两个时点。MySQL 权威数据与 ES 投影各自做 CAS 也不会形成跨库事务，投影要另带事件身份、版本和可重建边界。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul><p class="md-p">DocumentCas完整依赖集中在 <a href="#/e/database-94">TaskCas补充的Db.java与locking-schema.sql</a>（含doc/doc_receipt），同一默认包，独立空实验schema。正文按UTF-16长度限4000，使用utf8mb4且拒绝不成对代理项应由输入边界实现；此批未运行JDBC。version必须所有相关写推进并禁止回绕，删除重建用新generation或不复用ID。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-3" data-key="dbqa-4:2">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">3</span><div class="qa-q">MySQL 什么时候容易死锁？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>MySQL 死锁来自等待依赖成环，反序锁、升级与约束检查都可能参与；单次范围等待不是死锁。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>加锁顺序交叉 / RR 范围锁冲突 / 顺序索引缩事务</p></div><div class="qa-rest"><div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>加锁顺序交叉</b>：多个事务获取资源的顺序不一致。事务 A 先锁记录 1 再锁记录 2，事务 B 先锁记录 2 再锁记录 1，最后互相等待。</li><li><b>RR 范围锁冲突</b>：RR 隔离级别下，一个事务做范围当前读或范围更新，另一个事务又试图在这个区间插入或修改记录。</li></ol></div>
+<p class="md-p"><b>规避我会这样做</b>：统一加锁顺序；尽量走索引、缩小锁范围；减少长事务，大事务拆小；避免把慢 RPC 或复杂业务逻辑包在事务里。</p><div class="qa-end"><p class="md-p qa-sum"><span class="sx-tag sum">口径</span>先对上是顺序交叉还是范围锁冲突，再用统一顺序、索引和短事务把锁收住。</p></div><h2 class="md-h md-h2" id="add-own-mysql-dbqa-4-2">MySQL 手册：具体条件、完整推演与实验</h2><h3 class="md-h md-h3">共享锁升级的完整时序</h3><p class="md-p">两个会话都 START TRANSACTION。A 对同一已有主键执行 FOR SHARE，确认成功；B 对同一主键 FOR SHARE，确认也成功。A 发 UPDATE，需要 X，因此等 B 的 S；在 A 尚未结束时，B 发 UPDATE，又等 A 的 S。等待环成立，检测器会中止一个事务，不能预先指定受害者。</p><p class="md-p">完整 SQL 可使用一个独立的 upgrade_probe。A 先建表并填入数据，A、B 各自确认没有旧事务且实例 innodb_deadlock_detect 开启，锁等待超时足够覆盖手工关卡：</p><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">code/ch21/fence-078.sql</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- 初始化一次，自动提交状态
+CREATE TABLE upgrade_probe(id INT PRIMARY KEY,n INT NOT NULL) ENGINE=InnoDB;
+INSERT INTO upgrade_probe VALUES(1,0);
+-- A1
+START TRANSACTION;
+SELECT * FROM upgrade_probe WHERE id=1 FOR SHARE;
+-- B1，在独立连接 B 执行并确认返回：
+-- START TRANSACTION;
+-- SELECT * FROM upgrade_probe WHERE id=1 FOR SHARE;
+-- A2，仅在 B1 返回后提交：
+UPDATE upgrade_probe SET n=n+1 WHERE id=1;
+-- A2 等待时，由 B 查询 data_lock_waits 确认 A 等 B，再执行 B2：
+-- UPDATE upgrade_probe SET n=n+1 WHERE id=1;
+</pre></div></div><p class="md-p">B 观察等待边的方法使用下一章给出的 data_lock_waits/data_locks 查询，并将 OBJECT_NAME 筛为 upgrade_probe。死锁错误侧 ROLLBACK，成功侧 COMMIT；确认两边结束后用新事务读 n，预期为 1。若检测关闭、超时先发生或等待证据不匹配，双方回滚并将这轮视为中止；不预先指定 A 或 B 谁成功。</p><p class="md-p">明确的“锁后还要写”场景可一开始 FOR UPDATE，或直接条件 UPDATE，避免共同拿 S 再升级。但只有展示需求的查询应保留一致性读，否则会人为放大竞争。范式控制冗余异常，串行化理论控制并发历史，恢复理论控制故障后的状态；这是回答“范式之外还了解什么数据库理论”时可展开的三条不同主线。</p><h2 class="md-h md-h2">第23章 死锁检测 等待与完整事务重试</h2><p class="md-p">死锁是事务等待依赖成环，正确恢复的单位是重新读取并校验的完整业务事务；一次锁等待或超时本身并不能证明死锁。</p><h3 class="md-h md-h3">从等待图解释出现条件</h3><p class="md-p">A 持有账户 1，等账户 2；B 持有账户 2，等账户 1，形成 A→B→A。一般并发中的互斥、持有并等待、不可任意剥夺和循环等待可构成死锁条件。线程相互 join、同一线程池中工作线程全部等待投给本池的子任务，也可能卡住，但要区分资源环、线程池饥饿与单纯慢任务。</p><p class="md-p">InnoDB 中反序更新两行/两表、S→X 升级、唯一索引检查、外键检查、不同二级索引访问顺序，以及 gap 与插入意向组合都可能参与等待。事务只改两行不代表安全，空结果范围读也可能持锁。默认开启的死锁检测会打破等待环，并倾向选择较小事务回滚，不能保证固定牺牲先来、后来、A 或 B。某些跨锁层依赖也不一定被 InnoDB 检测器完整看见。</p><h3 class="md-h md-h3">还有一种不同的 唯一键插入死锁</h3><p class="md-p">不要把所有重复 INSERT 都讲成无风险地等待后返回重复键。在一个空 dup_probe(id INT PRIMARY KEY) 中，A 开事务插入 id=1 不提交；B、C 分别开事务插入 id=1，观察都因 A 等待；A 回滚。对于普通 INSERT 的重复键检查路径，两个等待者可能先取得共享保护，再各自申请插入需要的排他保护，从而产生升级等待环。最后一个受害事务回滚，另一个才可能成功。B/C 都必须显式结束事务，重新测试前确保表为空。</p><p class="md-p">这个例子有三个连接和特定回滚交错，不能改写成“任何两个重复请求都会死锁”。INSERT ... ON DUPLICATE KEY UPDATE 的冲突锁行为又不同。数据库唯一约束保证身份不变量，但应用仍必须处理等待、死锁和同号不同载荷。</p><h3 class="md-h md-h3">怎么定位而不是猜原因</h3><p class="md-p">先记录错误码、SQLSTATE、发生时间、业务幂等键与当前事务 SQL 顺序。1205 是锁等待超时，1213/40001 是常见的 MySQL 死锁受害错误；不要将所有 SQLException 都归入同一重试分支。</p><p class="md-p">实时等待时查 data_lock_waits 和 data_locks，关联事务 ID、连接、索引、LOCK_DATA、事务年龄。死锁已快速解除时，查看 SHOW ENGINE INNODB STATUS 中最近记录；需要持续观测时由获授权运维评估死锁日志设置、采样成本与敏感 SQL 脱敏。MDL 等待查 metadata_locks，内部 mutex 查相应等待事件。生产处理先评估长事务及业务影响，不应见到阻塞就自动 KILL。</p><h3 class="md-h md-h3">批量更新的取舍</h3><p class="md-p">先规范化并去重 ID，按全局约定的表/资源/主键顺序锁定，保持短事务，用索引减少扫描；锁内不做用户交互、模型推理、HTTP 或长计算。按批提交可以降低持锁时间，但会改变全批原子性：原本要求 1000 行全成全败的业务，不能为性能悄悄改成部分提交。热点可按 key 有界排队，本地 synchronized 只能协调本进程，存储约束仍须兜底。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul><p class="md-p">单次范围锁冲突只证明等待；死锁必须有等待环。所有SQL都需结束事务，1205通常只回滚当前语句而非整笔事务，应用必须显式回滚后再完整重试；重试有次数/时间预算且保留原业务键，提交未知先查询。</p></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div><div class="qa s0" id="q-4" data-key="dbqa-4:3">
+    <div class="qa-head" data-act="qa-toggle"><span class="qa-no">4</span><div class="qa-q">间隙锁和 next-key lock，到底锁的是什么？</div>
+      <div class="qa-tags"></div></div>
+    <button type="button" class="qa-reveal" data-act="qa-open">显示答案 · Space</button>
+    <div class="qa-body"><div class="md"><div class="qa-lead"><p class="md-p sx-ess"><span class="sx-tag">本质</span>间隙锁锁索引空隙，next-key lock 是记录锁加前方间隙，在 RR 下防止区间内插入。</p><p class="md-p lead-outline"><span class="lead-tag">要点</span>间隙锁锁空隙 / 记录锁加前方间隙 / 目标是防幻读 / 未走索引会放大</p></div><div class="qa-rest"><div class="md-list-wrap"><ol class="md-list md-depth-0"><li><b>间隙锁</b>：锁的不是某一行，而是索引记录之间的空隙。</li><li><b>next-key lock</b>：可以理解成“记录锁 + 前方间隙锁”的组合。</li><li><b>为什么锁</b>：在 RR 隔离级别下避免幻读，防止别的事务在已经锁住的区间里插入新记录。</li><li><b>锁的对象</b>：锁的是索引区间。SQL 没有命中合适索引时，锁范围可能会被放大，问题也会更明显。</li></ol></div><div class="qa-end"><p class="md-p sx-pit"><span class="sx-tag pit">易错</span>不要理解成锁了抽象意义上的“整张表某一段逻辑范围”；没命中合适索引，锁范围会被放大。</p></div><h2 class="md-h md-h2" id="add-own-mysql-dbqa-4-3">MySQL 手册：具体条件、完整推演与实验</h2><h2 class="md-h md-h2">第22章 实际访问路径决定锁范围</h2><p class="md-p">锁范围由引擎、隔离级别、事务边界、索引访问路径与完整谓词共同决定，不能只数结果行，也不能只看 WHERE 中出现了什么字段。</p><h3 class="md-h md-h3">按六个条件逐层推导</h3><p class="md-p">拿到一条 SQL，按执行过程推锁范围，而不要从返回几行倒猜。先固定 MySQL 8.4.0/InnoDB，并确认是否显式事务：autocommit 下语句结束，保护窗口也随该事务结束。接着确定读类型，RR 普通 SELECT 通常读快照；FOR SHARE、FOR UPDATE、UPDATE、DELETE 则面向当前可操作记录并加锁。</p><p class="md-p">然后看真正选中的索引，判断是否完整唯一等值命中；继续检查有没有修改索引键、外键检查或重复键检查，这些都会增添资源访问。最后把已取得的锁跟到 COMMIT 或 ROLLBACK。引擎、事务边界、读类型、访问路径、额外约束和释放时点都清楚了，才有条件说明谁会等待。</p><p class="md-p">对完整唯一键的现存记录等值查找，通常只需相应记录锁，无须锁前方 gap。主键路径锁聚簇记录；唯一二级路径可能同时涉及二级记录与聚簇记录。不存在的唯一值、联合唯一索引只给部分列、可空 UNIQUE 的 NULL 查找、普通非唯一等值、范围谓词、类型转换改变路径，都不能套用这一结论。修改主键或其他唯一列还需维护旧新索引项和检查约束，可能增加等待对象。</p><p class="md-p">RR 的范围锁定扫描可用 next-key/gap 保护插入位置，空结果也可能挡插入。RC 的普通搜索和扫描不使用常规间隙保护，但外键检查与重复键检查仍是例外。RC 的 UPDATE 可以用 semi-consistent read 将被锁行的最近已提交版本交给 Server 判断 WHERE；确需修改时再读并锁定或等待。对不匹配记录的释放还受执行路径影响，尤其索引条件与额外残余条件并非同一阶段，不能无条件说“RC 最终必然只锁返回行”。</p><h3 class="md-h md-h3">实验一 空范围为何挡插入</h3><p class="md-p">按编号操作，不使用 sleep 猜另一连接是否完成。</p><ol class="md-list"><li>A：SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION;</li><li>A：SELECT * FROM s3_lock FORCE INDEX(ix_score) WHERE score&gt;10 AND score&lt;20 FOR UPDATE; 确认返回空集，保持事务。</li><li>B：START TRANSACTION; INSERT INTO s3_lock VALUES(4,15,&#39;new&#39;); 在 B 窗口提交该命令，保持 A 窗口可操作。预期等待。</li><li>O 确认等待关系涉及 s3_lock 的 ix_score 范围；若 B 超时，先 B ROLLBACK，再重新开始本组，不能把超时后的旧事务继续混用。</li><li>A：ROLLBACK。B 的 INSERT 若尚在等待，应能继续；B 随后 ROLLBACK。</li><li>A 改成 READ COMMITTED，在新事务重做同一查询；B 再插同一行。普通 RC 范围查询通常不再因该 gap 保护挡住插入，B 仍 ROLLBACK，A ROLLBACK。</li></ol><p class="md-p">这不是“无匹配行就无锁”的反例外技巧，而是保护谓词未来成员的正常用途。普通 SELECT 去掉 FOR UPDATE 后又是不同契约，不能用这一实验推导普通快照读也锁间隙。</p><h3 class="md-h md-h3">实验二 唯一命中 未命中 普通键和联合键</h3><p class="md-p">每个分支独立执行：先 A 设 RR 并 START TRANSACTION，执行所列 A 语句并确认返回；再 B START TRANSACTION 执行 B 语句。记录是否完成/等待及真实锁，最后 A、B 都 ROLLBACK。如果 B 等待，先让 O 取证，再释放 A；不要在被阻塞的同一个 B 窗口尝试输入释放 A 的命令。</p><ul class="md-list"><li>完整主键命中：A SELECT * FROM s3_lock WHERE id=2 FOR UPDATE; B INSERT INTO s3_lock VALUES(4,15,&#39;new&#39;); 此主键点读不应照搬 ix_score 空范围的阻塞结论。</li><li>完整主键未命中：A SELECT * FROM s3_lock WHERE id=4 FOR UPDATE; B INSERT INTO s3_lock VALUES(4,15,&#39;new&#39;); RR 需要考虑缺失键所在间隙，不能从上一组推导不阻塞。</li><li>唯一二级命中：A SELECT * FROM unique_probe FORCE INDEX(uq_u) WHERE u=20 FOR UPDATE; B UPDATE unique_probe SET note=&#39;x&#39; WHERE id=2; 应关注二级项及聚簇记录的冲突。</li><li>唯一二级未命中：A SELECT * FROM unique_probe FORCE INDEX(uq_u) WHERE u=15 FOR UPDATE; B INSERT INTO unique_probe VALUES(4,15,15,&#39;new&#39;); RR 下检查插入 gap；改 RC 后用全新事务重做，对普通缺失搜索的结论不能覆盖重复检查例外。</li><li>普通二级等值：A SELECT * FROM unique_probe FORCE INDEX(ix_k) WHERE k=20 FOR UPDATE; B INSERT INTO unique_probe VALUES(4,40,20,&#39;new&#39;); 值 20 可有多行，索引物理次序还包含主键后缀，必须分析整个匹配范围及边界。</li><li>联合唯一只给前缀：A SELECT * FROM compound_probe FORCE INDEX(uq_ab) WHERE a=1 FOR UPDATE; B INSERT INTO compound_probe VALUES(4,1,15); 这里不是唯一点查。</li><li>联合唯一完整命中：A SELECT * FROM compound_probe WHERE a=1 AND b=10 FOR UPDATE; B INSERT INTO compound_probe VALUES(4,1,15); 与上一组独立比较。</li><li>改唯一键：A UPDATE unique_probe SET u=25 WHERE u=20; B INSERT INTO unique_probe VALUES(4,25,99,&#39;new&#39;); 新键的唯一性检查产生另外的约束，不能说“只锁旧行就结束”。</li></ul><p class="md-p">先 EXPLAIN 对应 SELECT/UPDATE，再执行测试。FORCE INDEX 是教学对照的显式假设，真实业务的自然计划需另看。若题面没给 SQL、schema、参数、缓存状态，无法计算精确回表次数、物理 I/O 次数或锁行数；逻辑访问数也不等于每次真实磁盘读。</p><h3 class="md-h md-h3">复习时的最后三问</h3><p class="md-p">RC 是否绝无 gap lock？不是，需保留重复键/外键检查例外。唯一等值命中、范围和不存在的键能否共用一句答案？不能。为什么没返回行还会挡插入？锁保护的是访问路径上的范围及未来成员，不只是最终结果行。</p><p class="md-p">InnoDB 的行锁数量增加不会按固定阈值自动升级为整表 X 锁；广范围阻塞要追溯实际扫描与间隙保护。</p><h3 class="md-h md-h3">关联知识</h3><ul class="md-list"><li><a href="#/e/own-mysql-guide">版本、练习前提与验证边界</a></li></ul><h3 class="md-h md-h3" id="review-lock-range-setup">完整锁范围实验初始化与观察</h3><p class="md-p">恢复原手册完整lock_ranges.sql与观察查询。只在已授权、空的mysql_tx_lab中初始化一次；和其他题的range_probe同名表是不同独立练习，不能混建。A/B独立连接，O是可选第三观察连接；前一轮全部回滚并确认阻塞语句结束后才继续，未运行数据库。</p><section class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">lock_ranges.sql · original complete fence</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">-- MySQL 8.4.0 / InnoDB. SETUP only; do not send all session steps on one connection.
+CREATE TABLE s3_lock(id INT PRIMARY KEY,score INT NOT NULL,note VARCHAR(20) NOT NULL,
+ KEY ix_score(score)) ENGINE=InnoDB;
+INSERT INTO s3_lock VALUES(1,10,&#x27;a&#x27;),(2,20,&#x27;b&#x27;),(3,30,&#x27;c&#x27;);
+CREATE TABLE items(id BIGINT PRIMARY KEY,label VARCHAR(40) NOT NULL,price INT NOT NULL) ENGINE=InnoDB;
+INSERT INTO items VALUES(1,&#x27;A&#x27;,10),(2,&#x27;A&#x27;,20),(3,&#x27;B&#x27;,30);
+CREATE TABLE range_probe(id INT PRIMARY KEY,k DECIMAL(4,1) NOT NULL,KEY ix_k(k)) ENGINE=InnoDB;
+INSERT INTO range_probe VALUES(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+CREATE TABLE unique_probe(id INT PRIMARY KEY,u INT NOT NULL,k INT NOT NULL,note VARCHAR(20) NOT NULL,
+ UNIQUE KEY uq_u(u),KEY ix_k(k)) ENGINE=InnoDB;
+INSERT INTO unique_probe VALUES(1,10,10,&#x27;a&#x27;),(2,20,20,&#x27;b&#x27;),(3,30,20,&#x27;c&#x27;);
+CREATE TABLE compound_probe(id INT PRIMARY KEY,a INT NOT NULL,b INT NOT NULL,
+ UNIQUE KEY uq_ab(a,b)) ENGINE=InnoDB;
+INSERT INTO compound_probe VALUES(1,1,10),(2,1,20),(3,2,10);
+CREATE TABLE dup_probe(id INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE mdl_probe(id INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO mdl_probe VALUES(1);
+</pre></div></section><section class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">lock_observation.sql · original complete fence</span></div><div class="code-scroll"><pre class="md-pre" data-lang="sql">SELECT ENGINE,REQUESTING_ENGINE_TRANSACTION_ID,BLOCKING_ENGINE_TRANSACTION_ID
+FROM performance_schema.data_lock_waits;
+SELECT ENGINE_TRANSACTION_ID,THREAD_ID,OBJECT_SCHEMA,OBJECT_NAME,
+       INDEX_NAME,LOCK_TYPE,LOCK_MODE,LOCK_STATUS,LOCK_DATA
+FROM performance_schema.data_locks
+WHERE OBJECT_SCHEMA=&#x27;mysql_tx_lab&#x27;;
+SELECT OBJECT_TYPE,OBJECT_SCHEMA,OBJECT_NAME,LOCK_TYPE,LOCK_DURATION,
+       LOCK_STATUS,OWNER_THREAD_ID
+FROM performance_schema.metadata_locks
+WHERE OBJECT_SCHEMA=&#x27;mysql_tx_lab&#x27;;
+SELECT THREAD_ID,PROCESSLIST_ID,PROCESSLIST_INFO
+FROM performance_schema.threads
+WHERE PROCESSLIST_ID IS NOT NULL;
+SHOW ENGINE INNODB STATUS;
+</pre></div></section></div></div>
+      <div class="qa-foot"><button type="button" class="mini more expand" data-act="qa-open">展开全文 ↓</button><button type="button" class="mini more collapse" data-act="qa-close">收起 ↑</button>
+        <span class="grow"></span><button type="button" class="mini" data-s="1" data-act="qa-mark">模糊</button><button type="button" class="mini" data-s="2" data-act="qa-mark">掌握</button></div></div></div></div>
+    
+    <section><h2>同专题其它小节</h2></section>
+    <nav class="pager"><span class="ph"></span>
+    <span class="ph"></span></nav>

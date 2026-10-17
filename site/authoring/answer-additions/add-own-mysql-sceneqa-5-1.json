@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-mysql-sceneqa-5-1",
+  "entryId": "sceneqa-5",
+  "expectedOriginalHash": "8c49c9fe6a4f0d8cbac2510c4141a1f8f1434d20b2910139a835a9fd6621efb4",
+  "title": "MySQL 手册：具体条件、完整推演与实验",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "点赞关系表怎样设计，重复点赞/取消如何幂等，持续增长后怎样治理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "点赞以唯一的用户和帖子关系承载当前状态，以独立事件承载历史；只有真实状态转换才能改变计数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可能的问法：点赞关系表怎样设计，重复点赞/取消如何幂等，持续增长后怎样治理？"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "当前状态与历史事件是两张不同的账"
+    },
+    {
+      "type": "paragraph",
+      "text": "like_state的唯一业务键为(tenant_id,post_id,user_id)，保存liked、version、updated_at；一个人重复点赞不能新增多个当前关系。用户已点赞列表另评估(tenant_id,user_id,liked,updated_at,post_id)，帖子赞用户列表按帖子路径索引。租户维度必须贯穿唯一键和查询。"
+    },
+    {
+      "type": "paragraph",
+      "text": "历史like_events记录唯一event_id、动作、事件时间与主体，用于审计/按天统计，不能把当前关系最后更新时间冒充所有点赞事件。可采用删行表示取消或保留liked=0以维护版本/历史，二者保留、索引和重试语义不同；明确后再写DDL。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "状态转换而不是每次请求加一"
+    },
+    {
+      "type": "paragraph",
+      "text": "接口可表达“设为已赞/未赞”，在事务中用唯一约束与行锁/版本条件，把旧状态改成新状态；只有0→1令计数+1，1→0令计数-1，重复相同状态为0变化。对应事件/outbox与关系变更同事务记录，消费者按event_id幂等更新投影，不能数据库失败却缓存先加一。"
+    },
+    {
+      "type": "paragraph",
+      "text": "仅唯一键还不能解决乱序：迟来的旧LIKE不能覆盖用户较新的UNLIKE。按同一关系的服务端版本/顺序令牌做条件更新，冲突读权威状态；客户端时间不可直接当可靠顺序。准确同步计数可在同事务维护计数行，但热门帖子同一行会成为热点，可分桶/异步汇总并公开延迟语义。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "增长治理从两类数据分别下手"
+    },
+    {
+      "type": "paragraph",
+      "text": "当前关系按真实有效用户规模增长，历史事件则随每次转换持续增长。先设保留期、归档/删除政策、分段清理与冷热分离，审计数据按时间分区/归档但保留必要重建基线；只清事件不应让当前已赞关系消失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "需要分片时按主要访问维度选择post_id或user_id等路由，另一方向用读模型/定位目录；超热单帖子可能仍热点，分片不自动解决。增加分片前评估索引/批量查询、缓存热点和容量，删除用户/撤权也须传播到计数、事件与缓存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可执行结构与边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "blog_ranking.sql完整提供帖子、当前关系、事件和索引，并演示当前关系与每日次数为何不能混用。回归用例应覆盖重复赞、重复取消、再赞只保留一个关系以及event_id重复拒绝。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-mysql-guide",
+      "label": "版本、练习前提与验证边界"
+    }
+  ],
+  "questionId": "1"
+}

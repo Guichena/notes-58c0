@@ -1,0 +1,504 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "entryId": "scenario-distributed-scheduler",
+      "entryIdentity": {
+        "id": "scenario-distributed-scheduler",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "分布式任务调度平台设计",
+        "number": "场景 5"
+      },
+      "path": [
+        "interviewAnswer"
+      ],
+      "before": "我把控制面、触发面和执行面拆开：DB 保存任务定义与持久运行槽，运行身份绑定任务版本和计划窗口，Outbox 经 MQ 唤醒 Worker。租约决定当前领取权，幂等与版本保护合法提交；外部超时保持 UNKNOWN 并核对，不能因租约过期就断言未执行。",
+      "beforeSha256": "470d4d686d8a04629fe0e166824f1bbfc763f4fb8bd85c3b0ea0d6794e41ae6a",
+      "after": "我会先分清任务定义、到期触发和真正执行。最简单可以把任务、dueAt和状态存数据库，按索引扫描到期项；要求每个周期都执行的任务，还要用任务版本加计划窗口保存独立运行槽，不能只记下次时间。\n\n规模增大后，把扫描按逻辑分片分给调度节点，近期任务放时间轮等结构，MQ负责分发已经持久生成的工作。运行槽、Outbox和调度进度一起提交，worker再有限并发地领取执行，调度与执行容量分开扩。\n\n最容易漏的是恢复。租约过期只说明可以接管，不说明旧worker已经停止，也不说明外部调用没成功。任务完成要检查代际和版本，外部超时按原操作身份核对UNKNOWN。最后用扫描水位、最老到期年龄和未完成槽检查是否漏责任，而不是只看调度中心存活。",
+      "afterSha256": "c05992f8d89f10fefabf20adc1e615004582c869577718951ad8c93667b58392",
+      "review": {
+        "rationale": "依据本题完整机制解释改为可口述、有取舍与失败路径的回答，保留全部版本及事实边界。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-distributed-scheduler",
+      "entryIdentity": {
+        "id": "scenario-distributed-scheduler",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "分布式任务调度平台设计",
+        "number": "场景 5"
+      },
+      "path": [
+        "followups",
+        0
+      ],
+      "before": "如何避免 Scheduler 写 DB 成功但 MQ 发布失败造成任务丢失？可以用 Outbox/事务消息。",
+      "beforeSha256": "35948347743a0905f0ca29d2f120271102f083bef37bbe2b1fd8e9ec3ac13308",
+      "after": "写DB成功但MQ发布失败怎么办？在同一事务保存稳定execution_id、运行槽、触发进度和Outbox，发布器再重试。发布成功确认丢失会重发同一身份，由消费端幂等吸收；不能先推进next_fire_time再只尝试发一次消息。",
+      "afterSha256": "ba42d8a4ece6e12e9a63540f8f2e3f00e6224ff5e2c124f0e989399ae2ee8d6a",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-distributed-scheduler",
+      "entryIdentity": {
+        "id": "scenario-distributed-scheduler",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "分布式任务调度平台设计",
+        "number": "场景 5"
+      },
+      "path": [
+        "followups",
+        1
+      ],
+      "before": "一个任务执行 2 小时，lease 多长合适？如何续租？",
+      "beforeSha256": "c2a61a395e0a46fddb761ca3cf663d809b0fdd9d0bc2f410b49a4a2fc9799bfc",
+      "after": "执行2小时，租约设多长？不能把2小时直接当通用租约。按失联发现、故障恢复和续租开销选期限，续租核对owner；即使续租正常也要有总执行预算。暂停或网络故障导致失权后，旧任务仍可能运行，完成提交检查epoch，外部结果未知先查。",
+      "afterSha256": "bf44694f04c3d48dc081d76afee98971de6e844800c075c83c9119b27bc61331",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-distributed-scheduler",
+      "entryIdentity": {
+        "id": "scenario-distributed-scheduler",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "分布式任务调度平台设计",
+        "number": "场景 5"
+      },
+      "path": [
+        "followups",
+        2
+      ],
+      "before": "百万 Cron 在同一秒触发形成尖峰，如何打散或限流？",
+      "beforeSha256": "3e06d8f2eb75a5093c4c8fdf51bb413c7ca51bd59fad0322a2bf88613b8df814",
+      "after": "百万Cron同秒触发怎么办？先看是否允许错峰，允许时分散相位；不允许时只能按资源预算排队并明确允许迟到。调度器分片、有界消费者和下游配额一起保护容量，时间轮本身不能创造执行能力。",
+      "afterSha256": "fa37de4ff0b8d02ca1659854cfd79935da8a41d7676d538e67015f9fff215167",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-distributed-scheduler",
+      "entryIdentity": {
+        "id": "scenario-distributed-scheduler",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "分布式任务调度平台设计",
+        "number": "场景 5"
+      },
+      "path": [
+        "followups",
+        3
+      ],
+      "before": "跨机房部署时是保证全局唯一触发，还是允许双活后由幂等层去重？",
+      "beforeSha256": "571486d4971e33252b2d8a9e090f31f1e3457e4d5b6e16eb4448a036c5117acb",
+      "after": "跨机房怎样选唯一触发或重复去重？先确定权威提交和故障模型。可以由权威租约分配触发责任，同时容忍消息重复，并用稳定运行槽去重；不能让两个机房各拿本地状态独立承诺唯一。分区时的拒绝、接管和旧owner隔离要明确，幂等也不能替代外部不可查询效果的核实。",
+      "afterSha256": "8b2a64d8917e3e0cf8d5dbd7051bd448bcc9d49a181ffdafabadf9e86e6e144c",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-distributed-scheduler",
+      "entryIdentity": {
+        "id": "scenario-distributed-scheduler",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "分布式任务调度平台设计",
+        "number": "场景 5"
+      },
+      "path": [
+        "boundaryCases",
+        0
+      ],
+      "before": "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。",
+      "beforeSha256": "ad201d1585bd24d4b0a4f384702c54cd5e1a29b63d9406fe84cf1e01f5c5162a",
+      "after": "验证生成运行槽前后退出、MQ确认丢失、nextDue推进中断、任务改期、租约到期旧执行继续、外部成功回包丢失、同秒突发与所有扫描器停滞；逐个计划窗口核对完成、跳过或待处理原因。",
+      "afterSha256": "c8ed51daa0396b85f45cc63ffd54c74c7ffeb3c36bddc621f4aac63c816c8ecd",
+      "review": {
+        "rationale": "依据本题完整机制解释改为可口述、有取舍与失败路径的回答，保留全部版本及事实边界。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "interviewAnswer"
+      ],
+      "before": "我会从调用链路拆：代理→协议/序列化→服务发现/LB→长连接传输→服务端 dispatcher，再横切 deadline、重试、熔断、鉴权和 tracing。重点主动讲清“超时≠没执行”，所以 retry 必须和幂等语义绑定。",
+      "beforeSha256": "c5e4d6e019f46f80d09039e78cd85f3c3f8e51fa625c463ad3a78166bd3b4b00",
+      "after": "RPC让调用方通过接口访问远端，但不能把远程失败伪装成本地调用。我会先沿一条请求讲清：代理拿到方法和参数，编码成协议消息，选服务实例，复用连接发送；服务端解码、鉴权、分派业务，再把响应关联回原请求。\n\n最小实现先把协议边界、请求ID、错误类型和资源上限做对。自定义TCP要处理半包、粘包与长度校验；用成熟HTTP协议栈可以少承担一部分责任。再按需要加入发现、负载均衡、跨语言schema和治理扩展，而不是每次调用临时建连接、查注册中心。\n\n核心失败语义是“超时不等于没执行”。一次attempt的requestId用于关联响应，稳定operationId才用于业务重试和结果查询。deadline、排队上限与重试预算贯穿整条链路，服务端取消也不能自动撤销已经提交的效果。",
+      "afterSha256": "edbf42848a8b2df3d734e44252e75cf5d28eae76a54d5f392a4678247c9f4391",
+      "review": {
+        "rationale": "依据本题完整机制解释改为可口述、有取舍与失败路径的回答，保留全部版本及事实边界。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "followups",
+        0
+      ],
+      "before": "如何做连接多路复用并解决 head-of-line blocking？",
+      "beforeSha256": "08c45938336c0dccafe019fca8a175960e103288ed7f58fbbbd2d9571c455041",
+      "after": "多路复用怎样做，能消除所有队头阻塞吗？协议用requestId或stream关联多个在途请求，连接上同时承载多路调用。HTTP/2减少部分应用层串行等待，但共享TCP、流控和服务端队列仍会阻塞；还要限制流数和在途量，不能把一条连接当无限并发。",
+      "afterSha256": "99845925faed915ae0d640576f3ae1cc187e4e20ffe488b1a340bdc448e84f63",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "followups",
+        1
+      ],
+      "before": "服务发现瞬间推送大量节点变更，客户端如何避免惊群重连？",
+      "beforeSha256": "5ac777ff7ca2be105ad1c6916455a60b86f356afdfb54bef188c70cd614c9cfd",
+      "after": "大量发现变更怎样避免惊群重连？客户端维护本地服务列表，按受控变更更新连接，不让每个请求都查注册中心。重连采用有上限的退避与抖动，恢复节点少量探测；移除节点后还要确认剩余节点能承载压力，不能同时无预算地重连和重试业务。",
+      "afterSha256": "fc683b0bfd892192cfbe5d9fe3a034687080e5942c7657d26929085b9eaeb76e",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "followups",
+        2
+      ],
+      "before": "如何做跨语言？",
+      "beforeSha256": "f96db5d046325f9fedd62139a43148692af0eddf53e8fbcf95ca373dac36b804",
+      "after": "怎样跨语言？用明确的服务/schema契约和各语言stub或编解码器，统一字段含义、数值范围、缺省值、错误及时间格式。Protobuf、JSON等都要考虑演进兼容；不能把Java对象内存布局直接发给Python，也不能只说二进制就更快。",
+      "afterSha256": "1d6500391bf8ab9cfce5abcce50e1d699285389590754fbaff9c803468d9fdad",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "followups",
+        3
+      ],
+      "before": "如果服务端已经执行成功但响应丢了，客户端重试怎么避免重复副作用？",
+      "beforeSha256": "15f71066be675f1b34ea2fafb68c47e88f160cfa4458abd0625348fcb64582d6",
+      "after": "服务端已成功但响应丢失怎么办？客户端保留同一个operationId，查询或重试原操作；目的端把幂等身份、业务效果和可重放结果放在明确持久提交边界。新的attempt可以有新响应关联ID，但不能因此生成新的业务操作；无幂等或查询能力时保留UNKNOWN。",
+      "afterSha256": "576b8bb6b1719b52d5f3a93a462fc2f0ee1a45be51765f742f2b70cff7918dba",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "boundaryCases",
+        0
+      ],
+      "before": "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。",
+      "beforeSha256": "ad201d1585bd24d4b0a4f384702c54cd5e1a29b63d9406fe84cf1e01f5c5162a",
+      "after": "验证半包/粘包、非法长度、未知方法、schema混版本、并发响应乱序、超时后迟到响应、提交后断连、节点变更、连接耗尽与扩展链热更新；检查错误分类、剩余期限和副作用是否一致。",
+      "afterSha256": "acd30a76cdd281db8861966c57265d066402a0fdf9a3862665e8467eac688113",
+      "review": {
+        "rationale": "依据本题完整机制解释改为可口述、有取舍与失败路径的回答，保留全部版本及事实边界。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-rpc-framework",
+      "entryIdentity": {
+        "id": "scenario-rpc-framework",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "如何设计一个 RPC 框架",
+        "number": "场景 14"
+      },
+      "path": [
+        "supplementHtml"
+      ],
+      "before": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s503\">机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">2.4 RPC框架做什么，Dubbo与gRPC设计理念怎样比较</h2><p class=\"md-p\">Dubbo更强调服务治理与多协议能力，gRPC以Protobuf契约和HTTP/2调用为典型路径，选型要结合生态、跨语言和治理需求。</p><p class=\"md-p\">常见问法：RPC框架做什么；Dubbo和gRPC怎么比较；远程调用为什么不能当本地方法。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">RPC是调用抽象，传输协议、序列化、发现和重试由具体框架配置决定。</p><h3 class=\"md-h md-h3\">RPC把远端调用包装成接口，但网络故障仍存在</h3><p class=\"md-p\">调用端stub/proxy把方法与参数编码，依据发现/路由选服务实例，经连接发送；服务端解码、分派方法、执行并编码响应，调用端根据requestId/stream关联结果。框架还处理超时、状态码、连接管理、认证和可观测性等。调用看似本地，失败时却可能已执行但响应丢失，不能自动当作未执行。</p><p class=\"md-p\">RPC 的几层概念要拆开说：同步、异步、流式是交互模型；序列化是数据格式；HTTP/2、TCP 等属于传输或协议层。</p><p class=\"md-p\">性能要一起看载荷、编码、网络往返、连接复用、排队和服务逻辑。用了二进制，并不保证比所有 HTTP 接口都快。</p><h3 class=\"md-h md-h3\">Dubbo侧重微服务框架与治理集成</h3><p class=\"md-p\">Dubbo提供服务暴露/引用、注册发现、路由/负载、容错等框架能力，传统Java接口开发生态突出，同时有多语言实现。经典Dubbo协议与Dubbo3 Triple要区分；当前Triple官方说明兼容gRPC并支持HTTP/1与HTTP/2，支持request-response和streaming。因此“Dubbo只能Java、只能自有TCP协议”都过时。</p><p class=\"md-p\">治理策略也是风险来源：默认重试是否合适取决于方法幂等性，注册变化需要传播，配置/路由要有版本和审计。框架集成完善不意味着业务不用设计deadline、幂等、熔断和数据契约。</p><h3 class=\"md-h md-h3\">gRPC侧重跨语言RPC契约和通用交互</h3><p class=\"md-p\">gRPC常以.proto服务/消息定义生成多语言stub，默认常用Protocol Buffers，提供unary、server streaming、client streaming和双向streaming。原生gRPC通常建立在HTTP/2上，有metadata、deadline、状态码和流控等语义；浏览器调用通常需要gRPC-Web等适配路径。</p><p class=\"md-p\">gRPC有命名解析、负载均衡、重试等机制，不能说完全没有治理；大规模发现/路由、策略与运维常结合平台、代理或service mesh。选择取决于跨语言契约、流式需求、现有团队/框架与治理栈，而不是把一个称作完整、另一个称作不完整。</p><h3 class=\"md-h md-h3\">共同的工程边界</h3><p class=\"md-p\">端到端deadline向下游传播并预算排队时间；仅对明确可重试且幂等的错误重试，设次数/总时长与抖动，防多层重试倍增。服务端取消是协作信号，不证明副作用未发生；错误码区分参数、权限、过载与结果未知。schema演进保留兼容字段语义，跨语言测试缺省值、数值范围和时间格式。</p><p class=\"md-p\">用真实消息大小、连接数、压缩、TLS与并发条件对比p95/p99、CPU和内存；故障测试超时、断连、版本混跑、实例摘除、流控与慢消费者。</p><h2 class=\"md-h md-h2\">2.8 Feign调用底层如何工作，用什么协议和序列化</h2><p class=\"md-p\">Feign用动态代理把接口调用编码为HTTP请求，通过选定客户端发送并解码响应，发现和负载均衡是可组合的额外层。</p><p class=\"md-p\">常见问法：Feign底层怎样调用；用什么协议和序列化；Feign与RPC是什么关系。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">以Spring Cloud OpenFeign 5.0.3为具体组件语义，实际HTTP客户端和序列化取决于配置与版本。</p><h3 class=\"md-h md-h3\">接口调用如何变成网络请求</h3><p class=\"md-p\">应用启动扫描@FeignClient接口，为接口创建代理并解析注解契约为方法元数据。调用接口方法时代理查对应处理器，把路径变量、查询参数、Header及body参数填到请求模板；编码器把Java对象转成约定的请求字节，拦截器可添加可信身份/trace，HTTP client负责连接与收发。</p><p class=\"md-p\">Feign 收到响应后，先按状态和错误解码规则处理，再由 Decoder 转成接口返回类型；失败通过异常或显式结果返回。</p><p class=\"md-p\">接口写起来像本地调用，代价和故障却仍是远程的：网络超时、部分失败、序列化不兼容，以及可能已生效但响应未知。不能拿本地方法成本估算它。</p><h3 class=\"md-h md-h3\">协议与组件分别负责什么</h3><p class=\"md-p\">Spring Cloud OpenFeign是声明式HTTP客户端，并非默认自定义二进制TCP协议。HTTP版本/TLS由实际底层client、服务端与配置决定，传输层通常TCP/TLS不能等同应用层RPC编码。SpringMvcContract解释Spring MVC注解，SpringEncoder/Decoder对接HttpMessageConverters；JSON常用但也可以是文本、表单或其他支持媒体类型，Feign不是固定某一种序列化。</p><p class=\"md-p\">服务名模式可经DiscoveryClient取得实例并由Spring Cloud LoadBalancer选择地址，直接配置URL可不经过发现/负载均衡。Nacos可提供实例列表或配置，它不是请求体序列化器，也不是所有RPC必需条件。HC5、OkHttp或默认client的连接池/支持能力按版本选择，不能说永远由某个具体库发送。</p><h3 class=\"md-h md-h3\">工程边界与验证</h3><p class=\"md-p\">区分连接超时、读取超时与全链路deadline；连接池等待、DNS等耗时也在用户预算内。重试只对明确可重试且幂等的请求，在总体预算内退避；Spring Cloud当前默认Retryer.NEVER_RETRY与原生Feign默认行为不同，必须以项目配置为准。熔断降级不能给扣款接口假成功。</p><p class=\"md-p\">用可控HTTP测试服务核验请求路径/编码、状态码、空响应/未知字段、超时后服务已提交、连接复用及LB摘除。分层包API/app/domain/infra是同一服务内部代码结构，微服务边界仍按领域与独立部署需求，不能把这些层直接各算一个服务。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-network-scenario-rpc-framework\">协议机制与设计边界</h2><h3 class=\"md-h md-h3\">应用重连的指数退避与内核 RTO 分开回答</h3><p class=\"md-p\">应用第 k 次连续失败可用 min(cap, base × 2^k) 作为等待上限，k 从 0 开始。base=0.5 秒、cap=30 秒时，未随机化序列为 0.5、1、2、4、8、16、30、30 秒。很多客户端同一时刻失败，即使使用纯指数也可能同步重试，所以还要 jitter，例如在 0 到当前上限内均匀随机；只在半上限到上限间随机则是另一种分布。</p><p class=\"md-p\">设总 deadline、总尝试预算、连续失败限制，遵守服务端适用的 Retry-After。参数错误、认证失败不按临时网络错误无限重试；等待期间必须允许取消。连接刚成功就断开时，不能每次成功都立即清零而导致持续高频，可用稳定时间门槛或跨连接限速。恢复连接后还要恢复订阅或查询业务结果，不能盲重放可能已成功的写入。心跳负责何时判失活，退避负责何时再尝试；它们又与 TCP RTO、CSMA/CD 的退避分别属于不同层次。</p><h2 class=\"md-h md-h2\">A16　RPC、序列化与有界 Java 调用链</h2><p class=\"md-p\">RPC 是把远程调用组织成接口的抽象，HTTP 是可承载它的协议；工程质量取决于类型契约、资源预算和失败语义，而不是调用看起来多像本地方法。</p><p class=\"md-p\">常见换问：RPC 和 HTTP 有什么区别？为什么不用直接 Socket？Spring 和 Socket 怎么选？五个节点要建几个连接？一个节点很慢但没宕机怎么办？Java 对象如何传到 Python？接口突然变慢如何自适应限流？十万条任务怎样批量调用？</p><h3 class=\"md-h md-h3\">一次远程调用比方法调用多了什么</h3><p class=\"md-p\">典型链路是 stub/代理 → 参数校验与序列化 → 服务发现与负载均衡 → 连接获取 → TLS 与认证 → 请求发送 → 服务端排队和执行 → 响应解码。各阶段都可能占用期限。gRPC 常通过 HTTP/2 承载，RPC 并不天然排斥 HTTP；普通 JSON/HTTP 也可以表达 RPC 风格操作。</p><p class=\"md-p\">远程超时表达的是“我没按时拿到结果”，不是“对方一定没执行”。对方可能根本没收到，也可能仍在执行，甚至已经提交，只是响应丢失；这和本地异常能看到当前调用栈的情况不同。</p><p class=\"md-p\">所以订单、扣款等远程操作要有业务幂等、状态查询和不确定结果处理。TCP 可靠性只解决传输的一部分，不能替你确认事务结果。</p><p class=\"md-p\">Spring 是框架体系，Socket 是网络端点抽象，二者不是同层互斥项。Spring MVC 处理 HTTP，Spring 也支持 WebSocket，底层仍依赖网络端点。若实际是在比较请求响应、SSE、WebSocket 和自定义 TCP，应先把问题说准确。自定义 Socket 让你承担分帧、版本、TLS、认证、背压与重连等责任；只有明确需要这种控制时才值得，分帧时应明确头部与长度上限，累计半帧、逐帧消费粘连数据，并在分配内存前拒绝非法长度。</p><h3 class=\"md-h md-h3\">五个节点与连接池怎样估算</h3><p class=\"md-p\">连接策略可以是每客户端覆盖全部节点、选择子集或按需懒建。若有 M 个客户端实例、N 个目标节点，每对目标预留 K 条连接，粗略数量可能达到 M×N×K，还要考虑灰度、重连和多地址。一个逻辑 channel 不保证始终对应一条物理连接，HTTP/2 单连接多流也不意味着并发无限，流限制、连接窗口和服务端队列都可能先到上限。</p><p class=\"md-p\">五个节点之一很慢但健康检查仍通过时，纯轮询会持续把约一部分请求送进尾延迟。可以结合在途请求、延迟、错误率和足够样本做异常摘除或降权，给恢复节点缓慢探测回流。不能只依据一次慢请求永久踢出，也不能把节点摘掉后忽略剩余四个节点的承载能力。</p><p class=\"md-p\">对少数幂等读请求可考虑带预算的延迟对冲，但第二次请求会加负载，第一份“迟到的成功”可能仍消耗资源。写操作不能未经设计就做对冲。取消落败调用也不保证后端已经停止，必须把重复执行风险和资源成本算进去。</p><h3 class=\"md-h md-h3\">期限、重试和连接复用如何协同</h3><p class=\"md-p\">为整体操作建立截止时间，再把剩余预算传给每次尝试和下游。连接超时、读取空闲超时、整体请求超时不是同一计时器。重试需要同时满足可重试故障、幂等或幂等键、剩余期限与重试预算，采用指数退避和抖动，并尊重适用的 Retry-After。</p><p class=\"md-p\">指定一个层次拥有主要重试策略，防止浏览器、网关、服务 A、SDK 各重试三次形成乘法放大。连接池等待也是延迟的一部分，应有限队列和等待期限；连接复用可以节约握手，不会让下游数据库或 CPU 变成无限容量。</p><p class=\"md-p\">Java HttpClient应复用配置好的客户端。流式响应的消费、关闭和取消都要明确所有者；方法返回不代表网络资源释放，超时后上游仍可能占并发。验证时可用仅回环HTTP服务观察类型化解析、大小限制、错误分类和关闭边界，而不是假定已有伴读程序。</p><h3 class=\"md-h md-h3\">自适应限流应限制什么</h3><p class=\"md-p\">至少区分并发上限 C、到达速率 R、排队容量 B。稳定条件下平均在途量约等于吞吐乘平均停留时间，但尾延迟与突发会使简单均值不足。接口变慢时即使请求率不变，在途量也会增加，因此只做每秒计数可能挡不住资源耗尽。</p><p class=\"md-p\">一个教学型 AIMD 控制器在健康且确实饱和的观察窗口缓慢加一，发现持续过载时乘性降低；设上下界、最小样本和冷却期，避免同一过载窗口每个失败都减半。参数错误、权限错误不是容量信号；429、超时、队列等待和服务延迟应根据契约分类。多实例各自自适应不能保证供应商的全局硬配额，仍需全局预算或协调。</p><p class=\"md-p\">permit应恰好释放一次，并对应实际资源生命周期。本地超时而上游仍执行时，立刻释放全部额度可能导致并发失控。通过重复释放、取消与迟到完成的事件交错检查控制器，再用真实指标、稳定性实验和故障回退验收。</p><h3 class=\"md-h md-h3\">十万条任务不等于十万个 Future</h3><p class=\"md-p\">十万条任务要靠有界领取逐步推进，而不是一次创建十万个 Future。先持久化任务，分页或流式领取，用租约、状态和幂等业务键记录处理过程，再由固定数量 worker 配合有界队列消费。</p><p class=\"md-p\">失败分类重试，毒性任务进入人工或隔离处理，重启后回收过期租约。不能把十万条一次塞进线程池或内存 CompletableFuture 列表；队列暂时为空，也不能证明整个批次已经完成。</p><p class=\"md-p\">批次进度由成功、永久失败、待处理、执行中等权威计数或可核对状态组成。调用外部接口的并发、每秒配额、成本预算和取消策略单独设限。低优先级批量任务要与在线流量隔离，避免重试风暴拖垮交互请求。</p><h3 class=\"md-h md-h3\">类型化上游适配比“换个 URL”可靠</h3><p class=\"md-p\">不同模型或服务供应商的鉴权、版本头、消息结构、工具调用 ID、终止事件和用量含义可能不同。定义内部的 Start、TextDelta、ToolArgumentsDelta、Usage、Completed、Failed 等类型，把供应商事件显式转换；工具参数未完整收齐并验证前不执行副作用，用量累计快照不能当逐次增量相加。</p><p class=\"md-p\">协议适配器负责语法，业务层负责授权、预算和状态。未知事件可以按兼容策略忽略或记录，关键终态不能靠模糊字符串匹配。具体供应商版本和 Agent 编排独立维护，网络集成回答只承诺已定义且验证过的接口契约。</p><h3 class=\"md-h md-h3\">多个 Agent 为什么可能不用网络互相调用</h3><p class=\"md-p\">Agent 是职责与状态边界，不必是独立服务器。同进程中的 Planner、Worker、Supervisor 可由调度器通过函数/协程、内存队列和显式状态对象交接任务，减少序列化与网络故障处理；它们调用远端模型或工具仍可能使用网络。跨进程可用受控管道等 IPC，跨机或需要独立语言、权限与扩缩容时再选择 HTTP/gRPC、MQ 或专用协议。不能从角色名字推断原项目实际拓扑。</p><p class=\"md-p\">Planner 输出带 taskId、依赖、输入版本和预算的任务，Worker 返回结构化结果与证据，Supervisor 按标准审核并给有限修订；关键操作仍需真实用户授权。消息区分 runId、taskId、attempt、目标、deadline 与结果引用，旧轮次结果不能覆盖新状态。共享可变状态需要单一拥有者或版本控制；短期会话和长期检索记忆各自隔离，向量库不是任务协调锁。题干没有提供调用代码，无法断言当时一定同进程或使用了某种队列。</p><h3 class=\"md-h md-h3\">JDBC 连 MySQL：接口名字不是线上协议</h3><p class=\"md-p\">JDBC 是 Java API。常见 Connector/J 连接把操作编码为经典 MySQL 客户端/服务器协议，经 TCP 传输并可协商 TLS，不是 HTTP 或 UDP；jdbc:mysql: 是驱动 URL 语法，不是线上报文前缀。Unix socket 等扩展要按驱动配置说明，MySQL X Protocol 也不能与经典协议混称。</p><p class=\"md-p\">TCP 连通后，服务器先发 Initial Handshake，携带能力、挑战数据和认证插件等信息；客户端的 HandshakeResponse 才包含用户名、能力以及插件定义的认证响应。用户名不在 TCP SYN 中，密码也不是统一以明文发送。启用 TLS 时，客户端先发 SSLRequest，在同一 TCP 连接上完成 TLS 握手，再发送 HandshakeResponse；因此敏感认证字段在 TLS 建立后发送。插件选择不同，还可能发生 AuthSwitchRequest 与后续响应。</p><p class=\"md-p\">回答“认证交互几次”要先约定计数单位。忽略 TCP/TLS 握手、不切换插件，且认证插件能直接成功结束时，可以画出服务器 Initial Handshake → 客户端 HandshakeResponse → 服务器 OK 的最简三条 MySQL 协议消息。它不是“三个 TCP 包”或“三个 RTT”，消息可能被分段、合并或重传；驱动初始化会话及后续 SQL 也不在这三条之内。</p><p class=\"md-p\">以 caching_sha2_password 的常见非空密码分支为例，快速认证成功还会在 OK 前发送 AuthMoreData（成功标记 0x03），按上述单位通常是四条；需要完整认证时，服务器用 0x04 要求继续，客户端在已验证的 TLS 中发送密码材料，再收到 OK/ERR。非 TLS 的 RSA 分支还要看客户端是否已有可信公钥，临时索取公钥会增加交互且有身份验证风险，不能为减少配置而无条件接受网络返回的公钥。TLS 升级、插件切换、完整认证与失败分支都会改变消息数；应按实际插件、驱动版本与抓包分层解释，不能给所有连接固定次数。</p><p class=\"md-p\">连接串示例是 jdbc:mysql://db.example.test:3306/app?sslMode=VERIFY_IDENTITY：db.example.test 是主机，3306 是端口，app 是数据库，问号后是驱动连接属性。VERIFY_IDENTITY 的前提是正确配置可信证书并匹配主机名。PREFERRED 可能允许回退明文，REQUIRED 也不等于完整主机身份校验，按实际驱动版本选择策略。用户名和密码可通过 DataSource、Properties 等受保护配置提供，避免把秘密拼入日志可见 URL。连接池减少重复认证，但归还连接时仍须处理事务与会话状态，建连成功不代表 SQL 授权或事务提交一定成功。</p><p class=\"md-p\">定位建连延迟时，分别记录名称解析、连接池等待、TCP 建连、TLS 握手与 MySQL 应用认证；复用连接可能跳过其中一些阶段。按实际调用链划分计时区间，不能把同一段等待重复计入多个阶段。</p><h3 class=\"md-h md-h3\">协程与 HTTP/2 多路复用为什么可以同时存在</h3><p class=\"md-p\">HTTP/2 组织连接上的协议流，协程组织程序的执行与等待。等待网络较多时，适当运行时可以挂起逻辑任务，让底层线程推进其他任务；这不增加 CPU 核数，也不会突破数据库连接池和远端容量。普通阻塞库是否会阻塞承载线程，要看运行时和调用方式。</p><p class=\"md-p\">Go goroutine 由 Go 运行时调度，C++20 协程机制本身不附带完整调度器，Java 21 虚拟线程又是具体的 Java 执行模型。不能把三者的实现细节互相套用。并发查询三个后端时，可以用顺序风格组织每个子任务，再统一总期限、异常和取消；共享状态仍需同步，有挂起点不代表没有竞态。</p><h3 class=\"md-h md-h3\">长任务为什么可能选择 MQ</h3><p class=\"md-p\">如果任务可以异步完成、需要削峰、重试和跨重启恢复，消息队列把提交与执行解耦。HTTP 返回已受理和任务 ID，worker 按有界并发处理，再通过查询或流式订阅报告结果。消息确认应与业务持久化边界协调，重复投递要求幂等；只有“发进 MQ”不意味着任务完成。</p><p class=\"md-p\">需要立刻获得短小结果、端到端期限很紧或事务控制较直接时，HTTP/RPC 更容易表达。MQ 增加排队、运维、重复与顺序管理成本，不能让慢任务凭空变快。状态保存、取消消息和正在执行任务之间也要有一致的状态机，不能只删队列消息就假定工作已停止。</p><h3 class=\"md-h md-h3\">Java SDK 与原生 HTTP 客户端可以并存</h3><p class=\"md-p\">一种可行分工是chat/embedding使用官方SDK客户端工厂，rerank使用Java HttpClient，分别统一超时、重试、错误映射、用量与关闭策略。若回答NoteWeave的实际实现，应核对对应仓库版本和调用代码，不能仅由项目用了SDK推断所有HTTP路径一致。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-network-source-guide\">适用版本与练习条件</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-practice-44fe592d4c853c30\">RPC 框架应该讲清哪些核心链路</h2><p class=\"md-p\">以下通过假设规模与故障时序推演设计，数字是待验证条件，不代表个人项目实测。</p><h3 class=\"md-h md-h3\">RPC 框架应该讲清哪些核心链路</h3><p class=\"md-p\">沿一次调用从代理、编码、寻址、传输到执行和响应关联讲清，再补超时、部分失败与治理。 远程调用看起来像方法调用，但网络中断、响应丢失和重复执行无法被透明抹去。</p><p class=\"md-p\">客户端代理从接口/方法定义生成请求，带协议版本、服务方法、参数、requestId、期限和追踪上下文。编码选 JSON、Protobuf 或 Thrift 等，比较体积、计算成本、演进规则和跨语言支持。服务发现获得候选节点，客户端或代理按轮询、权重、随机、最小在途等策略选择，连接池/异步 I/O 负责发送。</p><p class=\"md-p\">基于 TCP 自定义协议必须有清晰帧边界，例如固定头包含 magic、version、type、bodyLength、requestId；读取可得到半头、半包或多个包，先校验长度上限再分配内存并累计解析。TCP sequence 不是业务消息分界。HTTP 可利用成熟协议栈，UDP 则要自行面对丢失、乱序与大消息限制，不能仅把协议名列成等价选项。</p><p class=\"md-p\">服务端先解帧、鉴权和限制输入，再反序列化到白名单类型，把阻塞业务交给有界执行池；I/O 线程不做长时间数据库操作；反序列化不能加载任意不可信 Java 类型。</p><p class=\"md-p\">返回路径靠 requestId 关联：响应带原请求的 ID，客户端据此完成对应 Future；超时后移除关联，迟到回包按契约处理。练习时让一个响应晚于超时返回，说明怎样避免它污染后来的同号请求。</p><p class=\"md-p\">注册发现通常由服务按受控配置注册地址/端口、健康与元数据，客户端订阅或轮询获得变更；健康检测可能延迟，客户端还需被动失败剔除、连接更新和缓慢恢复。注册中心不可用时可以暂用有期限的旧列表，但不能保证所有旧地址仍有效。</p><p class=\"md-p\">重试必须看业务语义：读请求也可能昂贵或有计费；写请求必须带稳定 operationId 或查询原结果。TLS、双向身份或服务凭据、对象授权、限流、隔离、熔断和可观测不能只放在业务成功路径。日志分 attemptId、operationId 和 traceId，既能看重试又不把观测 ID 当去重依据。</p><p class=\"md-p\">验收半包/粘包、超长帧、未知方法、版本不兼容、并发响应乱序、请求取消、提交后丢响应、服务节点变化与连接耗尽；延迟和吞吐在真实 payload/依赖条件下测量。</p><p class=\"md-p\">扩展点还要限制它能看见和修改的状态。以 RPC 请求拦截器为例，传入服务、方法、经认证的身份、截止时间和追踪关联等只读上下文，并在各执行阶段重新计算剩余预算；只允许按白名单补充约定的 metadata，不直接开放内部连接、线程池和任意可变请求状态。身份和授权由受控入口负责，不能让普通 metadata 扩展改写；扩展改动影响实际执行参数时，应对最终执行版本重新校验授权。</p><p class=\"md-p\">同一次调用应使用一致的扩展链配置，并记录链和扩展版本，避免热更新时执行到一半混入另一套规则。除了接口总耗时，还应按受控的扩展名称和版本观察耗时、失败及短路次数，区分下游故障与插件故障。新扩展先小范围启用，比较额外延迟和误拒绝，再逐步放量；回退应切回已验证配置，不能靠关闭必要鉴权恢复流量。</p><h2 class=\"md-h md-h2\" id=\"add-reference-wave2-dubbo-failures\">Dubbo 的 Failover、Failfast、Failsafe 和 Forking 分别适合什么情况？</h2><p class=\"md-p\">Failover 在失败后重试其他提供者；Failfast 只发起一次调用，失败就返回错误；Failsafe 忽略调用异常；Forking 并发调用多个提供者，取得成功结果后返回。策略决定的是失败如何处理，不能替业务证明请求有没有产生副作用。</p><p class=\"md-p\">可重试的查询可以考虑 Failover，但次数和总时限要受控。非幂等写通常更适合先避免自动重试，同时保留操作 ID 和结果查询；Failfast 返回超时，也可能意味着远端已提交。Failsafe 只适合允许丢失结果的旁路工作，不能用来掩盖支付或必须保留的审计记录失败。Forking 会额外消耗下游资源，其他并发调用也可能已执行，不能用于未经幂等保护的扣款。</p><p class=\"md-p\">配置要落到具体方法并核对版本。以常见 Java SDK 的重试配置为例，retries 计的是首次调用之外的重试次数，不能把两次重试当作总共只调用两次。</p>",
+      "beforeSha256": "d1c5a622e859551608a05692cd40210da214382d7cd02a304b7c3c66ad7dfa8f",
+      "after": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s503\">机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">2.4 RPC框架做什么，Dubbo与gRPC设计理念怎样比较</h2><p class=\"md-p\">Dubbo更强调服务治理与多协议能力，gRPC以Protobuf契约和HTTP/2调用为典型路径，选型要结合生态、跨语言和治理需求。</p><p class=\"md-p\">常见问法：RPC框架做什么；Dubbo和gRPC怎么比较；远程调用为什么不能当本地方法。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">RPC是调用抽象，传输协议、序列化、发现和重试由具体框架配置决定。</p><h3 class=\"md-h md-h3\">RPC把远端调用包装成接口，但网络故障仍存在</h3><p class=\"md-p\">调用端stub/proxy把方法与参数编码，依据发现/路由选服务实例，经连接发送；服务端解码、分派方法、执行并编码响应，调用端根据requestId/stream关联结果。框架还处理超时、状态码、连接管理、认证和可观测性等。调用看似本地，失败时却可能已执行但响应丢失，不能自动当作未执行。</p><p class=\"md-p\">RPC 的几层概念要拆开说：同步、异步、流式是交互模型；序列化是数据格式；HTTP/2、TCP 等属于传输或协议层。</p><p class=\"md-p\">性能要一起看载荷、编码、网络往返、连接复用、排队和服务逻辑。用了二进制，并不保证比所有 HTTP 接口都快。</p><h3 class=\"md-h md-h3\">Dubbo侧重微服务框架与治理集成</h3><p class=\"md-p\">Dubbo提供服务暴露/引用、注册发现、路由/负载、容错等框架能力，传统Java接口开发生态突出，同时有多语言实现。经典Dubbo协议与Dubbo3 Triple要区分；当前Triple官方说明兼容gRPC并支持HTTP/1与HTTP/2，支持request-response和streaming。因此“Dubbo只能Java、只能自有TCP协议”都过时。</p><p class=\"md-p\">治理策略也是风险来源：默认重试是否合适取决于方法幂等性，注册变化需要传播，配置/路由要有版本和审计。框架集成完善不意味着业务不用设计deadline、幂等、熔断和数据契约。</p><h3 class=\"md-h md-h3\">gRPC侧重跨语言RPC契约和通用交互</h3><p class=\"md-p\">gRPC常以.proto服务/消息定义生成多语言stub，默认常用Protocol Buffers，提供unary、server streaming、client streaming和双向streaming。原生gRPC通常建立在HTTP/2上，有metadata、deadline、状态码和流控等语义；浏览器调用通常需要gRPC-Web等适配路径。</p><p class=\"md-p\">gRPC有命名解析、负载均衡、重试等机制，不能说完全没有治理；大规模发现/路由、策略与运维常结合平台、代理或service mesh。选择取决于跨语言契约、流式需求、现有团队/框架与治理栈，而不是把一个称作完整、另一个称作不完整。</p><h3 class=\"md-h md-h3\">共同的工程边界</h3><p class=\"md-p\">端到端deadline向下游传播并预算排队时间；仅对明确可重试且幂等的错误重试，设次数/总时长与抖动，防多层重试倍增。服务端取消是协作信号，不证明副作用未发生；错误码区分参数、权限、过载与结果未知。schema演进保留兼容字段语义，跨语言测试缺省值、数值范围和时间格式。</p><p class=\"md-p\">用真实消息大小、连接数、压缩、TLS与并发条件对比p95/p99、CPU和内存；故障测试超时、断连、版本混跑、实例摘除、流控与慢消费者。</p><h2 class=\"md-h md-h2\">2.8 Feign调用底层如何工作，用什么协议和序列化</h2><p class=\"md-p\">Feign用动态代理把接口调用编码为HTTP请求，通过选定客户端发送并解码响应，发现和负载均衡是可组合的额外层。</p><p class=\"md-p\">常见问法：Feign底层怎样调用；用什么协议和序列化；Feign与RPC是什么关系。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">以Spring Cloud OpenFeign 5.0.3为具体组件语义，实际HTTP客户端和序列化取决于配置与版本。</p><h3 class=\"md-h md-h3\">接口调用如何变成网络请求</h3><p class=\"md-p\">应用启动扫描@FeignClient接口，为接口创建代理并解析注解契约为方法元数据。调用接口方法时代理查对应处理器，把路径变量、查询参数、Header及body参数填到请求模板；编码器把Java对象转成约定的请求字节，拦截器可添加可信身份/trace，HTTP client负责连接与收发。</p><p class=\"md-p\">Feign 收到响应后，先按状态和错误解码规则处理，再由 Decoder 转成接口返回类型；失败通过异常或显式结果返回。</p><p class=\"md-p\">接口写起来像本地调用，代价和故障却仍是远程的：网络超时、部分失败、序列化不兼容，以及可能已生效但响应未知。不能拿本地方法成本估算它。</p><h3 class=\"md-h md-h3\">协议与组件分别负责什么</h3><p class=\"md-p\">Spring Cloud OpenFeign是声明式HTTP客户端，并非默认自定义二进制TCP协议。HTTP版本/TLS由实际底层client、服务端与配置决定，传输层通常TCP/TLS不能等同应用层RPC编码。SpringMvcContract解释Spring MVC注解，SpringEncoder/Decoder对接HttpMessageConverters；JSON常用但也可以是文本、表单或其他支持媒体类型，Feign不是固定某一种序列化。</p><p class=\"md-p\">服务名模式可经DiscoveryClient取得实例并由Spring Cloud LoadBalancer选择地址，直接配置URL可不经过发现/负载均衡。Nacos可提供实例列表或配置，它不是请求体序列化器，也不是所有RPC必需条件。HC5、OkHttp或默认client的连接池/支持能力按版本选择，不能说永远由某个具体库发送。</p><h3 class=\"md-h md-h3\">工程边界与验证</h3><p class=\"md-p\">区分连接超时、读取超时与全链路deadline；连接池等待、DNS等耗时也在用户预算内。重试只对明确可重试且幂等的请求，在总体预算内退避；Spring Cloud当前默认Retryer.NEVER_RETRY与原生Feign默认行为不同，必须以项目配置为准。熔断降级不能给扣款接口假成功。</p><p class=\"md-p\">用可控HTTP测试服务核验请求路径/编码、状态码、空响应/未知字段、超时后服务已提交、连接复用及LB摘除。分层包API/app/domain/infra是同一服务内部代码结构，微服务边界仍按领域与独立部署需求，不能把这些层直接各算一个服务。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-network-scenario-rpc-framework\">协议机制与设计边界</h2><h3 class=\"md-h md-h3\">应用重连的指数退避与内核 RTO 分开回答</h3><p class=\"md-p\">应用第 k 次连续失败可用 min(cap, base × 2^k) 作为等待上限，k 从 0 开始。base=0.5 秒、cap=30 秒时，未随机化序列为 0.5、1、2、4、8、16、30、30 秒。很多客户端同一时刻失败，即使使用纯指数也可能同步重试，所以还要 jitter，例如在 0 到当前上限内均匀随机；只在半上限到上限间随机则是另一种分布。</p><p class=\"md-p\">设总 deadline、总尝试预算、连续失败限制，遵守服务端适用的 Retry-After。参数错误、认证失败不按临时网络错误无限重试；等待期间必须允许取消。连接刚成功就断开时，不能每次成功都立即清零而导致持续高频，可用稳定时间门槛或跨连接限速。恢复连接后还要恢复订阅或查询业务结果，不能盲重放可能已成功的写入。心跳负责何时判失活，退避负责何时再尝试；它们又与 TCP RTO、CSMA/CD 的退避分别属于不同层次。</p><h2 class=\"md-h md-h2\">A16　RPC、序列化与有界 Java 调用链</h2><p class=\"md-p\">RPC 是把远程调用组织成接口的抽象，HTTP 是可承载它的协议；工程质量取决于类型契约、资源预算和失败语义，而不是调用看起来多像本地方法。</p><p class=\"md-p\">常见换问：RPC 和 HTTP 有什么区别？为什么不用直接 Socket？Spring 和 Socket 怎么选？五个节点要建几个连接？一个节点很慢但没宕机怎么办？Java 对象如何传到 Python？接口突然变慢如何自适应限流？十万条任务怎样批量调用？</p><h3 class=\"md-h md-h3\">一次远程调用比方法调用多了什么</h3><p class=\"md-p\">典型链路是 stub/代理 → 参数校验与序列化 → 服务发现与负载均衡 → 连接获取 → TLS 与认证 → 请求发送 → 服务端排队和执行 → 响应解码。各阶段都可能占用期限。gRPC 常通过 HTTP/2 承载，RPC 并不天然排斥 HTTP；普通 JSON/HTTP 也可以表达 RPC 风格操作。</p><p class=\"md-p\">远程超时表达的是“我没按时拿到结果”，不是“对方一定没执行”。对方可能根本没收到，也可能仍在执行，甚至已经提交，只是响应丢失；这和本地异常能看到当前调用栈的情况不同。</p><p class=\"md-p\">所以订单、扣款等远程操作要有业务幂等、状态查询和不确定结果处理。TCP 可靠性只解决传输的一部分，不能替你确认事务结果。</p><p class=\"md-p\">Spring 是框架体系，Socket 是网络端点抽象，二者不是同层互斥项。Spring MVC 处理 HTTP，Spring 也支持 WebSocket，底层仍依赖网络端点。若实际是在比较请求响应、SSE、WebSocket 和自定义 TCP，应先把问题说准确。自定义 Socket 让你承担分帧、版本、TLS、认证、背压与重连等责任；只有明确需要这种控制时才值得，分帧时应明确头部与长度上限，累计半帧、逐帧消费粘连数据，并在分配内存前拒绝非法长度。</p><h3 class=\"md-h md-h3\">五个节点与连接池怎样估算</h3><p class=\"md-p\">连接策略可以是每客户端覆盖全部节点、选择子集或按需懒建。若有 M 个客户端实例、N 个目标节点，每对目标预留 K 条连接，粗略数量可能达到 M×N×K，还要考虑灰度、重连和多地址。一个逻辑 channel 不保证始终对应一条物理连接，HTTP/2 单连接多流也不意味着并发无限，流限制、连接窗口和服务端队列都可能先到上限。</p><p class=\"md-p\">五个节点之一很慢但健康检查仍通过时，纯轮询会持续把约一部分请求送进尾延迟。可以结合在途请求、延迟、错误率和足够样本做异常摘除或降权，给恢复节点缓慢探测回流。不能只依据一次慢请求永久踢出，也不能把节点摘掉后忽略剩余四个节点的承载能力。</p><p class=\"md-p\">对少数幂等读请求可考虑带预算的延迟对冲，但第二次请求会加负载，第一份“迟到的成功”可能仍消耗资源。写操作不能未经设计就做对冲。取消落败调用也不保证后端已经停止，必须把重复执行风险和资源成本算进去。</p><h3 class=\"md-h md-h3\">期限、重试和连接复用如何协同</h3><p class=\"md-p\">为整体操作建立截止时间，再把剩余预算传给每次尝试和下游。连接超时、读取空闲超时、整体请求超时不是同一计时器。重试需要同时满足可重试故障、幂等或幂等键、剩余期限与重试预算，采用指数退避和抖动，并尊重适用的 Retry-After。</p><p class=\"md-p\">指定一个层次拥有主要重试策略，防止浏览器、网关、服务 A、SDK 各重试三次形成乘法放大。连接池等待也是延迟的一部分，应有限队列和等待期限；连接复用可以节约握手，不会让下游数据库或 CPU 变成无限容量。</p><p class=\"md-p\">Java HttpClient应复用配置好的客户端。流式响应的消费、关闭和取消都要明确所有者；方法返回不代表网络资源释放，超时后上游仍可能占并发。验证时可用仅回环HTTP服务观察类型化解析、大小限制、错误分类和关闭边界，而不是假定已有伴读程序。</p><h3 class=\"md-h md-h3\">自适应限流应限制什么</h3><p class=\"md-p\">至少区分并发上限 C、到达速率 R、排队容量 B。稳定条件下平均在途量约等于吞吐乘平均停留时间，但尾延迟与突发会使简单均值不足。接口变慢时即使请求率不变，在途量也会增加，因此只做每秒计数可能挡不住资源耗尽。</p><p class=\"md-p\">一个教学型 AIMD 控制器在健康且确实饱和的观察窗口缓慢加一，发现持续过载时乘性降低；设上下界、最小样本和冷却期，避免同一过载窗口每个失败都减半。参数错误、权限错误不是容量信号；429、超时、队列等待和服务延迟应根据契约分类。多实例各自自适应不能保证供应商的全局硬配额，仍需全局预算或协调。</p><p class=\"md-p\">permit应恰好释放一次，并对应实际资源生命周期。本地超时而上游仍执行时，立刻释放全部额度可能导致并发失控。通过重复释放、取消与迟到完成的事件交错检查控制器，再用真实指标、稳定性实验和故障回退验收。</p><h3 class=\"md-h md-h3\">十万条任务不等于十万个 Future</h3><p class=\"md-p\">十万条任务要靠有界领取逐步推进，而不是一次创建十万个 Future。先持久化任务，分页或流式领取，用租约、状态和幂等业务键记录处理过程，再由固定数量 worker 配合有界队列消费。</p><p class=\"md-p\">失败分类重试，毒性任务进入人工或隔离处理，重启后回收过期租约。不能把十万条一次塞进线程池或内存 CompletableFuture 列表；队列暂时为空，也不能证明整个批次已经完成。</p><p class=\"md-p\">批次进度由成功、永久失败、待处理、执行中等权威计数或可核对状态组成。调用外部接口的并发、每秒配额、成本预算和取消策略单独设限。低优先级批量任务要与在线流量隔离，避免重试风暴拖垮交互请求。</p><h3 class=\"md-h md-h3\">类型化上游适配比“换个 URL”可靠</h3><p class=\"md-p\">不同模型或服务供应商的鉴权、版本头、消息结构、工具调用 ID、终止事件和用量含义可能不同。定义内部的 Start、TextDelta、ToolArgumentsDelta、Usage、Completed、Failed 等类型，把供应商事件显式转换；工具参数未完整收齐并验证前不执行副作用，用量累计快照不能当逐次增量相加。</p><p class=\"md-p\">协议适配器负责语法，业务层负责授权、预算和状态。未知事件可以按兼容策略忽略或记录，关键终态不能靠模糊字符串匹配。具体供应商版本和 Agent 编排独立维护，网络集成回答只承诺已定义且验证过的接口契约。</p><h3 class=\"md-h md-h3\">多个 Agent 为什么可能不用网络互相调用</h3><p class=\"md-p\">Agent 是职责与状态边界，不必是独立服务器。同进程中的 Planner、Worker、Supervisor 可由调度器通过函数/协程、内存队列和显式状态对象交接任务，减少序列化与网络故障处理；它们调用远端模型或工具仍可能使用网络。跨进程可用受控管道等 IPC，跨机或需要独立语言、权限与扩缩容时再选择 HTTP/gRPC、MQ 或专用协议。不能从角色名字推断原项目实际拓扑。</p><p class=\"md-p\">Planner 输出带 taskId、依赖、输入版本和预算的任务，Worker 返回结构化结果与证据，Supervisor 按标准审核并给有限修订；关键操作仍需真实用户授权。消息区分 runId、taskId、attempt、目标、deadline 与结果引用，旧轮次结果不能覆盖新状态。共享可变状态需要单一拥有者或版本控制；短期会话和长期检索记忆各自隔离，向量库不是任务协调锁。题干没有提供调用代码，无法断言当时一定同进程或使用了某种队列。</p><h3 class=\"md-h md-h3\">JDBC 连 MySQL：接口名字不是线上协议</h3><p class=\"md-p\">JDBC 是 Java API。常见 Connector/J 连接把操作编码为经典 MySQL 客户端/服务器协议，经 TCP 传输并可协商 TLS，不是 HTTP 或 UDP；jdbc:mysql: 是驱动 URL 语法，不是线上报文前缀。Unix socket 等扩展要按驱动配置说明，MySQL X Protocol 也不能与经典协议混称。</p><p class=\"md-p\">TCP 连通后，服务器先发 Initial Handshake，携带能力、挑战数据和认证插件等信息；客户端的 HandshakeResponse 才包含用户名、能力以及插件定义的认证响应。用户名不在 TCP SYN 中，密码也不是统一以明文发送。启用 TLS 时，客户端先发 SSLRequest，在同一 TCP 连接上完成 TLS 握手，再发送 HandshakeResponse；因此敏感认证字段在 TLS 建立后发送。插件选择不同，还可能发生 AuthSwitchRequest 与后续响应。</p><p class=\"md-p\">回答“认证交互几次”要先约定计数单位。忽略 TCP/TLS 握手、不切换插件，且认证插件能直接成功结束时，可以画出服务器 Initial Handshake → 客户端 HandshakeResponse → 服务器 OK 的最简三条 MySQL 协议消息。它不是“三个 TCP 包”或“三个 RTT”，消息可能被分段、合并或重传；驱动初始化会话及后续 SQL 也不在这三条之内。</p><p class=\"md-p\">以 caching_sha2_password 的常见非空密码分支为例，快速认证成功还会在 OK 前发送 AuthMoreData（成功标记 0x03），按上述单位通常是四条；需要完整认证时，服务器用 0x04 要求继续，客户端在已验证的 TLS 中发送密码材料，再收到 OK/ERR。非 TLS 的 RSA 分支还要看客户端是否已有可信公钥，临时索取公钥会增加交互且有身份验证风险，不能为减少配置而无条件接受网络返回的公钥。TLS 升级、插件切换、完整认证与失败分支都会改变消息数；应按实际插件、驱动版本与抓包分层解释，不能给所有连接固定次数。</p><p class=\"md-p\">连接串示例是 jdbc:mysql://db.example.test:3306/app?sslMode=VERIFY_IDENTITY：db.example.test 是主机，3306 是端口，app 是数据库，问号后是驱动连接属性。VERIFY_IDENTITY 的前提是正确配置可信证书并匹配主机名。PREFERRED 可能允许回退明文，REQUIRED 也不等于完整主机身份校验，按实际驱动版本选择策略。用户名和密码可通过 DataSource、Properties 等受保护配置提供，避免把秘密拼入日志可见 URL。连接池减少重复认证，但归还连接时仍须处理事务与会话状态，建连成功不代表 SQL 授权或事务提交一定成功。</p><p class=\"md-p\">定位建连延迟时，分别记录名称解析、连接池等待、TCP 建连、TLS 握手与 MySQL 应用认证；复用连接可能跳过其中一些阶段。按实际调用链划分计时区间，不能把同一段等待重复计入多个阶段。</p><h3 class=\"md-h md-h3\">协程与 HTTP/2 多路复用为什么可以同时存在</h3><p class=\"md-p\">HTTP/2 组织连接上的协议流，协程组织程序的执行与等待。等待网络较多时，适当运行时可以挂起逻辑任务，让底层线程推进其他任务；这不增加 CPU 核数，也不会突破数据库连接池和远端容量。普通阻塞库是否会阻塞承载线程，要看运行时和调用方式。</p><p class=\"md-p\">Go goroutine 由 Go 运行时调度，C++20 协程机制本身不附带完整调度器，Java 21 虚拟线程又是具体的 Java 执行模型。不能把三者的实现细节互相套用。并发查询三个后端时，可以用顺序风格组织每个子任务，再统一总期限、异常和取消；共享状态仍需同步，有挂起点不代表没有竞态。</p><h3 class=\"md-h md-h3\">长任务为什么可能选择 MQ</h3><p class=\"md-p\">如果任务可以异步完成、需要削峰、重试和跨重启恢复，消息队列把提交与执行解耦。HTTP 返回已受理和任务 ID，worker 按有界并发处理，再通过查询或流式订阅报告结果。消息确认应与业务持久化边界协调，重复投递要求幂等；只有“发进 MQ”不意味着任务完成。</p><p class=\"md-p\">需要立刻获得短小结果、端到端期限很紧或事务控制较直接时，HTTP/RPC 更容易表达。MQ 增加排队、运维、重复与顺序管理成本，不能让慢任务凭空变快。状态保存、取消消息和正在执行任务之间也要有一致的状态机，不能只删队列消息就假定工作已停止。</p><h3 class=\"md-h md-h3\">Java SDK 与原生 HTTP 客户端可以并存</h3><p class=\"md-p\">一种可行分工是chat/embedding使用官方SDK客户端工厂，rerank使用Java HttpClient，分别统一超时、重试、错误映射、用量与关闭策略。若回答NoteWeave的实际实现，应核对对应仓库版本和调用代码，不能仅由项目用了SDK推断所有HTTP路径一致。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-network-source-guide\">适用版本与练习条件</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-practice-44fe592d4c853c30\">RPC 框架应该讲清哪些核心链路</h2><p class=\"md-p\">以下通过假设规模与故障时序推演设计，数字是待验证条件，不代表个人项目实测。</p><h3 class=\"md-h md-h3\">RPC 框架应该讲清哪些核心链路</h3><p class=\"md-p\">沿一次调用从代理、编码、寻址、传输到执行和响应关联讲清，再补超时、部分失败与治理。 远程调用看起来像方法调用，但网络中断、响应丢失和重复执行无法被透明抹去。</p><p class=\"md-p\">客户端代理先从接口和方法定义生成请求，带上协议版本、服务方法、参数、requestId、期限和追踪上下文。编码可选 JSON、Protobuf 或 Thrift，比较的是体积、计算成本、演进规则和跨语言支持。</p><p class=\"md-p\">接着才是把请求送到哪里：服务发现给出候选节点，客户端或代理按轮询、权重、随机、最小在途等策略选择，再由连接池或异步 I/O 发送。发现、选址、编码和连接管理各解决一层问题，不能混成一个“RPC协议”。</p><p class=\"md-p\">基于 TCP 自定义协议必须有清晰帧边界，例如固定头包含 magic、version、type、bodyLength、requestId；读取可得到半头、半包或多个包，先校验长度上限再分配内存并累计解析。TCP sequence 不是业务消息分界。HTTP 可利用成熟协议栈，UDP 则要自行面对丢失、乱序与大消息限制，不能仅把协议名列成等价选项。</p><p class=\"md-p\">服务端先解帧、鉴权和限制输入，再反序列化到白名单类型，把阻塞业务交给有界执行池；I/O 线程不做长时间数据库操作；反序列化不能加载任意不可信 Java 类型。</p><p class=\"md-p\">返回路径靠 requestId 关联：响应带原请求的 ID，客户端据此完成对应 Future；超时后移除关联，迟到回包按契约处理。练习时让一个响应晚于超时返回，说明怎样避免它污染后来的同号请求。</p><p class=\"md-p\">注册发现通常由服务按受控配置注册地址/端口、健康与元数据，客户端订阅或轮询获得变更；健康检测可能延迟，客户端还需被动失败剔除、连接更新和缓慢恢复。注册中心不可用时可以暂用有期限的旧列表，但不能保证所有旧地址仍有效。</p><p class=\"md-p\">重试必须看业务语义：读请求也可能昂贵或有计费；写请求必须带稳定 operationId 或查询原结果。TLS、双向身份或服务凭据、对象授权、限流、隔离、熔断和可观测不能只放在业务成功路径。日志分 attemptId、operationId 和 traceId，既能看重试又不把观测 ID 当去重依据。</p><p class=\"md-p\">验收半包/粘包、超长帧、未知方法、版本不兼容、并发响应乱序、请求取消、提交后丢响应、服务节点变化与连接耗尽；延迟和吞吐在真实 payload/依赖条件下测量。</p><p class=\"md-p\">扩展点还要限制它能看见和修改的状态。以 RPC 请求拦截器为例，传入服务、方法、经认证的身份、截止时间和追踪关联等只读上下文，并在各执行阶段重新计算剩余预算；只允许按白名单补充约定的 metadata，不直接开放内部连接、线程池和任意可变请求状态。身份和授权由受控入口负责，不能让普通 metadata 扩展改写；扩展改动影响实际执行参数时，应对最终执行版本重新校验授权。</p><p class=\"md-p\">同一次调用应使用一致的扩展链配置，并记录链和扩展版本，避免热更新时执行到一半混入另一套规则。除了接口总耗时，还应按受控的扩展名称和版本观察耗时、失败及短路次数，区分下游故障与插件故障。新扩展先小范围启用，比较额外延迟和误拒绝，再逐步放量；回退应切回已验证配置，不能靠关闭必要鉴权恢复流量。</p><h2 class=\"md-h md-h2\" id=\"add-reference-wave2-dubbo-failures\">Dubbo 的 Failover、Failfast、Failsafe 和 Forking 分别适合什么情况？</h2><p class=\"md-p\">Failover 在失败后重试其他提供者；Failfast 只发起一次调用，失败就返回错误；Failsafe 忽略调用异常；Forking 并发调用多个提供者，取得成功结果后返回。策略决定的是失败如何处理，不能替业务证明请求有没有产生副作用。</p><p class=\"md-p\">可重试的查询可以考虑 Failover，但次数和总时限要受控。非幂等写通常更适合先避免自动重试，同时保留操作 ID 和结果查询；Failfast 返回超时，也可能意味着远端已提交。Failsafe 只适合允许丢失结果的旁路工作，不能用来掩盖支付或必须保留的审计记录失败。Forking 会额外消耗下游资源，其他并发调用也可能已执行，不能用于未经幂等保护的扣款。</p><p class=\"md-p\">配置要落到具体方法并核对版本。以常见 Java SDK 的重试配置为例，retries 计的是首次调用之外的重试次数，不能把两次重试当作总共只调用两次。</p>",
+      "afterSha256": "bf503b607248576128d7e25335c27e6a8987bfdec2c013e75b21d8bbae401863",
+      "review": {
+        "rationale": "完整保留Dubbo/gRPC/Feign版本、JDBC认证、重连、AIMD、协程、Agent和调用策略正文；拆开核心链路密段，区分编码与寻址层，不触及代码。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "interviewAnswer"
+      ],
+      "before": "我先明确工作负载、回放与路由需求、延迟范围、顺序单位和业务效果边界，再比较 Kafka、RocketMQ 与 RabbitMQ 的版本能力和运维成本。可靠性沿生产意图、Broker 确认和消费效果逐段解释；性能用同一负载与确认配置验证，不把示例目标当成项目成绩。",
+      "beforeSha256": "92da1093a59366e4e43be31f38ed6fa94520dc86d031a5b53bcd641968ce61d0",
+      "after": "我会先问队列要承担什么：同进程解耦、可靠任务分发，还是跨服务订阅和长期回放。允许重启丢失的工作可以用有界内存队列；需要和业务一起可靠保存的任务，数据库任务表可能已经够用。只有需求和规模值得时，再引入或自建Broker。\n\n选Kafka、RocketMQ或RabbitMQ，我会比较日志回放、路由、延迟范围、顺序单位、事务接口和现有运维能力，不按产品名直接排吞吐。延迟消息尤其要核对版本，不能把某版能力套给所有部署。\n\n可靠性沿三段讲：业务先保存发布责任，Broker按声明的持久与复制条件确认，消费端业务效果完成或可靠接管后才确认。响应丢失会带来重复，所以目的端还要幂等。顺序也要约束生产重试和消费并发，不能只把同key发进一个分区就结束。",
+      "afterSha256": "33fe0e7b909599cec8deb23dab37f9cd9cb62666be4b5ed00ba582e6cf3d600f",
+      "review": {
+        "rationale": "依据本题完整机制解释改为可口述、有取舍与失败路径的回答，保留全部版本及事实边界。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "followups",
+        0
+      ],
+      "before": "Kafka 为什么快？",
+      "beforeSha256": "7c9252e9631cc1e4bcada90d66c42d926b9b7f430946476de391612f96b97e34",
+      "after": "Kafka为什么可能有较高吞吐？批量、顺序访问和页缓存降低每条消息的开销；零拷贝路径还受TLS、压缩与版本影响。最后要固定载荷、确认、复制与延迟目标比较，不能只引用一个峰值或说任何配置都快。",
+      "afterSha256": "95f39e633e2fc676ef86f951bb1bd190db912fd04492abe63d5e8163cb3a2f5a",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "followups",
+        1
+      ],
+      "before": "RocketMQ 事务消息怎么实现？",
+      "beforeSha256": "8c1206581d25ff154509bb6e3114299c05611cd5e1b2955786c41b82a9834160",
+      "after": "RocketMQ事务消息怎样工作？先发送半消息，再执行本地事务，随后提交或回滚；结果不明时Broker回查。回查必须依据可靠业务事实，未知不能一律回滚。这解决相应发布责任协调，不自动把消费方外部副作用纳入同一个事务。",
+      "afterSha256": "d0a44bf05e748c8c7e613c619732367d44ba8f87aadfd1182ae0fe60ac8ae616",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "followups",
+        2
+      ],
+      "before": "RabbitMQ 和 Kafka 性能差异？",
+      "beforeSha256": "fac25947d0d6c3299497987f16e16e7470758b8d1f05e1d60cf5a94fc4b9a009",
+      "after": "RabbitMQ与Kafka性能怎样比？先比较需求：路由/队列模型与日志保留、独立回放并不相同。固定同一消息大小、确认条件、复制、并发和统计窗口，再测吞吐与尾延迟；不能脱离场景说某个“性能一般”。",
+      "afterSha256": "13073082ff552575f2df280c9ecc548f9d87abb5742c35bb68a296c9c90a2c8c",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "followups",
+        3
+      ],
+      "before": "如何保证消息不丢失？",
+      "beforeSha256": "e1a17dc1989ab48939765035760c0ff8bd8872f940efeb6a1030c8e861a5b198",
+      "after": "怎样保证消息不丢？先明确故障与保留窗口，再检查生产意图是否持久、Broker确认代表什么、消费效果是否落地。Outbox防业务提交后未发消息，确认丢失允许同eventId重投，消费端同事务去重。盘毁、超保留或永久依赖故障仍有边界，不能承诺任意故障零丢。",
+      "afterSha256": "4a135f450aa8d3d58a17d0864c0896a1ef40c0742090d297a8eb7ad4d8109926",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "followups",
+        4
+      ],
+      "before": "如何实现顺序消息？",
+      "beforeSha256": "cd0734204f9a73b4643cb23219bfc844e69d9ed651399941accca487feeb1154",
+      "after": "顺序消息怎样实现？先定义按哪个业务key顺序，再稳定路由到相应分区或队列；生产并发、重试、分区调整与消费者并行也要遵守同一约束。前序失败时，严格顺序路径不能直接放行后序；日志顺序不自动等于业务完成顺序。",
+      "afterSha256": "8cfb54033bd521cfe3a6e902795ba26521bc46b3ec590b6fb10fa5f80fadbef8",
+      "review": {
+        "rationale": "完整回答原追问，不以组件名或泛化监控代替机制。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "requirements",
+        2
+      ],
+      "before": "消息不丢失",
+      "beforeSha256": "6102ca38a4fed142f74b79bde635e4ec5a287057fde47c5f69ada9ed816bdbd4",
+      "after": "定义“不丢失”覆盖的生产确认、Broker复制/持久边界、消费完成与保留窗口；永久不可恢复故障不包含在无条件保证内。",
+      "afterSha256": "497b6e20da0fa1457fd33d2119a1f41dcf88a0ba1dc0828653fcd16efb53029e",
+      "review": {
+        "rationale": "依据本题完整机制解释改为可口述、有取舍与失败路径的回答，保留全部版本及事实边界。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    },
+    {
+      "entryId": "scenario-message-queue",
+      "entryIdentity": {
+        "id": "scenario-message-queue",
+        "kind": "scenario",
+        "mod": "design",
+        "part": "架构场景 35 题",
+        "cat": "平台与基础设施",
+        "title": "消息队列选型与设计（Kafka / RocketMQ / RabbitMQ）",
+        "number": "场景 23"
+      },
+      "path": [
+        "supplementHtml"
+      ],
+      "before": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s3551\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">5.26 没有现成MQ时从头实现有哪些方案，怎样写一个诚实的持久日志核心</h2><p class=\"md-p\">从零做MQ先确定可靠性范围，持久日志核心须校验记录边界、刷盘后确认并安全恢复，其他Broker职责逐层补齐。</p><p class=\"md-p\">常见问法：没有MQ可以怎样实现；怎样写持久日志核心；断电后如何区分尾写和损坏。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">比较进程队列、数据库任务表和持久日志Broker，本节只推演单进程持久日志核心，不含网络、消费游标、复制或共识。</p><h3 class=\"md-h md-h3\">按需要的保证逐级选择</h3><p class=\"md-p\">只需同进程异步且允许重启丢任务，可用有界阻塞队列+worker，明确满队列拒绝/背压；它没有持久受理或跨服务订阅。需要可靠低中等量任务可用DB任务表，业务与待办同事务、索引小批领取、租约/epoch、重试和独立订阅进度，第5.11节已完整解释，不能把轮询删除一行当广播给所有下游。</p><p class=\"md-p\">需要高吞吐追加、长保留、独立消费组与回放，再考虑自己做分区日志Broker。代价包括文件恢复、复制、控制面、客户端SDK、升级、观测和安全，不只是ConcurrentLinkedQueue加Socket。按业务强顺序单位分区，不同分区并行，同分区内序号是日志位置而非全局时间。</p><h3 class=\"md-h md-h3\">存储和生产确认</h3><p class=\"md-p\">每个分区将长度、版本、序号、稳定eventId、payload及校验写到segment/WAL，稀疏offset索引支持定位；写满滚段，旧段按保留与订阅契约回收，索引可从日志重建。批写和顺序IO摊低开销，group commit改善吞吐但改变等待窗口。长度在分配缓冲前校验，CRC检测意外损坏而非恶意篡改。</p><p class=\"md-p\">ACK必须定义为内存接受、本地force完成还是已安全复制。单机刷盘不抵御盘毁，多副本需安全选主、epoch、提交水位与恢复规则；仅复制TCP发出去不等于对端持久。生产确认丢失时同eventId重发，去重账应与日志的可恢复状态一起存在；不要先在内存记seen再写文件。</p><h3 class=\"md-h md-h3\">消费、重试与保留是另一半Broker</h3><p class=\"md-p\">工作队列可用持久消息状态+visibility lease，过期重投；日志订阅则每个group独立位置，业务处理后才提交安全连续前缀，异步完成不能跳过洞。owner切换用generation/epoch防旧提交，业务端仍需inbox幂等。ACK丢失导致重投是正常情况。</p><p class=\"md-p\">重试有次数/期限/退避、死信保留原因和恢复责任；严格业务key顺序下前序失败不能任意放行后序。保留策略考虑离线消费者、最老必要offset与容量，不承诺永远等失联group；超过保留窗口明确缺口/重建。消息TTL、队列长度和回放都属于契约，不能静默删后仍显示已完成。</p><h3 class=\"md-h md-h3\">网络、集群和运维必须补齐</h3><p class=\"md-p\">协议需分帧、请求ID、版本、最大长度、超时、错误类别和背压；认证、topic/租户ACL、TLS、连接与速率配额保障隔离。控制面存topic/partition、成员/leader、策略与版本；数据面负责追加、复制、拉取与确认，二者分开。副本跨故障域、安全成员变更、备份恢复和升级兼容都要演练。</p><p class=\"md-p\">MQ积压仍按第5.15节测λ、μ和B/(μ−λ)，扩消费者受分区/顺序/下游限制。设计先写出故障模型和SLO，再由测试证明局部保证，不能把成熟MQ几行特征表当已完成产品。</p><h3 class=\"md-h md-h3\">单文件日志模型：12 字节帧头</h3><p class=\"md-p\">可将单文件日志模型设计为：在同一类加载器内先串行检查真实路径及文件系统fileKey，再打开唯一通道并获取FileChannel锁；在支持稳定fileKey的本地文件系统和协作调用方假设下，通过真实路径与fileKey登记拒绝相同文件的重复打开。只用tryLock再关闭失败通道不够：某些系统关闭同文件任一通道会释放本JVM的全部原生文件锁。实例synchronized串行追加；frame采用12字节头：4字节长度、4字节长度头CRC、4字节主体CRC；主体包含seq、UTF-8事件ID和payload。恢复必须先核对长度头CRC和范围，再按该长度读取主体并校验。同ID相同payload返回原seq，不同payload拒绝；force(true)返回后才更新内存索引并返回，IO失败后poisoned，必须重开扫描。</p><p class=\"md-p\">日志恢复先校验，再决定能不能截尾。依次检查长度头、完整主体和连续序号，重建索引；在约定的追加撕裂模型下，可以截去不完整尾记录，但完整头或主体校验错误，应拒绝打开且不改文件。</p><p class=\"md-p\">长度字段若不单独校验，损坏后的偏大长度可能把完整已确认记录误当撕裂尾部，这要用回归测试防住。截尾正确性仍依赖错误模型：未完成尾写和已有数据被截断，仅靠字节无法区分；已确认数据真丢了，需要副本或备份检测，示例不声称解决盘毁。</p><p class=\"md-p\">所有权假设必须明确：使用支持稳定fileKey和FileLock的普通本地文件；缺少fileKey则拒绝。协作方共用本类的单一类加载器，持有期间不另开/关闭同文件通道，不替换、删除或重绑路径；外部不遵守协议的程序仍能绕过advisory lock。多类加载器、网络文件系统及外部命名空间竞争不在保证内。构造恢复失败先关通道再清登记；正常close先完全释放资源再注销，重复close不能删掉新owner；清理出现IO错误则保留登记并拒绝自动重开。</p><h3 class=\"md-h md-h3\">测试与未实现范围</h3><p class=\"md-p\">验收应覆盖并发同ID去重、不同ID顺序、输入输出副本保护、payload冲突、关闭重开、第二frame各截断位置、完整记录CRC损坏拒绝以及长度头位翻转。CRC用于检测意外损坏，不能防恶意同时改内容与校验。FileChannel.force实际调用仍不证明断电与硬件缓存均满足所需耐久合同。</p><p class=\"md-p\">示例最多10000不同ID、单record主体1MiB，达到边界明确拒绝；保存所有payload/ID索引使内存O(日志总字节)，恢复O(文件字节)，追加写O(本条字节)加同步IO/锁等待。没有滚段、稀疏索引、消费游标、过期裁剪、网络、复制/共识，不能当生产MQ或吞吐基准。扩展这些能力需分别写恢复协议与故障测试。</p><h3 class=\"md-h md-h3\">12字节帧头的兼容性边界</h3><p class=\"md-p\">这个单文件日志模型采用12字节头格式，与8字节头格式不兼容。它没有magic或显式版本字段，也没有旧格式自动识别和迁移；只允许打开按本格式建立的文件，升级必须在受控离线流程中读取旧格式并生成经校验的新文件。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-mq-scenario-message-queue\">消息队列手册：机制、具体条件与可靠性边界</h2><h3 class=\"md-h md-h3\">Q43 从零实现一个消息队列 要回答到哪一层</h3><p class=\"md-p\">先确认是进程内队列、操作系统 IPC，还是分布式 broker，它们的持久性、故障模型和接口完全不同。</p><p class=\"md-p\">Java 进程内生产者消费者可用 ArrayBlockingQueue，或 ReentrantLock + 两个 Condition 管理环形数组；有界容量提供背压，close/中断必须唤醒等待者。时间复杂度可做到入队出队 O(1)，内存 O(capacity)，但 JVM 退出消息消失。</p><p class=\"md-p\">操作系统消息队列由内核管理消息边界、权限、阻塞与唤醒；与管道字节流、共享内存同步和 socket 不同。这里的“消息队列如何实现”不是默认让你部署 Kafka。C++ 条件变量题保留 mutex、condition_variable、RAII 与内存可见性的语言语义；只有一个 producer 也不能在多个 consumer 修改共享计数时省掉同步。</p><p class=\"md-p\">分布式 broker 还需要协议与认证、追加日志、索引、持久确认、复制选主、消费进度、重投、配额、保留、管理与观测。可先实现单节点追加日志和手动确认，再解释如何逐步加入恢复、复制和分区；不能把内存 BlockingQueue 改成 Socket 服务就称生产级 MQ。</p><p class=\"md-p\">Go channel 题需要按 Go 的 close、发送到已关闭通道、接收结束和 goroutine 语义回答；不能把 Java interrupt 当成 Go 原语。JavaScript 异步题要讨论 Promise、事件循环与背压，Promise.all 本身不限制并发，也不等于数据库事务。这些语言差异不改变稳定事件身份、持久完成再确认等分布式原则。</p><p class=\"md-p\">前端/全栈追问“为什么选 Cloudflare Workers Queues、为什么 Markdown 转 HTML 放到后端异步”时，应保留这个平台语境。可选择它来解耦请求与渲染，减少每次 SSR 重复消耗 CPU，并利用托管队列缓冲突发；代价是排队延迟、平台限制、调用成本和额外状态管理。若内容很小、更新少且同步渲染已满足延迟目标，异步链路未必划算。Serverless 冷启动和首屏慢仍需各自测量，放入队列不会自动改善所有页面指标。</p><p class=\"md-p\">Cloudflare Queues 的公开接口约定默认至少一次，且不保证按发布顺序投递。因此用文档 ID + 内容版本标识渲染任务，重复任务复用不可变产物；更新最新指针时以版本条件写入，避免旧渲染覆盖新稿。Markdown 输入与 HTML 输出都需限制资源并处理不可信内容，展示前按允许列表净化 HTML。数据库中的内容变更与入队意图仍需可靠衔接；页面读取明确的 PENDING/READY/FAILED 状态，不能把等待 promise 当持久任务记录。</p><p class=\"md-p\">在 Workers 的 JavaScript/TypeScript 消费回调中，只对已经持久完成的单条消息调用 ack()；其余按错误类别重试，达到上限进入配置好的 DLQ。批次局部成功需要显式确认策略，不能因后面一条失败把前面的外部副作用无保护地再执行。平台配额和运行限制按实际部署核对，不能套用 Kafka 分区数或 Java 线程数估算。</p><h3 class=\"md-h md-h3\">AI旁路和不可信脚本怎样隔离</h3><p class=\"md-p\">制造业场景中，基础告警、规则判定与可靠触达应独立于AI诊断。AI有自己的持久任务、上下文快照、队列、线程/连接/模型预算和最大等待；证据不足或超时返回可解释降级，不阻断基础告警。仅拆一个topic却共享满载执行池，不算隔离。正式工单写入由规则与人工审批控制，审批版本CAS和CMMS稳定请求号各保护不同边界。</p><p class=\"md-p\">分布式脚本服务先定义鉴权、不可变脚本hash、输入引用、总deadline和结果接口，再考虑调度。控制面不得直接把上传内容拼成宿主shell命令。执行环境按威胁模型使用加强沙箱、微虚机或专用节点，最小权限、只读授权输入、默认禁网，限制CPU、内存、进程数、磁盘、文件描述符、输出字节与时间。普通容器并不是敌对多租户场景的充分隔离证明。</p><p class=\"md-p\">Go控制面契约应保留Submit、Claim、Complete、Expire、Cancel、Reconcile、Get与竞争测试，这里按有界单进程内存控制面作契约推演，不提供HTTP鉴权、共享持久库、心跳、真实沙箱或宿主执行。它和Java日志模型是两种实验，不能用Java测试结果声称Go服务已跑通。Go中核对成功允许保留“取消请求发生前后外部实际成功”的结果，说明取消不具备回滚外界的魔法。</p><h3 class=\"md-h md-h3\">博客Markdown异步渲染为什么可用托管队列</h3><p class=\"md-p\">若博客提交后可先显示渲染中，而渲染耗时、依赖外部资源，Cloudflare Workers Queues可以提供托管消费与重试，减少自管broker负担。Cloudflare Queues采用至少一次交付，应假设重复且不依赖全局顺序。选型还要核对当时平台的CPU、墙钟、内存、消息大小、批量、保留和费用限制，不能沿用未经验证的旧数值。</p><p class=\"md-p\">任务固定文章ID、源版本/hash、渲染器和模板版本，生成不可变产物后条件更新发布指针。v2先完成、v1晚到不能倒退；文章删除保留墓碑。渲染失败显示原因、可重试或保留上一个有效版本，输出还要防注入、错误资源URL与不受信HTML。存源文与发队列仍有双写窗口，需同一可靠责任或可恢复扫描，而不是因用了托管服务就省掉一致性设计。</p><p class=\"md-p\">追问“为什么这个项目用了某MQ”时，按工作负载、已有基础设施、团队运维能力和失败合同解释，再说明比较成本。不能从组件名字推出低延迟、零丢失或最优性能，也不能把教学选型改写成做过的生产决策。</p><p class=\"md-p\">下面转入另一份独立的分段日志教学版本：它同样命名为 SegmentJournal，但使用 v2 的 20 字节帧头、专属目录和段轮转，与前面的 12 字节单文件版本不是同一实现，文件格式不可互换。两者都只是持久日志核心，不是完整生产 MQ。</p><h3 class=\"md-h md-h3\">按需要的保证逐级实现</h3><p class=\"md-p\">单进程内存队列适合可丢或可重建工作；数据库任务表适合依赖现有事务和到期索引的持久任务；自建日志broker适合确有需要且能承担协议、复制、运维复杂度的场景。不要从一道面试题直接跳到“复刻Kafka”。先说谁接收、成功返回代表什么、崩溃恢复从哪里开始、重复如何辨认。</p><p class=\"md-p\">分段日志模型以JDK 21为假设环境，使用本地普通文件和单写权威。调用append传入稳定ID与不可变payload，完整写入并force成功后才返回序号；同ID同内容返回原序号，同ID不同内容拒绝。它没有网络、认证、订阅、消费者游标、消费ACK、重试队列、复制或自动保留清理，其他章节的控制面只能在上述单机日志合同内作推演。</p><h3 class=\"md-h md-h3\">帧格式与边界校验</h3><p class=\"md-p\">先看一帧怎样被解析。实验使用 v2、大端格式，分头部和 body：</p><ul class=\"md-list\"><li>头部共 20 字节：4 字节 magic、2 字节版本、2 字节 flags、4 字节 body 长度、4 字节 body CRC32C、4 字节 header CRC32C。</li><li>header CRC 覆盖前 16 字节。先核对固定值、版本、flags、长度边界和独立 CRC，才能信任 body 长度；否则，已确认帧的合法长度被改大，可能被误认成半帧并静默截掉。</li><li>body 依次是 8 字节序号、4 字节 key 长度、UTF-8 key、4 字节 payload 长度、payload；body CRC 覆盖整个 body。</li></ul><p class=\"md-p\">CRC 用于检测常见损坏，不是防篡改认证。发现 v1 数据会拒绝打开，不做隐式转换；要保留旧数据，须用对应旧格式读取器核验，再显式迁移到新目录。实验使用新建专属目录。若需抵御恶意修改，还要密码学认证、权限和密钥管理。</p><p class=\"md-p\">恢复先检查文件总量、段大小和长度上限，再分配缓冲。不能直接new byte[磁盘里读出的长度]，否则坏数据可导致超大分配。UTF-8严格解码，Java输入也严格拒绝未配对代理字符，避免替换字符把两个不同ID折叠成同一身份。payload和返回记录做防御性复制，外部修改数组不能改变已接受内容。</p><p class=\"md-p\">教学上限为单body 1MiB、key 1024字节、最多10,000记录、日志总量16MiB，默认段2MiB。内存索引保留所有已恢复payload，空间复杂度与有界日志体积同阶，适合实验而非海量broker。任务层还有最多500任务、每租户身份配额；终态身份仍占去重容量，满了拒绝新受理，没有假装实现安全GC。</p><h3 class=\"md-h md-h3\">尾部写一半与完整坏帧，恢复策略不同</h3><p class=\"md-p\">最后活跃段末尾只有部分头，或通过完整头校验后发现body尚未写全，恢复在“已确认字节不会被截短”的存储假设下可以截断到最后完整帧并force。若介质会截短已确认数据，仅靠现有字节无法区分它与未确认尾写，必须靠外部提交证据、副本或备份恢复；CRC碰撞也仍可能发生。已经封存的非最后段如果不完整，拒绝打开；完整帧CRC错误、非法长度、未知版本或序号不连续，也拒绝，不把“损坏”当成可随意丢弃的未确认尾巴。</p><p class=\"md-p\">若完整帧写完但ACK前进程退出，恢复可能读到这条未被调用方确认的记录；客户端以相同ID重试可返回原序号。这是确认丢失带来的允许重复入口。若写入/force报错，实例进入poisoned状态，不再继续追加掩盖不确定尾部；关闭后重新打开，由恢复过程确定有效前缀。可在afterWrite位置设计故障注入以模拟这个窗口，不证明真实断电时磁盘固件如何工作。</p><p class=\"md-p\">CRC不能单独判断所有损坏；错误恰巧改成另一份合法记录、攻击者重算CRC、硬件同时损坏多个副本都需要更强措施。若故障可能影响已确认记录，需备份、副本、存储校验及人工恢复，不能通过“遇错就truncate”偷换不丢承诺。</p><h3 class=\"md-h md-h3\">段轮转与索引重建</h3><p class=\"md-p\">段名由首条记录序号组成，恢复按序排列并验证连续性。追加前判断下一帧是否放得下；放不下先force并关闭旧段，再以CREATE_NEW创建新段，同步必要的文件与目录元数据。新段创建后崩溃留下空的最后段可以继续，空的封存段不合法。恢复顺序扫描各段，从文件内容重建ID到记录索引，不依赖一个可能与数据不同步的旁路索引文件。</p><p class=\"md-p\">简化索引的代价是启动需扫描全部日志，随机按ID查询依赖内存；生产可用稀疏索引、checkpoint和后台压实，但checkpoint本身也需版本、校验和原子发布协议。不能先删日志再希望索引证明历史去重。记录/段保留还受最慢消费者、重放与幂等窗口约束，这份日志不实现删除策略。</p><h3 class=\"md-h md-h3\">文件锁、同JVM所有权与关闭</h3><p class=\"md-p\">构造器要求专用、已存在的目录，解析真实路径并取得独占lock文件锁。JVM内还用文件系统身份注册表，在打开第二个同目标锁文件通道前拒绝重复构造；原因是部分系统关闭同inode的任意通道可能释放进程持有的锁，不能只依赖捕获OverlappingFileLockException。验收应覆盖同路径、符号链接、lock文件硬链接别名及子进程争锁。</p><p class=\"md-p\">保证以单classloader、合作进程、受支持本地文件系统和稳定目录命名空间为前提。它不防敌对进程替换目录/段文件，不支持把不同目录硬链接同一数据段后当独立日志，也不能推论NFS等远程文件系统锁与force完全相同。真实部署需验证文件系统身份、原子创建、锁和目录同步行为。</p><p class=\"md-p\">close互斥且幂等，正常状态force、关闭活跃段和锁通道，再释放JVM内预约；清理失败采取失败封闭，不能为了继续服务悄悄允许第二写者。旧对象重复close不得撤销后来新实例的所有权。任务/业务模型通过AutoCloseable按同一生命周期持有日志，验收需保证异常退出后也清理专属临时目录。</p><h3 class=\"md-h md-h3\">从日志到broker还缺什么</h3><p class=\"md-p\">生产协议要有帧上限、版本协商、请求ID、鉴权、流控、连接超时和明确ACK；网络发送完成不是持久ACK。复制要定义领导权、日志任期、法定人数、提交水位、故障选主和fencing，不能把“复制到两个文件”叫高可用。控制面要负责元数据与分片迁移，数据面处理追加和读取。</p><p class=\"md-p\">消费协议要有group/partition游标、领取与可见性、重投、幂等接口、死信和管理操作。提交游标要与业务完成/持久接管一致，重平衡保留旧owner竞态处理。运营还需要磁盘水位拒绝、备份恢复、版本升级、审计、租户隔离、保留和监控。每加一项，都应列出确认前后崩溃时谁还有责任。</p><h3 class=\"md-h md-h3\">如何设计故障验收</h3><p class=\"md-p\">日志验收计划应检查严格编码、帧损坏、所有第二帧部分尾切点、完整CRC损坏不截断、非法序号、段轮转、封存段不完整、并发同ID、错误后poison、真实子进程锁竞争、重复关闭与临时文件清理。任务与业务验收还应覆盖四阶段重放、取消/版本、UNKNOWN、恢复扫描、规则槽和禁言变更。</p><p class=\"md-p\">上述验收计划限定时间、内存和专用临时文件；它不代替断电、磁盘故障、跨主机复制或真实broker集成。对每个时序记录输入、注入点和允许终态，只有实际运行并保存证据后才能报告通过；本节不提供代码或执行结果。</p><h3 class=\"md-h md-h3\">Go控制面验收边界</h3><p class=\"md-p\">若另做Go练习，应把Submit、Claim、Complete、Expire、Cancel、Reconcile、Get放在有界单权威模型中，以Go 1.23.0语言基线和兼容工具链独立验证竞争。该模型不含宿主执行、网络服务或沙箱；不能把Java/H2结果作为Go运行证据。</p><p class=\"md-p\">Go的生产实现必须把状态转移迁移到共享持久存储，补鉴权、输入/输出体积限制、沙箱资源隔离与真实核对。示例保留UNKNOWN与CANCEL_REQUESTED，就是为了不把“失联”伪装成“没有执行”。</p><h3 class=\"md-h md-h3\">C++、Go 与前端题的语言边界</h3><p class=\"md-p\">如果题目原本要求 C++ 有界队列，除 Q56 的 Java 解法，还应说明 RAII 锁所有权、std::condition_variable 的谓词等待、虚假唤醒、关闭后唤醒全部等待者，以及返回状态不能和元素值 0 混淆。不能把 Java 的 InterruptedException 原样搬成 C++ 语义。Go 的 context.Context 是协作取消信号，关闭 channel、发送者所有权和 goroutine 退出需另外设计；Go 控制面按原生语言语义设计，不借 Java 模型证明其运行行为。</p><p class=\"md-p\">前端 JavaScript 的并发请求调度、依赖批次、Worker 最新结果与主动让出事件循环，可结合Q50讨论相应语言机制。JS 单线程事件循环中的 Promise 并发不是 CPU 并行；Worker 消息到达不代表业务已经持久提交。异步硬编码扫描的 Go 岗题可用“任务输入版本 → 扫描结果身份 → CAS 写回”解释锁身份，AI 上下文只读最小必要代码并脱敏，不得把待扫描仓库内容当成可以执行的指令。</p><p class=\"md-p\">目标与实现边界：这里的百万 QPS、10ms 与固定堆积阈值是题设或待验证目标，不能当项目成果。RocketMQ 18 级只适用于相应旧版模型；事务回查未知时不能一律 ROLLBACK，传统 4.9.8 枚举拼写为 UNKNOW。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li></ul>",
+      "beforeSha256": "4eac8ea82e9725c15bf1b227d8587802adcd3ffe8647954e3e26be2d5cc4e73f",
+      "after": "<h2 class=\"md-h md-h2\" id=\"add-own-distributed-s3551\">分布式手册：完整机制、条件与故障推演</h2><h2 class=\"md-h md-h2\">5.26 没有现成MQ时从头实现有哪些方案，怎样写一个诚实的持久日志核心</h2><p class=\"md-p\">从零做MQ先确定可靠性范围，持久日志核心须校验记录边界、刷盘后确认并安全恢复，其他Broker职责逐层补齐。</p><p class=\"md-p\">常见问法：没有MQ可以怎样实现；怎样写持久日志核心；断电后如何区分尾写和损坏。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">比较进程队列、数据库任务表和持久日志Broker，本节只推演单进程持久日志核心，不含网络、消费游标、复制或共识。</p><h3 class=\"md-h md-h3\">按需要的保证逐级选择</h3><p class=\"md-p\">只需同进程异步且允许重启丢任务，可用有界阻塞队列+worker，明确满队列拒绝/背压；它没有持久受理或跨服务订阅。需要可靠低中等量任务可用DB任务表，业务与待办同事务、索引小批领取、租约/epoch、重试和独立订阅进度，第5.11节已完整解释，不能把轮询删除一行当广播给所有下游。</p><p class=\"md-p\">需要高吞吐追加、长保留、独立消费组与回放，再考虑自己做分区日志Broker。代价包括文件恢复、复制、控制面、客户端SDK、升级、观测和安全，不只是ConcurrentLinkedQueue加Socket。按业务强顺序单位分区，不同分区并行，同分区内序号是日志位置而非全局时间。</p><h3 class=\"md-h md-h3\">存储和生产确认</h3><p class=\"md-p\">每个分区将长度、版本、序号、稳定eventId、payload及校验写到segment/WAL，稀疏offset索引支持定位；写满滚段，旧段按保留与订阅契约回收，索引可从日志重建。批写和顺序IO摊低开销，group commit改善吞吐但改变等待窗口。长度在分配缓冲前校验，CRC检测意外损坏而非恶意篡改。</p><p class=\"md-p\">ACK必须定义为内存接受、本地force完成还是已安全复制。单机刷盘不抵御盘毁，多副本需安全选主、epoch、提交水位与恢复规则；仅复制TCP发出去不等于对端持久。生产确认丢失时同eventId重发，去重账应与日志的可恢复状态一起存在；不要先在内存记seen再写文件。</p><h3 class=\"md-h md-h3\">消费、重试与保留是另一半Broker</h3><p class=\"md-p\">工作队列可用持久消息状态+visibility lease，过期重投；日志订阅则每个group独立位置，业务处理后才提交安全连续前缀，异步完成不能跳过洞。owner切换用generation/epoch防旧提交，业务端仍需inbox幂等。ACK丢失导致重投是正常情况。</p><p class=\"md-p\">重试有次数/期限/退避、死信保留原因和恢复责任；严格业务key顺序下前序失败不能任意放行后序。保留策略考虑离线消费者、最老必要offset与容量，不承诺永远等失联group；超过保留窗口明确缺口/重建。消息TTL、队列长度和回放都属于契约，不能静默删后仍显示已完成。</p><h3 class=\"md-h md-h3\">网络、集群和运维必须补齐</h3><p class=\"md-p\">协议需分帧、请求ID、版本、最大长度、超时、错误类别和背压；认证、topic/租户ACL、TLS、连接与速率配额保障隔离。控制面存topic/partition、成员/leader、策略与版本；数据面负责追加、复制、拉取与确认，二者分开。副本跨故障域、安全成员变更、备份恢复和升级兼容都要演练。</p><p class=\"md-p\">MQ积压仍按第5.15节测λ、μ和B/(μ−λ)，扩消费者受分区/顺序/下游限制。设计先写出故障模型和SLO，再由测试证明局部保证，不能把成熟MQ几行特征表当已完成产品。</p><h3 class=\"md-h md-h3\">单文件日志模型：12 字节帧头</h3><p class=\"md-p\">单文件日志模型先解决“谁能写这个文件”。在同一类加载器内，串行检查真实路径和文件系统 fileKey，再打开唯一通道并获取 FileChannel 锁。在支持稳定 fileKey 的本地文件系统、协作调用方这一前提下，用路径与 fileKey 登记拒绝重复打开。</p><p class=\"md-p\">只用 tryLock、失败后关闭通道仍不够：某些系统关闭同文件任一通道，会释放本 JVM 的全部原生文件锁。实例内部再用 synchronized 串行追加。</p><p class=\"md-p\">然后看记录格式：12 字节头分别是4字节长度、4字节长度头CRC、4字节主体CRC；主体包含seq、UTF-8事件ID和payload。恢复时先核对长度头CRC与范围，才能按长度读取并校验主体。</p><p class=\"md-p\">同ID同payload返回原seq，不同payload拒绝。只有force(true)返回后才更新内存索引并返回；IO失败后进入poisoned状态，必须重开扫描。这几步分别保护文件所有权、解析边界与确认语义。</p><p class=\"md-p\">日志恢复先校验，再决定能不能截尾。依次检查长度头、完整主体和连续序号，重建索引；在约定的追加撕裂模型下，可以截去不完整尾记录，但完整头或主体校验错误，应拒绝打开且不改文件。</p><p class=\"md-p\">长度字段若不单独校验，损坏后的偏大长度可能把完整已确认记录误当撕裂尾部，这要用回归测试防住。截尾正确性仍依赖错误模型：未完成尾写和已有数据被截断，仅靠字节无法区分；已确认数据真丢了，需要副本或备份检测，示例不声称解决盘毁。</p><p class=\"md-p\">所有权假设必须明确：使用支持稳定fileKey和FileLock的普通本地文件；缺少fileKey则拒绝。协作方共用本类的单一类加载器，持有期间不另开/关闭同文件通道，不替换、删除或重绑路径；外部不遵守协议的程序仍能绕过advisory lock。多类加载器、网络文件系统及外部命名空间竞争不在保证内。构造恢复失败先关通道再清登记；正常close先完全释放资源再注销，重复close不能删掉新owner；清理出现IO错误则保留登记并拒绝自动重开。</p><h3 class=\"md-h md-h3\">测试与未实现范围</h3><p class=\"md-p\">验收应覆盖并发同ID去重、不同ID顺序、输入输出副本保护、payload冲突、关闭重开、第二frame各截断位置、完整记录CRC损坏拒绝以及长度头位翻转。CRC用于检测意外损坏，不能防恶意同时改内容与校验。FileChannel.force实际调用仍不证明断电与硬件缓存均满足所需耐久合同。</p><p class=\"md-p\">示例最多10000不同ID、单record主体1MiB，达到边界明确拒绝；保存所有payload/ID索引使内存O(日志总字节)，恢复O(文件字节)，追加写O(本条字节)加同步IO/锁等待。没有滚段、稀疏索引、消费游标、过期裁剪、网络、复制/共识，不能当生产MQ或吞吐基准。扩展这些能力需分别写恢复协议与故障测试。</p><h3 class=\"md-h md-h3\">12字节帧头的兼容性边界</h3><p class=\"md-p\">这个单文件日志模型采用12字节头格式，与8字节头格式不兼容。它没有magic或显式版本字段，也没有旧格式自动识别和迁移；只允许打开按本格式建立的文件，升级必须在受控离线流程中读取旧格式并生成经校验的新文件。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-mq-scenario-message-queue\">消息队列手册：机制、具体条件与可靠性边界</h2><h3 class=\"md-h md-h3\">Q43 从零实现一个消息队列 要回答到哪一层</h3><p class=\"md-p\">先确认是进程内队列、操作系统 IPC，还是分布式 broker，它们的持久性、故障模型和接口完全不同。</p><p class=\"md-p\">Java 进程内生产者消费者可用 ArrayBlockingQueue，或 ReentrantLock + 两个 Condition 管理环形数组；有界容量提供背压，close/中断必须唤醒等待者。时间复杂度可做到入队出队 O(1)，内存 O(capacity)，但 JVM 退出消息消失。</p><p class=\"md-p\">操作系统消息队列由内核管理消息边界、权限、阻塞与唤醒；与管道字节流、共享内存同步和 socket 不同。这里的“消息队列如何实现”不是默认让你部署 Kafka。C++ 条件变量题保留 mutex、condition_variable、RAII 与内存可见性的语言语义；只有一个 producer 也不能在多个 consumer 修改共享计数时省掉同步。</p><p class=\"md-p\">分布式 broker 还需要协议与认证、追加日志、索引、持久确认、复制选主、消费进度、重投、配额、保留、管理与观测。可先实现单节点追加日志和手动确认，再解释如何逐步加入恢复、复制和分区；不能把内存 BlockingQueue 改成 Socket 服务就称生产级 MQ。</p><p class=\"md-p\">Go channel 题需要按 Go 的 close、发送到已关闭通道、接收结束和 goroutine 语义回答；不能把 Java interrupt 当成 Go 原语。JavaScript 异步题要讨论 Promise、事件循环与背压，Promise.all 本身不限制并发，也不等于数据库事务。这些语言差异不改变稳定事件身份、持久完成再确认等分布式原则。</p><p class=\"md-p\">前端/全栈追问“为什么选 Cloudflare Workers Queues、为什么 Markdown 转 HTML 放到后端异步”时，应保留这个平台语境。可选择它来解耦请求与渲染，减少每次 SSR 重复消耗 CPU，并利用托管队列缓冲突发；代价是排队延迟、平台限制、调用成本和额外状态管理。若内容很小、更新少且同步渲染已满足延迟目标，异步链路未必划算。Serverless 冷启动和首屏慢仍需各自测量，放入队列不会自动改善所有页面指标。</p><p class=\"md-p\">Cloudflare Queues 的公开接口约定默认至少一次，且不保证按发布顺序投递。因此用文档 ID + 内容版本标识渲染任务，重复任务复用不可变产物；更新最新指针时以版本条件写入，避免旧渲染覆盖新稿。Markdown 输入与 HTML 输出都需限制资源并处理不可信内容，展示前按允许列表净化 HTML。数据库中的内容变更与入队意图仍需可靠衔接；页面读取明确的 PENDING/READY/FAILED 状态，不能把等待 promise 当持久任务记录。</p><p class=\"md-p\">在 Workers 的 JavaScript/TypeScript 消费回调中，只对已经持久完成的单条消息调用 ack()；其余按错误类别重试，达到上限进入配置好的 DLQ。批次局部成功需要显式确认策略，不能因后面一条失败把前面的外部副作用无保护地再执行。平台配额和运行限制按实际部署核对，不能套用 Kafka 分区数或 Java 线程数估算。</p><h3 class=\"md-h md-h3\">AI旁路和不可信脚本怎样隔离</h3><p class=\"md-p\">制造业场景中，基础告警、规则判定与可靠触达应独立于AI诊断。AI有自己的持久任务、上下文快照、队列、线程/连接/模型预算和最大等待；证据不足或超时返回可解释降级，不阻断基础告警。仅拆一个topic却共享满载执行池，不算隔离。正式工单写入由规则与人工审批控制，审批版本CAS和CMMS稳定请求号各保护不同边界。</p><p class=\"md-p\">分布式脚本服务先定义鉴权、不可变脚本hash、输入引用、总deadline和结果接口，再考虑调度。控制面不得直接把上传内容拼成宿主shell命令。执行环境按威胁模型使用加强沙箱、微虚机或专用节点，最小权限、只读授权输入、默认禁网，限制CPU、内存、进程数、磁盘、文件描述符、输出字节与时间。普通容器并不是敌对多租户场景的充分隔离证明。</p><p class=\"md-p\">Go控制面契约应保留Submit、Claim、Complete、Expire、Cancel、Reconcile、Get与竞争测试，这里按有界单进程内存控制面作契约推演，不提供HTTP鉴权、共享持久库、心跳、真实沙箱或宿主执行。它和Java日志模型是两种实验，不能用Java测试结果声称Go服务已跑通。Go中核对成功允许保留“取消请求发生前后外部实际成功”的结果，说明取消不具备回滚外界的魔法。</p><h3 class=\"md-h md-h3\">博客Markdown异步渲染为什么可用托管队列</h3><p class=\"md-p\">若博客提交后可先显示渲染中，而渲染耗时、依赖外部资源，Cloudflare Workers Queues可以提供托管消费与重试，减少自管broker负担。Cloudflare Queues采用至少一次交付，应假设重复且不依赖全局顺序。选型还要核对当时平台的CPU、墙钟、内存、消息大小、批量、保留和费用限制，不能沿用未经验证的旧数值。</p><p class=\"md-p\">任务固定文章ID、源版本/hash、渲染器和模板版本，生成不可变产物后条件更新发布指针。v2先完成、v1晚到不能倒退；文章删除保留墓碑。渲染失败显示原因、可重试或保留上一个有效版本，输出还要防注入、错误资源URL与不受信HTML。存源文与发队列仍有双写窗口，需同一可靠责任或可恢复扫描，而不是因用了托管服务就省掉一致性设计。</p><p class=\"md-p\">追问“为什么这个项目用了某MQ”时，按工作负载、已有基础设施、团队运维能力和失败合同解释，再说明比较成本。不能从组件名字推出低延迟、零丢失或最优性能，也不能把教学选型改写成做过的生产决策。</p><p class=\"md-p\">下面转入另一份独立的分段日志教学版本：它同样命名为 SegmentJournal，但使用 v2 的 20 字节帧头、专属目录和段轮转，与前面的 12 字节单文件版本不是同一实现，文件格式不可互换。两者都只是持久日志核心，不是完整生产 MQ。</p><h3 class=\"md-h md-h3\">按需要的保证逐级实现</h3><p class=\"md-p\">单进程内存队列适合可丢或可重建工作；数据库任务表适合依赖现有事务和到期索引的持久任务；自建日志broker适合确有需要且能承担协议、复制、运维复杂度的场景。不要从一道面试题直接跳到“复刻Kafka”。先说谁接收、成功返回代表什么、崩溃恢复从哪里开始、重复如何辨认。</p><p class=\"md-p\">分段日志模型以JDK 21为假设环境，使用本地普通文件和单写权威。调用append传入稳定ID与不可变payload，完整写入并force成功后才返回序号；同ID同内容返回原序号，同ID不同内容拒绝。它没有网络、认证、订阅、消费者游标、消费ACK、重试队列、复制或自动保留清理，其他章节的控制面只能在上述单机日志合同内作推演。</p><h3 class=\"md-h md-h3\">帧格式与边界校验</h3><p class=\"md-p\">先看一帧怎样被解析。实验使用 v2、大端格式，分头部和 body：</p><ul class=\"md-list\"><li>头部共 20 字节：4 字节 magic、2 字节版本、2 字节 flags、4 字节 body 长度、4 字节 body CRC32C、4 字节 header CRC32C。</li><li>header CRC 覆盖前 16 字节。先核对固定值、版本、flags、长度边界和独立 CRC，才能信任 body 长度；否则，已确认帧的合法长度被改大，可能被误认成半帧并静默截掉。</li><li>body 依次是 8 字节序号、4 字节 key 长度、UTF-8 key、4 字节 payload 长度、payload；body CRC 覆盖整个 body。</li></ul><p class=\"md-p\">CRC 用于检测常见损坏，不是防篡改认证。发现 v1 数据会拒绝打开，不做隐式转换；要保留旧数据，须用对应旧格式读取器核验，再显式迁移到新目录。实验使用新建专属目录。若需抵御恶意修改，还要密码学认证、权限和密钥管理。</p><p class=\"md-p\">恢复先检查文件总量、段大小和长度上限，再分配缓冲。不能直接new byte[磁盘里读出的长度]，否则坏数据可导致超大分配。UTF-8严格解码，Java输入也严格拒绝未配对代理字符，避免替换字符把两个不同ID折叠成同一身份。payload和返回记录做防御性复制，外部修改数组不能改变已接受内容。</p><p class=\"md-p\">教学上限为单body 1MiB、key 1024字节、最多10,000记录、日志总量16MiB，默认段2MiB。内存索引保留所有已恢复payload，空间复杂度与有界日志体积同阶，适合实验而非海量broker。任务层还有最多500任务、每租户身份配额；终态身份仍占去重容量，满了拒绝新受理，没有假装实现安全GC。</p><h3 class=\"md-h md-h3\">尾部写一半与完整坏帧，恢复策略不同</h3><p class=\"md-p\">最后活跃段末尾只有部分头，或通过完整头校验后发现body尚未写全，恢复在“已确认字节不会被截短”的存储假设下可以截断到最后完整帧并force。若介质会截短已确认数据，仅靠现有字节无法区分它与未确认尾写，必须靠外部提交证据、副本或备份恢复；CRC碰撞也仍可能发生。已经封存的非最后段如果不完整，拒绝打开；完整帧CRC错误、非法长度、未知版本或序号不连续，也拒绝，不把“损坏”当成可随意丢弃的未确认尾巴。</p><p class=\"md-p\">若完整帧写完但ACK前进程退出，恢复可能读到这条未被调用方确认的记录；客户端以相同ID重试可返回原序号。这是确认丢失带来的允许重复入口。若写入/force报错，实例进入poisoned状态，不再继续追加掩盖不确定尾部；关闭后重新打开，由恢复过程确定有效前缀。可在afterWrite位置设计故障注入以模拟这个窗口，不证明真实断电时磁盘固件如何工作。</p><p class=\"md-p\">CRC不能单独判断所有损坏；错误恰巧改成另一份合法记录、攻击者重算CRC、硬件同时损坏多个副本都需要更强措施。若故障可能影响已确认记录，需备份、副本、存储校验及人工恢复，不能通过“遇错就truncate”偷换不丢承诺。</p><h3 class=\"md-h md-h3\">段轮转与索引重建</h3><p class=\"md-p\">段名由首条记录序号组成，恢复按序排列并验证连续性。追加前判断下一帧是否放得下；放不下先force并关闭旧段，再以CREATE_NEW创建新段，同步必要的文件与目录元数据。新段创建后崩溃留下空的最后段可以继续，空的封存段不合法。恢复顺序扫描各段，从文件内容重建ID到记录索引，不依赖一个可能与数据不同步的旁路索引文件。</p><p class=\"md-p\">简化索引的代价是启动需扫描全部日志，随机按ID查询依赖内存；生产可用稀疏索引、checkpoint和后台压实，但checkpoint本身也需版本、校验和原子发布协议。不能先删日志再希望索引证明历史去重。记录/段保留还受最慢消费者、重放与幂等窗口约束，这份日志不实现删除策略。</p><h3 class=\"md-h md-h3\">文件锁、同JVM所有权与关闭</h3><p class=\"md-p\">构造器要求专用、已存在的目录，解析真实路径并取得独占lock文件锁。JVM内还用文件系统身份注册表，在打开第二个同目标锁文件通道前拒绝重复构造；原因是部分系统关闭同inode的任意通道可能释放进程持有的锁，不能只依赖捕获OverlappingFileLockException。验收应覆盖同路径、符号链接、lock文件硬链接别名及子进程争锁。</p><p class=\"md-p\">保证以单classloader、合作进程、受支持本地文件系统和稳定目录命名空间为前提。它不防敌对进程替换目录/段文件，不支持把不同目录硬链接同一数据段后当独立日志，也不能推论NFS等远程文件系统锁与force完全相同。真实部署需验证文件系统身份、原子创建、锁和目录同步行为。</p><p class=\"md-p\">close互斥且幂等，正常状态force、关闭活跃段和锁通道，再释放JVM内预约；清理失败采取失败封闭，不能为了继续服务悄悄允许第二写者。旧对象重复close不得撤销后来新实例的所有权。任务/业务模型通过AutoCloseable按同一生命周期持有日志，验收需保证异常退出后也清理专属临时目录。</p><h3 class=\"md-h md-h3\">从日志到broker还缺什么</h3><p class=\"md-p\">生产协议要有帧上限、版本协商、请求ID、鉴权、流控、连接超时和明确ACK；网络发送完成不是持久ACK。复制要定义领导权、日志任期、法定人数、提交水位、故障选主和fencing，不能把“复制到两个文件”叫高可用。控制面要负责元数据与分片迁移，数据面处理追加和读取。</p><p class=\"md-p\">消费协议要有group/partition游标、领取与可见性、重投、幂等接口、死信和管理操作。提交游标要与业务完成/持久接管一致，重平衡保留旧owner竞态处理。运营还需要磁盘水位拒绝、备份恢复、版本升级、审计、租户隔离、保留和监控。每加一项，都应列出确认前后崩溃时谁还有责任。</p><h3 class=\"md-h md-h3\">如何设计故障验收</h3><p class=\"md-p\">日志验收计划应检查严格编码、帧损坏、所有第二帧部分尾切点、完整CRC损坏不截断、非法序号、段轮转、封存段不完整、并发同ID、错误后poison、真实子进程锁竞争、重复关闭与临时文件清理。任务与业务验收还应覆盖四阶段重放、取消/版本、UNKNOWN、恢复扫描、规则槽和禁言变更。</p><p class=\"md-p\">上述验收计划限定时间、内存和专用临时文件；它不代替断电、磁盘故障、跨主机复制或真实broker集成。对每个时序记录输入、注入点和允许终态，只有实际运行并保存证据后才能报告通过；本节不提供代码或执行结果。</p><h3 class=\"md-h md-h3\">Go控制面验收边界</h3><p class=\"md-p\">若另做Go练习，应把Submit、Claim、Complete、Expire、Cancel、Reconcile、Get放在有界单权威模型中，以Go 1.23.0语言基线和兼容工具链独立验证竞争。该模型不含宿主执行、网络服务或沙箱；不能把Java/H2结果作为Go运行证据。</p><p class=\"md-p\">Go的生产实现必须把状态转移迁移到共享持久存储，补鉴权、输入/输出体积限制、沙箱资源隔离与真实核对。示例保留UNKNOWN与CANCEL_REQUESTED，就是为了不把“失联”伪装成“没有执行”。</p><h3 class=\"md-h md-h3\">C++、Go 与前端题的语言边界</h3><p class=\"md-p\">如果题目原本要求 C++ 有界队列，除 Q56 的 Java 解法，还应说明 RAII 锁所有权、std::condition_variable 的谓词等待、虚假唤醒、关闭后唤醒全部等待者，以及返回状态不能和元素值 0 混淆。不能把 Java 的 InterruptedException 原样搬成 C++ 语义。Go 的 context.Context 是协作取消信号，关闭 channel、发送者所有权和 goroutine 退出需另外设计；Go 控制面按原生语言语义设计，不借 Java 模型证明其运行行为。</p><p class=\"md-p\">前端 JavaScript 的并发请求调度、依赖批次、Worker 最新结果与主动让出事件循环，可结合Q50讨论相应语言机制。JS 单线程事件循环中的 Promise 并发不是 CPU 并行；Worker 消息到达不代表业务已经持久提交。异步硬编码扫描的 Go 岗题可用“任务输入版本 → 扫描结果身份 → CAS 写回”解释锁身份，AI 上下文只读最小必要代码并脱敏，不得把待扫描仓库内容当成可以执行的指令。</p><p class=\"md-p\">目标与实现边界：这里的百万 QPS、10ms 与固定堆积阈值是题设或待验证目标，不能当项目成果。RocketMQ 18 级只适用于相应旧版模型；事务回查未知时不能一律 ROLLBACK，传统 4.9.8 枚举拼写为 UNKNOW。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li></ul>",
+      "afterSha256": "b813c92cd779d22ba36edd097c5f5aa414e2af1237ad4f2fba6d81b84f2c0230",
+      "review": {
+        "rationale": "完整审阅两套日志模型及跨语言/MQ补充。将12字节模型一个密段拆为所有权、格式、确认三层；原12/20字节格式不兼容、CRC非安全认证、fileKey/类加载器、poisoned和force边界全部保留，未改代码。",
+        "reference": "黄同学《集合》保存的可见样本：先讲分类和区别，再聚焦机制；完整技术内容以本题既有核验稿为依据。"
+      }
+    }
+  ]
+}

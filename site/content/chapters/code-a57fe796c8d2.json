@@ -1,0 +1,523 @@
+{
+  "entries": [
+    {
+      "id": "pattern-sql-query",
+      "number": "SQL查询",
+      "title": "SQL 查询与统计：执行顺序、窗口函数、复杂聚合",
+      "kind": "pattern",
+      "kindLabel": "数据库模板",
+      "group": "题型模板",
+      "category": "SQL 查询",
+      "flat": false,
+      "subtitle": "覆盖 6 道题 · 聚合 + 窗口 + 留存",
+      "problemDecomposition": {
+        "title": "🎬 问题识别与拆解",
+        "steps": [
+          {
+            "stage": "识别查询类型",
+            "questions": [
+              "是简单查询 / 聚合统计 / 排名 / 连续区间 / 留存？",
+              "涉及几张表？需要什么 JOIN？",
+              "结果集大小？需要分页吗？"
+            ],
+            "example": "\"连续登录天数\" → 连续区间问题，用\"日期 - row_number\"技巧；\"TopN 每组\"→ 窗口函数 ROW_NUMBER。"
+          },
+          {
+            "stage": "识别性能约束",
+            "questions": [
+              "表多大？（千级 / 百万 / 亿级）",
+              "有没有合适的索引？",
+              "能容忍多少秒的查询时间？"
+            ],
+            "example": "亿级表的全表 GROUP BY 会跑几分钟 → 必须先加 WHERE 过滤或走覆盖索引。"
+          },
+          {
+            "stage": "识别正确性陷阱",
+            "questions": [
+              "NULL 值怎么处理？",
+              "重复数据怎么去重？",
+              "边界条件（如\"恰好等于\"）怎么处理？"
+            ],
+            "example": "NOT IN 子查询遇到 NULL 会返回空集；LEFT JOIN 后 WHERE 过滤右表会把 LEFT JOIN 变成 INNER JOIN。"
+          }
+        ]
+      },
+      "capacityEstimation": {
+        "title": "🔬 SQL 性能估算",
+        "formulas": [
+          {
+            "name": "全表扫描成本",
+            "formula": "table_size / io_throughput",
+            "example": "10 GB 表 / 500 MB/s = 20 秒"
+          },
+          {
+            "name": "索引查询成本",
+            "formula": "log_B(N) + rows_fetched",
+            "example": "B+ 树高 3-4 层，3-4 次 IO 定位 + 取数据"
+          },
+          {
+            "name": "JOIN 成本",
+            "formula": "outer_rows × log(inner_rows)",
+            "example": "Nested Loop Join：外表 1 万 × log(内表 100 万) ≈ 20 万次 IO"
+          }
+        ],
+        "benchmarks": [
+          {
+            "resource": "MySQL 主键查询",
+            "write": "N/A",
+            "read": "~1ms",
+            "note": "B+ 树 3-4 层"
+          },
+          {
+            "resource": "MySQL 二级索引+回表",
+            "write": "N/A",
+            "read": "~2-5ms",
+            "note": "2 次 B+ 树查找"
+          },
+          {
+            "resource": "MySQL 全表扫描",
+            "write": "N/A",
+            "read": "~100MB/s",
+            "note": "SSD 顺序读"
+          },
+          {
+            "resource": "MySQL GROUP BY 100 万行",
+            "write": "N/A",
+            "read": "~1-10 秒",
+            "note": "取决于是否有索引"
+          }
+        ],
+        "pitfalls": [
+          "不看执行计划 → 不知道走没走索引",
+          "不估算返回行数 → 网络传输爆炸"
+        ]
+      },
+      "architectureEvolution": {
+        "title": "🏗️ 复杂 SQL 演进",
+        "stages": [
+          {
+            "stage": "子查询嵌套",
+            "architecture": "SELECT ... WHERE x IN (SELECT ...)",
+            "pros": [
+              "直观"
+            ],
+            "cons": [
+              "性能差",
+              "不可索引"
+            ],
+            "when": "数据量小",
+            "tradeoff": ""
+          },
+          {
+            "stage": "JOIN 改写",
+            "architecture": "INNER JOIN / LEFT JOIN",
+            "pros": [
+              "可走索引"
+            ],
+            "cons": [
+              "可能产生笛卡尔积"
+            ],
+            "when": "中等数据量",
+            "tradeoff": "用可读性换性能"
+          },
+          {
+            "stage": "窗口函数",
+            "architecture": "ROW_NUMBER() / RANK() / LAG()",
+            "pros": [
+              "一次扫描完成排名"
+            ],
+            "cons": [
+              "内存占用大"
+            ],
+            "when": "排名 /  TopN / 同比环比",
+            "tradeoff": "用内存换简洁"
+          },
+          {
+            "stage": "CTE + 递归",
+            "architecture": "WITH RECURSIVE",
+            "pros": [
+              "可表达树/图遍历"
+            ],
+            "cons": [
+              "性能差"
+            ],
+            "when": "层级结构查询",
+            "tradeoff": "用性能换表达力"
+          }
+        ]
+      },
+      "tradeoffMatrix": {
+        "title": "⚖️ SQL Trade-off",
+        "decisions": [
+          {
+            "question": "子查询 vs JOIN？",
+            "chooseCache": "JOIN：可走索引，性能好",
+            "chooseDB": "子查询：可读性好",
+            "cost": "子查询通常无法索引；JOIN 可能产生重复行"
+          },
+          {
+            "question": "GROUP BY vs DISTINCT？",
+            "chooseCache": "GROUP BY：可以聚合",
+            "chooseDB": "DISTINCT：只去重",
+            "cost": "GROUP BY 开销大；单纯去重 DISTINCT 更快"
+          },
+          {
+            "question": "窗口函数 vs 自连接？",
+            "chooseCache": "窗口函数：一次扫描",
+            "chooseDB": "自连接：兼容老版本 MySQL",
+            "cost": "窗口函数 MySQL 8.0+ 才支持"
+          },
+          {
+            "question": "UNION vs UNION ALL？",
+            "chooseCache": "UNION ALL：不去重，快",
+            "chooseDB": "UNION：去重，慢",
+            "cost": "UNION 去重要排序或哈希"
+          },
+          {
+            "question": "IN vs EXISTS？",
+            "chooseCache": "EXISTS：子查询大时更快（短路）",
+            "chooseDB": "IN：子查询小时更直观",
+            "cost": "IN 遇到 NULL 有坑"
+          }
+        ]
+      },
+      "codeSkeletons": {
+        "title": "🛠️ 关键 SQL 骨架",
+        "snippets": [
+          {
+            "name": "连续登录天数（经典套路）",
+            "code": "-- 1. 每个用户的登录日期去重\nWITH login_dates AS (\n  SELECT DISTINCT user_id, DATE(login_time) AS login_date\n  FROM login_log\n),\n-- 2. 用 row_number 生成连续序号\nnumbered AS (\n  SELECT user_id, login_date,\n         ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY login_date) AS rn\n  FROM login_dates\n),\n-- 3. 日期 - 序号 = 常数 → 说明连续\ngrouped AS (\n  SELECT user_id,\n         DATE_SUB(login_date, INTERVAL rn DAY) AS group_key,\n         COUNT(*) AS consecutive_days\n  FROM numbered\n  GROUP BY user_id, group_key\n)\n-- 4. 取每个用户最长连续天数\nSELECT user_id, MAX(consecutive_days) AS max_consecutive_days\nFROM grouped\nGROUP BY user_id;",
+            "explanation": "核心技巧：连续日期的\"日期 - 序号\"是常数。这是面试必考题。"
+          },
+          {
+            "name": "每组 TopN（窗口函数）",
+            "code": "-- 每个部门工资最高的前 3 名\nSELECT dept_id, emp_name, salary\nFROM (\n  SELECT dept_id, emp_name, salary,\n         ROW_NUMBER() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rn\n  FROM employees\n) ranked\nWHERE rn <= 3;\n\n-- 如果允许并列（用 RANK）\nSELECT dept_id, emp_name, salary\nFROM (\n  SELECT dept_id, emp_name, salary,\n         RANK() OVER (PARTITION BY dept_id ORDER BY salary DESC) AS rnk\n  FROM employees\n) ranked\nWHERE rnk <= 3;",
+            "explanation": "ROW_NUMBER：并列时强制区分（1, 2, 3, 4）；RANK：并列同名次（1, 2, 2, 4）；DENSE_RANK：并列同名次且连续（1, 2, 2, 3）。"
+          },
+          {
+            "name": "用户留存率（次日/7日）",
+            "code": "-- 计算次日留存和 7 日留存\nWITH first_login AS (\n  SELECT user_id, MIN(DATE(login_time)) AS first_date\n  FROM login_log\n  GROUP BY user_id\n),\nretention AS (\n  SELECT f.user_id, f.first_date,\n         MAX(CASE WHEN DATEDIFF(DATE(l.login_time), f.first_date) = 1 THEN 1 ELSE 0 END) AS day1,\n         MAX(CASE WHEN DATEDIFF(DATE(l.login_time), f.first_date) = 7 THEN 1 ELSE 0 END) AS day7\n  FROM first_login f\n  LEFT JOIN login_log l ON f.user_id = l.user_id\n  GROUP BY f.user_id, f.first_date\n)\nSELECT first_date,\n       COUNT(*) AS new_users,\n       SUM(day1) / COUNT(*) AS day1_retention,\n       SUM(day7) / COUNT(*) AS day7_retention\nFROM retention\nGROUP BY first_date\nORDER BY first_date DESC;",
+            "explanation": "留存率的关键是\"以首次登录日期为锚点\"，看用户在第 N 天是否回来。用 LEFT JOIN + DATEDIFF 判断。"
+          },
+          {
+            "name": "删除重复数据（保留一条）",
+            "code": "-- 方法 1：用窗口函数标记后删除\nDELETE FROM users\nWHERE id IN (\n  SELECT id FROM (\n    SELECT id, ROW_NUMBER() OVER (PARTITION BY email ORDER BY id) AS rn\n    FROM users\n  ) t WHERE rn > 1\n);\n\n-- 方法 2：用自连接\nDELETE u1 FROM users u1\nINNER JOIN users u2 ON u1.email = u2.email AND u1.id > u2.id;",
+            "explanation": "方法 1 更通用（MySQL 8.0+）；方法 2 兼容性好但性能差（自连接是笛卡尔积）。"
+          }
+        ]
+      },
+      "failureModes": {
+        "title": "💣 SQL 常见坑",
+        "scenarios": [
+          {
+            "failure": "NOT IN 遇到 NULL",
+            "symptom": "返回空集",
+            "mitigation": "改用 NOT EXISTS 或过滤 NULL",
+            "detection": "查询结果数 = 0"
+          },
+          {
+            "failure": "LEFT JOIN 后 WHERE 过滤右表",
+            "symptom": "LEFT JOIN 变 INNER JOIN",
+            "mitigation": "把过滤条件放到 ON 子句",
+            "detection": "结果行数不符合预期"
+          },
+          {
+            "failure": "隐式类型转换",
+            "symptom": "索引失效",
+            "mitigation": "保证字段类型和参数类型一致",
+            "detection": "EXPLAIN 显示全表扫描"
+          },
+          {
+            "failure": "GROUP BY 选择非聚合列",
+            "symptom": "MySQL 5.7 报错 / 结果不确定",
+            "mitigation": "ONLY_FULL_GROUP_BY 模式 + 明确聚合",
+            "detection": "SQL 报错"
+          },
+          {
+            "failure": "大 OFFSET 深分页",
+            "symptom": "OFFSET 1000000 LIMIT 10 很慢",
+            "mitigation": "改用游标（WHERE id > last_id）",
+            "detection": "慢查询日志"
+          },
+          {
+            "failure": "COUNT(*) vs COUNT(列)",
+            "symptom": "结果不一致",
+            "mitigation": "COUNT(列) 不统计 NULL；COUNT(*) 统计所有",
+            "detection": "结果数差异"
+          }
+        ]
+      },
+      "observability": {
+        "title": "📊 SQL 监控",
+        "red": [
+          "慢查询数量（> 1s）",
+          "全表扫描次数",
+          "锁等待时间"
+        ],
+        "use": [
+          "连接池使用率",
+          "InnoDB Buffer Pool 命中率",
+          "临时表磁盘使用"
+        ],
+        "business": [
+          "核心 SQL 的 P99 响应时间",
+          "SQL 错误率"
+        ]
+      },
+      "problemMap": [
+        {
+          "range": "执行顺序与原理",
+          "ids": [
+            "database-72"
+          ],
+          "note": "SQL 逻辑执行顺序是理解一切的基础"
+        },
+        {
+          "range": "聚合统计",
+          "ids": [
+            "database-74",
+            "database-75"
+          ],
+          "note": "销售额统计 / 学生总分"
+        },
+        {
+          "range": "连续区间",
+          "ids": [
+            "database-76"
+          ],
+          "note": "连续登录天数的经典套路"
+        },
+        {
+          "range": "留存分析",
+          "ids": [
+            "database-77"
+          ],
+          "note": "次日/7日留存率"
+        },
+        {
+          "range": "排名 TopN",
+          "ids": [
+            "database-78"
+          ],
+          "note": "窗口函数 ROW_NUMBER / RANK"
+        },
+        {
+          "range": "去重",
+          "ids": [
+            "database-79"
+          ],
+          "note": "删除重复数据保留一条"
+        }
+      ],
+      "interviewPitch": "SQL 题我会先说\"逻辑执行顺序\"（FROM → WHERE → GROUP BY → HAVING → SELECT → ORDER BY → LIMIT），这决定了写法。然后识别题型：聚合统计用 GROUP BY；排名 TopN 用窗口函数；连续区间用\"日期 - row_number\"；留存用 LEFT JOIN + DATEDIFF。核心原则：先写对，再优化（加索引 / 避免全表扫描）。",
+      "pitfalls": [
+        "不知道 SQL 逻辑执行顺序 → WHERE 里不能用 SELECT 的别名",
+        "不会用窗口函数 → 遇到\"每组 TopN\"就卡住",
+        "不区分 ROW_NUMBER / RANK / DENSE_RANK → 并列处理错",
+        "NOT IN 遇到 NULL → 返回空集的坑"
+      ],
+      "relatedIds": [
+        "database-72",
+        "database-74",
+        "database-75",
+        "database-76",
+        "database-77",
+        "database-78",
+        "database-79"
+      ],
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-72",
+      "number": 1,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "SQL 逻辑执行顺序",
+      "questionHtml": "<p class=\"md-p\">说出一条 SQL 的逻辑执行顺序。为什么 <code class=\"tok-inline\">WHERE</code> 不能使用聚合函数？为什么有时不能在 <code class=\"tok-inline\">WHERE</code> 中使用 <code class=\"tok-inline\">SELECT</code> 里的别名？</p>",
+      "analysisHtml": "<p class=\"md-p\">这是数据库高频基础题。面试官不是让你背数据库内部源码执行流程，而是看你是否理解 SQL 的“逻辑处理顺序”。很多 SQL 写错都源于不知道 <code class=\"tok-inline\">WHERE</code>、<code class=\"tok-inline\">GROUP BY</code>、<code class=\"tok-inline\">HAVING</code>、<code class=\"tok-inline\">SELECT</code>、<code class=\"tok-inline\">ORDER BY</code> 的相对顺序。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">FROM/JOIN</code>：确定数据来源。",
+        "<code class=\"tok-inline\">WHERE</code>：对原始行过滤。",
+        "<code class=\"tok-inline\">GROUP BY</code>：分组。",
+        "聚合函数：对每组计算。",
+        "<code class=\"tok-inline\">HAVING</code>：对分组结果过滤。",
+        "<code class=\"tok-inline\">SELECT</code>：生成输出列。",
+        "<code class=\"tok-inline\">ORDER BY</code>：排序。",
+        "<code class=\"tok-inline\">LIMIT</code>：截取结果。"
+      ],
+      "answerHtml": "<p class=\"md-p\">逻辑顺序通常可记为：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">FROM / JOIN\nWHERE\nGROUP BY\n聚合函数\nHAVING\nSELECT\nDISTINCT\nORDER BY\nLIMIT</pre></div></section>\n<p class=\"md-p\">所以：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li><code class=\"tok-inline\">WHERE</code> 在聚合前执行，不能写 <code class=\"tok-inline\">WHERE SUM(amount) &gt; 100</code>，要写 <code class=\"tok-inline\">HAVING SUM(amount) &gt; 100</code>。</li><li><code class=\"tok-inline\">SELECT</code> 里的别名在 <code class=\"tok-inline\">WHERE</code> 阶段还没生成，因此很多数据库不允许 <code class=\"tok-inline\">WHERE alias = ...</code>。</li><li><code class=\"tok-inline\">ORDER BY</code> 在 <code class=\"tok-inline\">SELECT</code> 之后，通常可以使用 SELECT 别名。</li></ul></div>\n<p class=\"md-p\">示例：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT\n    user_id,\n    SUM(amount) AS total_amount\nFROM orders\nWHERE created_at &gt;= '2026-01-01'\nGROUP BY user_id\nHAVING SUM(amount) &gt; 1000\nORDER BY total_amount DESC\nLIMIT 10;</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：<code class=\"tok-inline\">WHERE</code> 和 <code class=\"tok-inline\">HAVING</code> 都能写普通条件，放哪更好？</strong></p>\n<p class=\"md-p\">问题分析：能在分组前过滤就不要拖到分组后。</p>\n<p class=\"md-p\">知识点：减少参与聚合的数据量。</p>\n<p class=\"md-p\">答案：普通行条件优先放 <code class=\"tok-inline\">WHERE</code>，例如时间、状态、租户；聚合条件放 <code class=\"tok-inline\">HAVING</code>。</p>\n<p class=\"md-p\"><strong>变体 2：<code class=\"tok-inline\">ON</code> 和 <code class=\"tok-inline\">WHERE</code> 的区别是什么？</strong></p>\n<p class=\"md-p\">问题分析：内连接里很多时候结果相同，外连接里差异很大。</p>\n<p class=\"md-p\">知识点：Join 条件、外连接保留行。</p>\n<p class=\"md-p\">答案：<code class=\"tok-inline\">ON</code> 是连接条件；<code class=\"tok-inline\">WHERE</code> 是连接后过滤。<code class=\"tok-inline\">LEFT JOIN</code> 时，把右表条件放 <code class=\"tok-inline\">WHERE</code> 可能把 NULL 行过滤掉，等价变成内连接。</p>\n<p class=\"md-p\"><strong>变体 3：SQL 真实物理执行顺序一定这样吗？</strong></p>\n<p class=\"md-p\">问题分析：优化器会改写 SQL。</p>\n<p class=\"md-p\">知识点：逻辑顺序 vs 物理计划。</p>\n<p class=\"md-p\">答案：不一定。数据库优化器可能谓词下推、Join 重排、索引选择。逻辑顺序用于理解语义，性能要看 <code class=\"tok-inline\">EXPLAIN</code>。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-73",
+      "number": 2,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "第三范式 3NF 判断与反范式设计",
+      "questionHtml": "<p class=\"md-p\">判断一个表是否满足第三范式，并说明 1NF、2NF、3NF 的区别。进一步追问：实际项目中是否一定要严格满足 3NF？</p>",
+      "analysisHtml": "<p class=\"md-p\">这题看似理论，实际考察你是否理解“减少冗余”和“查询性能”之间的平衡。面试官可能给一张订单表，例如：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">analysis.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">order_id, user_id, user_name, product_id, product_name, merchant_id, merchant_name, price, quantity</pre></div></section>\n<p class=\"md-p\">让你判断是否符合范式。这里 <code class=\"tok-inline\">user_name</code> 依赖 <code class=\"tok-inline\">user_id</code>，<code class=\"tok-inline\">product_name</code> 依赖 <code class=\"tok-inline\">product_id</code>，<code class=\"tok-inline\">merchant_name</code> 依赖 <code class=\"tok-inline\">merchant_id</code>，它们不是直接依赖订单主键的事实属性，而是其他实体属性，存在冗余和更新异常。</p>",
+      "knowledge": [
+        "1NF：字段原子性，不存可再拆分的重复组。",
+        "2NF：消除非主属性对联合主键的部分依赖。",
+        "3NF：消除非主属性对主键的传递依赖。",
+        "函数依赖：A 能唯一确定 B，则 B 依赖 A。",
+        "反范式：为了读性能、历史快照、审计追溯，允许适度冗余。"
+      ],
+      "answerHtml": "<p class=\"md-p\">理论定义：</p>\n<div class=\"md-list-wrap\"><ul class=\"md-list md-depth-0\"><li>1NF：每个字段都是原子值，例如不要在一个字段里存 <code class=\"tok-inline\">电话1,电话2</code>。</li><li>2NF：在 1NF 基础上，非主属性必须依赖整个主键，不能只依赖联合主键的一部分。</li><li>3NF：在 2NF 基础上，非主属性不能依赖其他非主属性，也就是不能有传递依赖。</li></ul></div>\n<p class=\"md-p\">订单场景推荐拆表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">CREATE TABLE users (\n    id BIGINT PRIMARY KEY,\n    user_name VARCHAR(64) NOT NULL\n);\n\nCREATE TABLE products (\n    id BIGINT PRIMARY KEY,\n    product_name VARCHAR(128) NOT NULL,\n    merchant_id BIGINT NOT NULL\n);\n\nCREATE TABLE orders (\n    id BIGINT PRIMARY KEY,\n    user_id BIGINT NOT NULL,\n    created_at DATETIME NOT NULL\n);\n\nCREATE TABLE order_items (\n    id BIGINT PRIMARY KEY,\n    order_id BIGINT NOT NULL,\n    product_id BIGINT NOT NULL,\n    price DECIMAL(10, 2) NOT NULL,\n    quantity INT NOT NULL\n);</pre></div></section>\n<p class=\"md-p\">但实际订单系统经常会在 <code class=\"tok-inline\">order_items</code> 中冗余 <code class=\"tok-inline\">product_name_snapshot</code>、<code class=\"tok-inline\">merchant_name_snapshot</code>、<code class=\"tok-inline\">price_snapshot</code>。这是合理反范式，因为订单要保留成交当时的快照，商品后续改名不能影响历史订单。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：为什么订单明细要冗余商品名？</strong></p>\n<p class=\"md-p\">问题分析：商品表是当前状态，订单是历史事实。商品改名、下架、归属变更不能影响历史订单展示。</p>\n<p class=\"md-p\">知识点：历史快照、审计追溯、反范式、数据一致性边界。</p>\n<p class=\"md-p\">答案：订单明细中保留商品名、价格、商家名快照；商品 ID 仍保留用于关联当前商品。这样牺牲少量存储，换取历史数据稳定。</p>\n<p class=\"md-p\"><strong>变体 2：用户表里存部门名是否违反 3NF？</strong></p>\n<p class=\"md-p\">问题分析：如果 <code class=\"tok-inline\">user_id -&gt; dept_id -&gt; dept_name</code>，用户表里直接存 <code class=\"tok-inline\">dept_name</code> 就有传递依赖。</p>\n<p class=\"md-p\">知识点：实体拆分、外键关系、更新异常。</p>\n<p class=\"md-p\">答案：规范设计应拆成 <code class=\"tok-inline\">user(dept_id)</code> 和 <code class=\"tok-inline\">department(dept_name)</code>。如果部门名只是查询展示且变化很少，可以冗余，但必须有同步机制。</p>\n<p class=\"md-p\"><strong>变体 3：范式越高越好吗？</strong></p>\n<p class=\"md-p\">问题分析：范式高能减少冗余，但会增加 Join。</p>\n<p class=\"md-p\">知识点：OLTP、OLAP、宽表、维表、性能权衡。</p>\n<p class=\"md-p\">答案：交易写入型系统优先规范化；高频查询、报表或搜索场景可建冗余宽表、物化视图或 ES 索引。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-74",
+      "number": 3,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "电商销售额统计与商家销冠商品",
+      "questionHtml": "<p class=\"md-p\">给定三张表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">orders(order_id, user_id, merchant_id, created_at)\norder_details(order_id, product_id, price, quantity)\nproducts(product_id, product_name)</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>查询每个商家销售额超过 10 万的商品。</li><li>查询每个商家销售额最高的商品。</li></ol></div>",
+      "analysisHtml": "<p class=\"md-p\">这题考察多表 Join、聚合、<code class=\"tok-inline\">GROUP BY</code>、<code class=\"tok-inline\">HAVING</code>、窗口函数和分组 TopN。面试官会特别关注你是否能处理“每个商家”的分组语义，以及销售额并列第一时怎么返回。</p>\n<p class=\"md-p\">销售额不是订单数，也不是销量，而是 <code class=\"tok-inline\">price * quantity</code> 的聚合结果。因为要对聚合结果过滤，所以用 <code class=\"tok-inline\">HAVING</code>，不是 <code class=\"tok-inline\">WHERE</code>。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">WHERE</code>：分组前过滤原始行。",
+        "<code class=\"tok-inline\">HAVING</code>：分组后过滤聚合结果。",
+        "<code class=\"tok-inline\">GROUP BY</code>：应按稳定 ID 分组，不能只按 name 分组。",
+        "窗口函数：<code class=\"tok-inline\">ROW_NUMBER</code>、<code class=\"tok-inline\">RANK</code>、<code class=\"tok-inline\">DENSE_RANK</code>。",
+        "并列处理：<code class=\"tok-inline\">ROW_NUMBER</code> 只取一个，<code class=\"tok-inline\">RANK</code> 可以返回并列第一。"
+      ],
+      "answerHtml": "<p class=\"md-p\">查询每个商家销售额超过 10 万的商品：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT\n    o.merchant_id,\n    od.product_id,\n    p.product_name,\n    SUM(od.price * od.quantity) AS total_sales\nFROM orders o\nJOIN order_details od ON o.order_id = od.order_id\nJOIN products p ON od.product_id = p.product_id\nGROUP BY o.merchant_id, od.product_id, p.product_name\nHAVING SUM(od.price * od.quantity) &gt; 100000;</pre></div></section>\n<p class=\"md-p\">查询每个商家销售额最高的商品，允许并列第一：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH product_sales AS (\n    SELECT\n        o.merchant_id,\n        od.product_id,\n        p.product_name,\n        SUM(od.price * od.quantity) AS total_sales\n    FROM orders o\n    JOIN order_details od ON o.order_id = od.order_id\n    JOIN products p ON od.product_id = p.product_id\n    GROUP BY o.merchant_id, od.product_id, p.product_name\n),\nranked AS (\n    SELECT\n        merchant_id,\n        product_id,\n        product_name,\n        total_sales,\n        RANK() OVER (\n            PARTITION BY merchant_id\n            ORDER BY total_sales DESC\n        ) AS rk\n    FROM product_sales\n)\nSELECT\n    merchant_id,\n    product_id,\n    product_name,\n    total_sales\nFROM ranked\nWHERE rk = 1;</pre></div></section>\n<p class=\"md-p\">如果业务只要每个商家一个商品，把 <code class=\"tok-inline\">RANK()</code> 换成 <code class=\"tok-inline\">ROW_NUMBER()</code>，并增加稳定排序：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">ROW_NUMBER() OVER (\n    PARTITION BY merchant_id\n    ORDER BY total_sales DESC, product_id ASC\n) AS rn</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：查询每个商家销售额 Top3 商品。</strong></p>\n<p class=\"md-p\">问题分析：从 Top1 扩展到 TopN，本质还是分组排序。</p>\n<p class=\"md-p\">知识点：窗口函数、并列、稳定排序。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH product_sales AS (\n    SELECT\n        o.merchant_id,\n        od.product_id,\n        SUM(od.price * od.quantity) AS total_sales\n    FROM orders o\n    JOIN order_details od ON o.order_id = od.order_id\n    GROUP BY o.merchant_id, od.product_id\n),\nranked AS (\n    SELECT *,\n           ROW_NUMBER() OVER (\n               PARTITION BY merchant_id\n               ORDER BY total_sales DESC, product_id\n           ) AS rn\n    FROM product_sales\n)\nSELECT *\nFROM ranked\nWHERE rn &lt;= 3;</pre></div></section>\n<p class=\"md-p\"><strong>变体 2：查询最近 30 天每个商家的销售额。</strong></p>\n<p class=\"md-p\">问题分析：时间条件应放在分组前，减少参与聚合的数据量。</p>\n<p class=\"md-p\">知识点：<code class=\"tok-inline\">WHERE</code> 过滤、时间范围、联合索引。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT\n    merchant_id,\n    SUM(od.price * od.quantity) AS total_sales\nFROM orders o\nJOIN order_details od ON o.order_id = od.order_id\nWHERE o.created_at &gt;= NOW() - INTERVAL 30 DAY\nGROUP BY merchant_id;</pre></div></section>\n<p class=\"md-p\">索引建议：<code class=\"tok-inline\">orders(created_at, merchant_id, order_id)</code> 或根据查询入口使用 <code class=\"tok-inline\">orders(merchant_id, created_at, order_id)</code>。</p>\n<p class=\"md-p\"><strong>变体 3：为什么不能只 <code class=\"tok-inline\">GROUP BY product_name</code>？</strong></p>\n<p class=\"md-p\">问题分析：商品名可能重复，且商品可改名。</p>\n<p class=\"md-p\">知识点：主键稳定性、名称非唯一、历史快照。</p>\n<p class=\"md-p\">答案：应按 <code class=\"tok-inline\">product_id</code> 分组，名称只是展示字段。如果 MySQL 开启 <code class=\"tok-inline\">ONLY_FULL_GROUP_BY</code>，非聚合字段也必须在分组中或由分组字段函数依赖确定。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-75",
+      "number": 4,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "统计总分最高的学生",
+      "questionHtml": "<p class=\"md-p\">给定：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">students(student_id, student_name)\nscores(student_id, course_id, score)</pre></div></section>\n<p class=\"md-p\">查询总分最高的学生。如果有并列第一，要全部返回。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察聚合求和、排序、并列第一处理。很多人会写 <code class=\"tok-inline\">ORDER BY total_score DESC LIMIT 1</code>，这只能返回一个学生，不符合“并列全部返回”的口径。</p>",
+      "knowledge": [
+        "聚合：<code class=\"tok-inline\">SUM(score)</code>。",
+        "分组：按 <code class=\"tok-inline\">student_id</code>，不是按姓名。",
+        "并列第一：<code class=\"tok-inline\">RANK()</code> 或先求最大总分再关联。",
+        "<code class=\"tok-inline\">LEFT JOIN</code>：如果要包含没有成绩的学生，需要左连接并处理 NULL。"
+      ],
+      "answerHtml": "<p class=\"md-p\">窗口函数写法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH total AS (\n    SELECT\n        s.student_id,\n        s.student_name,\n        SUM(sc.score) AS total_score\n    FROM students s\n    JOIN scores sc ON s.student_id = sc.student_id\n    GROUP BY s.student_id, s.student_name\n),\nranked AS (\n    SELECT\n        student_id,\n        student_name,\n        total_score,\n        RANK() OVER (ORDER BY total_score DESC) AS rk\n    FROM total\n)\nSELECT\n    student_id,\n    student_name,\n    total_score\nFROM ranked\nWHERE rk = 1;</pre></div></section>\n<p class=\"md-p\">不用窗口函数也可以：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH total AS (\n    SELECT\n        student_id,\n        SUM(score) AS total_score\n    FROM scores\n    GROUP BY student_id\n)\nSELECT\n    s.student_id,\n    s.student_name,\n    t.total_score\nFROM total t\nJOIN students s ON t.student_id = s.student_id\nWHERE t.total_score = (SELECT MAX(total_score) FROM total);</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：查询每门课最高分学生。</strong></p>\n<p class=\"md-p\">问题分析：从全局最高变成每个课程分组最高。</p>\n<p class=\"md-p\">知识点：<code class=\"tok-inline\">PARTITION BY course_id</code>、并列处理。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH ranked AS (\n    SELECT\n        sc.course_id,\n        sc.student_id,\n        s.student_name,\n        sc.score,\n        RANK() OVER (\n            PARTITION BY sc.course_id\n            ORDER BY sc.score DESC\n        ) AS rk\n    FROM scores sc\n    JOIN students s ON sc.student_id = s.student_id\n)\nSELECT *\nFROM ranked\nWHERE rk = 1;</pre></div></section>\n<p class=\"md-p\"><strong>变体 2：查询平均分大于 80 的学生。</strong></p>\n<p class=\"md-p\">问题分析：对聚合值过滤，用 <code class=\"tok-inline\">HAVING</code>。</p>\n<p class=\"md-p\">知识点：<code class=\"tok-inline\">AVG</code>、<code class=\"tok-inline\">HAVING</code>、NULL。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT\n    s.student_id,\n    s.student_name,\n    AVG(sc.score) AS avg_score\nFROM students s\nJOIN scores sc ON s.student_id = sc.student_id\nGROUP BY s.student_id, s.student_name\nHAVING AVG(sc.score) &gt; 80;</pre></div></section>\n<p class=\"md-p\"><strong>变体 3：包含没考试的学生，总分按 0 计算。</strong></p>\n<p class=\"md-p\">问题分析：普通 <code class=\"tok-inline\">JOIN</code> 会过滤掉没成绩的学生。</p>\n<p class=\"md-p\">知识点：<code class=\"tok-inline\">LEFT JOIN</code>、<code class=\"tok-inline\">COALESCE</code>。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT\n    s.student_id,\n    s.student_name,\n    COALESCE(SUM(sc.score), 0) AS total_score\nFROM students s\nLEFT JOIN scores sc ON s.student_id = sc.student_id\nGROUP BY s.student_id, s.student_name;</pre></div></section>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-76",
+      "number": 5,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "连续登录天数",
+      "questionHtml": "<p class=\"md-p\">给定登录表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">user_login(user_id, login_time)</pre></div></section>\n<p class=\"md-p\">查询连续登录 3 天及以上的用户和连续区间。</p>",
+      "analysisHtml": "<p class=\"md-p\">连续登录是大厂 SQL 高频题。关键是把同一用户的登录时间按“天”去重，因为一天登录多次只能算一天。之后用窗口函数生成行号，利用 <code class=\"tok-inline\">login_date - row_number</code> 的结果相同来识别连续区间。</p>",
+      "knowledge": [
+        "日期去重：同一用户同一天多次登录只保留一条。",
+        "窗口函数：<code class=\"tok-inline\">ROW_NUMBER() OVER(PARTITION BY user_id ORDER BY login_date)</code>。",
+        "连续分组技巧：连续日期减去递增行号，会得到相同的分组 key。",
+        "MySQL 日期函数：<code class=\"tok-inline\">DATE(login_time)</code>、<code class=\"tok-inline\">DATE_SUB</code>。"
+      ],
+      "answerHtml": "<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH daily AS (\n    SELECT DISTINCT\n        user_id,\n        DATE(login_time) AS login_date\n    FROM user_login\n),\nnumbered AS (\n    SELECT\n        user_id,\n        login_date,\n        ROW_NUMBER() OVER (\n            PARTITION BY user_id\n            ORDER BY login_date\n        ) AS rn\n    FROM daily\n),\ngrouped AS (\n    SELECT\n        user_id,\n        login_date,\n        DATE_SUB(login_date, INTERVAL rn DAY) AS grp\n    FROM numbered\n)\nSELECT\n    user_id,\n    MIN(login_date) AS start_date,\n    MAX(login_date) AS end_date,\n    COUNT(*) AS consecutive_days\nFROM grouped\nGROUP BY user_id, grp\nHAVING COUNT(*) &gt;= 3;</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：查询连续 7 天活跃的用户。</strong></p>\n<p class=\"md-p\">问题分析：和连续 3 天完全同构，只改 <code class=\"tok-inline\">HAVING COUNT(*) &gt;= 7</code>。</p>\n<p class=\"md-p\">知识点：日期去重、连续分组。</p>\n<p class=\"md-p\">答案：沿用上面 SQL，把最后阈值改成 7。</p>\n<p class=\"md-p\"><strong>变体 2：查询每个用户最长连续登录天数。</strong></p>\n<p class=\"md-p\">问题分析：先得到每段连续区间，再对每个用户取最大。</p>\n<p class=\"md-p\">知识点：二次聚合、窗口函数或 <code class=\"tok-inline\">MAX</code>。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH daily AS (\n    SELECT DISTINCT user_id, DATE(login_time) AS login_date\n    FROM user_login\n),\nnumbered AS (\n    SELECT user_id, login_date,\n           ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY login_date) AS rn\n    FROM daily\n),\nstreaks AS (\n    SELECT user_id,\n           DATE_SUB(login_date, INTERVAL rn DAY) AS grp,\n           COUNT(*) AS days\n    FROM numbered\n    GROUP BY user_id, DATE_SUB(login_date, INTERVAL rn DAY)\n)\nSELECT user_id, MAX(days) AS max_consecutive_days\nFROM streaks\nGROUP BY user_id;</pre></div></section>\n<p class=\"md-p\"><strong>变体 3：为什么要先 <code class=\"tok-inline\">DISTINCT</code>？</strong></p>\n<p class=\"md-p\">问题分析：同一天多次登录会破坏 row_number 的连续性。</p>\n<p class=\"md-p\">知识点：业务口径、数据清洗。</p>\n<p class=\"md-p\">答案：连续登录按自然日计数，必须先对 <code class=\"tok-inline\">(user_id, login_date)</code> 去重。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-77",
+      "number": 6,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "用户留存率",
+      "questionHtml": "<p class=\"md-p\">给定用户注册表和登录表：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">users(user_id, register_date)\nuser_login(user_id, login_time)</pre></div></section>\n<p class=\"md-p\">统计每天新增用户的次日留存率。</p>",
+      "analysisHtml": "<p class=\"md-p\">留存题考察业务口径和去重。次日留存率 = 某天注册的用户中，在注册后第 1 天登录过的人数 / 当天注册人数。</p>\n<p class=\"md-p\">坑点：同一用户次日登录多次只能算一次；注册时间和登录时间要统一到日期；分母是新增用户数，不是登录用户数。</p>",
+      "knowledge": [
+        "cohort：按注册日期分群。",
+        "去重计数：<code class=\"tok-inline\">COUNT(DISTINCT user_id)</code>。",
+        "日期差：MySQL <code class=\"tok-inline\">DATEDIFF(login_date, register_date)</code>。",
+        "<code class=\"tok-inline\">LEFT JOIN</code>：没有次日登录的用户也要留在分母里。"
+      ],
+      "answerHtml": "<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH login_daily AS (\n    SELECT DISTINCT\n        user_id,\n        DATE(login_time) AS login_date\n    FROM user_login\n)\nSELECT\n    u.register_date,\n    COUNT(DISTINCT u.user_id) AS new_users,\n    COUNT(DISTINCT CASE\n        WHEN DATEDIFF(ld.login_date, u.register_date) = 1 THEN u.user_id\n    END) AS retained_users,\n    ROUND(\n        COUNT(DISTINCT CASE\n            WHEN DATEDIFF(ld.login_date, u.register_date) = 1 THEN u.user_id\n        END) / COUNT(DISTINCT u.user_id),\n        4\n    ) AS day1_retention\nFROM users u\nLEFT JOIN login_daily ld\n    ON u.user_id = ld.user_id\n   AND ld.login_date = DATE_ADD(u.register_date, INTERVAL 1 DAY)\nGROUP BY u.register_date;</pre></div></section>\n<p class=\"md-p\">更简单的写法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT\n    u.register_date,\n    COUNT(*) AS new_users,\n    COUNT(ld.user_id) AS retained_users,\n    ROUND(COUNT(ld.user_id) / COUNT(*), 4) AS day1_retention\nFROM users u\nLEFT JOIN (\n    SELECT DISTINCT user_id, DATE(login_time) AS login_date\n    FROM user_login\n) ld\n    ON u.user_id = ld.user_id\n   AND ld.login_date = DATE_ADD(u.register_date, INTERVAL 1 DAY)\nGROUP BY u.register_date;</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：统计 1 日、3 日、7 日留存。</strong></p>\n<p class=\"md-p\">问题分析：同一分群下计算多个日期差。</p>\n<p class=\"md-p\">知识点：条件聚合。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH login_daily AS (\n    SELECT DISTINCT user_id, DATE(login_time) AS login_date\n    FROM user_login\n)\nSELECT\n    u.register_date,\n    COUNT(DISTINCT u.user_id) AS new_users,\n    COUNT(DISTINCT CASE WHEN DATEDIFF(ld.login_date, u.register_date) = 1 THEN u.user_id END) AS d1,\n    COUNT(DISTINCT CASE WHEN DATEDIFF(ld.login_date, u.register_date) = 3 THEN u.user_id END) AS d3,\n    COUNT(DISTINCT CASE WHEN DATEDIFF(ld.login_date, u.register_date) = 7 THEN u.user_id END) AS d7\nFROM users u\nLEFT JOIN login_daily ld ON u.user_id = ld.user_id\nGROUP BY u.register_date;</pre></div></section>\n<p class=\"md-p\"><strong>变体 2：统计每个渠道的次日留存。</strong></p>\n<p class=\"md-p\">问题分析：分群维度从日期扩展为日期 + 渠道。</p>\n<p class=\"md-p\">知识点：多维 <code class=\"tok-inline\">GROUP BY</code>。</p>\n<p class=\"md-p\">答案：在 <code class=\"tok-inline\">users</code> 表增加 <code class=\"tok-inline\">channel</code> 字段，最终 <code class=\"tok-inline\">GROUP BY u.register_date, u.channel</code>。</p>\n<p class=\"md-p\"><strong>变体 3：留存 SQL 很慢怎么办？</strong></p>\n<p class=\"md-p\">问题分析：登录表通常很大，按天去重代价高。</p>\n<p class=\"md-p\">知识点：明细表、DWD/DWS 分层、离线汇总、索引。</p>\n<p class=\"md-p\">答案：先构建用户日活明细表 <code class=\"tok-inline\">user_active_daily(user_id, active_date)</code>，并建立 <code class=\"tok-inline\">(user_id, active_date)</code> 或 <code class=\"tok-inline\">(active_date, user_id)</code> 索引，再做留存统计。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-78",
+      "number": 7,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "部门工资 TopN 与第 N 高薪",
+      "questionHtml": "<p class=\"md-p\">给定：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">employee(id, name, department_id, salary)\ndepartment(id, name)</pre></div></section>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>查询每个部门工资前三的员工。</li><li>查询公司第二高薪，如果并列要如何处理？</li></ol></div>",
+      "analysisHtml": "<p class=\"md-p\">这是窗口函数经典题。部门前三是分组 TopN；第二高薪有两种口径：第二个员工行，还是第二个不同薪资值。口径不同，<code class=\"tok-inline\">ROW_NUMBER</code>、<code class=\"tok-inline\">RANK</code>、<code class=\"tok-inline\">DENSE_RANK</code> 选择不同。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">ROW_NUMBER</code>：不保留并列，每行唯一序号。",
+        "<code class=\"tok-inline\">RANK</code>：保留并列，但名次会跳号。",
+        "<code class=\"tok-inline\">DENSE_RANK</code>：保留并列，名次不跳号。",
+        "TopN 先排名再过滤，不能直接全局 <code class=\"tok-inline\">LIMIT</code>。"
+      ],
+      "answerHtml": "<p class=\"md-p\">每个部门工资前三，保留并列薪资：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH ranked AS (\n    SELECT\n        e.*,\n        DENSE_RANK() OVER (\n            PARTITION BY department_id\n            ORDER BY salary DESC\n        ) AS rk\n    FROM employee e\n)\nSELECT\n    d.name AS department_name,\n    r.name AS employee_name,\n    r.salary\nFROM ranked r\nJOIN department d ON r.department_id = d.id\nWHERE r.rk &lt;= 3;</pre></div></section>\n<p class=\"md-p\">第二高的不同薪资：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT MAX(salary) AS second_highest_salary\nFROM employee\nWHERE salary &lt; (SELECT MAX(salary) FROM employee);</pre></div></section>\n<p class=\"md-p\">如果要返回第二高薪对应员工，并保留并列：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH ranked AS (\n    SELECT\n        id,\n        name,\n        salary,\n        DENSE_RANK() OVER (ORDER BY salary DESC) AS rk\n    FROM employee\n)\nSELECT id, name, salary\nFROM ranked\nWHERE rk = 2;</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：每个部门只返回 3 个员工，不管并列。</strong></p>\n<p class=\"md-p\">问题分析：只要 3 行，使用 <code class=\"tok-inline\">ROW_NUMBER</code>。</p>\n<p class=\"md-p\">知识点：稳定排序。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">WITH ranked AS (\n    SELECT e.*,\n           ROW_NUMBER() OVER (\n               PARTITION BY department_id\n               ORDER BY salary DESC, id ASC\n           ) AS rn\n    FROM employee e\n)\nSELECT *\nFROM ranked\nWHERE rn &lt;= 3;</pre></div></section>\n<p class=\"md-p\"><strong>变体 2：查询没有员工的部门。</strong></p>\n<p class=\"md-p\">问题分析：需要保留部门侧数据。</p>\n<p class=\"md-p\">知识点：<code class=\"tok-inline\">LEFT JOIN</code>、<code class=\"tok-inline\">NULL</code> 判断。</p>\n<p class=\"md-p\">答案：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">variants.md</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">SELECT d.*\nFROM department d\nLEFT JOIN employee e ON d.id = e.department_id\nWHERE e.id IS NULL;</pre></div></section>\n<p class=\"md-p\"><strong>变体 3：TopN 查询没有窗口函数怎么写？</strong></p>\n<p class=\"md-p\">问题分析：老 MySQL 版本可能没有窗口函数。</p>\n<p class=\"md-p\">知识点：自连接计数，但性能较差。</p>\n<p class=\"md-p\">答案：可用自连接统计比当前员工工资高的不同薪资数量，小于 3 即前三。但面试中应说明窗口函数是现代 MySQL 首选。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    },
+    {
+      "id": "database-79",
+      "number": 8,
+      "kind": "database",
+      "kindLabel": "数据库手撕",
+      "group": "数据库手撕",
+      "category": "第一章：SQL 基础与统计手撕",
+      "flat": false,
+      "title": "删除重复数据，只保留一条",
+      "questionHtml": "<p class=\"md-p\">用户表中可能存在重复邮箱：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">question.txt</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"text\">user_account(id, email, created_at)</pre></div></section>\n<p class=\"md-p\">要求删除重复邮箱记录，每个邮箱只保留 <code class=\"tok-inline\">id</code> 最小的一条。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题考察去重删除。不能直接 <code class=\"tok-inline\">DELETE FROM user_account WHERE email IN (...)</code>，否则可能把所有重复邮箱都删掉。要明确保留规则，例如保留最小 id 或最早创建时间。</p>",
+      "knowledge": [
+        "自连接删除。",
+        "窗口函数标号后删除。",
+        "MySQL 不允许在同一层直接删除并查询同一张表时，需要派生表包一层。",
+        "删除前先 <code class=\"tok-inline\">SELECT</code> 验证，生产环境分批删除。"
+      ],
+      "answerHtml": "<p class=\"md-p\">自连接写法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">DELETE u1\nFROM user_account u1\nJOIN user_account u2\n  ON u1.email = u2.email\n AND u1.id &gt; u2.id;</pre></div></section>\n<p class=\"md-p\">窗口函数写法：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">DELETE FROM user_account\nWHERE id IN (\n    SELECT id\n    FROM (\n        SELECT\n            id,\n            ROW_NUMBER() OVER (\n                PARTITION BY email\n                ORDER BY id\n            ) AS rn\n        FROM user_account\n    ) t\n    WHERE t.rn &gt; 1\n);</pre></div></section>\n<p class=\"md-p\">删除后应该增加唯一索引防止再次重复：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">answer.sql</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"sql\">ALTER TABLE user_account\nADD UNIQUE KEY uk_email (email);</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：保留最新一条怎么办？</strong></p>\n<p class=\"md-p\">问题分析：保留规则从最小 id 改为最大 <code class=\"tok-inline\">created_at</code>。</p>\n<p class=\"md-p\">知识点：排序规则、并列处理。</p>\n<p class=\"md-p\">答案：窗口函数中 <code class=\"tok-inline\">ORDER BY created_at DESC, id DESC</code>，删除 <code class=\"tok-inline\">rn &gt; 1</code>。</p>\n<p class=\"md-p\"><strong>变体 2：数据量千万级，直接 delete 会有什么问题？</strong></p>\n<p class=\"md-p\">问题分析：大事务会造成锁时间长、binlog 大、主从延迟。</p>\n<p class=\"md-p\">知识点：分批删除、归档、限速。</p>\n<p class=\"md-p\">答案：先把要删除的 id 写入临时表，然后按主键范围分批删除，每批几千条，并监控主从延迟。</p>\n<p class=\"md-p\"><strong>变体 3：email 允许 NULL，唯一索引怎么处理？</strong></p>\n<p class=\"md-p\">问题分析：MySQL 唯一索引允许多个 NULL。</p>\n<p class=\"md-p\">知识点：NULL 语义、函数索引、业务校验。</p>\n<p class=\"md-p\">答案：如果业务不允许空邮箱，字段设 <code class=\"tok-inline\">NOT NULL</code>；如果允许空但只允许一个，需要额外约束或应用层校验。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "SQL 与数据库",
+      "cat": "SQL 基础与统计"
+    }
+  ]
+}

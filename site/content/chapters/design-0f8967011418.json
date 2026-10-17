@@ -1,0 +1,231 @@
+{
+  "entries": [
+    {
+      "id": "scenario-cross-site-sso",
+      "number": "场景 8",
+      "title": "A 网站登录后，B 网站如何自动登录（SSO）",
+      "slug": "",
+      "category": "架构场景题",
+      "source": "场景题截图补充",
+      "scenario": true,
+      "idea": "A、B 不共享业务 Cookie，而是共同信任统一身份提供方 IdP；B 通过 OIDC/OAuth2 Authorization Code + PKCE 或企业 SAML 完成单点登录。已有 IdP 会话时，B 的登录跳转可以无感完成。",
+      "description": "用户已经登录 A 网站，访问 B 网站时希望自动识别身份并登录。需要考虑跨域 Cookie 限制、票据安全、退出登录、账号映射以及防止伪造/重放。",
+      "metrics": "不共享密码；短时票据；可撤销；跨域安全",
+      "components": "Identity Provider / Authorization Endpoint / Token Endpoint / A / B / Session Store",
+      "requirements": [
+        "不要让 A 直接把自己的 session cookie 复制给 B；跨域业务应该共同信任一个身份提供方（IdP/OP），而不是共享业务 Cookie。",
+        "A、B 分别注册 client_id 与精确 redirect_uri；浏览器走 OIDC Authorization Code Flow，避免把 ID/Access Token 暴露在前端 URL。",
+        "必须校验 state（CSRF 绑定）、ID Token 的 issuer/audience/signature/exp；使用 nonce 时校验 nonce 防止 ID Token 重放。公共客户端必须使用 PKCE，机密 Web 客户端也可叠加 PKCE 作为额外防护。",
+        "A/B 各自建立本地 session，并定义单点退出、token 撤销、账号映射和 IdP 不可用时的降级行为。"
+      ],
+      "architecture": [
+        "用户在 A 登录时实际建立 IdP 会话，A 再获得自己的本地 session。",
+        "用户访问 B；B 没有本地 session 时 302 到 IdP authorization endpoint。",
+        "浏览器携带 IdP 域的登录 Cookie。IdP 发现已有会话，因此无需再次输入密码，签发一次性 code 并重定向回 B。",
+        "B 后端使用 code + PKCE/client credential 换取 ID Token/Access Token，验证后映射本地账号并创建 B session。"
+      ],
+      "dataFlow": [
+        "A → IdP 完成登录。",
+        "访问 B → B 重定向 IdP。",
+        "IdP 复用已有登录态 → 返回一次性 code。",
+        "B 后端换 token、验签、校验 state/nonce → 建立 B 本地登录态。"
+      ],
+      "keyPoints": [
+        "跨域 SSO 的核心是“共同信任身份提供方”，不是让两个业务域直接共享 Cookie。",
+        "不要把 access token 放 URL query 长时间传播；authorization code 必须短时、一次性，并严格绑定 redirect_uri。",
+        "B 必须校验 token 的 iss/aud/exp/nonce/signature，不能只 decode JWT 就当成可信。",
+        "企业内系统常见 OIDC 或 SAML；新系统优先 OIDC，浏览器/移动端推荐 Authorization Code + PKCE。"
+      ],
+      "followups": [
+        "如果 A、B 属于同一父域，能否直接共享父域 Cookie？为什么通常仍不推荐？",
+        "单点退出怎么做？B 的本地 session 和 IdP session 如何联动？",
+        "如果 B 不信任 A，但两者都信任 IdP，为什么仍然可以 SSO？",
+        "如何防 CSRF、登录重放和 token 被窃取？"
+      ],
+      "code": "// B 发现未登录\nGET /resource -> 302 /authorize?client_id=B&state=...&nonce=...&code_challenge=...\n\n// IdP 已有登录态，无需再次输入密码\nIdP -> 302 https://b.example/callback?code=ONE_TIME_CODE&state=...\n\n// B 后端\nverify(state)\ntokens = idp.exchange(code, codeVerifier)\nverifyJwt(tokens.idToken, issuer, audience=B, nonce)\ncreateLocalSession(userId)",
+      "capacityPlan": [
+        "认证流量通常远小于业务请求，但要估登录峰值、token endpoint QPS、JWKS 缓存和 session 存储；IdP 是关键基础设施，需要多副本。"
+      ],
+      "consistency": [
+        "A/B 各自维护本地 session；身份事实来自 IdP 的签名 ID Token/用户目录。全局退出通常是最终一致，需要 back-channel/front-channel logout 或短 session TTL。",
+        "authorization code 一次性使用；state 绑定浏览器会话，nonce 绑定 ID Token，PKCE 绑定发起授权的客户端实例。"
+      ],
+      "failureModes": [
+        "IdP 暂时不可用时，已有本地 session 可按有效期继续服务；新登录失败应快速返回，不要无限重试。",
+        "JWKS 轮换要缓存并在 kid miss 时刷新，避免密钥轮换导致全站认证失败。"
+      ],
+      "observability": [
+        "监控登录成功率、code exchange 失败、state/nonce 校验失败、token 验签失败、IdP P99 和 session 创建量。"
+      ],
+      "interviewAnswer": "A、B 不共享业务 Cookie，而是共同信任 IdP。B 未登录时走 OIDC Authorization Code Flow，IdP 复用已有登录会话后给 B 一次性 code，B 后端换 token、严格验签/state/nonce 并建立自己的 session。",
+      "tradeoffs": [
+        "中心 IdP 简化身份一致性，但也成为关键基础设施；需要多副本、缓存公钥和明确故障策略。",
+        "共享 Cookie 看似简单却强耦合域名和会话语义；标准 OIDC 多一次重定向/Token 交换，但隔离性与可演进性更好。"
+      ],
+      "security": [
+        "严格校验 redirect_uri、state、nonce、issuer/audience/signature/exp；Token 不放 URL，Cookie 使用 Secure/HttpOnly/SameSite。"
+      ],
+      "kind": "scenario",
+      "group": "场景设计",
+      "boundaryCases": [
+        "按容量、一致性、故障、可观测性四类分别构造失败场景做验证。"
+      ],
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "登录与安全"
+    },
+    {
+      "id": "scenario-oauth-login",
+      "number": "场景 25",
+      "title": "第三方登录设计（OAuth 2.0 / 微信 / 支付宝）",
+      "idea": "OAuth 2.0 授权码模式 + state 防 CSRF + PKCE 防拦截 + 令牌刷新。流程：跳转授权页 → 用户同意 → 回调拿 code → 换 access_token → 拿用户信息 → 绑定/注册本地账号。",
+      "description": "设计第三方登录：支持微信、支付宝、GitHub。要求安全（防 CSRF、令牌加密）、用户体验好（一键登录）、支持账号绑定。",
+      "metrics": "登录成功率 > 99%；令牌安全；防 CSRF",
+      "components": "OAuth 2.0 / PKCE / JWT / Redis / State",
+      "requirements": [
+        "授权码模式：最安全的 OAuth 2.0 流程",
+        "防 CSRF：state 参数校验",
+        "令牌安全：access_token 加密存储",
+        "账号绑定：openid/unionid 映射到本地 user_id"
+      ],
+      "capacityPlan": [
+        "登录 QPS = DAU × 登录频率",
+        "Redis 存储 state 和令牌"
+      ],
+      "architecture": [
+        "授权码模式：跳转授权页 → 回调拿 code → 换 access_token → 拿用户信息",
+        "PKCE：code_verifier 和 code_challenge 防拦截",
+        "state 参数：随机字符串 + Redis 存储 + 回调校验",
+        "令牌刷新：access_token 过期前用 refresh_token 换新",
+        "账号绑定：openid + unionid 映射到本地 user_id"
+      ],
+      "dataFlow": [
+        "用户 → 点击第三方登录 → 跳转授权页",
+        "用户同意 → 回调拿 code",
+        "后端 → code 换 access_token",
+        "后端 → access_token 拿用户信息",
+        "后端 → 绑定/注册本地账号 → 返回 JWT"
+      ],
+      "consistency": [
+        "state 一次性，防重放",
+        "access_token 加密存储"
+      ],
+      "failureModes": [
+        "state 校验失败 → 拒绝登录",
+        "access_token 过期 → 用 refresh_token 换新",
+        "用户信息获取失败 → 重试 + 降级"
+      ],
+      "keyPoints": [
+        "授权码模式是最安全的 OAuth 2.0 流程",
+        "PKCE 适合移动端和 SPA，防止授权码被拦截",
+        "state 参数必须随机且一次性",
+        "unionid 是微信生态的唯一标识，openid 是单个应用的"
+      ],
+      "observability": [
+        "监控登录成功率、令牌刷新率",
+        "告警：登录成功率 < 99%"
+      ],
+      "tradeoffs": [
+        "授权码模式 vs 隐式模式：授权码安全但流程复杂",
+        "JWT vs Session：JWT 无状态但无法主动失效"
+      ],
+      "security": [
+        "state 防 CSRF",
+        "PKCE 防拦截",
+        "access_token 加密存储",
+        "敏感操作要二次验证"
+      ],
+      "followups": [
+        "OAuth 2.0 四种模式分别是什么？",
+        "PKCE 的原理？",
+        "如何防止授权码被拦截？",
+        "access_token 和 refresh_token 的区别？",
+        "如何设计账号绑定？"
+      ],
+      "code": "// 第三方登录核心代码\npublic String oauthCallback(String code, String state) {\n    String cachedState = redis.get(\"oauth:state:\" + state);\n    if (cachedState == null) throw new BusinessException(\"非法请求\");\n    redis.delete(\"oauth:state:\" + state);\n    TokenResponse token = httpPost(\"https://api.weixin.qq.com/sns/oauth2/access_token\", code);\n    UserInfo userInfo = httpGet(\"https://api.weixin.qq.com/sns/userinfo\", token.getAccessToken());\n    User user = userService.findByOpenid(userInfo.getOpenid());\n    if (user == null) user = userService.register(userInfo);\n    return jwtService.generate(user.getId());\n}",
+      "interviewAnswer": "我会先明确第三方登录的核心是 OAuth 2.0 授权码模式。然后给出流程：跳转授权页 → 用户同意 → 回调拿 code → 换 access_token → 拿用户信息 → 绑定/注册本地账号。最后讨论安全措施：state 防 CSRF，PKCE 防拦截，access_token 加密存储。关键要能说出 state 参数的作用和 PKCE 的原理。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "第三方登录",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "登录与安全"
+    },
+    {
+      "id": "scenario-scan-login",
+      "number": "场景 32",
+      "title": "扫码登录设计（微信 / 钉钉）",
+      "idea": "二维码包含 scene_id，状态轮询用长轮询或 WebSocket，安全校验用一次性 code。难点在状态同步和安全。",
+      "description": "设计扫码登录：支持微信、钉钉扫码登录。要求安全（防伪造）、用户体验好（一键登录）、状态同步及时。",
+      "metrics": "登录成功率 > 99%；状态同步延迟 < 1s",
+      "components": "QRCode / WebSocket / Redis / JWT",
+      "requirements": [
+        "二维码生成：包含 scene_id",
+        "状态轮询：长轮询或 WebSocket",
+        "安全校验：一次性 code",
+        "状态同步：及时"
+      ],
+      "capacityPlan": [
+        "QPS = DAU × 登录频率",
+        "存储 = scene_id × 状态"
+      ],
+      "architecture": [
+        "二维码生成：包含 scene_id，存储到 Redis",
+        "状态轮询：长轮询或 WebSocket",
+        "安全校验：一次性 code",
+        "状态同步：WebSocket 推送"
+      ],
+      "dataFlow": [
+        "用户 → 扫码 → 跳转授权页",
+        "用户同意 → 回调拿 code",
+        "后端 → code 换 access_token",
+        "后端 → 绑定/注册本地账号 → 返回 JWT",
+        "WebSocket 推送状态"
+      ],
+      "consistency": [
+        "状态最终一致：WebSocket 推送"
+      ],
+      "failureModes": [
+        "WebSocket 断开 → 重连",
+        "code 过期 → 重新生成"
+      ],
+      "keyPoints": [
+        "scene_id 要一次性，防重放",
+        "WebSocket 推送状态，实时性最好",
+        "code 要一次性，防伪造"
+      ],
+      "observability": [
+        "监控登录成功率、状态同步延迟"
+      ],
+      "tradeoffs": [
+        "长轮询 vs WebSocket：长轮询简单但延迟高，WebSocket 实时但复杂"
+      ],
+      "security": [
+        "scene_id 一次性",
+        "code 一次性",
+        "防伪造"
+      ],
+      "followups": [
+        "scene_id 怎么生成？",
+        "WebSocket 怎么推送状态？",
+        "code 怎么防伪？",
+        "如何设计状态同步？",
+        "如何防止重放？"
+      ],
+      "code": "// 扫码登录核心代码\npublic String scanLogin(String sceneId, String code) {\n    String cachedCode = redis.get(\"scan:code:\" + sceneId);\n    if (cachedCode == null || !cachedCode.equals(code)) throw new BusinessException(\"非法请求\");\n    redis.delete(\"scan:code:\" + sceneId);\n    User user = userService.findBySceneId(sceneId);\n    if (user == null) user = userService.register(sceneId);\n    webSocketService.push(sceneId, \"login_success\");\n    return jwtService.generate(user.getId());\n}",
+      "interviewAnswer": "我会先明确扫码登录的核心是二维码生成、状态轮询、安全校验。然后给出方案：二维码包含 scene_id，状态轮询用 WebSocket，安全校验用一次性 code。最后讨论状态同步和安全。关键要能说出 scene_id 的一次性和 WebSocket 的实时性。",
+      "scenario": true,
+      "kind": "scenario",
+      "group": "场景题",
+      "topic": "扫码登录",
+      "patternIdx": 0,
+      "explainIdx": 0,
+      "mod": "design",
+      "part": "架构场景 35 题",
+      "cat": "登录与安全"
+    }
+  ]
+}

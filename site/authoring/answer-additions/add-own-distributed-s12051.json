@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s12051",
+  "entryId": "ai-模型与评测-8",
+  "expectedOriginalHash": "90bbc94b2cb8f0c6093754e1323eb3936115381804e55c22534a5fb0a9c715cb",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "13.13 Agent Runtime与Go业务服务之间怎样设计高吞吐双向通信"
+    },
+    {
+      "type": "paragraph",
+      "text": "双向高吞吐通信需有有界流控、消息序号、取消和重连恢复，大产物走引用，业务提交状态不依赖连接存活。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：Runtime与Go服务怎样双向通信；断流后怎么恢复；怎样防发送方压垮接收方。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "以Go业务端与Agent Runtime长连接双向流为例，协议和吞吐目标需根据消息大小与时延确定。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "协议和消息契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "持续命令/进度/结果双向交互可选择gRPC bidirectional streaming：schema清楚、跨语言生成桩、同一RPC两方向独立发送，单方向流内保序。浏览器/现有WebSocket生态可选WS，但需自定消息schema/分帧上限/错误语义；SSE单向流本身不是完整双向，另一方向需独立请求。可靠长离线任务可用MQ配持久任务账，不能仅用连接活着代表任务还在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "双向流的每帧都要能识别任务和顺序，包含tenant、taskId、attempt/generation、messageId、sequence、type、payloadVersion及deadline/trace。身份以认证连接为准，帧里自填tenant不能提权。大文档和产物传对象引用及校验值，不在每次往返都复制全部历史。"
+    },
+    {
+      "type": "paragraph",
+      "text": "确认状态也要分层：RECEIVED、PERSISTED、BUSINESS_COMMITTED和FINAL分别表示不同进展。传输send成功，不能直接当成业务已完成。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Go并发与端到端背压"
+    },
+    {
+      "type": "paragraph",
+      "text": "每条stream安排一个发送协程和一个接收协程，业务worker经有界channel交给单写者；不要多个goroutine无序并发Send。收到帧后校验再派入有限worker池，按任务/租户公平调度，CPU重任务与IO分开；runtime若Python异步也不能让CPU长循环阻塞事件循环。"
+    },
+    {
+      "type": "paragraph",
+      "text": "gRPC流控只主要保护传输缓冲。应用如果一直把读到的数据塞进无限slice，仍会OOM，所以还要限制单消息大小、排队条数/字节、未确认窗口、租户并发和取消deadline。"
+    },
+    {
+      "type": "paragraph",
+      "text": "到水位后暂停读取、减少credit或明确拒绝，同时检查双向等待：一边永远堵在发送，另一边又不读，可能形成死锁。进度可以合并成最新值，必须保留的业务事件不能静默丢弃。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "断线续接与取消"
+    },
+    {
+      "type": "paragraph",
+      "text": "连接中断后按持久taskId、generation及已确认sequence续接/查状态；幂等messageId消除重放，ACK保存与本地效果同事务。gRPC重新建流不会自动重放应用帧，更不保证跨重连恰好一次。写入下游已成功但回包丢失时保持UNKNOWN并按operationId核对，不把新连接当新业务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消先标任务取消请求，向执行器/IO传播context取消，停止新派发并关闭自己拥有的channel/句柄；goroutine应能退出。外部不可取消效果仍核实，响应取消与资源回收分别观测，晚到旧代际结果不覆盖新任务。实例升级先摘新流、通知重连窗口并排空/检查点，不能直接杀连接当无损迁移。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "吞吐调优与测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "复用连接和编码buffer要避免并发复用可变对象；批量小帧有大小/时间上限，压缩是否收益取决于消息与CPU，少量大流可形成负载不均，必要按任务分配多连接。衡量有效业务bytes/s、p99、排队时间、重连恢复和CPU/GC，不只测网络空消息。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试慢接收者、双向同时满队列、乱序重放、半关闭、进程重启、取消后晚回与恶意大帧；同流保序不自动让不同任务业务全局有序。该协议落地为Go/gRPC服务时，应测试真实流控、协程退出和网络恢复；本地Java回调模型不能代替这些验证。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "1"
+}

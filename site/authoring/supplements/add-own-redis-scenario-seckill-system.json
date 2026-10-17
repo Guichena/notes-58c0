@@ -1,0 +1,418 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-redis-scenario-seckill-system",
+  "entryId": "scenario-seckill-system",
+  "expectedOriginalHash": "2949ed1fa441bc1563ab745930bc60c00919057637d071672a2f26f5bae98d55",
+  "title": "库存预留、一人一单、取消释放与领券恢复协议",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "阅读边界：下面是设计推演与教学模型，不能据此宣称项目已经达到示例容量、吞吐或业务收益。Redis 命令成功、预留受理、数据库订单提交和渠道副作用必须分开确认。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "库存预留 一人一单与数据库落单"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果设计秒杀系统，我会让数据库决定最终库存和订单成功，Redis 做限流、预筛或可恢复暂占。库存非负、一人一单、请求幂等和事件不漏，要落在明确的权威事务与恢复协议内；Redis 预扣成功不能直接回答“订单一定成功”。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "先给链路 再说明成功层级"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以把这些问法放在一起：“库存保存在哪里”“Redis 如何与 MySQL 同步”“有没有超卖”“如何让扣库存和一人一单原子”“缓存扣减成功后订单会失败吗”“消息发送失败或落单失败如何自动补偿”。链路可以是鉴权与限流、Redis 预筛、权威预留事务、可靠事件发布、订单后续处理、支付或取消，以及对账修复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 返回 PREHELD 只代表这一层暂占成功。接口如果要承诺“已可靠受理，稍后一定能查到结果”，必须已经把请求及待处理意图放进可恢复的持久边界；如果要承诺“下单成功”，就要等权威订单事务提交。数据库不可达、MQ 发送失败、消费者拒绝、脚本部分执行、切主丢状态都会让后续无法照常完成，所以应返回 PENDING、失败或可查询的结果，不能把三种成功混成一个布尔值。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库权威也不意味着所有请求都必须先落库再筛选。Redis 可以提前拦截明显重复、售罄或高风险流量，真正通过的请求仍由权威事务裁决。缓存故障时可以受限回权威路径或明确拒绝；不能无上限回源，也不能为可用性绕过库存和资格约束。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "把四个不变量放进同一事务"
+    },
+    {
+      "type": "paragraph",
+      "text": "对每个 (tenant, sku) 保证 available≥0；对业务规定的一人一单范围保证至多一条有效占用；对 (tenant, requestId) 保证参数绑定和成功结果重放；每次成功预留都有一条可恢复的后续事件。教学上可以先采用“某 SKU 每用户只成功预留一次”的简单政策，把唯一键设为 (tenant, sku, user)，活动、多轮次和取消后重购要扩充政策模型。"
+    },
+    {
+      "type": "paragraph",
+      "text": "条件更新 available=available-quantity 且 WHERE available≥quantity 能防本行超扣，却不能单独保证同一用户不重复、订单一定落下或 MQ 一定有消息。应在本地事务内锁定库存行，检查请求历史与购买资格，执行条件扣减，插入唯一预留和 outbox，最后提交。任一步明确失败都撤销该事务的修改；事务提交后再承诺 ACCEPTED。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以无补货、无退货的单 SKU 模型为例，总额应等于可售量加有效预留量加已经履约但仍占额度的数量。实现中若已支付订单仍计在预留记录里，只能算一次，不能同时加到两个分类。现实的补货、退款、报损都要有独立有符号流水和业务规则；数量相等还不够，还要核对每个预留与正确用户、订单和事件的对应关系。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 JDBC 预留示例"
+    },
+    {
+      "type": "paragraph",
+      "text": "InventoryLedger 每次申请独立连接和独立事务，不提交调用者已有事务。PreparedStatement 绑定 tenant、sku、user、request 和数量；先用 FOR UPDATE 锁库存行，再检查幂等和已购，执行条件扣减、reservation 插入和 outbox 插入。身份由可信上层提供，示例不实现登录鉴权。"
+    },
+    {
+      "type": "paragraph",
+      "text": "ACCEPTED 表示这次事务首次提交成功；REPLAY 表示同参数成功预留已存在；ALREADY_ORDERED 表示同一用户已经用其他请求占用资格；SOLD_OUT 表示当时库存不足。后两类拒绝未持久化，因此补货等条件改变后可以重新判定。这是最小预留示例，不包含支付、取消、退款或消息发布器，也不通过删除 reservation 实现退款。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.sql.Connection;\nimport java.sql.DriverManager;\nimport java.sql.PreparedStatement;\nimport java.sql.ResultSet;\nimport java.sql.SQLException;\n\n/** Dedicated JDBC connection/transaction per call. The caller authenticates tenant/user. */\npublic final class InventoryLedger {\n    public enum Result { ACCEPTED, REPLAY, SOLD_OUT, ALREADY_ORDERED }\n    private final String url;\n    public InventoryLedger(String jdbcUrl) { url = java.util.Objects.requireNonNull(jdbcUrl); }\n    public Result reserve(String tenant, String request, String sku, String user, long quantity)\n            throws SQLException {\n        return reserve(tenant, request, sku, user, quantity, false);\n    }\n    Result reserve(String tenant, String request, String sku, String user, long quantity,\n                   boolean injectFailure) throws SQLException {\n        for (String value : new String[]{tenant, request, sku, user})\n            if (value == null || value.isBlank() || value.length() > 80)\n                throw new IllegalArgumentException(\"nonblank identifier up to 80 chars required\");\n        if (quantity <= 0) throw new IllegalArgumentException(\"positive quantity required\");\n        try (Connection c = DriverManager.getConnection(url)) {\n            c.setAutoCommit(false);\n            try {\n                try (PreparedStatement p = c.prepareStatement(\n                        \"SELECT available FROM stock WHERE tenant=? AND sku=? FOR UPDATE\")) {\n                    p.setString(1, tenant); p.setString(2, sku);\n                    try (ResultSet rs = p.executeQuery()) {\n                        if (!rs.next()) throw new IllegalArgumentException(\"unknown sku\");\n                    }\n                }\n                try (PreparedStatement p = c.prepareStatement(\n                        \"SELECT sku, user_id, qty FROM reservation WHERE tenant=? AND request_id=?\")) {\n                    p.setString(1, tenant); p.setString(2, request);\n                    try (ResultSet rs = p.executeQuery()) {\n                        if (rs.next()) {\n                            if (!sku.equals(rs.getString(1)) || !user.equals(rs.getString(2)) || quantity != rs.getLong(3))\n                                throw new IllegalArgumentException(\"idempotency key reused with different payload\");\n                            c.commit(); return Result.REPLAY;\n                        }\n                    }\n                }\n                try (PreparedStatement p = c.prepareStatement(\n                        \"SELECT request_id FROM reservation WHERE tenant=? AND sku=? AND user_id=?\")) {\n                    p.setString(1, tenant); p.setString(2, sku); p.setString(3, user);\n                    try (ResultSet rs = p.executeQuery()) {\n                        if (rs.next()) { c.commit(); return Result.ALREADY_ORDERED; }\n                    }\n                }\n                try (PreparedStatement p = c.prepareStatement(\n                        \"UPDATE stock SET available=available-? WHERE tenant=? AND sku=? AND available>=?\")) {\n                    p.setLong(1, quantity); p.setString(2, tenant); p.setString(3, sku); p.setLong(4, quantity);\n                    if (p.executeUpdate() == 0) { c.commit(); return Result.SOLD_OUT; }\n                }\n                try (PreparedStatement p = c.prepareStatement(\n                        \"INSERT INTO reservation(tenant,request_id,sku,user_id,qty) VALUES (?,?,?,?,?)\")) {\n                    p.setString(1, tenant); p.setString(2, request); p.setString(3, sku);\n                    p.setString(4, user); p.setLong(5, quantity); p.executeUpdate();\n                }\n                if (injectFailure) throw new SQLException(\"injected failure before outbox\");\n                try (PreparedStatement p = c.prepareStatement(\n                        \"INSERT INTO outbox(tenant,request_id,sku,qty) VALUES (?,?,?,?)\")) {\n                    p.setString(1, tenant); p.setString(2, request); p.setString(3, sku);\n                    p.setLong(4, quantity); p.executeUpdate();\n                }\n                c.commit(); return Result.ACCEPTED;\n            } catch (SQLException | RuntimeException e) {\n                try { c.rollback(); } catch (SQLException rollback) { if (e != rollback) e.addSuppressed(rollback); }\n                throw e;\n            }\n        }\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "表结构把非负库存、正数量、请求唯一、用户资格唯一以及预留和 outbox 的关联都写出来。用于 MySQL 时应选 InnoDB，并核对目标版本的约束、字符集、排序规则、隔离级别和错误处理；请求 ID 是否区分大小写必须与应用一致，不能让数据库的字符串比较改变业务身份。"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "value": "-- Minimal reservation schema. For MySQL, select InnoDB and verify target database contracts.\nCREATE TABLE stock (\n  tenant VARCHAR(80) NOT NULL, sku VARCHAR(80) NOT NULL,\n  available BIGINT NOT NULL CHECK (available >= 0),\n  PRIMARY KEY (tenant, sku)\n);\nCREATE TABLE reservation (\n  tenant VARCHAR(80) NOT NULL, request_id VARCHAR(80) NOT NULL,\n  sku VARCHAR(80) NOT NULL, user_id VARCHAR(80) NOT NULL,\n  qty BIGINT NOT NULL CHECK (qty > 0),\n  PRIMARY KEY (tenant, request_id),\n  UNIQUE (tenant, sku, user_id),\n  FOREIGN KEY (tenant, sku) REFERENCES stock(tenant, sku)\n);\nCREATE TABLE outbox (\n  tenant VARCHAR(80) NOT NULL, request_id VARCHAR(80) NOT NULL,\n  sku VARCHAR(80) NOT NULL, qty BIGINT NOT NULL CHECK (qty > 0),\n  PRIMARY KEY (tenant, request_id),\n  FOREIGN KEY (tenant, request_id) REFERENCES reservation(tenant, request_id)\n);\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一 SKU 的并发请求先争库存行，事务长度应保持短。不同 SKU 误用同一个 requestId 时，两边可能分别持有不同库存锁，最终在请求唯一键处竞争；失败方回滚全部修改，再用新的权威读取核对已提交收据和参数。不能在已失效的旧事务快照里无限查询，也不能把唯一冲突以外的异常全吞掉。死锁或锁等待超时要按明确的可重试错误有限退避，并重跑整个事务。"
+    },
+    {
+      "type": "paragraph",
+      "text": "commit 抛出网络异常时，服务器可能已经提交，后续 rollback 不能证明先前提交没发生。调用方应保留 UNKNOWN，用同一 requestId 查询或安全重试，不能换 ID。示例返回枚举，生产接口还应返回稳定 reservationId 或 orderId 和查询入口；它不证明实际 InnoDB 的锁、复制、掉电持久性或 MQ 集成已经具备。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Redis 预扣到异步落库怎样避免断链"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 预扣之后直接发送 MQ，如果应用在两步之间崩溃，就会留下占用但没有消息。发完 MQ 再记录已发送，若应答丢失，又会重复发送。单次网络调用成功无法填补这个间隙。"
+    },
+    {
+      "type": "paragraph",
+      "text": "数据库是最终权威时，可以先把可靠受理记录与 outbox 同事务持久化，再异步推进权威库存预留和订单。沿这条链路，Redis 预扣只负责流量保护和暂占提示；它要绑定稳定 reservationId，并有可恢复的对账来源。请求还没进入持久受理边界，就不能告诉用户“已经可靠受理”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "另一条更简单的路径，是在前面的权威预留事务中直接提交 outbox，再异步做订单后续步骤。前者先持久受理、后裁决预留，后者先完成权威预留；受理时点不同，画流程时不能随意交换。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果有意让 Redis 成为成功预留的权威，可以在同一脚本里写预留和 Stream，减少应用扣库存与发事件之间的双写间隙；但两者仍可能一起受 Redis 持久化、异步复制或切主回退影响。AOF 和复制确认降低某些丢失风险，不自动提供跨故障线性一致。必须明确哪些确认才可承诺、丢失窗口、切换期间是否停卖，以及如何恢复已对外承诺的预留。事后对账无法让已经超卖的承诺从未发生。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MQ 消费者用稳定事件身份与业务收据共同提交后再 ACK，重复投递返回原状态。真实缺货或重复购买是业务拒绝；确定未提交的暂时故障有限重试；超时未确定结果先对账。状态确认失败时也不能把占用直接加回，否则一个已经落单的请求会与新请求争同一份库存。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "初始化不一致时先查权威和在途预留"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 Redis 只是可重建库存投影，可以从明确的数据库快照水位构建新 generation，保留并重放该水位之后的可靠 CDC 或 outbox 增量，追到切换水位并校验后切换可信当前代。不要在全量复制一半时开放不受控双向增减，也不要用旧快照覆盖刚发生的扣减。受影响 SKU 可暂停预筛或受限回权威路径，恢复过程本身也要可重试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 Redis 还有尚未落库的有效预留，两个数不同不一定表示 Redis 错。此时直接用 MySQL 数值覆盖，可能把已暂占的额度重新卖掉。应按 reservationId、订单终态、预留期限、事件版本和消费位点核对：有哪些承诺，哪些只是暂占，哪些结果未知，哪些已经释放。必要时停卖该资源或代际，厘清事实后按幂等事件修复。"
+    },
+    {
+      "type": "paragraph",
+      "text": "普通展示缓存通常先提交数据库再删除相关缓存，失败靠可靠失效重试；但仍可能发生旧查询在删除之后回填。版本屏障或墓碑需要保留比较下界，丢失后先从权威恢复。TTL 只限制一次缓存写入寿命，旧回填会重新开始 TTL，固定延迟双删也不能覆盖任意慢请求。交易判定不应依赖允许陈旧的展示视图。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "热点 失败与生产追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "单 SKU 行锁或单 Redis 库存 key 都有串行热点。先削峰、控制并发和连接池、缩短事务，再判断是否需要额度分桶。分桶必须满足总额度守恒、唯一用户资格、桶代际和可靠调拨；不能把十份相同“总库存”发给十个桶分别出售。队列削峰只是推迟工作，持续到达率超过处理能力时还需背压和拒绝。锁粒度也要服从不变量：只锁某个用户无法保护所有用户共享的库存；只锁 SKU 会串行化该商品全部请求，却不会自动保留请求历史。可以按租户、活动和资源规划竞争范围，多资源按固定顺序处理，最终仍由权威库存条件和业务唯一约束裁决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "要判断链路能否用于生产，应看失败是否可恢复、接受范围是否真实可兑现，而不是只看 happy path。至少核对扣减后崩溃、预留插入后 outbox 失败、MQ 漏发与重投、commit 应答丢失、Redis 清空或回退、初始重建与新扣减交错、支付与释放并发，以及同 ID 不同参数。对账应同时检查数量守恒、资格唯一、收据与事件完整性、最老待处理时间和补偿积压，不只比较两个库存总数。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "取消订单 释放库存与再次下单"
+    },
+    {
+      "type": "paragraph",
+      "text": "取消订单先由权威状态机裁决，再把库存、资格和缓存投影一起推进。不能收到“取消”请求就直接 INCR 库存；重复取消、支付同时到达和旧取消事件晚到，都可能把额度或新订单破坏掉。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "支付与取消只能赢一个终态"
+    },
+    {
+      "type": "paragraph",
+      "text": "可把未决订单表示为 HELD 或 PENDING，终态为 PAID、CANCELLED。reservationId、requestId、generation 和 version 需要稳定含义。支付与取消从同一个未决状态做条件迁移，或在同一权威行锁事务中检查状态，只有一个操作能成功改变终态。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果支付先赢，取消不能加回库存；如果取消先赢，随后渠道报告已扣款，必须进入退款、重新预留或人工核查等明确流程，不能同时让库存释放与原订单履约都成功。数据库终态竞争只限定本地订单，不会自动阻止支付渠道已经发生的扣款。网络超时先查权威订单或渠道收据，不能把用户点了取消等同于取消已经提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一个权威取消事务应条件更新订单，释放对应 HELD 预留，把数量归还可售库存，按政策释放当前购买资格，并写唯一 releaseId 与 outbox。重复取消发现终态已确定时返回原状态，不再加库存；条件更新影响零行可能是已经支付、已经取消、版本变化或不存在，需要解释清楚。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取消后能否重买决定数据模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果政策是“一生或一个活动中最多成功领取一次”，取消未必释放资格；如果政策是“最多一笔有效订单，取消后可重买”，资格应单独保存当前占用，历史订单和请求收据仍然保留。预留示例里的永久 (tenant, sku, user) 唯一键不能不改 schema 就直接支持取消后重买。"
+    },
+    {
+      "type": "paragraph",
+      "text": "后一种设计可以有当前资格表，唯一键是 (tenant, activity, user)，value 记录当前 reservationId 和 generation；历史订单表以稳定订单或请求 ID 唯一。取消 A 时只释放仍属于 A 的资格。新订单 B 已占位后，迟到的 A 取消事件不能无条件 SREM user 或 DEL user-marker。使用比较 owner、generation 或版本的条件更新，让旧消息只能影响它所属的那一次预留。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一旧 requestId 重放始终返回 A 的历史终态，不能重新创建 B。新购买必须新 requestId、递增的业务代际。这里递增代际用于区分一次次业务占用，与锁 owner 的随机 token、数据库行 version 分别解决不同问题。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "取消后哪些缓存需要处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果设计一套秒杀缓存，我会逐项说明键与字段：SKU 可售库存、reservation 状态、(活动,用户) 当前占位或已购标记、订单详情和列表、用户资格或优惠券冻结，以及超时任务索引。不是所有系统都需要全部字段；关键是能解释每项的权威来源、重建方式、更新事件和失败策略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只归还库存却保留购买 Set，用户会一直被当作已购；只删除购买标记却没归还额度，也可能让重新下单失败。订单详情改了，但用户订单列表、资格缓存或冻结状态没同步，同样会出现业务与页面不一致。修复应从权威取消事务的结果派生，不能让多个缓存值各自决定是否取消成功。"
+    },
+    {
+      "type": "paragraph",
+      "text": "超时 ZSet 的 member 宜包含稳定预留身份与必要代际，score 是截止。旧任务醒来先核验权威 state、generation 和 deadline，再决定能否取消，不能仅凭 user 或 SKU 取消当前最新订单。不要把 TTL 过期事件当唯一的关单依据，它既不保证准点，也不保证断线后可靠补发。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "数据库成功 缓存失败怎样收敛"
+    },
+    {
+      "type": "paragraph",
+      "text": "订单和 release outbox 同事务提交，发布器可靠重试，投影消费者核对 eventId 与实体版本。对库存不能不去重地反复 INCR；对当前资格不能用旧事件删掉新 generation。投影更新与版本或释放去重标记应在同一个局部原子范围内，否则“先记已处理后更新”和“先更新后记已处理”都存在崩溃窗口。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果 Redis 自身回退，版本和去重记录也可能丢，局部脚本不再足以证明跨故障幂等。此时暂停受影响代际或回权威路径，从可核对快照和增量恢复，再开放流量。库存投影可采用带版本的绝对值更新减少重复增量风险，但必须明确这些绝对值是否包含在途预留，不能覆盖掉尚未确认的暂占。"
+    },
+    {
+      "type": "paragraph",
+      "text": "订单详情通常提交后失效，读 miss 再受限回源；旧读回填用版本屏障、墓碑或可信版本指针防回退。延迟删除的动机是清理慢读回填的旧值，但固定 sleep 无法覆盖任意暂停，删除本身也可能失败，因此必须有可靠失效、版本和对账。缓存资格误拒绝时可限流查权威并修复；缓存不可达不是无条件允许重购的理由。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "超时任务怎样可靠执行"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果用 Spring 定时任务扫描，任务事实应存在持久表或可从权威表恢复的索引中，不只在进程内存。按 status、deadline 和必要分片索引分批查询，限制每次扫描量、执行时长和并发，记录重试、租约和进度；扫描间隔由允许的关单延迟与处理成本共同决定，没有适合所有数据量的固定秒数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "多个实例执行时要有可恢复的认领、owner 和代际。先删到期候选再只交给内存线程，中间崩溃会漏任务；可以先认领，权威取消事务提交后再完成任务确认，重投由状态机去重。取出订单后发现到期，只是获得检查资格，还要核对未支付、未换代及当前截止，支付竞态仍由权威事务裁决。"
+    },
+    {
+      "type": "paragraph",
+      "text": "延迟消息、时间轮或 ZSet 都能改善到期触发效率，不能代替持久任务事实与补偿扫描。大量订单时应分页、分片、限制追赶速率，并监控最老到期滞后、认领超时、取消失败、已释放仍占位、版本落后和守恒差异。换一种定时容器不会自动解决任务丢失、重复执行或在途支付。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "单 SKU 的完整状态机模型"
+    },
+    {
+      "type": "paragraph",
+      "text": "CancellationLedger 演示“取消后允许新请求重买”的政策。synchronized 让状态迁移、库存、资格和事件在单 JVM 内不可交错；同请求保留历史，PAID 持续占资格，CANCELLED 只释放自己的当前标记，generation 递增且检查溢出。Event 的 List 只是内存观察日志，没有持久 outbox、Redis、MQ 或支付网关能力。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "value": "import java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Objects;\n\n/** One SKU, one JVM, retry allowed after cancellation. No database/Redis/MQ durability. */\npublic final class CancellationLedger {\n    public enum State { HELD, PAID, CANCELLED }\n    public record Order(String request, String user, long quantity, long generation,\n                        long version, State state) { }\n    public record Event(String request, long generation, long version, State state) { }\n    private final long capacity;\n    private long available;\n    private final Map<String, Order> orders = new HashMap<>();\n    private final Map<String, String> activeByUser = new HashMap<>();\n    private final Map<String, Long> generations = new HashMap<>();\n    private final List<Event> events = new ArrayList<>();\n    public CancellationLedger(long capacity) {\n        if (capacity < 0) throw new IllegalArgumentException(\"negative capacity\");\n        this.capacity = capacity; available = capacity;\n    }\n    public synchronized Order reserve(String request, String user, long quantity) {\n        nonblank(request); nonblank(user);\n        if (quantity <= 0) throw new IllegalArgumentException(\"positive quantity required\");\n        Order old = orders.get(request);\n        if (old != null) {\n            if (!old.user().equals(user) || old.quantity() != quantity)\n                throw new IllegalArgumentException(\"request payload conflict\");\n            return old; // A cancelled request stays cancelled; a new purchase needs a new ID.\n        }\n        if (activeByUser.containsKey(user)) throw new IllegalStateException(\"already active\");\n        if (quantity > available) throw new IllegalStateException(\"sold out\");\n        long generation = Math.addExact(generations.getOrDefault(user, 0L), 1L);\n        Order order = new Order(request, user, quantity, generation, 1, State.HELD);\n        available -= quantity;\n        orders.put(request, order); activeByUser.put(user, request); generations.put(user, generation);\n        events.add(new Event(request, generation, 1, State.HELD));\n        return order;\n    }\n    /** True only for the first successful HELD -> target transition; replays return false. */\n    public synchronized boolean finish(String request, State target) {\n        nonblank(request); Objects.requireNonNull(target);\n        if (target == State.HELD) throw new IllegalArgumentException(\"terminal target required\");\n        Order old = orders.get(request);\n        if (old == null) throw new IllegalArgumentException(\"unknown request\");\n        if (old.state() != State.HELD) return false;\n        long nextAvailable = target == State.CANCELLED\n                ? Math.addExact(available, old.quantity()) : available;\n        Order next = new Order(request, old.user(), old.quantity(), old.generation(),\n                old.version() + 1, target);\n        available = nextAvailable; orders.put(request, next);\n        if (target == State.CANCELLED) activeByUser.remove(old.user(), request);\n        events.add(new Event(request, next.generation(), next.version(), target));\n        return true;\n    }\n    public synchronized Order order(String request) { return orders.get(request); }\n    public synchronized String activeRequest(String user) { return activeByUser.get(user); }\n    public synchronized long available() { return available; }\n    public synchronized List<Event> events() { return List.copyOf(events); }\n    public synchronized void checkConservation() {\n        long accounted = available;\n        for (Order order : orders.values()) {\n            if (order.state() != State.CANCELLED) {\n                accounted = Math.addExact(accounted, order.quantity());\n                if (!order.request().equals(activeByUser.get(order.user())))\n                    throw new AssertionError(\"active marker mismatch\");\n            }\n        }\n        if (available < 0 || accounted != capacity) throw new AssertionError(\"inventory mismatch\");\n    }\n    private static void nonblank(String value) {\n        if (value == null || value.isBlank()) throw new IllegalArgumentException(\"identifier required\");\n    }\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这个模型的关键检查是 available 加所有未取消订单数量始终等于初始 capacity，且每笔有效订单都对应用户当前占用。支付与取消竞争只能有一个 finish 返回 true，重复释放不能增加数量，旧取消不能清理新占位。还应覆盖零或负数量、未知请求、参数冲突、Long.MAX_VALUE 容量和新旧请求交错。生产实现必须把这些不变量放到真实数据库事务及目的端协议里，进程退出后内存模型不会保留任何承诺。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "一亿用户领券 从大 Key 到完整预留协议"
+    },
+    {
+      "type": "paragraph",
+      "text": "一亿用户即 100000000 个潜在领取身份。单 Set 会遇到容量与大 key 问题，拆桶或独立 String 可以改变存储与访问分布，但都不会自动解决全局库存、一人一券、跨槽原子性和异步落库失败。完整答案应沿着“资格表示、额度分配、原子预筛、权威确认、幂等释放”连续展开。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么先用 Set 又为什么需要拆分"
+    },
+    {
+      "type": "paragraph",
+      "text": "Set 适合表达某张券已经领取的 userId，SADD 对同成员重复加入不新增，SISMEMBER 判断精确成员身份。在普通字典编码下单成员操作通常按平均 O(1) 理解，实际还受成员长度、碰撞、rehash、内存与系统负载影响。这个复杂度不能推出一亿成员的集合轻量或固定亚毫秒。"
+    },
+    {
+      "type": "paragraph",
+      "text": "大集合的风险包括内存、rehash、复制传输、备份和迁移成本；SMEMBERS 或大范围集合运算会产生巨大返回和执行工作，删除或释放也可能造成停顿。SSCAN 可以增量遍历，COUNT 只是工作量提示，不能保证单次返回数量上限；UNLINK 可把昂贵释放移到后台，但总工作量、内存带宽、复制流量和持久化 copy-on-write 峰值仍然存在。"
+    },
+    {
+      "type": "paragraph",
+      "text": "容量估算需要真实 userId 编码长度、成员对象或字典开销、桶数组、分配对齐、key 元数据及复制和持久化峰值，不能直接用一亿乘八字节给出真实占用。Bitmap 在 ID 稠密且映射可控时值得评估，但稀疏大编号、映射成本、资格与库存的共同原子协议仍需处理。Bloom 阳性不能直接当作“已领”拒绝，因为误判会漏发合法资格；严格领取事实仍要精确确认。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "独立 String 的收益和代价"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以把一个大 Set 改为 claim:{tenant:voucher:generation}:userId，value 保存稳定 requestId、reservationId 或必要状态；stock:{tenant:voucher:generation} 保存这一代库存。身份组件要经过无歧义编码，不允许用户输入括号或分隔符改变路由范围；tenant 和活动代际不能省略。"
+    },
+    {
+      "type": "paragraph",
+      "text": "独立 String 便于查单人、独立期限和按 owner 安全释放，单 key 不再装一亿成员。但一亿个小 key 有额外 key、对象、字典及 TTL 元数据，总内存不一定更少。资格保留期要覆盖活动限制与重放窗口，永久一人一券由持久唯一约束兜底，不能到期后把已领取的人重新当作新用户。"
+    },
+    {
+      "type": "paragraph",
+      "text": "如果每个人的 claim 与同一 stock 共享 hash tag，它们都在一个 slot，便于单次 Lua 一起裁决，但该券写热点仍集中。把 user 放进不同 tag 能分散 key，却会使共享 stock 跨槽。普通 Cluster 多键脚本应只访问显式声明的同槽 KEYS，不能一边承诺所有用户任意分片，一边承诺单个全局库存跨节点原子扣减。要分散额度，必须引入分区配额或共同权威事务。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "分桶怎样避免有券却领不到"
+    },
+    {
+      "type": "paragraph",
+      "text": "假设总额度 S 拆为未分配池 U 和若干桶额度，任何时刻已经分配而未收回的额度总和不得超过 S。按 userId 固定哈希路由后，某个桶耗尽、其他桶尚有剩余，会出现局部售罄。只拆领取 Set 不会自动造成或解决库存分桶；要明确分的是资格记录，还是确实给每个桶划了可售配额。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可选择接受局部售罄换取简单与隔离，也可以有限探测其他桶或可靠调拨。探测其他桶时，必须有全局 (活动,用户) 唯一资格或稳定预留归属，不能在每个桶里分别“未领取”就允许一人领多张。最终数据库唯一约束可以阻止重复发券，但各桶已暂占的失败预留还需安全归还，否则会损失售尽率。"
+    },
+    {
+      "type": "paragraph",
+      "text": "调拨同一份额度，要先让源桶不能再卖，再让目标桶可以卖。用 transferId、bucket、epoch 和持久转移状态记录过程：先冻结并扣除源桶可分配额度，可靠确认它不再可售，再把这份额度授予目标桶；目标端按转移身份拦住重复授予。"
+    },
+    {
+      "type": "paragraph",
+      "text": "因此不能只发两次不相关的“源桶减、目标桶加”就忽略失败。中间结果不确定时，可以暂时少卖，不能让两边同时放行；超时后换 transferId 重新分配也会破坏守恒。同库事务能一起更新两个桶时，可直接利用事务；跨节点调拨则要承担协调、恢复和暂时不可用的成本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "单库存避免局部售罄，却保留写热点；分桶提高并行度，也带来额度碎片、跨桶资格和调拨复杂度。选哪一种要结合峰值写入、可接受售尽率、尾延迟和故障策略，不能根据“一亿用户”直接编造峰值 QPS 或机器数。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "GET SET 与 DECR 的优化边界"
+    },
+    {
+      "type": "paragraph",
+      "text": "客户端 GET 看到用户未领取再 SET，有检查与写入的竞态。只需要“缺失才创建”时可用 SET key value NX，默认成功返回 OK、未满足条件返回空；SETNX 返回 1 或 0。但同请求重试和同用户不同请求要有不同处理，所以还需旧标记或结果收据，不能为了少一次读把 REPLAY 语义丢掉。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 内经过预校验的 GET 再 SET 不会被其他普通命令穿插，和客户端两次往返的危险不同。DECR 原子减一，返回减后的整数，不是是否领取成功的布尔值；不存在的 key 从 0 减到 -1，非整数、错误类型或超出有符号 64 位范围会报错。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一种变体是在已初始化且受控的库存上先 DECR，结果小于零时在同一脚本内 INCR 补回并不给资格；但这个变体也要处理运行中错误，并在协议上定义暂时负值是否可接受。把 DECR 与补回拆成客户端两次调用会扩大超时窗口。若需要拒绝缺失或损坏库存、维持非负状态和完整重放结果，保留 GET 检查更清楚，减少命令数不能排在正确性之前。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整 Lua 预筛与返回契约"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面脚本以 Redis 7.2 的命令语义为基线，要求两个不同且同槽的显式 KEYS：初始化为持久整数 String 的库存，以及当前用户的 String 标记。ARGV 只有稳定 requestId，长度 1 到 128 字节；调用方要鉴权并构造正确用户键。脚本本身不计算槽号，同槽由调用与部署契约保证。"
+    },
+    {
+      "type": "paragraph",
+      "text": "脚本检查类型、规范非负十进制表示和 2147483647 的教学上限，不接受多余前导零。ID 一直作为字符串，避免 Lua number 精度损失；库存上限也让数值计算明确可表示。旧 marker 相同返回 REPLAY，不同返回 ALREADY_CLAIMED；售罄不修改；正常首次通过才 DECR 并写 marker，返回 PREHELD 与剩余库存。"
+    },
+    {
+      "type": "code",
+      "language": "lua",
+      "value": "-- Redis 7.2 teaching pre-screen, NOT a durable order commit or a complete reservation service.\n-- KEYS[1] = stock:{tenant:voucher:generation}; initialized, persistent integer String.\n-- KEYS[2] = claim:{tenant:voucher:generation}:user; String value = stable request ID.\n-- Both keys must use the SAME hash tag. Trusted caller binds authenticated user to KEYS[2].\n-- ARGV[1] = stable request ID. This script does not publish MQ, persist outbox, or release stock.\n-- Returned PREHELD/REPLAY means consult the authoritative order state, never promise issuance.\nif #KEYS ~= 2 or #ARGV ~= 1 or KEYS[1] == KEYS[2] then\n    return redis.error_reply('two distinct same-slot keys and one request ID required')\nend\nif #ARGV[1] == 0 or #ARGV[1] > 128 then\n    return redis.error_reply('request ID length must be 1..128 bytes')\nend\nlocal st = redis.call('TYPE', KEYS[1]).ok\nlocal mt = redis.call('TYPE', KEYS[2]).ok\nif st ~= 'string' or (mt ~= 'none' and mt ~= 'string') then\n    return redis.error_reply('stock must exist as String; marker must be absent or String')\nend\nlocal old = redis.call('GET', KEYS[2])\nif old then\n    if old == ARGV[1] then return {'REPLAY', old} end\n    return {'ALREADY_CLAIMED', old}\nend\nlocal raw = redis.call('GET', KEYS[1])\nif not raw or not string.match(raw, '^%d+$') or (#raw > 1 and string.sub(raw, 1, 1) == '0') then\n    return redis.error_reply('canonical nonnegative decimal stock required')\nend\nlocal stock = tonumber(raw)\nif #raw > 10 or not stock or stock > 2147483647 then\n    return redis.error_reply('teaching stock bound is 0..2147483647')\nend\nif stock == 0 then return {'SOLD_OUT'} end\n-- Normal successful execution is isolated. Redis does NOT roll back earlier writes on errors.\n-- ACL/configuration/memory errors after this point need UNKNOWN handling and reconciliation.\nlocal remaining = redis.call('DECR', KEYS[1])\nredis.call('SET', KEYS[2], ARGV[1])\nreturn {'PREHELD', ARGV[1], remaining}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "PREHELD 或 REPLAY 都要求继续查询权威订单状态，不能解释为已经发券成功。脚本不发布 MQ、不持久化 outbox、不实现释放，也不为标记自动设 TTL。它只保存当前用户的 requestId，完整的 tenant、参数绑定与跨用户误用同 ID，仍由上层协议和权威请求收据检查。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Lua 不是带回滚日志的事务。比如 DECR 已成功，后续 SET 因权限或其他运行条件报错，库存可能已减而标记没写；写前校验只能减少常见错误，不能证明所有后续写必定成功。发生错误或响应丢失，应隔离受影响暂占并按权威预留对账，不能把再次调用脚本当作无条件安全重试。最终领取依然由数据库库存条件、用户资格唯一、请求幂等及 outbox 的共同提交裁决。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "落库失败 与补偿再次超时"
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis 预扣后经 MQ 落库，数据库明确未提交的暂时错误可以用同 requestId 有限重跑事务；缺货、已领等是业务拒绝；commit 或网络超时则是 UNKNOWN，可能已经落单。先查权威主账本和稳定请求收据，不能因为从库暂时没查到就回补。数据库和 Redis 谁是权威必须从头到尾一致，不能成功时用 Redis、出错时又随意切到 MySQL。"
+    },
+    {
+      "type": "paragraph",
+      "text": "确认预留应终止后，权威状态机生成唯一 releaseId 和版本。Redis 的局部释放协议要检查对应 reservation 仍处于可释放状态、此 releaseId 未执行、标记仍归该订单和 generation，然后在同一原子边界加回对应额度并记已释放；再次收到同一释放只返回原结果。旧订单不能删新订单的资格，取消与支付的竞争也不能由缓存各自决定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "回滚 Redis 又超时，仍是“结果未知”，不是“回滚一定没做”。保留持久待修复 release 事件，用同一 releaseId 查询与重试；若已经释放但应答丢失，应返回原结果而不是再 INCR 一次。如果 Redis 去重或预留状态已因切主回退丢失，不能凭一个新的空标记继续增量修复。暂停受影响代际，按权威快照及可靠增量重建或执行已证明的恢复协议，再恢复接单。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "到期对账 轮询与积压如何一起治理"
+    },
+    {
+      "type": "paragraph",
+      "text": "按 orderId 写入 ZSet、定时扫超时后查 MySQL，是一种到期候选机制。score 表示 deadline，member 是稳定 reservationId；它不等于订单账本。多 worker 要可靠认领，不能弹出后只留下内存任务；权威表应能重建遗漏的到期候选。查不到订单可能是尚在途、读取落后或结果未知，必须结合受理记录、处理状态和代际判断，不能直接视为从未提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "前端拿 orderId 轮询，可以指数退避加抖动、服务端限频、合并同一订单查询、缓存短期状态，并对长时间 PENDING 给出合理查询间隔。服务端推送也需要客户端重连后的查询兜底。减少轮询压力不能通过提前返回“发券成功”实现，最终状态仍来自权威账本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "异步积压时看最老事件年龄、队列长度、处理速率、锁等待和失败重试，先限流、背压、隔离毒消息，再在数据库可承受范围内扩消费者。单行热点不会因无限增加消费者而消失。可以在同库事务中批量处理同一 SKU 或同桶的请求，固定锁顺序、限制批次和事务时间；每个 requestId、用户资格与结果收据仍单独保留。不能只把数量合成一个 DECR，就丢掉谁成功、谁失败和重复请求对应关系。"
+    },
+    {
+      "type": "paragraph",
+      "text": "只同步可重建的绝对库存投影时，可以按版本合并中间值；消费不可丢的订单或 release 事件时，则不能随意覆盖掉中间业务动作。最终一致允许 Redis 展示落后，不允许权威事务的库存非负、用户唯一和一次释放约束被暂时取消。单实例改多实例时，要重新检查共同身份、持久状态、队列 ACK、同槽路由、锁粒度、时钟、限额和故障恢复，不能只多部署几个进程。"
+    },
+    {
+      "type": "paragraph",
+      "text": "把这条链路讲完整，最后应能回答：每份额度归谁、每个请求能重放什么、何时报告成功、失败记录在哪里、谁有权释放，以及补偿重试为何不会再加一次库存。桶局部耗尽、跨桶重试、脚本半途错误、漏发与重投、commit 未知、释放应答丢失、旧取消晚到和切主回退，都应分别给出状态与恢复入口，而不是用“定时补偿”四个字带过。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-redis-reading-guide",
+      "label": "阅读顺序、版本与项目证据边界"
+    }
+  ]
+}

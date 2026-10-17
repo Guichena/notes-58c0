@@ -1,0 +1,75 @@
+{
+  "entries": [
+    {
+      "id": "handwrite-46",
+      "number": 1,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第一章：基础手写与数据结构",
+      "flat": false,
+      "title": "海量文件 Top K",
+      "questionHtml": "<p class=\"md-p\">有 100 个大文件，每个文件里有几亿个整数。机器 4 核 CPU，内存可能充足也可能只有几十 MB。要求找出全局最大的 1000 个数。输入是目录路径，输出 Top 1000。</p>",
+      "analysisHtml": "<p class=\"md-p\">这不是简单排序题，而是“海量数据 + 有限内存 + 并行处理”的综合题。面试官想看你是否能避免全量加载、全量排序和全局锁竞争。</p>\n<p class=\"md-p\">如果把所有数字读进内存再排序，会遇到两个问题：数据量远超内存；全排序是 <code class=\"tok-inline\">O(N log N)</code>，而我们只需要最大的 K 个，没必要排序所有元素。</p>\n<p class=\"md-p\">正确方向是分治：每个文件或分片先求局部 TopK，再把局部结果归并成全局 TopK。找最大 K 个数时维护大小为 K 的小顶堆，堆顶永远是当前 TopK 中最小的元素，新元素只有大于堆顶才有资格进入。</p>",
+      "knowledge": [
+        "小顶堆：适合找最大 K 个；大顶堆适合找最小 K 个。",
+        "分治/MapReduce：局部聚合减少数据规模，再全局聚合。",
+        "IO 优化：<code class=\"tok-inline\">BufferedInputStream</code>、大缓冲、按字节解析整数；极大文件可用 <code class=\"tok-inline\">FileChannel</code> 或分片读取。",
+        "并发模型：每个任务维护局部堆，最后单线程或分层归并，避免多个线程竞争一个全局堆。",
+        "内存约束：内存很小时仍然可以维护 K 大小堆；如果 K 也很大或需要排序全部结果，再考虑外部排序。"
+      ],
+      "answerHtml": "<p class=\"md-p\">核心算法：</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li>遍历目录得到文件列表。</li><li>使用固定线程池处理文件。4 核机器可以先设 4 个工作线程；如果 IO 等待明显，可以调到 6 到 8，但要压测。</li><li>每个文件任务只维护一个大小为 1000 的小顶堆。</li><li>所有局部堆返回后，再用一个全局小顶堆合并。</li><li>最后把堆中元素倒序输出。</li></ol></div>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.io.BufferedInputStream;\nimport java.io.File;\nimport java.io.FileInputStream;\nimport java.io.IOException;\nimport java.util.ArrayList;\nimport java.util.Collections;\nimport java.util.List;\nimport java.util.PriorityQueue;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.Future;\n\npublic class ParallelTopK {\n    private static final int K = 1000;\n\n    public List&lt;Integer&gt; topK(List&lt;File&gt; files) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(4);\n        List&lt;Future&lt;PriorityQueue&lt;Integer&gt;&gt;&gt; futures = new ArrayList&lt;&gt;();\n\n        for (File file : files) {\n            futures.add(pool.submit(() -&gt; topKOfFile(file, K)));\n        }\n\n        PriorityQueue&lt;Integer&gt; global = new PriorityQueue&lt;&gt;(K);\n        for (Future&lt;PriorityQueue&lt;Integer&gt;&gt; future : futures) {\n            for (Integer value : future.get()) {\n                offer(global, value, K);\n            }\n        }\n\n        pool.shutdown();\n        List&lt;Integer&gt; ans = new ArrayList&lt;&gt;(global);\n        ans.sort(Collections.reverseOrder());\n        return ans;\n    }\n\n    private PriorityQueue&lt;Integer&gt; topKOfFile(File file, int k) throws IOException {\n        PriorityQueue&lt;Integer&gt; heap = new PriorityQueue&lt;&gt;(k);\n        try (BufferedInputStream in = new BufferedInputStream(new FileInputStream(file), 1 &lt;&lt; 20)) {\n            int sign = 1;\n            int num = 0;\n            boolean reading = false;\n            int ch;\n            while ((ch = in.read()) != -1) {\n                if (ch == '-') {\n                    sign = -1;\n                } else if (ch &gt;= '0' &amp;&amp; ch &lt;= '9') {\n                    num = num * 10 + (ch - '0');\n                    reading = true;\n                } else if (reading) {\n                    offer(heap, sign * num, k);\n                    sign = 1;\n                    num = 0;\n                    reading = false;\n                }\n            }\n            if (reading) {\n                offer(heap, sign * num, k);\n            }\n        }\n        return heap;\n    }\n\n    private void offer(PriorityQueue&lt;Integer&gt; heap, int value, int k) {\n        if (heap.size() &lt; k) {\n            heap.offer(value);\n        } else if (value &gt; heap.peek()) {\n            heap.poll();\n            heap.offer(value);\n        }\n    }\n}</pre></div></section>\n<p class=\"md-p\">复杂度：总共有 N 个数字，时间复杂度 <code class=\"tok-inline\">O(N log K)</code>；空间复杂度约为 <code class=\"tok-inline\">O(T * K)</code>，T 是并发任务数。局部结果合并最多处理 <code class=\"tok-inline\">文件数 * K</code> 个元素。</p>\n<p class=\"md-p\">工程补充：如果单个文件特别大，任务粒度不应固定为“一个文件一个任务”，可以按文件偏移切分，切分点需要向后找到分隔符，避免截断数字。如果输入来自对象存储或网络流，还要考虑失败重试和断点续读。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：内存只有 10MB 怎么办？</strong></p>\n<p class=\"md-p\">分析：如果 K=1000，堆本身很小，10MB 仍然够用；真正的问题是不能读全量数据。答案仍是流式读取 + 小顶堆。如果题目要求输出全量有序或 K 极大，则用外部排序：切分小文件、内存排序、落盘、多路归并。</p>\n<p class=\"md-p\"><strong>变体 2：100 个文件大小极不均匀怎么办？</strong></p>\n<p class=\"md-p\">分析：按文件分配任务会导致大文件拖尾。答案是把大文件按块切分成更多任务，线程池从任务队列中动态取任务，最后归并所有分片 TopK。</p>\n<p class=\"md-p\"><strong>变体 3：实时数据流中持续维护 TopK 怎么做？</strong></p>\n<p class=\"md-p\">分析：数据不会结束，不能等全量扫描。答案是维护一个长期小顶堆；如果多节点分布式处理，每个节点维护局部 TopK，定时汇总到中心节点或使用流处理框架做分层聚合。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "基础手写与数据结构"
+    },
+    {
+      "id": "handwrite-47",
+      "number": 2,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第一章：基础手写与数据结构",
+      "flat": false,
+      "title": "手写 LRU 缓存",
+      "questionHtml": "<p class=\"md-p\">实现一个固定容量的 LRU Cache，支持 <code class=\"tok-inline\">get(key)</code> 和 <code class=\"tok-inline\">put(key, value)</code>，要求平均 <code class=\"tok-inline\">O(1)</code>。</p>",
+      "analysisHtml": "<p class=\"md-p\">LRU 是大厂手撕高频题。核心是同时满足快速查找和快速移动顺序。哈希表能 O(1) 查找，双向链表能 O(1) 删除和移动节点，所以组合使用。</p>\n<p class=\"md-p\">Java 里也可以用 <code class=\"tok-inline\">LinkedHashMap</code> 快速实现，但面试手撕通常要求你写双向链表。</p>",
+      "knowledge": [
+        "哈希表：key 到节点的映射。",
+        "双向链表：维护最近使用顺序。",
+        "头部表示最近使用，尾部表示最久未使用。",
+        "get 命中后要移动到头部。",
+        "put 已存在要更新并移动；容量超限淘汰尾部。"
+      ],
+      "answerHtml": "<p class=\"md-p\">手写版：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.HashMap;\nimport java.util.Map;\n\npublic class LruCache&lt;K, V&gt; {\n    private final int capacity;\n    private final Map&lt;K, Node&lt;K, V&gt;&gt; map = new HashMap&lt;&gt;();\n    private final Node&lt;K, V&gt; head = new Node&lt;&gt;(null, null);\n    private final Node&lt;K, V&gt; tail = new Node&lt;&gt;(null, null);\n\n    public LruCache(int capacity) {\n        this.capacity = capacity;\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public V get(K key) {\n        Node&lt;K, V&gt; node = map.get(key);\n        if (node == null) {\n            return null;\n        }\n        moveToHead(node);\n        return node.value;\n    }\n\n    public void put(K key, V value) {\n        Node&lt;K, V&gt; node = map.get(key);\n        if (node != null) {\n            node.value = value;\n            moveToHead(node);\n            return;\n        }\n\n        Node&lt;K, V&gt; created = new Node&lt;&gt;(key, value);\n        map.put(key, created);\n        addAfterHead(created);\n\n        if (map.size() &gt; capacity) {\n            Node&lt;K, V&gt; removed = removeTail();\n            map.remove(removed.key);\n        }\n    }\n\n    private void moveToHead(Node&lt;K, V&gt; node) {\n        remove(node);\n        addAfterHead(node);\n    }\n\n    private void addAfterHead(Node&lt;K, V&gt; node) {\n        node.prev = head;\n        node.next = head.next;\n        head.next.prev = node;\n        head.next = node;\n    }\n\n    private void remove(Node&lt;K, V&gt; node) {\n        node.prev.next = node.next;\n        node.next.prev = node.prev;\n    }\n\n    private Node&lt;K, V&gt; removeTail() {\n        Node&lt;K, V&gt; node = tail.prev;\n        remove(node);\n        return node;\n    }\n\n    private static class Node&lt;K, V&gt; {\n        K key;\n        V value;\n        Node&lt;K, V&gt; prev;\n        Node&lt;K, V&gt; next;\n\n        Node(K key, V value) {\n            this.key = key;\n            this.value = value;\n        }\n    }\n}</pre></div></section>\n<p class=\"md-p\"><code class=\"tok-inline\">LinkedHashMap</code> 版：</p>\n<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.LinkedHashMap;\nimport java.util.Map;\n\npublic class LruByLinkedHashMap&lt;K, V&gt; extends LinkedHashMap&lt;K, V&gt; {\n    private final int capacity;\n\n    public LruByLinkedHashMap(int capacity) {\n        super(capacity, 0.75f, true);\n        this.capacity = capacity;\n    }\n\n    @Override\n    protected boolean removeEldestEntry(Map.Entry&lt;K, V&gt; eldest) {\n        return size() &gt; capacity;\n    }\n}</pre></div></section>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：如何让 LRU 线程安全？</strong></p>\n<p class=\"md-p\">问题分析：HashMap 和链表都不是线程安全的。</p>\n<p class=\"md-p\">知识点：互斥锁、分段锁。</p>\n<p class=\"md-p\">答案：简单方案是所有 <code class=\"tok-inline\">get/put</code> 加锁；高并发可分片，每片一个 LRU，类似 ConcurrentHashMap 分段思想。</p>\n<p class=\"md-p\"><strong>变体 2：Redis 的内存淘汰就是 LRU 吗？</strong></p>\n<p class=\"md-p\">问题分析：Redis 出于性能考虑不是严格全局 LRU。</p>\n<p class=\"md-p\">知识点：近似 LRU、采样淘汰。</p>\n<p class=\"md-p\">答案：Redis 支持多种淘汰策略，LRU 类策略通常基于采样近似，不维护全量双向链表。</p>\n<p class=\"md-p\"><strong>变体 3：LRU 和 LFU 区别？</strong></p>\n<p class=\"md-p\">问题分析：一个看最近访问，一个看访问频次。</p>\n<p class=\"md-p\">知识点：时间局部性、频率局部性。</p>\n<p class=\"md-p\">答案：LRU 淘汰最久未访问；LFU 淘汰访问频次最低。热点长期稳定适合 LFU，访问模式变化快适合 LRU。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "基础手写与数据结构"
+    },
+    {
+      "id": "handwrite-48",
+      "number": 3,
+      "kind": "handwrite",
+      "kindLabel": "场景手撕",
+      "group": "场景设计",
+      "category": "第一章：基础手写与数据结构",
+      "flat": false,
+      "title": "简易内存池分配",
+      "questionHtml": "<p class=\"md-p\">内存池中有多种固定粒度的内存块，例如 <code class=\"tok-inline\">64:2,128:1,32:4</code> 表示 64 字节 2 块、128 字节 1 块、32 字节 4 块。给定一批申请大小，按顺序处理。每次选择大于等于申请大小的最小块，块不可拆分，输出每次是否分配成功。</p>",
+      "analysisHtml": "<p class=\"md-p\">这题是贪心 + 有序查找。局部最优选择是 Best Fit：每次用能满足请求的最小块，尽量保留大块给未来请求。</p>\n<p class=\"md-p\">关键操作是“找大于等于 request 的最小 key”，Java 中 <code class=\"tok-inline\">TreeMap.ceilingKey</code> 正好匹配。</p>",
+      "knowledge": [
+        "<code class=\"tok-inline\">TreeMap</code> 基于红黑树，<code class=\"tok-inline\">ceilingKey</code> 是 <code class=\"tok-inline\">O(log N)</code>。",
+        "Best Fit：减少大块浪费，但可能产生碎片。",
+        "First Fit/Worst Fit：不同策略适用于不同内存管理场景。",
+        "并发场景：<code class=\"tok-inline\">TreeMap</code> 非线程安全，需要加锁、分段或 ThreadLocal 缓存。"
+      ],
+      "answerHtml": "<section class=\"code-card md-code-card\"><div class=\"code-toolbar\"><div class=\"toolbar-left\"><span class=\"window-dots\" aria-hidden=\"true\"><i></i><i></i><i></i></span><span class=\"file-label\">Answer.java</span></div><button class=\"copy-button md-copy\" type=\"button\">复制代码</button></div><div class=\"code-scroll\"><pre class=\"md-pre\" data-lang=\"java\">import java.util.ArrayList;\nimport java.util.List;\nimport java.util.TreeMap;\n\npublic class MemoryAllocator {\n    private final TreeMap&lt;Integer, Integer&gt; blocks = new TreeMap&lt;&gt;();\n\n    public MemoryAllocator(String config) {\n        for (String item : config.split(&quot;,&quot;)) {\n            String[] pair = item.split(&quot;:&quot;);\n            int size = Integer.parseInt(pair[0]);\n            int count = Integer.parseInt(pair[1]);\n            blocks.merge(size, count, Integer::sum);\n        }\n    }\n\n    public List&lt;Boolean&gt; allocate(List&lt;Integer&gt; requests) {\n        List&lt;Boolean&gt; result = new ArrayList&lt;&gt;(requests.size());\n        for (int request : requests) {\n            Integer size = blocks.ceilingKey(request);\n            if (size == null) {\n                result.add(false);\n                continue;\n            }\n            result.add(true);\n            int count = blocks.get(size);\n            if (count == 1) {\n                blocks.remove(size);\n            } else {\n                blocks.put(size, count - 1);\n            }\n        }\n        return result;\n    }\n}</pre></div></section>\n<p class=\"md-p\">复杂度：申请数为 M，粒度种类为 N，时间复杂度 <code class=\"tok-inline\">O(M log N)</code>，空间复杂度 <code class=\"tok-inline\">O(N)</code>。</p>",
+      "relatedHtml": "<p class=\"md-p\"><strong>变体 1：内存块可以拆分怎么办？</strong></p>\n<p class=\"md-p\">分析：分配后要把剩余空间重新放回池子。答案：找到 <code class=\"tok-inline\">ceilingKey</code> 后，扣掉原块，如果 <code class=\"tok-inline\">size &gt; request</code>，把 <code class=\"tok-inline\">size - request</code> 作为新块加入。但还要考虑相邻空闲块合并，否则碎片越来越多。</p>\n<p class=\"md-p\"><strong>变体 2：多线程同时申请怎么办？</strong></p>\n<p class=\"md-p\">分析：<code class=\"tok-inline\">TreeMap</code> 不是线程安全的。答案：简单做法是用锁保护整个分配过程；高性能做法是按 size range 分段，或者为线程维护本地缓存，参考 Netty 内存池思想。</p>\n<p class=\"md-p\"><strong>变体 3：粒度都是 2 的幂，能否更快？</strong></p>\n<p class=\"md-p\">分析：可以根据申请大小向上取整到最近的 2 次幂，直接定位桶，接近 O(1)。这就是很多内存分配器和对象池的分级思想。</p>\n<hr class=\"md-hr\">",
+      "mod": "code",
+      "part": "代码手撕",
+      "cat": "基础手写与数据结构"
+    }
+  ]
+}

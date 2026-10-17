@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-practice-1440a4c49422ef57",
+  "entryId": "ai-agent-8",
+  "expectedOriginalHash": "f94c1221a862fc6241a23d0b409829dfad1cd437aa96246c9cdd91558f41bc8e",
+  "title": "跨册场景补充：Function Calling与MCP怎样接线，未知工具、参数错误和复杂结构应在哪层处理",
+  "blocks": [
+    {
+      "type": "paragraph",
+      "text": "本节保留教学来源的条件、示例和代码。原文“通过”、测试数量、性能数字与运行命令不代表本批实际执行或个人项目成绩；本批只做来源保真与隔离的站点内容编译，没有运行导入程序。混合来源中的纯前端或推荐课程已单独排除；理论与场景的完整程序、夹具只存来源归档，不进入学习导航。实际算法与手撕代码如有裁切会明确注明。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Function Calling与MCP怎样接线，未知工具、参数错误和复杂结构应在哪层处理"
+    },
+    {
+      "type": "paragraph",
+      "text": "Function Calling 是模型提出工具调用的接口，MCP 是客户端连接工具服务的协议；宿主仍负责白名单、类型、业务权限与副作用恢复，且接线流程必须绑定协议版本。"
+    },
+    {
+      "type": "paragraph",
+      "text": "也可能这样问："
+    },
+    {
+      "type": "paragraph",
+      "text": "- MCP 异常捕获：MCP 工具调用的时候如果工具名字错误或者参数格式/类型错误该怎么办？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 工具调用与协议选型：Agent 的工具调用是怎么实现的？Function Calling 和 MCP 分别是怎么接入的？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- MCP 复杂结构处理：MCP 的协议有没有做复杂参数或结构化数据的特殊处理？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- MCP 工具使用的时候有什么注意事项？"
+    },
+    {
+      "type": "paragraph",
+      "text": "- 如果调用失败了怎么办？"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "模型提出调用，宿主执行真实动作"
+    },
+    {
+      "type": "paragraph",
+      "text": "注册表记录工具名、描述、inputSchema、风险/权限和版本，宿主把当前获准工具转换为模型供应商支持的函数定义。模型返回工具名、结构化参数和callId后，宿主校验并执行本地函数或通过MCP客户端调用对应server；将结果按原callId回填模型，再继续有限循环。模型不会因为生成函数名就自动拥有外部权限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "Host 是承载模型与用户交互、权限和执行策略的应用；Client 是 Host 内连接某个 Server 的协议参与者，Server 暴露工具/资源等能力。模型提出调用与协议Client执行调用是两层。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MCP 2025-11-25 的Client首先发送initialize协商版本/能力，确认兼容后发送notifications/initialized，再按能力tools/list分页发现、tools/call传name/arguments；后续HTTP请求带MCP-Protocol-Version。结果包含content以及可选structuredContent/isError。"
+    },
+    {
+      "type": "paragraph",
+      "text": "MCP 2026-07-28 已改为每请求携带协议版本、身份与能力元数据，不再要求initialize握手；版本在_meta中声明，HTTP还带版本头。Server须实现server/discover，Client可先发现也可直接发请求。不支持版本返回-32022及支持列表，选择双方支持版本重试。兼容两代时按stdio/Streamable HTTP各自探测与回退规则处理，不能看见任意超时就盲目改走旧握手。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同一个SDK名称不代表支持两代协议，接线与错误处理必须锁定实际协议/SDK版本。工具名只在server内唯一，聚合多个server要有受控命名空间；描述和annotations来自工具服务，未经信任不能当授权证明。工具清单变化要刷新并处理在途版本。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "未知名字和参数错误不是统一的Exception"
+    },
+    {
+      "type": "paragraph",
+      "text": "收到未知工具名时，先在当前白名单做精确匹配，不能模糊匹配到一个危险的近似名字。再判断是模型编造、目录缓存过旧，还是工具已经撤销；可以刷新一次已授权目录，或让模型在明确可用工具里受控修正，次数必须受限。"
+    },
+    {
+      "type": "paragraph",
+      "text": "错误层级也要分清：MCP 将未知工具、请求信封不满足 CallToolRequest schema 等列为 JSON-RPC 协议错误。示例未知名用 -32602，但这个码不能套给所有服务端异常。"
+    },
+    {
+      "type": "paragraph",
+      "text": "参数先解析JSON并校验inputSchema，再做业务/对象权限、单位范围与跨字段约束。JSON语法或调用信封错属于协议/客户端契约问题；规范把日期格式、数值越界等工具输入校验和业务执行失败列为isError:true的工具结果。具体SDK对schema错误处理可能不同，按协商版本与实现契约区分；不要断言任何参数类型错都一定是某一种错误。"
+    },
+    {
+      "type": "paragraph",
+      "text": "提供去敏的字段路径/期望类型/错误类别供模型一次受控修正，但缺失用户决定不能猜金额/对象。401/403或权限拒绝不得换工具绕过。网络过载只在幂等与总预算内重试；外部写UNKNOWN先查询原操作，无法确定时保留未决状态。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "复杂参数与结构化结果有标准入口"
+    },
+    {
+      "type": "paragraph",
+      "text": "嵌套object、array、required、enum、数值/长度上限可在JSON Schema描述，复杂业务仍需宿主验证；JSON number对大整数精度的跨语言风险可用十进制字符串契约，金额带币种/整数最小单位，时间用明确格式与时区，不能暗中丢小数。约束数组数量/嵌套深度/字节量，拒绝额外危险字段，资源引用按权限解析。"
+    },
+    {
+      "type": "paragraph",
+      "text": "2025-11-25规范允许outputSchema与structuredContent；给了outputSchema时服务端结构化结果必须符合schema，客户端应校验。content可合法是文本/图片/音频/资源链接，不是所有非JSON文本都是失败；兼容旧客户端可同时给序列化JSON文本。结构化工具结果和模型受约束生成是两回事，类型合法也不证明事实正确或业务成功。"
+    },
+    {
+      "type": "heading",
+      "level": 4,
+      "text": "接入安全、观测和测试"
+    },
+    {
+      "type": "paragraph",
+      "text": "本地stdio日志不能污染JSON-RPC stdout；HTTP传输要按协议处理会话/版本头、认证、超时与断连，不能将通用SSE接口当任意版本MCP完整实现。工具参数最小化、输出限长脱敏、防SSRF与路径越界，工具返回的指令永远是低信任数据。"
+    },
+    {
+      "type": "paragraph",
+      "text": "记录request/call/operation/trace身份和工具版本、耗时、重试/错误层级，敏感原文不默认打日志。测试未知名、目录刷新、嵌套类型/必填/越界、合法结构但越权、isError、协议error、截断、重试与超时后成功。"
+    }
+  ],
+  "questionId": "4"
+}

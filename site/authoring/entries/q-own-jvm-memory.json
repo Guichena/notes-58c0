@@ -1,0 +1,563 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "q-own-jvm-memory",
+  "kind": "qa",
+  "module": "bagu",
+  "part": "Java 与 JVM",
+  "category": "JVM 运行机制与诊断",
+  "title": "内存预算、对象、字符串与直接缓冲",
+  "number": "4 问",
+  "source": "https://my.feishu.cn/wiki/LHMUwWeOZiLKRZk6tDecxooCnDo",
+  "tags": [
+    "OWN JVM",
+    "Java 21 / HotSpot 21"
+  ],
+  "questions": [
+    {
+      "id": "q-own-jvm-memory-budget",
+      "order": 50,
+      "question": "运行时数据区怎样对应HotSpot进程内存，如何做完整预算？",
+      "commonPhrasings": [
+        "JVM 内存分哪几块",
+        "哪些线程共享",
+        "堆和栈为什么分开",
+        "static 放在哪",
+        "对象的属性和方法各在哪里",
+        "堆没满为什么还 OOM",
+        "内存模型"
+      ],
+      "shortAnswer": "回答 JVM 内存问题，要同时给出两张图：规范描述执行需要哪些逻辑结构，HotSpot 实现决定这些结构怎样占用堆、元空间、线程栈和 Code Cache 等资源。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "回答 JVM 内存问题，要同时给出两张图：规范描述执行需要哪些逻辑结构，HotSpot 实现决定这些结构怎样占用堆、元空间、线程栈和 Code Cache 等资源。前者帮助解释代码，后者帮助做进程预算。Xmx 只限制 Java 堆，不能当成整个进程的上限。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法有“JVM 内存分哪几块”“哪些线程共享”“堆和栈为什么分开”“static 放在哪”“对象的属性和方法各在哪里”“堆没满为什么还 OOM”。若面试官只说“内存模型”，先确认是在问运行时分区，还是 JMM 的可见性、原子性与有序性。后者是多线程可观察行为的规则，不是下面这张内存地图。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "线程执行状态与共享数据"
+        },
+        {
+          "type": "paragraph",
+          "text": "程序计数器表达一个线程当前执行的位置。执行普通 JVM 方法时，它与当前指令位置有关；执行 native 方法时，其值在规范中未定义。它不要求物理上永远对应某一个 CPU 寄存器，也不应该被解释成操作系统给每个 Java 方法建立的计数器。"
+        },
+        {
+          "type": "paragraph",
+          "text": "每个线程有自己的 JVM 栈。一次方法调用建立逻辑栈帧，包含局部变量表、操作数栈、动态链接以及方法返回等信息。参数是局部变量的一部分，实例方法还需要接收者 this。局部变量可以保存基本值，也可以保存对象引用；操作数栈用于字节码运算的中间值。动态链接使当前方法能够使用所在类的运行时常量池来找到被调用方法或访问字段。正常返回或异常传播时，相关栈帧按调用关系退出。"
+        },
+        {
+          "type": "paragraph",
+          "text": "“每次调用一帧”首先是逻辑模型。解释帧与编译帧的布局不同，内联后几个 Java 方法可能没有一一对应的物理帧，某些局部值还可能留在寄存器或被优化掉。字节码局部变量槽位也不能直接当作物理内存字节数。定位问题时应结合实际执行模式和工具能重建的逻辑栈。"
+        },
+        {
+          "type": "paragraph",
+          "text": "本地方法栈支持本地代码的执行环境。native 方法没有 Java 方法体，可能由 C、C++ 等符合调用接口的本地实现提供；它不意味着只能用某两种语言，也不意味着任意 native 调用都必然进入内核。JVM 实现可以让 Java 栈与本地栈共享某些物理设施，不必在进程中划出两块完全独立的连续区域。"
+        },
+        {
+          "type": "paragraph",
+          "text": "堆为对象实例和数组提供存储，在规范层面由线程共享。共享表示多个线程能够通过引用访问同一对象，不表示所有对象都实际被多线程使用。方法区也是共享的逻辑区域，描述每类结构、字段与方法数据、运行时常量池和代码等。JVMS 在逻辑上把方法区视为堆的一部分，但不要求它与普通对象使用相同的回收或分配方式；面试中说“Java 堆”时通常特指对象堆，要交代语境。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "方法区元空间与静态字段如何对应"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 HotSpot 21 的一个引用型 static 字段为例，可以沿“字段说明 → 字段当前值 → 被引用对象”分三处看。名称、描述符、修饰符等是类元数据，主要在本地内存中的 Metaspace；启用相应配置时还会涉及压缩类空间等实现结构。程序能访问的 java.lang.Class 镜像则是堆对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "static 字段的实际值位于类镜像相关布局中。引用型 static 保存的是一个引用，它指向的普通对象仍在 Java 堆。把字段的元数据、引用值和目标对象分清，就不会把“static”简单等同于“整个对象放在元空间”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "方法也要分开看。方法描述、字节码等属于类相关结构；JIT 产生的本地机器码放在 Code Cache；执行某次调用所需的局部值和操作数属于该次执行状态。每个实例不会各自复制一份方法体，但同一方法在运行过程中可以有不同编译版本，不能反过来说“一个方法在整个进程里永远只占一份固定机器码”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "运行时常量池是每类或每接口的结构，包含常量及待解析/已解析的引用。不能因名字里都有“常量池”，就把它与字符串驻留表画成一个盒子；其中引用到的 String 对象又是堆对象。HotSpot 对元数据、符号、已解析对象引用等还会采用不同的存储结构，因此“常量池全部就是一块字符串元空间”也不成立。"
+        },
+        {
+          "type": "paragraph",
+          "text": "JDK 8 移除了 HotSpot 的永久代，类元数据主要转向本地 Metaspace。这不是把所有曾被笼统称作“方法区”的东西统一搬到堆外，更不是从此不再发生类空间 OOM。元空间会随类加载增长，并受本地资源和限制参数约束。MetaspaceSize 主要是初始的元数据回收高水位，不等于一启动就预分配的固定容量；MaxMetaspaceSize 则用于限制相应元空间使用。把前者调大不能修复旧加载器被保留的问题。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-jvm/runtime-runtime-memory.png",
+          "alt": "运行链及JVMS逻辑数据区与HotSpot21物理进程预算的区别；Class镜像和static值在堆，元数据和编译代码分开预算。"
+        },
+        {
+          "type": "paragraph",
+          "text": "图中上半部分是执行及数据区的逻辑关系，下半部分是 HotSpot 21 进程预算。两层之间不是一个盒子对应一块固定物理地址；Class 镜像与 static 值在堆、类元数据在元空间、编译代码在 Code Cache，需要分别理解。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "为什么区分堆和栈"
+        },
+        {
+          "type": "paragraph",
+          "text": "栈帧的寿命通常跟随调用进入和退出，适合管理参数、局部值和返回状态；对象却可能跨越方法返回继续存活，也可能被多个线程共享，因此需要另一种生命周期管理。分开后可以分别优化调用状态与对象存储，而不是用“基本类型放栈、引用类型放堆”这条错误口诀划线：实例中的 int 字段也属于对象，栈中的引用也可能指向共享对象。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设一个方法创建局部 ArrayList，随后把它放进全局缓存。局部变量的槽位属于该线程，但被引用的列表已经可以通过全局缓存访问，线程封闭不再成立。返回时栈帧退出，只释放该帧对应的执行状态，不会把全局缓存里的列表自动销毁；反之，局部引用不再活跃时，对象也不必等到源代码块结束才具备回收条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "GC 会识别执行状态中的活跃引用，因此不能说“GC 完全不管栈”。同时，堆和本地栈仍竞争进程资源，不能保证堆 OOM 与栈问题互不影响。递归过深导致 StackOverflowError，通常应该检查终止条件、调用深度和栈设置，增大 Xmx 并不直接解决；无法创建本地线程，则还要考虑线程数、本地内存及系统限制，二者不是同一种错误。"
+        },
+        {
+          "type": "paragraph",
+          "text": "Java 21 虚拟线程还提醒我们不要把逻辑模型硬画成固定物理布局：虚拟线程的栈状态可以保存在 Java 堆中的 stack chunk 对象里，运行时再与载体线程协作。它们仍拥有独立的逻辑执行状态，却不是每个虚拟线程都拥有一块与平台线程等价的独占本地栈。它们的堆中栈块也不能机械视为与平台线程本地栈完全相同的 GC 根结构。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "给整个进程留预算"
+        },
+        {
+          "type": "paragraph",
+          "text": "Xmx 约束 Java 堆的最大容量，堆外仍有类元数据、平台线程栈、Code Cache、直接缓冲、GC 辅助结构、JIT 和本地库分配等。操作系统看到的虚拟地址保留量、实际提交量和 RSS 也不是同一指标。容器或系统可以因为总资源压力终止进程，此时未必来得及抛一个 Java 层 OutOfMemoryError。"
+        },
+        {
+          "type": "paragraph",
+          "text": "做预算时，先确定容器或进程可用总额，再给堆、直接缓冲池、类空间、线程以及其他本地开销分别预留，并给短时峰值留余量。上限之和也不是实际常驻占用之和，但把每项都配到理论最大、指望它们从不同“区域”各取一份独立资源，显然不可行。排错要先判断是堆对象膨胀、类增长、缓冲未释放、线程过多还是别的本地分配，再进入相应工具链。"
+        },
+        {
+          "type": "paragraph",
+          "text": "以 NoteWeave 的资料处理链路练习预算，先核清入口：资料接入按 128MB 单文件能力设计；具体配置同时把单文件和整个 multipart 请求上限设为 128MiB。实际文件还必须给请求封装留出空间，并受入口限制。这些接收限制并不等于 Java 堆只需 128MB。"
+        },
+        {
+          "type": "paragraph",
+          "text": "再沿 Java Host 与 Python Worker 的分工追一份文件：原始字节、解析树、字符串、分片结果和序列化副本，哪些同时存活，哪些在 Java，哪些在 Python？再加上排队任务和并发文件，才有峰值预算的依据。流式解析、有界缓冲、限制同时处理数和及时释放阶段结果，是可以进一步评估的设计选择。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这仍是设计延伸，不代表项目已经实施这些 JVM 调优或取得特定内存收益。异步化可以释放请求等待路径，也可能因积压留住更多数据，不能自动推出总内存下降。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "怎样实际观察栈溢出时的方法调用深度"
+        },
+        {
+          "type": "paragraph",
+          "text": "想把“递归过深”变成可以观察的实验，可以继续阅读当前 Java 方法的栈溢出深度和栈预算（https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnhSjAvwyCLA6kDWhK0Gceqc）。示例在独立子进程中设置栈预算，捕获并展开异常后再输出观察到的调用深度。方法进入次数不等于栈字节数，编译与运行条件变化也会影响结果，不能从一次深度直接推定固定帧大小。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [
+        {
+          "entryId": "scenario-local-cache",
+          "label": "对象头、引用与容量预算已有；缺运行时区/物理布局/进程总预算。"
+        }
+      ],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-allocation",
+      "order": 60,
+      "question": "对象怎样创建，TLAB、逃逸分析和分配消除有哪些边界？",
+      "commonPhrasings": [
+        "new 一个对象的全过程",
+        "创建对象后 JVM 内存发生什么变化",
+        "对象一定在堆上吗",
+        "什么时候栈上分配",
+        "TLAB 在哪里",
+        "TLAB 满了是否立刻 GC",
+        "数组分配在哪里"
+      ],
+      "shortAnswer": "对象和数组在 JVM 抽象语义中由堆提供存储，但源代码中的每个 new 不一定对应一次真实分配。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "对象和数组在 JVM 抽象语义中由堆提供存储，但源代码中的每个 new 不一定对应一次真实分配。HotSpot 可能先消除不必要的分配；仍需分配时，适合的对象通常走堆内 TLAB 快路径，快路径失败后再走与收集器有关的慢路径。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法有“new 一个对象的全过程”“创建对象后 JVM 内存发生什么变化”“对象一定在堆上吗”“什么时候栈上分配”“TLAB 在哪里”“TLAB 满了是否立刻 GC”“数组分配在哪里”。先讲可观察语义，再讲优化路径，才能避免把语言保证与实现策略混成一张固定流程图。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "先解释创建语义"
+        },
+        {
+          "type": "paragraph",
+          "text": "对普通 new，目标类首先要满足必要的加载、链接和初始化条件。实例所需空间取决于实际类型和布局；取得空间后，实例字段先有默认值，运行时建立对象头等可供自身识别的状态，再通过构造过程完成业务初始化。HotSpot 可以预先清零一批分配区，也可以在对象初始化时清零，优化还可能省略随后必被覆盖且不可观察的写入，所以不要把某个物理写指令顺序当成所有实现的统一要求。"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通对象构造涉及父类与子类。整个新对象先具备默认字段值，构造链先完成父类一侧的初始化和构造，再执行本类实例字段初始化、实例初始化块和构造器体；本类字段初始化与实例初始化块按源码顺序执行。构造器之间的 this 调用会影响进入哪条构造链，但不会使同一个对象的本类字段初始化无端重复执行。"
+        },
+        {
+          "type": "paragraph",
+          "text": "构造器还可能抛异常，或者在构造过程中错误地把 this 发布出去。获得了一块不重叠的内存，不等于另一个线程就能安全观察已经完成的业务状态；跨线程使用仍要遵守安全发布规则。对象分配的并发正确性与对象内容的并发正确性是两个问题。"
+        },
+        {
+          "type": "paragraph",
+          "text": "类第一次初始化可以执行任意静态代码，构造器也可以做任意复杂工作，分配慢路径还可能等待回收。因此整个 new 表达式没有统一的 O(1) 时间保证。已初始化类型的小对象 TLAB 分配通常很短，不代表每次对象创建都有固定时限。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "对象头字段引用与数组"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通实例可以从对象头、实例字段和对齐填充三部分理解。对象头保存运行时识别、状态或类型相关信息；确切结构受架构、压缩指针、锁实现和 JDK 版本影响。实例字段包含从父类继承的状态和本类状态，物理顺序可能由实现布局决定，不保证严格等于源码声明顺序。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如一个对象有 int count 和 Object child 两个字段，count 的值属于该实例，child 保存的是对另一个对象的引用，不是把子对象完整嵌进去。估算空间需要区分浅大小和沿引用可达的总体大小，不能把共享的 child 在每个父对象下都重复计入独占内存。static 字段属于类身份，不是每个实例一份；方法代码也不随每个实例复制，this 才决定访问哪一个对象的字段。"
+        },
+        {
+          "type": "paragraph",
+          "text": "数组本身也是对象，包含长度和元素存储。基本类型数组保存元素值，引用数组保存引用；new Parser[100] 建立一个含 100 个 null 引用的数组，不建立 100 个 Parser。多维数组是数组的数组，不应一律当成一块连续的二维数值矩阵。估算时还要考虑各层数组对象、引用宽度与对齐。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见 64 位 HotSpot 的某组参数可以得到常见对象头和引用大小，但这些不是 Java 语言常量。涉及容量规划时，应写明版本、架构、压缩选项、对象形状和统计口径，再用布局/采样工具核实；不能只按字段的基本类型字节数相加。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "TLAB 优化了哪段路径"
+        },
+        {
+          "type": "paragraph",
+          "text": "TLAB 是线程本地分配缓冲，本质上是 Java 堆里一段暂由该分配线程使用的区域。对适合的对象，线程只需检查剩余空间并推进本地分配位置，就能减少每次都争用共享分配点的成本。在 HotSpot 里应理解为当前执行所依附的 VM 线程分配路径，不要进一步推导成“每个虚拟线程一出生就永久得到一个固定 TLAB”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TLAB 放不下当前对象，下一步不一定是申请新 TLAB，更不一定是 GC。运行时可能保留余量还较多的旧缓冲，让这次对象在缓冲之外分配；也可能退休旧缓冲，再申请一个新 TLAB。对象太大或策略不适合时，本来就可能直接走缓冲之外的分配。"
+        },
+        {
+          "type": "paragraph",
+          "text": "这些补充缓冲和共享空间分配，要由收集器及运行时协调，可以使用 CAS 等手段。不能把它们全画成“争用同一把堆分配互斥锁”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "TLAB 剩余不足只说明这一小段缓冲不适合当前请求，不说明整个堆满了。慢路径可能仍能直接成功，必要时才进入回收、等待或最终失败的路径。TLAB 大小还可自适应，过大增加闲置尾部浪费，过小增加补充开销，要结合分配行为衡量，而不是为所有线程设置一个终身固定值。"
+        },
+        {
+          "type": "paragraph",
+          "text": "线程私有的是分配权限，不是对象以后永远私有。一个对象从 TLAB 分配后放入共享队列，其他线程仍然可以使用它；队列或发布协议应提供需要的可见性，之后的可变状态还需要符合业务同步规则。"
+        },
+        {
+          "type": "image",
+          "src": "assets/imported/own-jvm/runtime-allocation-paths.png",
+          "alt": "先判断分配能否消除，再进入Java堆内TLAB或缓冲外快慢路径；TLAB耗尽不表示必须GC。"
+        },
+        {
+          "type": "paragraph",
+          "text": "图中的第一层是编译优化决策，第二层才是仍需执行的运行时分配路径。没有“发现未逃逸就把完整对象搬到栈”的必经分支；TLAB 分配和缓冲之外的分配也都属于堆分配。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "逃逸分析与标量替换怎样理解"
+        },
+        {
+          "type": "paragraph",
+          "text": "逃逸分析追踪对象能否被分析范围外的代码观察。返回对象、写入共享字段、交给未知调用或传到其他线程，可能使分析更保守；但把对象作为方法参数并不必然阻止优化，内联和跨方法分析可以让编译器看见调用实际做了什么。反过来，源码里只有一个局部变量，也不证明对象未逃逸，因为其引用可能被方法间接保留。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果一个临时 Pair 只用于计算两个数字之和，编译器可能把这两个字段直接当作标量值处理，根本不建立一个完整 Pair。值可以位于寄存器、栈槽或被进一步常量折叠，这叫标量替换及分配消除，不能据此画出一个与堆对象一模一样的完整栈对象。HotSpot 21 的常见 C2 优化应按这条路径解释。"
+        },
+        {
+          "type": "paragraph",
+          "text": "不逃逸只是条件之一。没有成功内联、复杂控制流、无法分析的调用、对象使用方式、数组处理限制或编译预算，都可能让分配仍然保留。分析结论和标量可替换性不是一个词。优化必须保持可观察的身份和行为，不能为了减少分配改变 == 的结果。"
+        },
+        {
+          "type": "paragraph",
+          "text": "若编译器证明锁对象只在当前线程中可见，没有其他线程会参与相同监视器的竞争，还可能消除相关锁操作。锁消除不意味着程序员可以删除本来保护共享状态的锁；只有在优化器证明等价的条件下才成立。反优化时需要恢复的对象和锁状态，也要由运行时保持语义。"
+        },
+        {
+          "type": "paragraph",
+          "text": "大对象、长期存活对象和跨代引用会进一步影响收集器的分配与回收策略，但“数组一律在老年代”“超过固定字节数就直接晋升”“TLAB 满就 Full GC”都不成立。比如 G1 有 Humongous 对象路径，其他收集器又有自己的结构与阈值；分代和晋升问题应接着按具体收集器展开。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-strings",
+      "order": 70,
+      "question": "字符串常量池、拼接和intern怎样影响对象身份与对象数量？",
+      "commonPhrasings": [
+        "String 常量池在哪里",
+        "String 底层随版本怎样变",
+        "s1、s2、s3 的 == 结果是什么",
+        "第三个一定 true 吗",
+        "给定代码打印 b 是什么",
+        "一共创建多少对象",
+        "打印变量 b",
+        "上述代码创建几个对象"
+      ],
+      "shortAnswer": "字符串题先区分内容和对象身份，再区分常量表达式、运行期计算与 intern；底层数组是否共享、池中是否已有值和实际分配次数，不能替代这几个语义判断。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "字符串题先区分内容和对象身份，再区分常量表达式、运行期计算与 intern；底层数组是否共享、池中是否已有值和实际分配次数，不能替代这几个语义判断。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法有“String 常量池在哪里”“String 底层随版本怎样变”“s1、s2、s3 的 == 结果是什么”“第三个一定 true 吗”“给定代码打印 b 是什么”“一共创建多少对象”。输出和对象数必须建立在完整声明、表达式和比较对象上。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "三种常被叫作常量池的东西"
+        },
+        {
+          "type": "paragraph",
+          "text": "class 文件的常量池是文件结构，保存数值、字符串常量描述、类/字段/方法的符号信息等；运行时常量池是加载后每类或每接口的运行时结构；字符串驻留结构则负责为内容相同的字符串找到规范表示。它们有关联，但不是同一块存储。"
+        },
+        {
+          "type": "paragraph",
+          "text": "在现代 HotSpot 中，普通 String 实例及其内容数组是堆对象，驻留查找所用的表结构与这些对象分开管理。读取字面量或对常量表达式求值得到驻留表示，不等于所有 new String 和运行期拼接都自动成为同一个池对象。也不能说“字符串内容全部在元空间里”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "驻留不等于永久强引用。HotSpot 21 的驻留表有可清理的弱句柄机制；若没有其他保留路径，动态驻留的字符串并不因此永久存活。但已加载类的常量关联、静态字段或业务缓存可能继续保留它，因此“设一个变量为 null 后池中对象必然立刻被收集”同样错误。这里先记住驻留与存活是两个维度，可达性和引用强度再沿回收基础章节深入。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "从最明确的比较开始"
+        },
+        {
+          "type": "paragraph",
+          "text": "== 比较是否同一个对象，String.equals 比较内容。两个相同字面量可以指向同一个驻留对象；new String(\"abc\") 则创建新的 String 身份，与字面量引用不同。即使实现复用了不可变的内容数组，也不能推出两个 String 对象相同。内容相等的字符串 hashCode 本来就相等；identityHashCode 也存在碰撞可能，不能代替引用比较。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把声明补全再判断：String s1 = \"abc\"，String s2 = new String(\"abc\")，String s3 = s1 + \"\"。s2 由 new 建立新的 String 身份，所以 s1 与 s2 引用不同。s3 要看表达式：这里 s1 是普通变量，s1 + \"\" 不是字符串常量表达式，连接结果在可观察语义上是新的 String，因此 s1 == s3 为 false。"
+        },
+        {
+          "type": "paragraph",
+          "text": "三个字符串的内容相等，身份却不必相同。编译器和 JIT 可以改变连接的实现方式，但不能把这个可观察的 false 优化成 true。下一步再把 s1 改为 final 常量变量，才能看清究竟是哪一个条件改变了答案。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果改成 final String s1 = \"abc\"，它是用常量表达式初始化的常量变量，s1 + \"\" 也可成为常量表达式，与同内容字面量共享驻留表示，此时相应比较为 true。普通变量即使从未再次赋值、满足 effectively final，也不会自动成为 JLS 的常量变量。若写成 final String s1 = new String(\"abc\") 或由方法返回值初始化，虽禁止重新绑定，却不满足常量表达式条件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "intern 返回内容相等的规范表示：池中已经有相同内容时返回已有对象，没有时按 API 语义将当前字符串作为规范表示并返回。因此上例中 s2.intern() == s1 为 true，但只调用 s2.intern() 而不接收返回值，不会让 s2 变量自动改变指向。不要把 intern 讲成原地改变对象身份。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "完整变体与字符存储"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面是声明条件完整的教学程序，分别覆盖普通拼接、常量折叠、final 非常量初始化、intern、输入数组的防御性复制和 UTF-16 长度。先判断每个表达式属于哪一类，再阅读断言，不必靠背输出顺序。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "StringCases.java",
+          "value": "public final class StringCases {\n    public static void main(String[] args) {\n        String s1=\"abc\";\n        String s2=new String(\"abc\");\n        String s3=s1+\"\";\n        if(s1==s2 || s1==s3 || !s1.equals(s2) || !s1.equals(s3)) throw new AssertionError();\n        final String constant=\"abc\";\n        String folded=constant+\"\";\n        if(folded!=s1 || (\"a\"+\"bc\")!=s1 || s2.intern()!=s1) throw new AssertionError();\n        final String notConstant=new String(\"abc\");\n        String runtime=notConstant+\"\";\n        if(runtime==notConstant || runtime==s1 || !runtime.equals(s1)) throw new AssertionError();\n        char[] input={'a','b','c'};\n        String copy=new String(input);input[0]='z';\n        if(!copy.equals(\"abc\")) throw new AssertionError();\n        String unicode=\"A\\uD83D\\uDE00\";\n        if(unicode.length()!=3 || unicode.codePointCount(0,unicode.length())!=2) throw new AssertionError();\n        System.out.println(\"PASS: ordinary runtime concat=false, constant concat=true, final nonconstant=false, intern=true, defensive copy, UTF16 units\");\n    }\n}\n"
+        },
+        {
+          "type": "paragraph",
+          "text": "OpenJDK 8 的 String 主要使用 char[]；JDK 9 引入 Compact Strings 后，常见实现使用 byte[] 加 coder，在适合时采用 Latin-1，否则采用 UTF-16 表示。它不是把全部 Java 字符串改成 UTF-8，也没有改变 length 返回 UTF-16 代码单元数的 API。示例中的 A 加一个补充平面表情共有 3 个代码单元、2 个码点；用户感知的一个字符还可能包含多个码点，所以按“可见字符”截断时需要更高层的字素簇规则。"
+        },
+        {
+          "type": "paragraph",
+          "text": "String 不可变依赖 final 类、私有存储、没有公开修改内部内容的接口，以及需要时的防御性复制。仅把数组字段声明为 final，只能限制数组引用重新绑定，不能禁止数组元素被修改。示例从 char[] 构造 String 后再改输入数组，不会改变已构造字符串，说明调用方不应持有可改变其内部内容的别名。"
+        },
+        {
+          "type": "paragraph",
+          "text": "长度限制也分层。class 的 CONSTANT_Utf8 项使用 u2 长度，限制的是最多 65535 个修改版 UTF-8 字节，不是 65535 个字符；编译器如何将较长表达式生成常量还需具体看代码。运行期 String.length 使用 int，不等于一定能成功分配接近 Integer.MAX_VALUE 的字符串，底层数组、编码方式和可用内存可能更早限制它。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "对象数为什么不能固定背两个"
+        },
+        {
+          "type": "paragraph",
+          "text": "讨论“创建几个对象”至少先确定四件事：完整表达式是什么，字面量是否已被驻留，数 String 身份还是也数底层数组与辅助对象，以及数语言语义还是这次 JVM 的物理分配事件。"
+        },
+        {
+          "type": "paragraph",
+          "text": "例如在字面量已经存在、仅统计这次表达式引入的 String 身份时，new String(\"abc\") 引入一个新的 String；不能额外把已经存在的字面量再算作“本次新建”。如果还没有驻留对应字面量，类的解析/使用过程又可能建立规范表示。JDK 8 与 JDK 9 以后的存储、编译器采用的连接策略，以及 JIT 是否消除不可观察分配，都会影响更底层的数量。现代 javac 常通过 invokedynamic 描述字符串连接，不能固定把每个加号展开成一套 StringBuilder 对象计数。"
+        },
+        {
+          "type": "paragraph",
+          "text": "因此，只给 s1 == \"abc\" / s2 = new String / s3 = s1 + \"\" 这类不完整片段，不能唯一推出输出：s1 的声明缺失、构造参数缺失、比较哪两个对象也没有明确。问“第三个一定 true 吗”，应指出普通变量与 final 常量变量的区别，并让比较对象明确。若只说“打印变量 b”或“上述代码创建几个对象”却没有代码，输出与数量就仍然未知，不能拿另一段教学代码代替。"
+        },
+        {
+          "type": "paragraph",
+          "text": "把 intern 用于业务也需要取舍。对大量重复、可控取值的文本，规范化可能降低重复对象占用；对高基数、任意外部输入，驻留增加查找成本和表项负担，不是无条件省内存。应先看重复比例、引用寿命和实际分配证据。锁字符串字面量或驻留结果，还可能与其他组件意外共用同一监视器，通常更适合使用私有专用锁对象。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [],
+      "mustKnow": false
+    },
+    {
+      "id": "q-own-jvm-direct-buffers",
+      "order": 80,
+      "question": "直接缓冲是否更快，游标、视图、异步使用与释放怎样配合？",
+      "commonPhrasings": [
+        "什么是 JVM 堆外内存",
+        "哪些类会用直接内存",
+        "direct 一定更快吗",
+        "ByteBuffer 怎样切换读写",
+        "小 slice 为什么可能留住大块内存",
+        "堆还有空间为什么直接缓冲申请失败"
+      ],
+      "shortAnswer": "直接缓冲把内容放在适合本地 I/O 访问的存储中，可能省掉一段中间复制。",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "直接缓冲把内容放在适合本地 I/O 访问的存储中，可能省掉一段中间复制。选它之前要同时回答两件事：这次 I/O 是否真的少复制了，以及谁负责让缓冲在正确时机释放或归还。它仍占进程资源，收益和释放时机都取决于具体实现与用法。"
+        },
+        {
+          "type": "paragraph",
+          "text": "常见问法有“什么是 JVM 堆外内存”“哪些类会用直接内存”“direct 一定更快吗”“ByteBuffer 怎样切换读写”“小 slice 为什么可能留住大块内存”“堆还有空间为什么直接缓冲申请失败”。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "heap 与 direct 的差别在哪里"
+        },
+        {
+          "type": "paragraph",
+          "text": "ByteBuffer.allocate 创建由 byte[] 支撑的堆缓冲；allocateDirect 创建直接缓冲，HotSpot 21 通常使用 DirectByteBuffer 及本地存储。包装对象依然是 Java 堆对象，内容区域与包装对象的浅大小是两个不同的资源量。FileChannel 映射文件得到的 MappedByteBuffer 也是直接缓冲，但它的映射与文件语义还需要单独考虑；JNI 和网络/存储库也可能使用本地缓冲及自己的内存池。"
+        },
+        {
+          "type": "paragraph",
+          "text": "通道把堆缓冲内容交给本地 I/O 时，某些路径需要临时本地缓冲和复制；直接缓冲可让运行时尽力直接使用适合本地访问的区域，减少这段中间复制。它不保证跨过所有用户态、内核页缓存和设备路径，也不等于 TCP、TLS、文件系统等整条链路都零拷贝。应明确省掉哪次复制，而不是只说“在堆外所以快”。"
+        },
+        {
+          "type": "paragraph",
+          "text": "直接内存的分配和释放通常更贵，频繁创建小缓冲可能得不偿失；长期复用、大块且确实参与本地 I/O 的缓冲更值得评估。选择前应比较真实负载的吞吐、尾延迟、CPU、分配频率与总内存。仅比较几次 put/get 不足以证明通道 I/O 的收益。"
+        },
+        {
+          "type": "paragraph",
+          "text": "访问数组之前要检查 hasArray。allocate 返回的缓冲有可访问的数组；allocateDirect 的 API 不保证有可访问数组。HotSpot 21 常见直接缓冲的 hasArray 为 false，调用 array 会抛 UnsupportedOperationException，不能把 direct 当成另一种随时能取出 byte[] 的包装。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "游标变化与半包处理"
+        },
+        {
+          "type": "paragraph",
+          "text": "ByteBuffer 的 capacity 是容量，position 是下一次相对读写位置，limit 是当前允许访问的边界。写入数据后，flip 将 limit 设为原 position，再把 position 置为 0，让读者只看到已写入部分。clear 则把 position 置为 0、limit 恢复为 capacity，并丢弃 mark；它没有擦除内容，也不代表释放内存。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果读了一部分，还有未处理字节，compact 把剩余区间搬到开头，把 position 放到剩余字节数，limit 恢复为 capacity，以便继续追加输入。网络协议出现半包时，通常要保留这部分数据，不能简单 clear 后覆盖。compact 会移动剩余字节，代价随保留的数据量增长，不能因为它看上去只调用一个方法就算 O(1)。"
+        },
+        {
+          "type": "paragraph",
+          "text": "下面在 16 字节直接缓冲中写入 1、2、3、4，flip 后读走 1，compact 保留 2、3、4，再追加 5，下一次读取应得到 2、3、4、5。它还演示了 duplicate 共享内容而不共享 position。这段程序中的无数组断言以 HotSpot 21 的直接缓冲实现为前提。"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "label": "DirectBufferSemantics.java",
+          "value": "import java.nio.*;\npublic final class DirectBufferSemantics {\n    public static void main(String[] args) {\n        ByteBuffer heap=ByteBuffer.allocate(16);\n        ByteBuffer direct=ByteBuffer.allocateDirect(16);\n        if(heap.isDirect() || !heap.hasArray() || !direct.isDirect() || direct.hasArray()) throw new AssertionError();\n        try { direct.array(); throw new AssertionError(); } catch(UnsupportedOperationException expected) { }\n        direct.put(new byte[]{1,2,3,4}).flip();\n        if(direct.get()!=1) throw new AssertionError();\n        direct.compact(); // keep bytes2,3,4; position3, limit16\n        if(direct.position()!=3 || direct.limit()!=16) throw new AssertionError();\n        direct.put((byte)5).flip();\n        byte[] actual=new byte[4];direct.get(actual);\n        if(!java.util.Arrays.equals(actual,new byte[]{2,3,4,5})) throw new AssertionError();\n        direct.clear();\n        ByteBuffer duplicate=direct.duplicate();\n        duplicate.put(0,(byte)9);\n        duplicate.position(3);\n        if(direct.get(0)!=9 || direct.position()!=0 || duplicate.position()!=3) throw new AssertionError();\n        System.out.println(\"PASS: direct vs heap, absent backing array, flip/compact, shared bytes and independent positions\");\n    }\n}\n"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "视图为什么容易留下隐藏引用"
+        },
+        {
+          "type": "paragraph",
+          "text": "slice 只为指定范围或当前剩余内容建立新视图，duplicate 为同一内容建立另一套游标状态。它们不是复制数据；position、limit、mark 独立，重叠字节仍然共享。对字节缓冲的 slice/duplicate，新的字节序按 API 规则初始化为 BIG_ENDIAN，不应假定自动继承原缓冲后续或原有的字节序；使用多字节数据时应显式设置并核对。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HotSpot 的直接缓冲视图会保留到所属存储的关联，因此把一个大缓冲的一小片长时间放入缓存，也可能让整块直接存储不能释放。若确实只需要少量内容长期存活，可以权衡复制这几字节，与继续持有整个大块资源的成本。只读视图也只是限制通过该视图写入，其他可写别名仍可改变底层内容，它不是不可变快照。"
+        },
+        {
+          "type": "paragraph",
+          "text": "假设缓冲已经提交给异步 I/O，但操作尚未完成。若此时 compact 搬动字节，或把缓冲 clear 后重新写入，或提前归还池供别人复用，就可能破坏尚在使用的数据。因此，租约要持续到真正的 I/O 完成，不能在“提交成功”时就结束。"
+        },
+        {
+          "type": "paragraph",
+          "text": "独立游标只保证视图之间不互改 position，不提供重叠数据的同步。多个线程通过不同视图修改同一字节，仍可能竞争；另一个视图或线程尚在使用时，同样不能提前复用底层存储。"
+        },
+        {
+          "type": "heading",
+          "level": 4,
+          "text": "释放协议和预算要一起设计"
+        },
+        {
+          "type": "paragraph",
+          "text": "普通 ByteBuffer 没有通用的 public close 方法让应用保证 allocateDirect 的区域马上释放。在 HotSpot 中，Java 包装对象的可达性与内部清理机制参与本地存储释放，但清理时机不是业务请求结束的同步承诺。不要把调用 System.gc 当成资源归还协议，也不要默认推荐通过反射或内部 Unsafe/cleaner 强制清理：版本封装、别名和仍在进行的 I/O 都可能使这种做法不安全。"
+        },
+        {
+          "type": "paragraph",
+          "text": "如果采用库提供的缓冲池或引用计数对象，要明确每次借出由谁归还、异常与取消怎样处理、视图是否共享所有权、异步完成前能否复用、空闲池保留多少。池必须有总容量与并发上限，否则只是把频繁分配变成了长期无限占用。引用计数归零与普通 Java 引用不再使用之间也要有一致契约，不能一边释放本地资源，一边还把可访问视图交给调用方。"
+        },
+        {
+          "type": "paragraph",
+          "text": "当确实需要显式、作用域化的本地内存生命周期，可按所用 JDK 和库评估正式支持的资源 API。例如 JDK 22 的外部函数与内存 API 可通过可关闭的 Arena 管理分配；这不改变既有 allocateDirect 对象的契约，且需遵守 Arena 的线程和存活期限制。JDK 21 中对应 API 仍属于预览边界，不能直接当成无版本前提的替代代码。"
+        },
+        {
+          "type": "paragraph",
+          "text": "内存映射也要单独回答。关闭 FileChannel 并不等同于立即解除已经建立的映射；MappedByteBuffer 的引用和映射仍有自己的生命周期。清理映射、把修改强制写回以及关闭文件通道是不同操作。对被截断或外部修改的映射区域，还要考虑操作系统相关行为，不能把它当成永久稳定的普通数组。"
+        },
+        {
+          "type": "paragraph",
+          "text": "HotSpot 的 MaxDirectMemorySize 约束 JDK 直接缓冲相关的预留容量，不是所有堆外分配的统一限额；JNI、本地库、映射和自管分配器要分别核对。Java 堆还没满，也可能因为直接缓冲上限、系统本地内存不足或容器限制而失败。以独立子进程、32MiB 堆、1MiB 直接缓冲上限申请一个 2MiB 直接缓冲，是区分两个预算的教学条件；实际诊断要确认异常确实来自直接缓冲预留，而不能只捕获任意 OOM 就下结论。"
+        },
+        {
+          "type": "paragraph",
+          "text": "观测时可先看 BufferPoolMXBean 的 count、totalCapacity 和 memoryUsed：它们分别表达缓冲数量、总容量估计和底层内存使用估计，不保证数值完全相等。再结合进程 RSS、容器指标、库的池指标与 NMT。NMT 面向 JVM 自己跟踪的本地内存，不能承诺覆盖所有第三方 malloc；堆转储中 DirectByteBuffer 的浅大小很小，也不表示它关联的本地存储很小。"
+        },
+        {
+          "type": "paragraph",
+          "text": "最终需要区分正常池预留、未归还租约、小视图保留大块、异步操作尚未完成和不可达后的清理延迟。先找到具体拥有者及生命周期，再决定减少副本、限制池、缩短保留或修复归还协议；只提高上限可能把可识别的缓冲申请失败，拖成整个进程的资源事故。"
+        }
+      ],
+      "followUps": [],
+      "tags": [
+        "JVM",
+        "HotSpot 21",
+        "历史或其他版本按正文限定"
+      ],
+      "related": [
+        {
+          "entryId": "doc-23",
+          "label": "仅列 DirectByteBuffer/ByteBuf/JNI/mmap 泄漏方向；无游标、视图、清理契约或代码。"
+        }
+      ],
+      "mustKnow": false
+    }
+  ]
+}

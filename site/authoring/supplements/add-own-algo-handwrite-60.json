@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-algo-handwrite-60",
+  "entryId": "handwrite-60",
+  "expectedOriginalHash": "4875e570804267af5904eded9bf16c55de7b68bb869fb0fb7e25aa1b484d87d5",
+  "title": "算法练习补充：一分钟十次、分钟与小时同时限制、多租户限流",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "一分钟十次、分钟与小时同时限制、多租户限流"
+    },
+    {
+      "type": "paragraph",
+      "text": "所有窗口必须先共同检查，只有全部通过才一起记账；检查和记账必须是同一个原子操作。"
+    },
+    {
+      "type": "paragraph",
+      "text": "以短视频点赞为例，按用户分别维护最近一分钟的成功请求时间，限额设为 10。这里的一分钟是精确滚动区间 (now-60000,now]，不是自然分钟；恰好早于当前 60000 毫秒的请求已经离开窗口，同一时刻的 10 次成功点赞仍占 10 个名额。用户 A 耗尽额度不影响用户 B。拒绝请求不记账，但代码允许清理已经过期的历史。"
+    },
+    {
+      "type": "paragraph",
+      "text": "同时限制分钟与小时，最容易写错的是扣额顺序。一个租户配置两个窗口时，先检查两边是否都有额度，全部通过后，才向两个队列一起追加时间戳。"
+    },
+    {
+      "type": "paragraph",
+      "text": "反例是先扣分钟额度，再发现小时额度不够：若忘记回滚，这次被拒绝的请求也花了额度。把检查和记账拆到多个锁或多个 Redis 命令之间，还会产生并发竞态；两个窗口必须共同预检查、统一提交。"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面有两种配置入口：所有用户共用同一套限额，或每个租户拥有固定独立策略，例如免费租户一分钟 1 次、付费租户一分钟 2 次。后者拒绝未配置的租户，配置构造时做快照，不允许在流量中悄悄改变窗口含义。时间是非负、非递减的逻辑时间，时钟在同一监视器内读取，拒绝回拨。一个调用代表一个请求单位；如果限制的是 TPM、字节或金额，必须改为带权使用量，不能仅数请求条数。"
+    },
+    {
+      "type": "paragraph",
+      "text": "一分钟最多十次："
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "MultiWindowLimiter<String> likes = new MultiWindowLimiter<>(\n    List.of(new MultiWindowLimiter.Window(60_000, 10)),\n    100_000,\n    clockMillis\n);\nboolean accepted = likes.allow(userId);\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "这里的 clockMillis 是调用方提供的 LongSupplier；测试里可用 AtomicLong::get 精确推进时间。上线时应由单调时间适配器产生逻辑毫秒，进程重启是否保留限额也必须另定。"
+    },
+    {
+      "type": "paragraph",
+      "text": "内存清理与请求使用同一把锁，所以不会出现“清理线程删掉 tenant 状态，但请求线程还持有旧状态并放行”的分裂状态。最多跟踪的活跃租户数也是构造参数；容量不足时拒绝新租户，而不是忘掉某个活跃租户已经花掉的额度。状态为空才回收。为了代码直观，新租户入场会扫描当前租户做清理；这是 O(TW+过期条目数)，T 为跟踪租户数、W 为窗口数，不能称每次调用都 O(1)。已有租户通常只遍历自己的 W 个窗口，并摊还弹出其过期请求。空间至多为所有活跃租户各窗口配额之和，加上静态策略表。"
+    },
+    {
+      "type": "paragraph",
+      "text": "这是一份进程内精确实现，线程安全不等于跨进程全局限流。多副本共享限额时可在 Redis 同一 hash slot 内用 Lua 完成所有窗口的清理、预检查和统一记账；跨 slot 必须调整 key 布局或使用具备相应原子性的协调机制。把“每台机器各放行 10 次”误当全局 10 次，会随副本数量放大额度。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.function.LongSupplier;\n\n/** Exact process-local arrival-time windows; one successful request consumes one unit in EVERY window. */\npublic final class MultiWindowLimiter<K> {\n    public record Window(long duration,int limit) {\n        public Window {if(duration<=0||limit<0)throw new IllegalArgumentException(\"positive duration/nonnegative limit\");}\n    }\n    private static final class State {\n        final List<ArrayDeque<Long>> history=new ArrayList<>();\n        final List<Window> windows;\n        State(List<Window> windows){this.windows=windows;for(int i=0;i<windows.size();i++)history.add(new ArrayDeque<>());}\n    }\n    private final List<Window> windows;\n    private final Map<K,List<Window>> policies;\n    private final LongSupplier clock;private final int maximumTrackedTenants;\n    private final Map<K,State> tenants=new HashMap<>();private long lastTime;private boolean haveTime;\n    public MultiWindowLimiter(List<Window> windows,int maximumTrackedTenants,LongSupplier clock){\n        Objects.requireNonNull(windows);if(windows.isEmpty()||maximumTrackedTenants<1)throw new IllegalArgumentException(\"policy/capacity\");\n        this.windows=List.copyOf(windows);this.policies=null;this.maximumTrackedTenants=maximumTrackedTenants;this.clock=Objects.requireNonNull(clock);\n    }\n    /** Fixed per-tenant policies; unconfigured tenant IDs are rejected. */\n    public MultiWindowLimiter(Map<K,List<Window>> policies,int maximumTrackedTenants,LongSupplier clock){\n        Objects.requireNonNull(policies);if(maximumTrackedTenants<1)throw new IllegalArgumentException(\"capacity\");\n        Map<K,List<Window>> copy=new HashMap<>();\n        for(var e:policies.entrySet()){\n            Objects.requireNonNull(e.getKey());List<Window> policy=List.copyOf(e.getValue());\n            if(policy.isEmpty())throw new IllegalArgumentException(\"empty policy\");copy.put(e.getKey(),policy);\n        }\n        this.policies=Map.copyOf(copy);this.windows=null;this.maximumTrackedTenants=maximumTrackedTenants;this.clock=Objects.requireNonNull(clock);\n    }\n    private long now(){long t=clock.getAsLong();if(t<0||(haveTime&&t<lastTime))throw new IllegalArgumentException(\"nonnegative monotonic logical time required\");haveTime=true;lastTime=t;return t;}\n    private void expire(State s,long t){for(int i=0;i<s.windows.size();i++){ArrayDeque<Long> q=s.history.get(i);long boundary=t-s.windows.get(i).duration;while(!q.isEmpty()&&q.peekFirst()<=boundary)q.removeFirst();}}\n    private boolean empty(State s){for(ArrayDeque<Long> q:s.history)if(!q.isEmpty())return false;return true;}\n    /** Capacity exhaustion rejects admission; it never silently forgets an active tenant's usage. */\n    public synchronized boolean allow(K tenant){\n        Objects.requireNonNull(tenant);List<Window> policy=policies==null?windows:policies.get(tenant);\n        if(policy==null)return false;\n        long t=now();State state=tenants.get(tenant);\n        if(state==null){\n            cleanupAt(t);\n            if(tenants.size()>=maximumTrackedTenants)return false;\n            state=new State(policy);\n        }else expire(state,t);\n        for(int i=0;i<state.windows.size();i++)if(state.history.get(i).size()>=state.windows.get(i).limit){if(empty(state))tenants.remove(tenant);return false;}\n        for(ArrayDeque<Long> q:state.history)q.addLast(t);\n        tenants.put(tenant,state);return true;\n    }\n    /** Returns reclaimed tenant count; same monitor as allow avoids detached-state races. */\n    public synchronized int cleanup(){return cleanupAt(now());}\n    private int cleanupAt(long t){int removed=0;Iterator<State> it=tenants.values().iterator();while(it.hasNext()){State s=it.next();expire(s,t);if(empty(s)){it.remove();removed++;}}return removed;}\n    public synchronized int trackedTenants(){return tenants.size();}\n}\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "下面的测试用带频率与最后访问时间的朴素 LFU、LinkedHashMap 的顺序模型、全部成功时间戳列表作参考，覆盖相等到期时刻、过期 MRU、零容量、用户隔离和双窗口拒绝不扣费。并发测试固定时钟，让多个线程同时争抢三个用户各 10 个名额；结果应恰好是 30 次成功。测试线程池必须正常终止，异常通过 Future 传播，不能只启动线程就宣布通过。"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\n\npublic final class CacheLimiterTest {\n    static long checks;\n    static void eq(Object a,Object b){checks++;if(!Objects.equals(a,b))throw new AssertionError(a+\" != \"+b);}\n    static void bad(Runnable r){checks++;try{r.run();}catch(IllegalArgumentException|NullPointerException|NoSuchElementException|ArithmeticException e){return;}throw new AssertionError(\"invalid accepted\");}\n    static final class F {int value;long frequency,tick;F(int value,long tick){this.value=value;this.tick=tick;frequency=1;}}\n    record T(int value,long deadline) {}\n    public static void main(String[] args)throws Exception {\n        Random random=new Random(20261016);\n        for(int cap=0;cap<=8;cap++) {\n            var lfu=new InterviewCaches.Lfu<Integer,Integer>(cap);Map<Integer,F> oracle=new HashMap<>();\n            var batch=new InterviewCaches.BatchLru<Integer,Integer>(cap);LinkedHashMap<Integer,Integer> order=new LinkedHashMap<>(16,.75f,true);\n            AtomicLong clock=new AtomicLong();var ttl=new InterviewCaches.TtlLru<Integer,Integer>(cap,10,clock::get);LinkedHashMap<Integer,T> live=new LinkedHashMap<>(16,.75f,true);\n            for(int step=0;step<6000;step++) {\n                int key=random.nextInt(12),value=random.nextInt(),op=random.nextInt(3);\n                if(op==0){F f=oracle.get(key);eq(lfu.get(key),f==null?Optional.empty():Optional.of(f.value));if(f!=null){f.frequency++;f.tick=step;}}\n                else{F f=oracle.get(key);lfu.put(key,value);if(f!=null){f.value=value;f.frequency++;f.tick=step;}else if(cap>0){if(oracle.size()==cap){int victim=oracle.entrySet().stream().min(Comparator.<Map.Entry<Integer,F>>comparingLong(e->e.getValue().frequency).thenComparingLong(e->e.getValue().tick)).orElseThrow().getKey();oracle.remove(victim);}oracle.put(key,new F(value,step));}}\n                eq(lfu.size(),oracle.size());\n                if(op==0)eq(batch.get(key),Optional.ofNullable(order.get(key)));\n                else if(op==1){batch.put(key,value);if(cap>0){order.put(key,value);if(order.size()>cap)order.remove(order.keySet().iterator().next());}}\n                else{int n=random.nextInt(12),removed=0;while(removed<n&&!order.isEmpty()){order.remove(order.keySet().iterator().next());removed++;}eq(batch.evict(n),removed);}\n                eq(batch.size(),order.size());\n                long now=clock.addAndGet(random.nextInt(3));live.entrySet().removeIf(e->e.getValue().deadline<=now);\n                if(op==0){T t=live.get(key);eq(ttl.get(key),t==null?Optional.empty():Optional.of(t.value));}\n                else if(op==1){long duration=random.nextInt(20);ttl.put(key,value,duration);live.remove(key);if(duration>0&&cap>0){if(live.size()==cap)live.remove(live.keySet().iterator().next());live.put(key,new T(value,now+duration));}}\n                else{int n=random.nextInt(12),removed=0;while(removed<n&&!live.isEmpty()){live.remove(live.keySet().iterator().next());removed++;}eq(ttl.evict(n),removed);}\n                eq(ttl.keysOldestFirst(),new ArrayList<>(live.keySet()));eq(ttl.size(),live.size());\n            }\n        }\n        var minimum=new InterviewCaches.MinStack();List<Integer> stack=new ArrayList<>();\n        for(int i=0;i<20000;i++) {if(stack.isEmpty()||random.nextBoolean()){int x=random.nextInt(9)-4;minimum.push(x);stack.add(x);}else eq(minimum.pop(),stack.remove(stack.size()-1));if(!stack.isEmpty()){eq(minimum.peek(),stack.get(stack.size()-1));eq(minimum.minimum(),Collections.min(stack));}eq(minimum.isEmpty(),stack.isEmpty());}\n        while(!minimum.isEmpty())minimum.pop();bad(minimum::minimum);bad(minimum::pop);\n        var recent=new InterviewCaches.RecentPlayers<String>(3);for(String p:List.of(\"a\",\"b\",\"c\",\"a\",\"d\"))recent.seen(p);eq(recent.newestFirst(),List.of(\"d\",\"a\",\"c\"));\n        AtomicLong time=new AtomicLong();var limiter=new MultiWindowLimiter<String>(List.of(new MultiWindowLimiter.Window(60,2),new MultiWindowLimiter.Window(3600,3)),100,time::get);\n        Map<String,List<Long>> histories=new HashMap<>();\n        for(int i=0;i<12000;i++) {\n            long now=time.addAndGet(random.nextInt(100));String who=\"u\"+random.nextInt(5);List<Long> past=histories.computeIfAbsent(who,k->new ArrayList<>());past.removeIf(t->t<=now-3600);\n            boolean expected=past.stream().filter(t->t>now-60).count()<2&&past.size()<3;\n            eq(limiter.allow(who),expected);if(expected)past.add(now);if(i%17==0)limiter.cleanup();\n        }\n        time.set(0);var atomic=new MultiWindowLimiter<String>(List.of(new MultiWindowLimiter.Window(60,2),new MultiWindowLimiter.Window(3600,3)),2,time::get);\n        eq(atomic.allow(\"a\"),true);eq(atomic.allow(\"a\"),true);eq(atomic.allow(\"a\"),false);time.set(60);eq(atomic.allow(\"a\"),true);eq(atomic.allow(\"a\"),false);time.set(3600);eq(atomic.allow(\"a\"),true);eq(atomic.allow(\"a\"),true);eq(atomic.allow(\"a\"),false);\n        time.set(0);var bounded=new MultiWindowLimiter<String>(List.of(new MultiWindowLimiter.Window(60,10)),1,time::get);eq(bounded.allow(\"a\"),true);eq(bounded.allow(\"b\"),false);time.set(60);eq(bounded.allow(\"b\"),true);eq(bounded.trackedTenants(),1);\n        time.set(0);var concurrent=new MultiWindowLimiter<Integer>(List.of(new MultiWindowLimiter.Window(60_000,10)),10,time::get);\n        ExecutorService pool=Executors.newFixedThreadPool(12);CountDownLatch start=new CountDownLatch(1);List<Future<Integer>> futures=new ArrayList<>();\n        for(int worker=0;worker<30;worker++){int user=worker%3;futures.add(pool.submit(()->{start.await();int count=0;for(int i=0;i<200;i++)if(concurrent.allow(user))count++;return count;}));}\n        start.countDown();int accepted=0;for(Future<Integer> f:futures)accepted+=f.get(30,TimeUnit.SECONDS);eq(accepted,30);\n        var shared=new InterviewCaches.TtlLru<Integer,Integer>(20,100,time::get);List<Future<Boolean>> jobs=new ArrayList<>();\n        for(int worker=0;worker<12;worker++){int key=worker;jobs.add(pool.submit(()->{for(int i=0;i<1000;i++){shared.put(key,i);if(!shared.get(key).equals(Optional.of(i)))return false;}return true;}));}\n        for(Future<Boolean> f:jobs)eq(f.get(30,TimeUnit.SECONDS),true);pool.shutdown();eq(pool.awaitTermination(30,TimeUnit.SECONDS),true);\n        time.set(100);eq(shared.size(),0);\n        bad(()->new InterviewCaches.Lfu<>(-1));bad(()->new InterviewCaches.BatchLru<>(-1));bad(()->new InterviewCaches.TtlLru<>(1,-1,()->0));bad(()->new MultiWindowLimiter.Window(0,1));\n        AtomicLong backward=new AtomicLong(2);var c=new InterviewCaches.TtlLru<String,String>(1,2,backward::get);c.put(\"k\",\"v\");backward.set(1);bad(()->c.get(\"k\"));\n        var overflow=new InterviewCaches.TtlLru<String,String>(1,2,()->Long.MAX_VALUE);bad(()->overflow.put(\"k\",\"v\"));\n        var zero=new MultiWindowLimiter<String>(List.of(new MultiWindowLimiter.Window(1,0)),1,()->0);eq(zero.allow(\"x\"),false);eq(zero.trackedTenants(),0);\n        var different=new MultiWindowLimiter<String>(Map.of(\"free\",List.of(new MultiWindowLimiter.Window(60,1)),\"paid\",List.of(new MultiWindowLimiter.Window(60,2))),2,()->0);\n        eq(different.allow(\"free\"),true);eq(different.allow(\"free\"),false);eq(different.allow(\"paid\"),true);eq(different.allow(\"paid\"),true);eq(different.allow(\"paid\"),false);eq(different.allow(\"unknown\"),false);\n        System.out.println(\"CacheLimiterTest PASS \"+checks);\n    }\n}\n"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "让 AI 生成分级 QPS 限流器，Prompt 怎么写？"
+    },
+    {
+      "type": "paragraph",
+      "text": "把用户身份、等级映射、窗口语义、原子性和验证要求写成可执行合同，再让 AI 交付实现与测试，不能只说“写个高性能限流器”。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以这样提出任务：“用 Java 17 源级语法实现单 JVM 限流器。输入用户 ID，由不可变配置决定高优和普通用户各自的正整数 QPS 配额；未知用户拒绝。QPS 定义为精确滚动一秒 (now-1000,now]，用户之间隔离，拒绝请求不扣费。注入非负单调毫秒时钟，全部检查与记账原子化。限制活跃用户状态数量，只有历史全部过期时才回收，不丢弃仍占配额的状态。返回允许或拒绝；提供完整实现、复杂度和可重放测试，不调用 sleep 模拟时钟。说明高并发竞争、同毫秒突发、秒边界、回拨、未配置用户、状态满和清理竞态。”"
+    },
+    {
+      "type": "paragraph",
+      "text": "这份 Prompt 选择的是固定等级配置；题目若允许运行中升级或降级，必须再确定旧消费是否沿用、策略切换何时生效和并发版本。高优用户配额更高，也不意味着可以绕过全局容量；同时限制全局和用户额度时，需要共同预检查后统一记账。"
+    },
+    {
+      "type": "paragraph",
+      "text": "上方 MultiWindowLimiter 的逐用户策略构造器可承接这个固定配置合同：每个用户的窗口 duration=1000，limit 为其等级配额。审查 AI 代码时，沿一次成功、一次失败和一次过期清理追踪状态，确认没有分离的先查后改、没有清理后仍被旧引用继续使用、没有用墙钟回拨制造额外额度。测试以朴素成功时间戳列表为参考，逐操作差分；固定时刻让多个线程争同一用户配额，成功总数必须等于配额，再验证两个用户互不干扰。普通样例通过不能代替这些并发与边界合同。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "每分钟3请求：固定分钟和严格滚动60秒"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定分钟以 epochMillis/60000 分桶，每桶最多 3 次，新桶清零；分钟交界附近可能短时间通过 6 次。严格滚动窗口保存最近 3 个获准时间，删掉至少 60 秒前的记录后，不足 3 个才放行并记账，两者保证不同。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "可能的问法"
+    },
+    {
+      "type": "list",
+      "ordered": false,
+      "items": [
+        "手写限流器：每分钟允许3个请求，超过拒绝。",
+        "自然分钟与任意滚动 60 秒有何差别？拒绝是否计数，边界并发如何保证原子性？"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "输入、输出与前提"
+    },
+    {
+      "type": "paragraph",
+      "text": "先确认自然分钟还是任意滚动 60 秒、全局还是每用户、拒绝请求是否消耗额度。这里的两个单 JVM 全局版本只让获准请求占额度；每用户每分钟 10 次及双窗口原子扣额见 MultiWindowLimiter。生产滚动窗口采用同 JVM 单调 nanoTime，固定分钟采用非负 epoch 毫秒，注入时钟便于无 sleep 测试。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "为什么这样做"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定窗口解释的是某个UTC时间轴上的自然分钟区间[k×60000,(k+1)×60000)。代码记录minute与used；单次检查窗口、检查额度、增加计数必须一起同步。自然分钟不是从第一次请求开始再过一分钟，也不是平均每20秒一个。墙钟可能被校时倒退，因此本实现检测倒退并拒绝以异常提示调用方，调用方必须失败关闭或明确处理，不允许无意重置成一个旧窗口多放额度。"
+    },
+    {
+      "type": "paragraph",
+      "text": "严格滚动窗口只数 (now−60s,now] 内已经获准的请求：恰好满 60 秒的旧记录离开窗口，拒绝请求不追加。限额为 3，只需环形 long[3] 和 head/size 保存状态，每次先清过期、再判满、最后追加。"
+    },
+    {
+      "type": "paragraph",
+      "text": "并发时这三步必须连在一起。否则同一时刻多个请求都看到 size=2，就会一起放行。synchronized 保护整个过程，并在锁内读时钟，让检查顺序一致。"
+    },
+    {
+      "type": "paragraph",
+      "text": "正确性归纳：调用开始剔除所有窗口外成功事件，留下的恰是当前窗口内已成功者；若已有3则拒绝而保持不变量，否则加入当前事件后仍≤3。窗口长度固定且队列容量3，所以每次最多剔除3项。对一般限额L，单次最坏O(L)、均摊O(1)，空间O(L)；不能把一般版最坏也说成O(1)。"
+    },
+    {
+      "type": "paragraph",
+      "text": "nanoTime只有相对意义，可以为负，不能与epoch混用，更不能跨不同JVM比较；使用now−start≥window而不是now≥start+window，允许long计数器环绕的正常短间隔。前提是比较跨度小于2^63纳秒，官方约292年。代码检测相邻样本负差；注入倒退时钟会拒绝，正常MAX_VALUE到MIN_VALUE短跨越可通过测试。"
+    },
+    {
+      "type": "paragraph",
+      "text": "按用户限流可用 Map<用户或API键,状态>，但要处理空闲清理、键数上限和删除与正在访问的竞态，否则不断换 key 就可能耗尽内存；逐用户实现见本章多窗口限流器。多实例全局限流需要共享原子状态或一致分片，Redis 脚本须保证读取、清理、判断和追加原子完成，用唯一请求 ID 避免同毫秒覆盖，并约定故障时开放还是关闭。本地每台放行 3 次不能保证全局只放行 3 次。"
+    },
+    {
+      "type": "paragraph",
+      "text": "令牌桶允许按速率补充并按桶容量突发，是另一种合同；容量3、每20秒补1token并不等于任何60秒内最多3次。边界突发是否允许是先要问清楚的业务要求，而不是任选一个算法就声称符合题意。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "例子与推演"
+    },
+    {
+      "type": "paragraph",
+      "text": "固定窗口在 59.999 秒通过 3 次、60.000 秒还能通过 3 次；滚动窗口会拒绝这第二批。若滚动窗口在 0 秒通过 3 次，则 59.999999999 秒仍拒绝，恰好 60 秒可以接受新请求。"
+    },
+    {
+      "type": "paragraph",
+      "text": "测试以保留全部获准时间的简单模型作参照，覆盖精确边界、拒绝不计数、时钟倒退和 long 回绕；并发测试让多个任务争同一状态，检查成功数恰好等于额度，并等待线程池正常终止。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "复杂度与正确性"
+    },
+    {
+      "type": "paragraph",
+      "text": "本题限额固定3，两种实现每次O(1)时间/O(1)空间；同步锁存在竞争与排队成本但不是逻辑复杂度变化。生产有外部请求ID/租户维度时还需状态存储与过期成本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "边界、反例与追问"
+    },
+    {
+      "type": "paragraph",
+      "text": "允许3个指成功准入而非下游执行成功；若业务要求失败退还额度，要定义幂等撤销和窗口过期的交互，不能简单used--。"
+    },
+    {
+      "type": "paragraph",
+      "text": "重启会丢本地历史，进程暂停、时钟策略、实例扩缩容都会影响服务级合同；题目没有要求持久化时不要宣称拥有这些保证。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "完整Java实现与自测"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "label": "原文代码（本次未执行）",
+      "value": "import java.util.*;\nimport java.util.function.LongSupplier;\nimport java.util.concurrent.*;\npublic final class ThreePerMinute {\n    public static final class Sliding {\n        private static final long WINDOW=60_000_000_000L;\n        private final LongSupplier nanoClock;private final long[] accepted=new long[3];private int head,size;private boolean initialized;private long last;\n        public Sliding(LongSupplier clock){nanoClock=Objects.requireNonNull(clock);}\n        public synchronized boolean allow(){long now=nanoClock.getAsLong();if(initialized&&now-last<0)throw new IllegalArgumentException(\"clock moved backwards or interval exceeds 2^63 nanos\");initialized=true;last=now;while(size>0&&now-accepted[head]>=WINDOW){head=(head+1)%3;size--;}if(size==3)return false;accepted[(head+size)%3]=now;size++;return true;}\n    }\n    public static final class Fixed {\n        private final LongSupplier epochMillis;private long minute=-1,last=-1;private int used;\n        public Fixed(LongSupplier clock){epochMillis=Objects.requireNonNull(clock);}\n        public synchronized boolean allow(){long now=epochMillis.getAsLong();if(now<0||now<last)throw new IllegalArgumentException(\"nonnegative nondecreasing epoch clock required\");last=now;long bucket=now/60000;if(bucket!=minute){minute=bucket;used=0;}if(used==3)return false;used++;return true;}\n    }\n    private static final class Clock implements LongSupplier {long now;public long getAsLong(){return now;}}\n    public static void main(String[] args)throws Exception {Clock c=new Clock();Sliding sliding=new Sliding(c);List<Long> accepted=new ArrayList<>();Random random=new Random(864);for(int i=0;i<10000;i++){c.now+=random.nextInt(50_000_000);int live=0;for(long t:accepted)if(c.now-t<60_000_000_000L)live++;boolean want=live<3,got=sliding.allow();if(got!=want)throw new AssertionError();if(got)accepted.add(c.now);}Clock a=new Clock();a.now=59_999;Fixed f=new Fixed(a);for(int i=0;i<3;i++)if(!f.allow())throw new AssertionError();if(f.allow())throw new AssertionError();a.now=60000;for(int i=0;i<3;i++)if(!f.allow())throw new AssertionError();Clock b=new Clock();Sliding s=new Sliding(b);for(int i=0;i<3;i++)if(!s.allow())throw new AssertionError();b.now=59_999_999_999L;if(s.allow())throw new AssertionError();b.now=60_000_000_000L;if(!s.allow())throw new AssertionError();b.now--;try{s.allow();throw new AssertionError();}catch(IllegalArgumentException ok){}Clock w=new Clock();w.now=Long.MAX_VALUE-10;Sliding wrapped=new Sliding(w);if(!wrapped.allow())throw new AssertionError();w.now=Long.MIN_VALUE+10;if(!wrapped.allow())throw new AssertionError();ExecutorService pool=Executors.newFixedThreadPool(10);try{Sliding same=new Sliding(()->0);List<Future<Boolean>> futures=new ArrayList<>();for(int i=0;i<100;i++)futures.add(pool.submit(same::allow));int count=0;for(var task:futures)if(task.get(5,TimeUnit.SECONDS))count++;if(count!=3)throw new AssertionError();}finally{pool.shutdownNow();if(!pool.awaitTermination(5,TimeUnit.SECONDS))throw new AssertionError();}System.out.println(\"PASS 10000 timeline oracle decisions; fixed-minute boundary permits6/rolling limit3; exact60s expiration/rejection not counted/regression/long-wrap;100 concurrent attempts exactly3\");}\n}\n"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-algo-manual-guide",
+      "label": "来源与自测边界"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+import {readFile,writeFile,stat} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import path from 'node:path';
+const root=fileURLToPath(new URL('../',import.meta.url));
+const file=p=>path.join(root,p);
+const startup=['index.html','assets/styles/main.css','assets/styles/loading.css','assets/styles/reading-layout.css','assets/runtime/bootstrap.js','assets/runtime/content-repository.js','assets/runtime/reading-presentation.js','data/catalog.json','assets/app.js'];
+const sizes=await Promise.all(startup.map(async name=>({path:name,bytes:(await stat(file('dist/'+name))).size})));
+const manifest=JSON.parse(await readFile(file('dist/build-manifest.json'),'utf8'));
+const chapterSizes=manifest.files.filter(f=>f.path.startsWith('data/chapters/')).map(f=>f.bytes).sort((a,b)=>a-b);
+const original=4681405,total=sizes.reduce((n,f)=>n+f.bytes,0);
+const result={measurement:'Uncompressed deterministic file bytes; not browser timing or compressed transfer measurement',originalSingleHTMLBytes:original,eagerRequests:sizes.length,eagerFiles:sizes,eagerTotalBytes:total,eagerReductionPercent:Number(((1-total/original)*100).toFixed(2)),deferred:{firstNonEmptySearch:{path:'data/search.json',bytes:(await stat(file('dist/data/search.json'))).size},firstEntryVisuals:{path:'assets/visuals.js',bytes:(await stat(file('dist/assets/visuals.js'))).size},chapters:{count:chapterSizes.length,minBytes:chapterSizes[0],medianBytes:chapterSizes[Math.floor(chapterSizes.length/2)],maxBytes:chapterSizes.at(-1),totalBytes:chapterSizes.reduce((a,b)=>a+b,0)}},notes:['Entry routes additionally fetch their chapter and the visual bundle on first use.','Map routes fetch QA chapters for the selected module.','In-memory caches deduplicate repeat resource reads for the current page session.','No server compression, network latency, browser parse time, or warm-cache transfer is claimed.','No persistent offline cache or service worker is installed.']};
+await writeFile(file('reports/transfer-budget.json'),JSON.stringify(result,null,2)+'\n');
+console.log(`${total.toLocaleString('en')} uncompressed eager bytes across ${sizes.length} requests (${result.eagerReductionPercent}% smaller than original HTML).`);

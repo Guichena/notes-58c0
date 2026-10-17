@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "add-own-distributed-s3467",
+  "entryId": "bg-rabbitmq-3",
+  "expectedOriginalHash": "8bb85e0b6d3fe0b8b9a008c681f2c4a1d7ba30b6a6dd927fcd119a37ccc2e156",
+  "title": "分布式手册：完整机制、条件与故障推演",
+  "blocks": [
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "5.24 RabbitMQ项目如何实现延迟消息，TTL死信和旧插件有哪些可靠性限制"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL加死信适合有明确队列和故障边界的延迟投递，但队头阻塞、转移可靠性和业务取消仍须单独处理。"
+    },
+    {
+      "type": "paragraph",
+      "text": "常见问法：RabbitMQ怎样延迟消息；TTL加DLX会不会丢；旧插件能否用于新版本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "适用条件"
+    },
+    {
+      "type": "paragraph",
+      "text": "传统方案固定按RabbitMQ 4.3的TTL与DLX语义，旧延迟插件须核对维护状态和精确兼容版本，不能直接用于4.4。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "TTL加死信交换机的链路"
+    },
+    {
+      "type": "paragraph",
+      "text": "发布到延迟队列，消息过期后经DLX路由到真正工作队列，消费者在工作队列处理。延迟队列通常没有业务消费者；配置message TTL，而queue TTL/x-expires是队列自身闲置删除，不能混用。每条expiration与队列TTL同时存在时取较小者，格式/单位按AMQP属性核对。"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL 队列不是任意精确定时器。同一个队列逐条设置不同 TTL，后面已经到期的消息，可能还要等到队头才被死信转发。比如先入 1 小时、再入 10 秒，不能承诺第二条 10 秒就到工作队列。"
+    },
+    {
+      "type": "paragraph",
+      "text": "可以按延迟等级拆多个固定 TTL 队列，减少长 TTL 头部挡住短 TTL 的问题，但这会增加拓扑和路由成本。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "发布确认不覆盖死信转发与业务提交"
+    },
+    {
+      "type": "paragraph",
+      "text": "入口业务+outbox可靠记录，发布确认/无路由处理保障生产阶段；持久队列、持久消息与适用复制配置保障存储阶段。DLX本质再次发布，默认转发不提供内部publisher confirm，目标不可用可能丢；quorum的at-least-once dead-lettering需按版本及策略显式核对。不能仅写了x-dead-letter-exchange就保证零丢失。"
+    },
+    {
+      "type": "paragraph",
+      "text": "业务消费者仍手动ACK在本地inbox+效果提交之后，重复触发按taskId/scheduleVersion与当前状态去重。延迟消息不是业务权威；订单已支付、审批改期或任务已完成时不做旧动作。DB到期扫描复用同状态转换作兜底，长时间不可用导致的保留/容量限制要告警。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "旧延迟插件与新版本必须区分"
+    },
+    {
+      "type": "paragraph",
+      "text": "历史x-delayed-message exchange通过x-delay指定延迟并在到期时路由；旧设计把延迟消息单副本存于当前节点Mnesia，重启可恢复不等于永久丢节点仍可恢复，禁用插件会失去未投递消息，且不支持普通mandatory语义。它与TTL队列头阻塞的机制不同，但不是无条件更可靠。"
+    },
+    {
+      "type": "paragraph",
+      "text": "旧延迟插件已停止维护，其Mnesia依赖不能直接沿用于4.3及以后架构。RabbitMQ 4.3的quorum delayed retry针对重投；4.4的原生message delivery delay另有契约，不能把两者混同，也不能把较新能力套到旧部署。采用任何方案前都要固定服务端版本、客户端接口和迁移路径。"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "何时选择外部调度"
+    },
+    {
+      "type": "paragraph",
+      "text": "跨天/月、需要改期取消、复杂业务日历和强审计的任务，持久dueAt任务账加窗口投递往往更可控；MQ负责唤醒交付，业务状态负责正确性。比较调度精度、最长延时、峰值到期量、复制恢复与维护成本，而不是只背两个方案名。"
+    },
+    {
+      "type": "paragraph",
+      "text": "故障注入发布回包丢、DLX目标缺失/多数不可用、旧插件节点损坏、同队列长短TTL、消息重复、取消与触发竞争、系统停机恢复后大量到期。记录计划与实际执行时间、未处理责任和最终业务状态。"
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-distributed-guide",
+      "label": "源手册路线、版本与证据边界"
+    }
+  ],
+  "questionId": "1"
+}
