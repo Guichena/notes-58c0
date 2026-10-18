@@ -1,0 +1,77 @@
+# Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# composite-first | HTTP 200；桶按 java、python、search 顺序分页；计数分别为 2、1、1；检查 timed_out 和失败分片
+POST /interview_java_demo/_search?allow_partial_search_results=false
+{
+  "size":0,
+  "query":{"bool":{"filter":[
+    {"term":{"tenant_id":"demo"}},
+    {"term":{"acl":"reader"}},
+    {"term":{"generation":"r1"}},
+    {"term":{"deleted":false}},
+    {"range":{"created_at":{"lte":"2026-10-10T12:00:00Z"}}}
+  ]}},
+  "aggs":{"all_tags":{"composite":{"size":1,"sources":[
+    {"tag":{"terms":{"field":"tags","order":"asc"}}}
+  ]}}}
+}
+
+# composite-next | HTTP 200；用真实 after_key 整体替换 after，再重复至空桶或无 after_key；不是固定 java 游标
+POST /interview_java_demo/_search?allow_partial_search_results=false
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "tenant_id": "demo"
+          }
+        },
+        {
+          "term": {
+            "acl": "reader"
+          }
+        },
+        {
+          "term": {
+            "generation": "r1"
+          }
+        },
+        {
+          "term": {
+            "deleted": false
+          }
+        },
+        {
+          "range": {
+            "created_at": {
+              "lte": "2026-10-10T12:00:00Z"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "all_tags": {
+      "composite": {
+        "size": 1,
+        "sources": [
+          {
+            "tag": {
+              "terms": {
+                "field": "tags",
+                "order": "asc"
+              }
+            }
+          }
+        ],
+        "after": {
+          "tag": "REPLACE_WITH_RETURNED_AFTER_KEY_TAG"
+        }
+      }
+    }
+  }
+}

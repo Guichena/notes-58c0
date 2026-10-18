@@ -1,0 +1,347 @@
+{
+  "schemaVersion": 1,
+  "originalCount": 11,
+  "foldedOriginalCount": 6,
+  "variants": [
+    {
+      "text": "MoE 是什么？为什么它能在控制推理成本的同时提升容量？",
+      "sourceKind": "main-question",
+      "sourceExact": "MoE 是什么？为什么它能在控制推理成本的同时提升容量？",
+      "sourceField": "q",
+      "destinations": [
+        {
+          "sectionName": "moe-core",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "先区分总容量与每个 token 的计算",
+          "html": "<p class=\"md-p\">MoE 是专家混合。常见 token 级 MoE 让 router 根据当前表示选出少数 top-k FFN 专家，计算后按路由权重合并输出。相同输入在稠密 FFN 中通常经过同一组参数，MoE 则可以增加专家总数而只激活其中一部分，把总参数容量与每 token 的部分计算量分开。它提供更大的可学习容量，但不会自动保证效果更好或端到端更快。</p><p class=\"md-p\">MoE 稀疏选择的是专家，稀疏注意力减少的是位置之间的交互。MoE 常放在 Transformer 的 FFN 位置，attention、共享专家和其他模块仍可能是稠密的，也可以与其他序列模块组合。因此 MoE 与 Transformer 不是互斥架构，激活参数也不是整次推理 FLOPs 的完整账本。</p>",
+          "sha256": "5d2578c6b8be07c81bf1994ed26f1ed754b52716a4b3ce208b72117a6611241a"
+        },
+        {
+          "sectionName": "moe-cost",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "省下的激活计算，要和三类额外成本一起算",
+          "html": "<p class=\"md-p\">第一是权重存储：未被当前 token 选中的专家仍是模型的一部分，必须有可用的存储与取用路径，不能只按 activated parameters 算显存。第二是分发通信：专家跨卡时要把 token 送过去，再收回结果。第三是负载与执行效率：热点专家拖尾、路由坍塌、专家小矩阵和调度开销都可能抵消计算节省。offload 或分片会改变常驻显存，也引入取用、传输和调度成本。</p><p class=\"md-p\">所以我会固定质量门槛、输入输出长度、batch、硬件与并行布局，比较总权重、激活计算、峰值显存、通信、吞吐和 P95 延迟。EP/TP 的字节口径、专家放置和目的节点热点见<a href=\"#/e/own-distributed-ch14/q-own-distributed-expert-communication\">专家通信与分组路由</a>；不能只用总参数或激活参数给模型排快慢。</p>",
+          "sha256": "832388f022e2be9934562f962a39a1eb49fd6bb4df1d25c426a1eb13bc956c2c"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "q"
+    },
+    {
+      "text": "MoE 与传统 Transformer 有什么区别？死专家怎么处理？MQA、GQA、MLA 有何差异？Mamba 与线性注意力怎么理解？",
+      "sourceKind": "variant",
+      "sourceExact": "<li>MoE 与传统 Transformer 有什么区别？死专家怎么处理？MQA、GQA、MLA 有何差异？Mamba 与线性注意力怎么理解？</li>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "moe-core",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "先区分总容量与每个 token 的计算",
+          "html": "<p class=\"md-p\">MoE 是专家混合。常见 token 级 MoE 让 router 根据当前表示选出少数 top-k FFN 专家，计算后按路由权重合并输出。相同输入在稠密 FFN 中通常经过同一组参数，MoE 则可以增加专家总数而只激活其中一部分，把总参数容量与每 token 的部分计算量分开。它提供更大的可学习容量，但不会自动保证效果更好或端到端更快。</p><p class=\"md-p\">MoE 稀疏选择的是专家，稀疏注意力减少的是位置之间的交互。MoE 常放在 Transformer 的 FFN 位置，attention、共享专家和其他模块仍可能是稠密的，也可以与其他序列模块组合。因此 MoE 与 Transformer 不是互斥架构，激活参数也不是整次推理 FLOPs 的完整账本。</p>",
+          "sha256": "5d2578c6b8be07c81bf1994ed26f1ed754b52716a4b3ce208b72117a6611241a"
+        },
+        {
+          "sectionName": "moe-balance",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "为什么会有死专家，均匀路由就够了吗？",
+          "html": "<p class=\"md-p\">死专家是长期几乎收不到 token 的专家。先看每专家 token 数、router 分数与选择分布、容量溢出和丢 token，再排查初始化、训练数据分布、容量设置及热点。平衡辅助损失用来抑制少数专家包揽输入，但过强会干扰任务学习；动态路由偏置是另一类办法，不能说所有 MoE 都必须靠同一种惩罚。</p><p class=\"md-p\">例如 DeepSeek-V3 用动态专家偏置参与选择，并保留小的序列级辅助平衡项；不能把“主要不用辅助损失平衡”说成完全没有辅助项。专家负载均匀也不代表通信目的节点均匀，还要看每设备/节点收发量和最慢 rank。限制路由目的组与均衡负载解决不同问题，不能强行平均后就宣布质量和吞吐都通过。</p>",
+          "sha256": "e6b824a689c0546c0c9a159e91fe41b6852654a2aba587636e9398ebb1edc864"
+        },
+        {
+          "sectionName": "kv-boundary",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "另一类节省来自 KV 与序列交互，和 MoE 有何区别？",
+          "html": "<p class=\"md-p\">MHA 每个 query 头有独立 K/V；MQA 让多个 query 头共享一组 K/V；GQA 则按组共享。它们主要改变 KV 表示、缓存与读取带宽，query 头仍分别计算权重和输出，不能说全部 query 计算都省掉。MLA 进一步缓存压缩潜变量与位置分支，利用合法的投影吸收减少历史 K/V 的展开；这不是把整个 attention 矩阵直接低秩化，也不能直接照抄普通 GQA 的缓存公式。</p><p class=\"md-p\">MLA 的潜变量、解耦 RoPE 和速度条件见<a href=\"#/e/own-theory-architectures/q-own-theory-qwen-deepseek\">MLA 与 GQA 的具体比较</a>。混元要先说清型号：<a href=\"#/e/own-theory-architectures/q-own-theory-hunyuan-kv\">2024 年文本 Hunyuan-Large</a>同时采用 MoE、GQA 与跨层 KV 共享，三者分别改变专家计算、KV 头和缓存层数；不能把所有节省归给 MoE。Mamba、线性注意力与扩散 LM 的机制和公平比较见<a href=\"#/e/own-theory-architectures/q-own-theory-sequence-scaling\">序列架构与生成方式的取舍</a>。</p>",
+          "sha256": "c284d4139fc4842b1b790db60325f0e119ddbbf0c9f75caeecf3a3a599a11ab6"
+        },
+        {
+          "sectionName": "canonical-mla",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-qwen-deepseek",
+          "section": "Qwen 与 DeepSeek 的具体型号怎样比较 attention、MoE 和 FFN？",
+          "html": "<p><strong>GQA 减少独立 KV 头，MLA 把多头 K/V 的共同信息压到低维潜变量。</strong>以 DeepSeek-V2 的 MLA 为例，历史隐藏状态先经下投影得到 c_t，再由不同上投影得到各头内容 K/V。推理缓存潜变量及解耦的位置分支，而非每个头的完整 K/V；内容投影可在合法代数条件下吸收到 Query 或输出投影，避免每步完整展开历史 K/V。RoPE 的位置相关旋转妨碍直接合并内容投影，所以另设位置分支。不能只做低秩分解就声称获得了同一训练结构。</p><p>若潜变量维度 d_c、缓存位置分支维度 d_r，理想缓存可按 B×S×L×(d_c+d_r)×元素字节估算；对照普通 MHA 的 2BSLH_qd_h×字节、GQA 的 2BSLH_kvd_h×字节。具体缓存布局、并行复制和量化元数据仍应按实现计入。</p><p><strong>不直接统一用 GQA，是因为表示自由度与缓存节省的路线不同；MLA 也不保证总是更快。</strong>比较应固定质量门槛、输入输出长度、batch、硬件及实现。投影/重构、prefill 算子、内核成熟度、带宽和通信都影响速度；短序列或低效内核下，理论缓存更小可能没有端到端收益。已有 GQA 权重也不能无训练直接换成 MLA。论文的整模型吞吐对比不是 MLA 对 GQA 的独立因果实验。</p>",
+          "fragments": [
+            "<p><strong>GQA 减少独立 KV 头，MLA 把多头 K/V 的共同信息压到低维潜变量。</strong>以 DeepSeek-V2 的 MLA 为例，历史隐藏状态先经下投影得到 c_t，再由不同上投影得到各头内容 K/V。推理缓存潜变量及解耦的位置分支，而非每个头的完整 K/V；内容投影可在合法代数条件下吸收到 Query 或输出投影，避免每步完整展开历史 K/V。RoPE 的位置相关旋转妨碍直接合并内容投影，所以另设位置分支。不能只做低秩分解就声称获得了同一训练结构。</p>",
+            "<p>若潜变量维度 d_c、缓存位置分支维度 d_r，理想缓存可按 B×S×L×(d_c+d_r)×元素字节估算；对照普通 MHA 的 2BSLH_qd_h×字节、GQA 的 2BSLH_kvd_h×字节。具体缓存布局、并行复制和量化元数据仍应按实现计入。</p>",
+            "<p><strong>不直接统一用 GQA，是因为表示自由度与缓存节省的路线不同；MLA 也不保证总是更快。</strong>比较应固定质量门槛、输入输出长度、batch、硬件及实现。投影/重构、prefill 算子、内核成熟度、带宽和通信都影响速度；短序列或低效内核下，理论缓存更小可能没有端到端收益。已有 GQA 权重也不能无训练直接换成 MLA。论文的整模型吞吐对比不是 MLA 对 GQA 的独立因果实验。</p>"
+          ],
+          "sha256": "60cbd8fddcf1ce925f662196213adb221135e8768ee3a9654caae08d3cc32ef5",
+          "readOnly": true,
+          "sourceBodySha256": "ba460f8b7d8f193032cfb0ec3c9048b6696c23a9bfbad912e61ba27f392c1afa"
+        },
+        {
+          "sectionName": "sequence-mamba",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "Mamba 的选择性状态空间在省什么",
+          "html": "<p class=\"md-p\">Mamba 用输入依赖的选择性状态空间机制，让当前输入影响哪些信息写入、保留或遗忘。训练可用硬件友好的并行扫描，逐步解码维护递推状态；在固定模型宽度与状态大小下，状态不必随历史长度逐 token 增长。它不是线性 attention 的另一个名字，也不是把所有 SSM 都改称 Mamba。</p><p class=\"md-p\">收益来自把历史压进有限状态，代价也是压缩：能处理很长输入不保证精确取回任意多条独立历史。要按距离、干扰项和待记忆事实数量测检索/复制，观察状态容量、数值精度和任务质量；不能把纯模型的递推状态大小当成训练激活或整套服务内存。</p>",
+          "sha256": "ea93a25a33060d9163d8539224936e4a87bd8867cf0e9140bf36e55ec294794d"
+        },
+        {
+          "sectionName": "sequence-linear",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "线性注意力为什么不等于无损删掉 softmax",
+          "html": "<p class=\"md-p\">以核特征形式的线性注意力为例，把相似度写成特征映射的点积后，可用矩阵结合律先汇总 K/V 的统计量，再与 Query 组合；因果形式能递推维护固定形状的汇总状态。固定特征维度时，可避免逐次显式构造全部位置对。</p><p class=\"md-p\">这里有不同方法：有的改变原来的相似度核，有的近似 softmax；不能说任何 attention 都能无损变线性。特征维度、归一化、数值稳定和信息压缩影响表达能力与实际耗时。它和 Mamba 都有有限状态的取舍，但具体状态更新和选择机制不同，需分别检查训练并行、长程检索与高效内核。</p>",
+          "sha256": "deb5edcd49500d461b21f6f2192164bd69671ac166ab593bb47e24a3ab61ddc9"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a",
+      "folded": true
+    },
+    {
+      "text": "MoE 架构与 Router 原理",
+      "sourceKind": "variant",
+      "sourceExact": "<li>MoE 架构与 Router 原理</li>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "moe-core",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "先区分总容量与每个 token 的计算",
+          "html": "<p class=\"md-p\">MoE 是专家混合。常见 token 级 MoE 让 router 根据当前表示选出少数 top-k FFN 专家，计算后按路由权重合并输出。相同输入在稠密 FFN 中通常经过同一组参数，MoE 则可以增加专家总数而只激活其中一部分，把总参数容量与每 token 的部分计算量分开。它提供更大的可学习容量，但不会自动保证效果更好或端到端更快。</p><p class=\"md-p\">MoE 稀疏选择的是专家，稀疏注意力减少的是位置之间的交互。MoE 常放在 Transformer 的 FFN 位置，attention、共享专家和其他模块仍可能是稠密的，也可以与其他序列模块组合。因此 MoE 与 Transformer 不是互斥架构，激活参数也不是整次推理 FLOPs 的完整账本。</p>",
+          "sha256": "5d2578c6b8be07c81bf1994ed26f1ed754b52716a4b3ce208b72117a6611241a"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a",
+      "folded": true
+    },
+    {
+      "text": "MoE 架构的路由机制如何工作",
+      "sourceKind": "variant",
+      "sourceExact": "<li>MoE 架构的路由机制如何工作</li>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "moe-core",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "先区分总容量与每个 token 的计算",
+          "html": "<p class=\"md-p\">MoE 是专家混合。常见 token 级 MoE 让 router 根据当前表示选出少数 top-k FFN 专家，计算后按路由权重合并输出。相同输入在稠密 FFN 中通常经过同一组参数，MoE 则可以增加专家总数而只激活其中一部分，把总参数容量与每 token 的部分计算量分开。它提供更大的可学习容量，但不会自动保证效果更好或端到端更快。</p><p class=\"md-p\">MoE 稀疏选择的是专家，稀疏注意力减少的是位置之间的交互。MoE 常放在 Transformer 的 FFN 位置，attention、共享专家和其他模块仍可能是稠密的，也可以与其他序列模块组合。因此 MoE 与 Transformer 不是互斥架构，激活参数也不是整次推理 FLOPs 的完整账本。</p>",
+          "sha256": "5d2578c6b8be07c81bf1994ed26f1ed754b52716a4b3ce208b72117a6611241a"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a",
+      "folded": true
+    },
+    {
+      "text": "MoE 混合专家是什么？路由为什么要加惩罚？",
+      "sourceKind": "variant",
+      "sourceExact": "<li>MoE 混合专家是什么？路由为什么要加惩罚？</li>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "moe-core",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "先区分总容量与每个 token 的计算",
+          "html": "<p class=\"md-p\">MoE 是专家混合。常见 token 级 MoE 让 router 根据当前表示选出少数 top-k FFN 专家，计算后按路由权重合并输出。相同输入在稠密 FFN 中通常经过同一组参数，MoE 则可以增加专家总数而只激活其中一部分，把总参数容量与每 token 的部分计算量分开。它提供更大的可学习容量，但不会自动保证效果更好或端到端更快。</p><p class=\"md-p\">MoE 稀疏选择的是专家，稀疏注意力减少的是位置之间的交互。MoE 常放在 Transformer 的 FFN 位置，attention、共享专家和其他模块仍可能是稠密的，也可以与其他序列模块组合。因此 MoE 与 Transformer 不是互斥架构，激活参数也不是整次推理 FLOPs 的完整账本。</p>",
+          "sha256": "5d2578c6b8be07c81bf1994ed26f1ed754b52716a4b3ce208b72117a6611241a"
+        },
+        {
+          "sectionName": "moe-balance",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "为什么会有死专家，均匀路由就够了吗？",
+          "html": "<p class=\"md-p\">死专家是长期几乎收不到 token 的专家。先看每专家 token 数、router 分数与选择分布、容量溢出和丢 token，再排查初始化、训练数据分布、容量设置及热点。平衡辅助损失用来抑制少数专家包揽输入，但过强会干扰任务学习；动态路由偏置是另一类办法，不能说所有 MoE 都必须靠同一种惩罚。</p><p class=\"md-p\">例如 DeepSeek-V3 用动态专家偏置参与选择，并保留小的序列级辅助平衡项；不能把“主要不用辅助损失平衡”说成完全没有辅助项。专家负载均匀也不代表通信目的节点均匀，还要看每设备/节点收发量和最慢 rank。限制路由目的组与均衡负载解决不同问题，不能强行平均后就宣布质量和吞吐都通过。</p>",
+          "sha256": "e6b824a689c0546c0c9a159e91fe41b6852654a2aba587636e9398ebb1edc864"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a",
+      "folded": true
+    },
+    {
+      "text": "MoE是什么？混元使用MoE的好处；激活专家机制，MoE相比Dense模型优缺点",
+      "sourceKind": "variant",
+      "sourceExact": "<li>MoE是什么？混元使用MoE的好处；激活专家机制，MoE相比Dense模型优缺点</li>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "moe-core",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "先区分总容量与每个 token 的计算",
+          "html": "<p class=\"md-p\">MoE 是专家混合。常见 token 级 MoE 让 router 根据当前表示选出少数 top-k FFN 专家，计算后按路由权重合并输出。相同输入在稠密 FFN 中通常经过同一组参数，MoE 则可以增加专家总数而只激活其中一部分，把总参数容量与每 token 的部分计算量分开。它提供更大的可学习容量，但不会自动保证效果更好或端到端更快。</p><p class=\"md-p\">MoE 稀疏选择的是专家，稀疏注意力减少的是位置之间的交互。MoE 常放在 Transformer 的 FFN 位置，attention、共享专家和其他模块仍可能是稠密的，也可以与其他序列模块组合。因此 MoE 与 Transformer 不是互斥架构，激活参数也不是整次推理 FLOPs 的完整账本。</p>",
+          "sha256": "5d2578c6b8be07c81bf1994ed26f1ed754b52716a4b3ce208b72117a6611241a"
+        },
+        {
+          "sectionName": "moe-cost",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "省下的激活计算，要和三类额外成本一起算",
+          "html": "<p class=\"md-p\">第一是权重存储：未被当前 token 选中的专家仍是模型的一部分，必须有可用的存储与取用路径，不能只按 activated parameters 算显存。第二是分发通信：专家跨卡时要把 token 送过去，再收回结果。第三是负载与执行效率：热点专家拖尾、路由坍塌、专家小矩阵和调度开销都可能抵消计算节省。offload 或分片会改变常驻显存，也引入取用、传输和调度成本。</p><p class=\"md-p\">所以我会固定质量门槛、输入输出长度、batch、硬件与并行布局，比较总权重、激活计算、峰值显存、通信、吞吐和 P95 延迟。EP/TP 的字节口径、专家放置和目的节点热点见<a href=\"#/e/own-distributed-ch14/q-own-distributed-expert-communication\">专家通信与分组路由</a>；不能只用总参数或激活参数给模型排快慢。</p>",
+          "sha256": "832388f022e2be9934562f962a39a1eb49fd6bb4df1d25c426a1eb13bc956c2c"
+        },
+        {
+          "sectionName": "canonical-hunyuan",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-hunyuan-kv",
+          "section": "Hunyuan-Large 的 GQA 与 CLA 怎样共同减少 KV？",
+          "html": "<p class=\"md-p\">这个型号总参数约 389B，每 token 激活约 52B。前馈部分有 1 个所有 token 都经过的共享专家，以及 16 个可路由专家，每个 token 选择其中 top-1。</p><p class=\"md-p\">与传统 MHA 的第一处差别是 GQA。 这个型号保留 80 个 query 头，但只有 8 个 KV 头，每 10 个 query 头共用一组 K/V。</p><p class=\"md-p\">第二处差别是 CLA 跨层共享。 在这个 Hunyuan-Large 中，相邻两层共用一份 KV：组内前一层计算 K/V，后一层用自己的 Q 去读取这份 K/V，不再为同一段历史保存另一整份 KV。</p>",
+          "fragments": [
+            "<p class=\"md-p\">这个型号总参数约 389B，每 token 激活约 52B。前馈部分有 1 个所有 token 都经过的共享专家，以及 16 个可路由专家，每个 token 选择其中 top-1。</p>",
+            "<p class=\"md-p\">与传统 MHA 的第一处差别是 GQA。 这个型号保留 80 个 query 头，但只有 8 个 KV 头，每 10 个 query 头共用一组 K/V。</p>",
+            "<p class=\"md-p\">第二处差别是 CLA 跨层共享。 在这个 Hunyuan-Large 中，相邻两层共用一份 KV：组内前一层计算 K/V，后一层用自己的 Q 去读取这份 K/V，不再为同一段历史保存另一整份 KV。</p>"
+          ],
+          "sha256": "068888fb9ecc692798168b991444fceaba337b6488943c0ff472da84377a95a3",
+          "readOnly": true,
+          "sourceBodySha256": "29cb7401cb22852da1ef47b5d4581623d8cb8bb6ece7b314e3ab572989a9b2b1"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a",
+      "folded": true
+    },
+    {
+      "text": "从第一性原理分析LLM是否会被非Transformer架构取代，比较SSM、线性Attention、MoE、扩散LM的scaling瓶颈与工程风险",
+      "sourceKind": "variant",
+      "sourceExact": "<li>从第一性原理分析LLM是否会被非Transformer架构取代，比较SSM、线性Attention、MoE、扩散LM的scaling瓶颈与工程风险</li>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "sequence-overview",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "非Transformer路线怎样比较scaling与工程风险",
+          "html": "<p class=\"md-p\">我不会用“线性复杂度”直接判断谁会取代 Transformer。先分三条轴：SSM 或 attention 决定怎样混合序列信息，MoE 决定激活哪些专家，扩散或自回归决定训练与生成方式。它们可以组合，比较时必须说清具体结构与任务。</p>",
+          "sha256": "70c05ce53be97afdd217c37c8c9e1e70c2784c81450cf2ad3e9b7201dd2fef5e"
+        },
+        {
+          "sectionName": "sequence-mamba",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "Mamba 的选择性状态空间在省什么",
+          "html": "<p class=\"md-p\">Mamba 用输入依赖的选择性状态空间机制，让当前输入影响哪些信息写入、保留或遗忘。训练可用硬件友好的并行扫描，逐步解码维护递推状态；在固定模型宽度与状态大小下，状态不必随历史长度逐 token 增长。它不是线性 attention 的另一个名字，也不是把所有 SSM 都改称 Mamba。</p><p class=\"md-p\">收益来自把历史压进有限状态，代价也是压缩：能处理很长输入不保证精确取回任意多条独立历史。要按距离、干扰项和待记忆事实数量测检索/复制，观察状态容量、数值精度和任务质量；不能把纯模型的递推状态大小当成训练激活或整套服务内存。</p>",
+          "sha256": "ea93a25a33060d9163d8539224936e4a87bd8867cf0e9140bf36e55ec294794d"
+        },
+        {
+          "sectionName": "sequence-linear",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "线性注意力为什么不等于无损删掉 softmax",
+          "html": "<p class=\"md-p\">以核特征形式的线性注意力为例，把相似度写成特征映射的点积后，可用矩阵结合律先汇总 K/V 的统计量，再与 Query 组合；因果形式能递推维护固定形状的汇总状态。固定特征维度时，可避免逐次显式构造全部位置对。</p><p class=\"md-p\">这里有不同方法：有的改变原来的相似度核，有的近似 softmax；不能说任何 attention 都能无损变线性。特征维度、归一化、数值稳定和信息压缩影响表达能力与实际耗时。它和 Mamba 都有有限状态的取舍，但具体状态更新和选择机制不同，需分别检查训练并行、长程检索与高效内核。</p>",
+          "sha256": "deb5edcd49500d461b21f6f2192164bd69671ac166ab593bb47e24a3ab61ddc9"
+        },
+        {
+          "sectionName": "moe-cost",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "省下的激活计算，要和三类额外成本一起算",
+          "html": "<p class=\"md-p\">第一是权重存储：未被当前 token 选中的专家仍是模型的一部分，必须有可用的存储与取用路径，不能只按 activated parameters 算显存。第二是分发通信：专家跨卡时要把 token 送过去，再收回结果。第三是负载与执行效率：热点专家拖尾、路由坍塌、专家小矩阵和调度开销都可能抵消计算节省。offload 或分片会改变常驻显存，也引入取用、传输和调度成本。</p><p class=\"md-p\">所以我会固定质量门槛、输入输出长度、batch、硬件与并行布局，比较总权重、激活计算、峰值显存、通信、吞吐和 P95 延迟。EP/TP 的字节口径、专家放置和目的节点热点见<a href=\"#/e/own-distributed-ch14/q-own-distributed-expert-communication\">专家通信与分组路由</a>；不能只用总参数或激活参数给模型排快慢。</p>",
+          "sha256": "832388f022e2be9934562f962a39a1eb49fd6bb4df1d25c426a1eb13bc956c2c"
+        },
+        {
+          "sectionName": "sequence-diffusion",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "扩散语言模型改变生成方式，骨干仍可用 Transformer",
+          "html": "<p class=\"md-p\">扩散 LM 通过加噪或掩码及反向去噪学习生成，可在一次预测中处理多个位置，再迭代修复。LLaDA 就用没有因果 mask 的 Transformer 预测被遮住的 token。因此扩散不必是“非 Transformer”，也不能把图像扩散的全部连续噪声公式直接套到离散语言模型。</p><p class=\"md-p\">并行预测多个位置不等于一次前向完成答案。需要把去噪轮数、每轮处理长度、停止条件、可交付输出的稳定时点、流式响应、缓存兼容与工具交互都计入服务成本；自回归 causal KV 的复用条件不能原封不动搬过来。具体模型可以设计分块生成或专门缓存，仍需验收质量与总耗时。</p>",
+          "sha256": "e461216fbb237bfbc7ceff3a3ff0cd461c0e8f0df66cc878bb23925b8b52ec3c"
+        },
+        {
+          "sectionName": "sequence-fairness",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "先做公平的 scaling 比较，再看同质量服务成本",
+          "html": "<p class=\"md-p\">训练侧固定数据来源、质量、去重与评测划分，以相同有效数据量和总训练 FLOPs 做对照；若探索计算最优配置，就明确数据量如何随预算变化，不能把更多优质数据的收益算成架构优势。按多个参数、数据和计算规模画学习曲线，记录真实算子、路由及重计算开销，检查外推误差。只赢一个规模或一组论文任务，不足以得到所有规模的 scaling 定律。</p><p class=\"md-p\">不同生成目标的训练 loss 不一定同尺度，要用共同的任务质量门槛验证。再固定硬件、精度、引擎、输入输出长度与到达负载，测首个可用响应、总耗时、长文精确回忆、吞吐、峰值内存和每成功任务成本。多轮去噪与错路由重试不能漏计，未完成/失败请求不能悄悄移出统计；此处是比较方案，没有模型实验结果。</p>",
+          "sha256": "c32f7b2342aece3d38efc2ef19288a55a0de5bcd979d43add9bb12c4684dacd2"
+        },
+        {
+          "sectionName": "sequence-hybrid",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "什么时候混合架构比押注单一路线更合适",
+          "html": "<p class=\"md-p\">需要精确访问具体历史的位置保留全局 attention，其他层使用线性或状态空间模块，是一种可能的取舍。复杂度和状态内存要按真实层数、比例与缓存张量求和；只要仍有完整 attention 层，就不能把整个模型一概说成无 KV 或所有项都线性。</p><p class=\"md-p\">选择还取决于成熟内核、模型权重迁移与继续训练成本、服务生态和团队能否稳定维护。<a href=\"#/e/own-theory-architectures/q-own-theory-qwen-deepseek\">Qwen3-Next 的具体混合层配置</a>是已存在的型号例子；<a href=\"#/e/own-theory-distributed/q-own-theory-mfu-scaling\">Scaling Law 与训练预算</a>解释计算最优拟合边界。MoE 的容量、路由和通信回到<a href=\"#/e/ai-模型与评测-7/0\">专家混合主答</a>，不在这里重复一遍。</p>",
+          "sha256": "4c0efb0947e3ea8ea90b115388ea60d6b4177d2c8f4100c7e2b5b19c804ed5ff"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a",
+      "folded": true
+    },
+    {
+      "text": "为什么会有死专家，均匀路由就够了吗？",
+      "sourceKind": "heading-question",
+      "sourceExact": "<h3 class=\"md-h md-h3\">为什么会有死专家，均匀路由就够了吗？</h3>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "moe-balance",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "为什么会有死专家，均匀路由就够了吗？",
+          "html": "<p class=\"md-p\">死专家是长期几乎收不到 token 的专家。先看每专家 token 数、router 分数与选择分布、容量溢出和丢 token，再排查初始化、训练数据分布、容量设置及热点。平衡辅助损失用来抑制少数专家包揽输入，但过强会干扰任务学习；动态路由偏置是另一类办法，不能说所有 MoE 都必须靠同一种惩罚。</p><p class=\"md-p\">例如 DeepSeek-V3 用动态专家偏置参与选择，并保留小的序列级辅助平衡项；不能把“主要不用辅助损失平衡”说成完全没有辅助项。专家负载均匀也不代表通信目的节点均匀，还要看每设备/节点收发量和最慢 rank。限制路由目的组与均衡负载解决不同问题，不能强行平均后就宣布质量和吞吐都通过。</p>",
+          "sha256": "e6b824a689c0546c0c9a159e91fe41b6852654a2aba587636e9398ebb1edc864"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a"
+    },
+    {
+      "text": "另一类节省来自 KV 与序列交互，和 MoE 有何区别？",
+      "sourceKind": "heading-question",
+      "sourceExact": "<h3 class=\"md-h md-h3\">另一类节省来自 KV 与序列交互，和 MoE 有何区别？</h3>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "kv-boundary",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "另一类节省来自 KV 与序列交互，和 MoE 有何区别？",
+          "html": "<p class=\"md-p\">MHA 每个 query 头有独立 K/V；MQA 让多个 query 头共享一组 K/V；GQA 则按组共享。它们主要改变 KV 表示、缓存与读取带宽，query 头仍分别计算权重和输出，不能说全部 query 计算都省掉。MLA 进一步缓存压缩潜变量与位置分支，利用合法的投影吸收减少历史 K/V 的展开；这不是把整个 attention 矩阵直接低秩化，也不能直接照抄普通 GQA 的缓存公式。</p><p class=\"md-p\">MLA 的潜变量、解耦 RoPE 和速度条件见<a href=\"#/e/own-theory-architectures/q-own-theory-qwen-deepseek\">MLA 与 GQA 的具体比较</a>。混元要先说清型号：<a href=\"#/e/own-theory-architectures/q-own-theory-hunyuan-kv\">2024 年文本 Hunyuan-Large</a>同时采用 MoE、GQA 与跨层 KV 共享，三者分别改变专家计算、KV 头和缓存层数；不能把所有节省归给 MoE。Mamba、线性注意力与扩散 LM 的机制和公平比较见<a href=\"#/e/own-theory-architectures/q-own-theory-sequence-scaling\">序列架构与生成方式的取舍</a>。</p>",
+          "sha256": "c284d4139fc4842b1b790db60325f0e119ddbbf0c9f75caeecf3a3a599a11ab6"
+        },
+        {
+          "sectionName": "sequence-mamba",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "Mamba 的选择性状态空间在省什么",
+          "html": "<p class=\"md-p\">Mamba 用输入依赖的选择性状态空间机制，让当前输入影响哪些信息写入、保留或遗忘。训练可用硬件友好的并行扫描，逐步解码维护递推状态；在固定模型宽度与状态大小下，状态不必随历史长度逐 token 增长。它不是线性 attention 的另一个名字，也不是把所有 SSM 都改称 Mamba。</p><p class=\"md-p\">收益来自把历史压进有限状态，代价也是压缩：能处理很长输入不保证精确取回任意多条独立历史。要按距离、干扰项和待记忆事实数量测检索/复制，观察状态容量、数值精度和任务质量；不能把纯模型的递推状态大小当成训练激活或整套服务内存。</p>",
+          "sha256": "ea93a25a33060d9163d8539224936e4a87bd8867cf0e9140bf36e55ec294794d"
+        },
+        {
+          "sectionName": "sequence-linear",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "线性注意力为什么不等于无损删掉 softmax",
+          "html": "<p class=\"md-p\">以核特征形式的线性注意力为例，把相似度写成特征映射的点积后，可用矩阵结合律先汇总 K/V 的统计量，再与 Query 组合；因果形式能递推维护固定形状的汇总状态。固定特征维度时，可避免逐次显式构造全部位置对。</p><p class=\"md-p\">这里有不同方法：有的改变原来的相似度核，有的近似 softmax；不能说任何 attention 都能无损变线性。特征维度、归一化、数值稳定和信息压缩影响表达能力与实际耗时。它和 Mamba 都有有限状态的取舍，但具体状态更新和选择机制不同，需分别检查训练并行、长程检索与高效内核。</p>",
+          "sha256": "deb5edcd49500d461b21f6f2192164bd69671ac166ab593bb47e24a3ab61ddc9"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a"
+    },
+    {
+      "text": "非Transformer路线怎样比较scaling与工程风险",
+      "sourceKind": "heading-question",
+      "sourceExact": "<h4>非Transformer路线怎样比较scaling与工程风险</h4>",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "sequence-overview",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "非Transformer路线怎样比较scaling与工程风险",
+          "html": "<p class=\"md-p\">我不会用“线性复杂度”直接判断谁会取代 Transformer。先分三条轴：SSM 或 attention 决定怎样混合序列信息，MoE 决定激活哪些专家，扩散或自回归决定训练与生成方式。它们可以组合，比较时必须说清具体结构与任务。</p>",
+          "sha256": "70c05ce53be97afdd217c37c8c9e1e70c2784c81450cf2ad3e9b7201dd2fef5e"
+        },
+        {
+          "sectionName": "sequence-fairness",
+          "stableReviewKey": "own-theory-architectures#q-own-theory-sequence-scaling",
+          "section": "先做公平的 scaling 比较，再看同质量服务成本",
+          "html": "<p class=\"md-p\">训练侧固定数据来源、质量、去重与评测划分，以相同有效数据量和总训练 FLOPs 做对照；若探索计算最优配置，就明确数据量如何随预算变化，不能把更多优质数据的收益算成架构优势。按多个参数、数据和计算规模画学习曲线，记录真实算子、路由及重计算开销，检查外推误差。只赢一个规模或一组论文任务，不足以得到所有规模的 scaling 定律。</p><p class=\"md-p\">不同生成目标的训练 loss 不一定同尺度，要用共同的任务质量门槛验证。再固定硬件、精度、引擎、输入输出长度与到达负载，测首个可用响应、总耗时、长文精确回忆、吞吐、峰值内存和每成功任务成本。多轮去噪与错路由重试不能漏计，未完成/失败请求不能悄悄移出统计；此处是比较方案，没有模型实验结果。</p>",
+          "sha256": "c32f7b2342aece3d38efc2ef19288a55a0de5bcd979d43add9bb12c4684dacd2"
+        }
+      ],
+      "retainedAt": "own-theory-architectures#q-own-theory-sequence-scaling",
+      "retainedField": "a"
+    },
+    {
+      "text": "追问：一个分类模型、多个细分模型、MoE 融合怎么选？",
+      "sourceKind": "inline-question",
+      "sourceExact": "追问：一个分类模型、多个细分模型、MoE 融合怎么选？",
+      "sourceField": "a",
+      "destinations": [
+        {
+          "sectionName": "classifier-choice",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "追问：一个分类模型、多个细分模型、MoE 融合怎么选？",
+          "html": "<p class=\"md-p\">我会先用统一模型建立基线。它共享数据和表示，部署与校准流程相对简单，适合标签定义一致、不同任务能互相迁移的情况；但异质领域可能互相干扰，大类也可能掩盖少数类。多个专门模型便于分别选特征、阈值和更新周期，代价是每个模型数据更稀疏、维护更多，还要验证前置路由。路由一旦选错，后续模型可能根本没有正确标签空间。</p><p class=\"md-p\">若多个模型都运行再融合，要先统一标签语义、输出尺度与错误代价；把未校准的分数直接平均，没有可靠的概率解释。分类器级可学习 mixture 用软或稀疏 gate 选择或加权专家预测，兼顾共享与分工，但专家不保证自然对应可解释的业务类别，也可能发生路由坍塌。它与大模型层内按 token 选择 FFN 专家不同，也不能把一次外部 API 选路直接称为已经训练好的 MoE。</p>",
+          "sha256": "fff61abfcfc4a41c3ab4fc3f793245873370fad20bc89abed5e3479416554537"
+        },
+        {
+          "sectionName": "classifier-evaluation",
+          "stableReviewKey": "ai-模型与评测-7#0",
+          "section": "比较时怎样防止大类和正确路由假设掩盖问题",
+          "html": "<p class=\"md-p\">固定训练数据、数据划分和预算，除总体指标，还看 macro-F1、逐类召回、少数类错误、概率校准、OOD、路由错误和 P95 延迟。校准应使用独立代表样本，按业务错误代价设阈值；分布或类先验变化后重新检查，不能把高分直接当真实正确概率。全跑融合的计算成本也要计入，不能只比较单个专家的速度。</p><p class=\"md-p\">“专模在已知正确路由下更准”只说明条件表现，不能证明端到端系统更准。端到端准确率要同时计正确路由后的表现、错路由后的表现，以及拒判/回退带来的覆盖率和成本；只汇报被路由器接受的容易样本会换掉分母。先比较真实路由下的统一模型、专模和 mixture，再决定是否值得增加复杂度。</p>",
+          "sha256": "61c59d4c3d12839ef334de199dab34dd4f61fdc12aa22c38ab89259938390dd4"
+        }
+      ],
+      "retainedAt": "ai-模型与评测-7#0",
+      "retainedField": "a"
+    }
+  ]
+}

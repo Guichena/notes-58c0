@@ -8,6 +8,8 @@ import {execFileSync} from 'node:child_process';
 import {projectQuestionBankMerge,readQuestionBankMerge} from '../scripts/question-bank-merge.mjs';
 import {sha256} from '../scripts/interview-voice-review.mjs';
 import {expectedNoteDisplay} from './helpers/note-display-oracle.mjs';
+import {readPracticeBoundaryCorrections,projectPracticeBoundaryCorrections,restoreBeforePracticeBoundary} from '../scripts/practice-boundary-corrections.mjs';
+import {restoreReviewedAuditQuestions} from './helpers/reviewed-audit-authoring.mjs';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const json=async path=>JSON.parse(await readFile(new URL('../'+path,import.meta.url),'utf8'));
 async function loadEntries(base){
@@ -21,11 +23,13 @@ test('final merge reverses to the exact restored corpus and preserves existing i
  for(const e of catalog.entries)if(!chunks.has(e._chunk))chunks.set(e._chunk,await json('dist/'+e._chunk));
  const byId=new Map([...chunks.values()].flatMap(c=>c.entries).map(e=>[e.id,e]));
  const entries=catalog.entries.map(e=>byId.get(e.id)),registry=await readQuestionBankMerge();
- const baseline=projectQuestionBankMerge(entries,registry,{reverse:true});
+ const prePractice=restoreBeforePracticeBoundary(entries,await readPracticeBoundaryCorrections());
+ const reviewedBase=await restoreReviewedAuditQuestions(prePractice);
+ const baseline=projectQuestionBankMerge(reviewedBase,registry,{reverse:true});
  assert.equal(baseline.length,768);
  assert.equal(baseline.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),1603);
  assert.equal(sha256(JSON.stringify(baseline)),'7505b58a04dafaa14dc956be38a45b03fb2ade1cab92ebc41cd9f9fa4d153877');
- assert.deepEqual(projectQuestionBankMerge(baseline,registry),entries);
+ assert.deepEqual(projectQuestionBankMerge(baseline,registry),reviewedBase);
  for(const [i,old]of baseline.entries()){
   const current=entries[i];
   for(const key of ['id','kind','mod','part','cat','title','progressKey'])assert.deepEqual(current[key],old[key]);
@@ -75,8 +79,10 @@ test('actual current disposable build accepts independent authoring while preser
   const catalog=await load(temp,'dist/data/catalog.json');
   for(const q of questions)assert.equal(catalog.entries.find(e=>e.id===q.entryId).number,future.find(e=>e.id===q.entryId).number);
   assert.deepEqual(restore(await load(temp,'dist/data/archives/source-entries.json')),await load(root,'dist/data/archives/source-entries.json'));
-  const registry=await readQuestionBankMerge(),reversed=projectQuestionBankMerge(future,registry,{reverse:true});
-  assert.deepEqual(expectedNoteDisplay(restore(reversed)),projectQuestionBankMerge(current,registry,{reverse:true}));
+  const registry=await readQuestionBankMerge(),practiceRegistry=await readPracticeBoundaryCorrections();
+  const reverseCurrent=entries=>projectQuestionBankMerge(projectPracticeBoundaryCorrections(entries,practiceRegistry,{reverse:true}),registry,{reverse:true});
+  const reversed=reverseCurrent(future);
+  assert.deepEqual(expectedNoteDisplay(restore(reversed)),reverseCurrent(current));
   for(const q of questions)assert.equal(reversed.find(e=>e.id===q.entryId).items.at(-1).id,q.id);
  }finally{await rm(temp,{recursive:true,force:true});}
 });

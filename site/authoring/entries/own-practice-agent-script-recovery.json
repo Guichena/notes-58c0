@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-practice-agent-script-recovery",
+  "kind": "doc",
+  "module": "code",
+  "part": "代码手撕",
+  "category": "并发与任务调度",
+  "title": "执行接管实验：内存 UNKNOWN 与本地持久协调器",
+  "sections": [
+    {
+      "id": "s-script-recovery-contract",
+      "title": "题目、文件与验证边界",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">练习两个不同的控制面：一是内存 ScriptControl，失联后必须核实；二是持久 ScriptService，只调度两个无外部副作用的纯函数模板。目标是看清任务身份、租约和恢复证据，而不是搭建任意代码沙箱或生产分布式平台。</p><p class=\"md-p\">下载<a href=\"assets/examples/agent-script-recovery/agent-script-recovery.zip\" download>完整 Java 实现与测试包</a>。解压后运行 python3 run_tests.py；需要 Linux/macOS、Python 3 和带 jdk.compiler 模块的 JDK 21 或以上。HTTP 测试用 POSIX 管道 select，未在 Windows 运行。运行器在新建临时目录编译与执行，不连接外部账户或服务。</p><p class=\"md-p\">单文件：<a href=\"assets/examples/agent-script-recovery/ScriptControl.java\" download>ScriptControl.java</a>；<a href=\"assets/examples/agent-script-recovery/StrictJson.java\" download>StrictJson.java</a>；<a href=\"assets/examples/agent-script-recovery/DurableFile.java\" download>DurableFile.java</a>；<a href=\"assets/examples/agent-script-recovery/ScriptService.java\" download>ScriptService.java</a>；<a href=\"assets/examples/agent-script-recovery/fence-032.sh\" download>fence-032.sh</a>；<a href=\"assets/examples/agent-script-recovery/fence-033.sh\" download>fence-033.sh</a>；<a href=\"assets/examples/agent-script-recovery/fence-034.sh\" download>fence-034.sh</a>；<a href=\"assets/examples/agent-script-recovery/ScriptCoreTests.java\" download>ScriptCoreTests.java</a>；<a href=\"assets/examples/agent-script-recovery/CrashWorker.java\" download>CrashWorker.java</a>；<a href=\"assets/examples/agent-script-recovery/LockLifecycleTests.java\" download>LockLifecycleTests.java</a>；<a href=\"assets/examples/agent-script-recovery/http_integration.py\" download>http_integration.py</a>。fence-032/033/034 命令片段含示例路径与端口占位，以 run_tests.py 和 README 为复跑入口。</p>"
+      }
+    },
+    {
+      "id": "s-script-memory",
+      "title": "练习一：UNKNOWN 与核对状态机",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">先读独立的 ScriptControl.java：它是内存状态机，接收受信适配层提供的身份、时间和核对证据。下面的持久任务账、MQ、执行沙箱描述是生产接口要求，不是这个类已经实现的功能。</p><p class=\"md-p\">可设计一个局部实验，验证有界单权威脚本控制面，不在宿主执行提交脚本，也不实现数据库、认证、沙箱或网络服务。</p><h3 class=\"md-h md-h3\">受理与接口契约</h3><p class=\"md-p\">受理已鉴权的不可变artifactHash、输入引用、运行时与资源限制，以(tenant, requestId)标识一次提交意图。同键同输入返回同一任务，同键不同输入报冲突。返回任务ID后提供查询、取消请求及受限产物访问；不能把HTTP字段直接拼成宿主shell命令。</p><p class=\"md-p\">持久任务账保存输入版本、状态、owner、epoch、租约、deadline和结果；MQ只负责唤醒。执行器按可信能力领取，创建稳定sandboxOperationId，启动前再次核对制品哈希、资源和权限。大输入和产物使用不可变对象引用，控制面只保存必要元数据。</p><h3 class=\"md-h md-h3\">隔离和取消</h3><p class=\"md-p\">每次执行有独立环境和工作目录，只读挂载获准输入，不暴露宿主路径、容器管理socket或其他租户凭据。限制CPU、内存、进程数、文件描述符、临时盘、网络目标、运行时间与输出字节；超额结果显式截断或失败，不允许无限stdout耗尽控制面。</p><p class=\"md-p\">敌对多租户代码需要适合威胁模型的强化沙箱、微虚机或独立节点，namespace本身不是完整安全边界。取消先成为CANCEL_REQUESTED，再由监督器终止整个进程树并核对资源回收；本地取消不能撤销已发出的远端请求。</p><h3 class=\"md-h md-h3\">UNKNOWN与接管</h3><p class=\"md-p\">正常状态为QUEUED到RUNNING到SUCCEEDED或FAILED。领取由单一权威原子决定，租约截止不得超过任务deadline；完成校验owner与epoch。本局部内存教学模型把租约到期或执行失联转为UNKNOWN，核对前不能直接回QUEUED；其他任务能否安全重做须按操作合同判断。任务可能已经执行，而响应、产物或最终收据尚未保存。</p><p class=\"md-p\">接管前按稳定sandboxOperationId核对，只接受三类有证据的结论：</p><ul class=\"md-list\"><li>已成功，且拿到验证过的产物。</li><li>已失败，并确认不会继续运行。</li><li>尚未启动，而且旧请求以后也不可能再启动。</li></ul><p class=\"md-p\">能否重新排队不只取决于是否启动：无外部副作用、输入固定的纯函数可在预算内重新计算；有可信证据证明失败无效果且旧请求以后也不会生效，可按可重试失败处理；目的端提供覆盖该操作与重试窗口的幂等保证时，可沿用相同operationId和原载荷重试。不可核实且不满足安全重做条件的副作用保持UNKNOWN，转查询、人工或业务补偿。上面的局部内存模型仍只实现第三类核对后重排，其他分支需另行实现和测试。下次领取递增epoch，旧owner的回包不能覆盖新任务。超时、找不到一条日志，或用户自报“没执行”，本身都不足以证明副作用可以重跑。</p><p class=\"md-p\">若脚本可产生外部副作用，资源端还需幂等键或查询协议。控制面拒绝旧结果不等于撤回旧脚本的HTTP调用。不提供查询且不可幂等的任意副作用可能必须保持待核实，由人工或业务补偿解决。</p><h3 class=\"md-h md-h3\">数据结构与复杂度</h3><p class=\"md-p\">ScriptControl 风格的内存模型可以用同步方法维护有界任务表，任务输入和返回记录不可变，tenant/request绑定完整输入，终态重放校验相同结果。权威时间和owner身份必须来自受信控制面；调用者不能自报时间或epoch以延长执行权。</p><p class=\"md-p\">单项查询与状态转换平均O(1)，过期扫描O(任务数)。生产数据库用状态和租约索引分批扫描。已完成记录清理必须遵守最长重试和恢复窗口，不能删掉去重证据后接受旧提交为新任务。</p><h3 class=\"md-h md-h3\">测试与扩展</h3><p class=\"md-p\">测试应覆盖30线程竞争仅一次领取、重复与冲突提交、精确租约到期、UNKNOWN禁止领取、可信未启动核对后重排、旧owner和epoch拒绝、终态结果冲突、取消后仍核实成功、容量及UTF-8输出边界。</p><p class=\"md-p\">这个模型在一个进程内保证条件转换，多个进程各自new对象不构成共享权威；进程重启也不会保存内存状态。生产验收还包括数据库提交前后退出、沙箱创建应答丢失、执行器分区、子进程不退出、路径穿越、日志泄密、资源耗尽和备份恢复。</p>"
+      }
+    },
+    {
+      "id": "s-script-durable",
+      "title": "练习二：多 JVM 与本地持久快照",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">分布式执行的关键是让多个 worker 共享同一个持久任务权威，并把领取、租约、执行和结果提交连起来；租约到期只撤销提交资格，不会自动撤销已经发生的计算或外部副作用。</p><p class=\"md-p\">可把实验范围限定为单机可复跑的多进程闭环：Java协调器通过loopback HTTP服务多个独立Java worker进程，用本地快照保存任务；worker真正执行两个受限纯函数模板。</p><p class=\"md-p\">该实验的验证目标是协议和进程故障恢复，尚不包含多机高可用、任意代码沙箱或真实LLM服务。题目如果没有约定脚本语言、外部副作用、认证、隔离级别和部署环境，先把这些边界问清并缩小交付范围。</p><h4 class=\"md-h md-h4\">先约定什么能够执行</h4><p class=\"md-p\">提交内容是已安装的模板名和有界输入，不是待执行源码。两个模板的合同如下：</p><ul class=\"md-list\"><li>upper-v1：字符串最多512个UTF-8字节，使用Locale.ROOT转大写。</li><li>sum-v1：最多256个整数，每项在负十亿到十亿之间，精确求和。</li></ul><p class=\"md-p\">模板版本也属于任务输入。未知模板、分数、超界输入和额外字段直接拒绝；设计中不提供shell、eval、动态编译或把用户路径拼入进程命令的入口。</p><p class=\"md-p\">实验应让 worker 作为独立 JVM 运行，它通过 HTTP 领取、计算并提交结果。为了让练习自包含，控制面还重新计算这两个廉价函数核对收据；这是验证教学结果的办法，对昂贵脚本重新计算会失去分布式执行的价值，真实系统应换成可信执行身份、产物哈希和适合任务的校验机制。</p><p class=\"md-p\">两个模板没有外部副作用，因此租约过期后允许再次执行。同一任务的旧计算与新计算可能短暂重叠，这份合同只要求过期或旧代际结果不会成为权威结果，不保证计算只发生一次。若换成发邮件、扣款或调用不可幂等外部 API，必须改为 UNKNOWN 与结果核对流程，不能沿用这里的自动重排。</p><h4 class=\"md-h md-h4\">受理与查询合同</h4><p class=\"md-p\">所有接口仅使用 POST 和精确的 Content-Type: application/json，请求体最多 8192 字节。服务只绑定 127.0.0.1，客户端也只允许这个 loopback 地址。下列身份都是同一台可信教学机器上的演示字段，没有身份认证，不能把自填 owner 当作安全身份。</p><ul class=\"md-list\"><li>/submit 输入 id、template、input、ttlMillis。id 是 1 至 64 位字母数字下划线或连字符，ttlMillis 为 100 至 60000。受理成功返回 QUEUED 任务。</li><li>/claim 只输入 owner。一次领取一个任务并返回 RUNNING、epoch、until 等信息，没有可执行任务返回 EMPTY。客户端不能上传 now 或租约时长。</li><li>/complete 输入 id、owner、epoch、output。只有当前有效 owner 和 epoch 能提交正确结果；过期、错误结果和旧代际返回 409。同一终态收据重复提交返回已保存成功结果。</li><li>/get 输入 id，返回已保存的任务及结果。租约扫描在 claim 时懒执行，因此查询可能看到已到 until 的 RUNNING；这不表示完成仍会被接受，complete 总是再次检查时间。</li></ul><p class=\"md-p\">幂等键绑定的是规范化后的完整合同。键顺序、无关空白，以及数值1/1.0的区别，不会产生新意图；同id却换了模板、输入或ttlMillis，就报冲突。</p><p class=\"md-p\">成功重试返回原任务，不重置deadline。任务总数最多128个，终态也计入其中；程序不自动删除幂等记录，容量满后明确拒绝。</p><h4 class=\"md-h md-h4\">持久化和租约怎样配合</h4><p class=\"md-p\">控制面的方法在单权威内串行处理，每次先构造下一份快照，写临时文件并 force，然后在同一目录原子替换，成功后才更新内存和返回。写入结果不确定时停止后续写入，需重启读取权威文件；损坏或不一致快照拒绝启动，不能静默当成空数据库。</p><p class=\"md-p\">账本要同时挡住同JVM重复打开和其他合作进程，所以使用两层互斥：先在共享登记表里检查重复打开，再让唯一的FileChannel取得本地操作系统文件锁。</p><p class=\"md-p\">顺序不能反过来。若先打开第二个通道，等重叠锁异常后再关闭，某些操作系统会因为这次关闭而释放该JVM在同文件上的已有锁。登记检查、通道创建和关闭后的注销，都由同一把JVM锁串行保护；关闭失败时保留未关闭通道的登记，避免新写者进入。</p><p class=\"md-p\">路径别名和文件类型也属于账本合同。先解析真实父目录，让相对路径、点路径和父目录符号链接指向同一账本时共用登记。账本与锁文件本身必须是普通文件，不能是符号链接；已有文件还要检查身份，拒绝同JVM的硬链接别名，以及把另一账本锁文件当数据文件打开。</p><p class=\"md-p\">合作进程必须使用同一规范账本路径，不能自行创建跨进程硬链接别名，也不能替换或删除锁文件。该登记方案要求只使用唯一加载的DurableFile类；多ClassLoader容器、绕开该类打开锁文件的代码，均不在教学合同内。文件锁也不是跨主机事务，不能阻止恶意进程访问。</p><p class=\"md-p\">原子替换能否执行，取决于文件系统；已有目标的原子覆盖行为也依赖具体实现。需要在目标文件系统验证重复原子替换，不能预设其成功。遇到不支持的环境，程序拒绝继续，不降级成“先删除、再写入”。</p><p class=\"md-p\">force 与原子替换解决的故障不同。临时文件被 force 不等于目录重命名已在真实断电时持久，这一受限设计没有目录 fsync、复制、备份或磁盘故障处理。因此测试和承诺范围是本地进程被杀后重新打开完好文件，不包含断电无损、磁盘损坏或跨机容灾。</p><p class=\"md-p\">领取时，协调器把epoch和attempts各加一，持久保存租约后再发给worker。租约最多1秒，并且不能超过deadline。</p><p class=\"md-p\">本例是纯函数任务，过期后可重排，但最多领取3次；deadline到期或次数用尽，就变为FAILED。旧owner即使提交正确答案，也会因epoch不匹配而被拒绝。成功收据可以重试，但必须与已保存结果一致，不能改写终态。</p><p class=\"md-p\">时间取自协调器。保存的 lastTime 用于避免重启后把权威时间倒退到更早值；时钟大幅前跳仍可能提前过期，大幅回拨可能降低可用性。这是本地演示策略，不能称为分布式时钟方案。</p><h4 class=\"md-h md-h4\">为什么不直接接受任意脚本</h4><p class=\"md-p\">任意脚本需要可信制品、不可变输入、租户权限和独立执行环境，并限制 CPU、内存、进程树、临时盘、文件描述符、网络和输出。敌对多租户代码应根据威胁模型选择沙箱、微虚机或独立节点；普通子进程和线程超时不是完整隔离。</p><p class=\"md-p\">脚本有外部副作用后，失联恢复必须改变。先保留稳定operationId，向真实执行器或资源端查询：已完成且收据可信，可以恢复成功；结果未知但目的端对该操作提供有效幂等保证时，可按原身份和原载荷安全重试；否则保持UNKNOWN。</p><p class=\"md-p\">不具备上述目的端幂等保证时，只有可信证据同时证明“未执行或已失败且无效果”和“旧请求以后也不会生效”，并满足重试条件，才允许重新开始。fencing还须延伸到可写资源端，才可能挡住旧写；控制面仅检查epoch，不会把已经发生的扣款回滚。</p><p class=\"md-p\">取消同样需要 CANCEL_REQUESTED、停止实际进程树及结果核对。本例没有取消、续租、长脚本、真正的用户隔离和外部副作用接口，不把“关闭一个 worker JVM”描述为完整取消协议。</p><h4 class=\"md-h md-h4\">容量 复杂度和部署取舍</h4><p class=\"md-p\">每次快照提交与任务数及序列化字节量有关，约 O(J + S)；有序映射操作还有 O(log J) 成本，claim 扫描是 O(J)，不是所有操作都 O(1)。同机小练习用整个快照容易审查，但高吞吐系统应使用事务数据库、条件更新与适当索引，必要时用事务性投递唤醒 worker。MQ 不能代替任务的权威账本。</p><p class=\"md-p\">HTTP处理池有4个线程，应用排队最多32项。这限制的是应用执行队列，不能据此断言恶意慢连接的所有资源都已有严格上界。</p><p class=\"md-p\">演示缺少完备认证、TLS、服务端请求读取超时、限流和拒绝服务防护，不能暴露到公网或不可信本地环境。worker的连接与单次请求有超时；超时后退出，后续按相同任务身份查询，不能自行创建新任务。</p><h4 class=\"md-h md-h4\">AI Coding 的实施顺序</h4><p class=\"md-p\">先冻结模板、幂等、租约和失败合同，再完成一次 submit→claim→execute→complete→get。随后把内存存储换为本地持久快照，最后增加进程故障和网络协议测试。让 AI 修改一个模块时仍保留接口与独立验收；代码能编译、worker 输出一行成功、控制面已持久保存终态，是三个不同的检查点。</p><h4 class=\"md-h md-h4\">局部实现需要满足的合同</h4><p class=\"md-p\">如选择 Java 21 做局部实验，可先设计 StrictJson 风格的有界解析器，拒绝重复键并保留精确数字，再实现控制面与 worker；无外部依赖是可选实验约束。</p><h4 class=\"md-h md-h4\">如何验收一次提交到结果</h4><p class=\"md-p\">实验实现后，应先编译，再在独立终端启动服务。端口参数 0 表示操作系统分配一个空闲端口，程序打印实际 PORT；服务读到回车或标准输入结束会关闭。</p><p class=\"md-p\">测试客户端应使用实际分配的端口，例如 12345 只是占位值。整个流程只访问本机 loopback，不需要外部账户、模型密钥、消息队列或数据库。</p><p class=\"md-p\">例如输入 [1,2,3]，最终应验证 state 为 SUCCEEDED、output 为 6。再次提交完全相同的合同返回同一任务；把 input 改为 [9] 则返回冲突。若调试输出完整任务输入，真实系统应另做敏感字段最小化和日志访问控制。</p><h4 class=\"md-h md-h4\">控制面与真实进程测试</h4><p class=\"md-p\">可把控制面、故障 worker、文件锁生命周期与 HTTP 集成测试分别组织为 ScriptCoreTests、CrashWorker、LockLifecycleTests 和 http_integration；若使用 Python 3 标准库驱动独立进程与 HTTP，它只承担测试驱动，不替代 Java 业务实现。</p><p class=\"md-p\">控制面可规划 47 个明确断言：30 个竞争领取只有一个胜者，同键冲突、输入预算、拒绝第二写者、精确租约边界、迟到结果、合法终态重试、三次执行预算、deadline、重启读取和快照损坏等，并核对首次异常和清理异常同时发生时保留原诊断。时钟使用可控值，不依赖随机 sleep 恰好触发竞态。</p><p class=\"md-p\">进程测试可规划 40 个 HTTP 与进程断言：两个独立 JVM worker 领取不同任务，真实完成纯函数；杀死已领取但未提交的 worker 和协调器，再启动新协调器读取同一快照，等待租约到期，验证新 epoch 和旧收据拒绝；再杀死保存着 QUEUED 的协调器，用新 JVM worker 恢复任务。测试最后关闭所有进程，端口随进程停止。</p><p class=\"md-p\">文件锁测试应启动独立外部JVM来探测锁。在同一JVM连续打开失败、并发打开失败，以及路径别名被拒绝后，外部JVM仍不能取得锁；原持有者关闭后，外部JVM应能取得锁。</p><p class=\"md-p\">还应覆盖快照损坏导致构造失败后的释放、锁路径不合法后的重试、重复close，以及100轮关闭和重新打开的并发竞争。符号链接、硬链接用例依赖本地文件系统；环境不支持时要说明未运行，不能记为通过。</p><p class=\"md-p\">这些测试的目标是验证具体失败点，不等于穷尽所有网络分区、任意指令时刻崩溃、磁盘故障或真实多机故障。增加长任务、取消或任意代码能力时，须重新设计执行隔离、续租和 UNKNOWN 核对，不应仅把模板允许列表扩大。</p>"
+      }
+    },
+    {
+      "id": "s-script-verified",
+      "title": "运行环境与验证范围",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">随包提供可执行测试：ScriptControl 检查 30 线程竞争领取与 UNKNOWN；ScriptCoreTests 包含 47 条控制面断言；LockLifecycleTests 包含 251 条检查；HTTP/独立进程测试包含 40 条断言。运行时会使用合作 JVM、loopback HTTP、进程终止与重启，并验证当前本地文件系统的符号链接、硬链接和原子替换。计划覆盖哪些场景与一次实际运行通过，是不同证据；以自己的完整运行日志和退出码为准。</p><p class=\"md-p\">即使这些测试通过，也不证明所有调度交错、任意时刻崩溃、网络分区、断电持久化或磁盘故障安全。测试没有覆盖容器、microVM、商业沙箱、生产服务或真实 LLM；更换文件系统、JDK、平台或扩展成任意脚本后，要按合同重新验证。</p><p class=\"md-p\">协议解析器还限制快照/JSON 为 1,048,576 字节、嵌套深度 64、节点数 50,000；数字 token 最多 128 字符、scale 绝对值最多 1000，拒绝重复键、非法 UTF-8 与不配对 surrogate。HTTP 请求体仍独立限 8192 字节，完成收据按 UTF-8 限 4096 字节。</p><p class=\"md-p\">内存 ScriptControl 的容量由构造参数限定；租户、请求和 owner 标识为 1 至 64 位字母数字下划线或连字符，制品摘要须 64 位小写十六进制，时间非负，deadline/ttl 与 epoch 增量做边界检查。它没有持久化、网络、认证、真实执行、自动扫描和独立的执行次数预算，不能与持久模板实验的 128 个任务、3 次领取、1 秒租约混成同一个实现。</p><p class=\"md-p\">关联知识：<a href=\"#/e/own-distributed-guide\">学习路线、版本与验证范围</a>；<a href=\"#/e/own-tools-guide\">接口、运行条件与验收边界</a>。</p>"
+      }
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-os-sandbox",
+      "questionId": "q-agent-executor-recovery",
+      "label": "执行器失联恢复设计"
+    },
+    {
+      "entryId": "handwrite-69",
+      "label": "任务 checkpoint/resume 与工作区漂移"
+    },
+    {
+      "entryId": "own-tools-execution",
+      "questionId": "q-own-tools-unknown-recovery",
+      "label": "未知外部副作用的核对边界"
+    }
+  ]
+}

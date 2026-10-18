@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "entryId": "ai-agent-7",
+  "id": "q-agent-runtime-duplex-contract",
+  "order": 1100,
+  "question": "业务服务与 Agent Runtime 的双向流，怎样保证背压、持久确认和断线恢复？",
+  "shortAnswer": "连接传消息，任务账存事实；用有界流控、持久连续 ACK、稳定操作身份与代际校验恢复，提交顺序和取消效果由业务合同决定。",
+  "explanation": {
+    "format": "html",
+    "value": "<p class=\"md-p\">我会把通信连接和任务状态分开：连接负责交换命令、进度与结果，持久任务账负责说明任务是否受理、提交、结束。低延迟连续交互可用 gRPC 双向流；需要离线缓冲、独立消费与持久重放时，用任务/结果消息主题，必要时组合。先问清消息大小、持续时长、吞吐/时延目标、允许丢失范围及离线恢复要求，再定协议。</p><p class=\"md-p\">双向流两端可以各自发送，各方向流内有序；SSE 本身只做服务端推送，反向命令需独立请求，WebSocket 则要补 schema、帧上限和错误语义。不能为了“双向”把每个 token 都视为必须持久化的业务命令，也不能用连接存活证明任务还在执行。</p><h3 class=\"md-h md-h3\">一帧消息要能识别责任与顺序</h3><p class=\"md-p\">信封包含 tenant、runId、taskId、attempt/generation、planRevision、leaseEpoch、messageId、sequence、type、payloadVersion、deadline 与 trace；有业务写入时另带稳定 operationId。同一业务操作重试沿用 operationId，新的执行尝试换 attempt。tenant 与权限以已认证连接/令牌和服务端核对为准，帧里自填身份不能提权。</p><p class=\"md-p\">大文档和产物传有 ACL、版本与校验值的对象引用，不每轮复制整个历史。跨语言统一类型、单位、错误与演进规则；字段兼容详见 <a href=\"#/e/own-distributed-ch02/q-own-distributed-protobuf\">Protobuf 序列化与兼容性</a>。</p><h3 class=\"md-h md-h3\">先分清 ACK 确认了什么</h3><p class=\"md-p\">可把 RECEIVED、PERSISTED、BUSINESS_COMMITTED、FINAL 分别定义为已收到、已持久受理、本地业务已提交和任务明确终态。它们是应用合同，不是 gRPC 自动提供的四个状态；send 成功甚至不等于数据已到网络，更不等于业务完成。持久 ACK 必须在对应持久状态提交后才能发出。</p><p class=\"md-p\">去重记录、需确认的本地效果与处理水位在同一事务边界提交，再发送确认；事务完成但确认丢失时，重放只能返回已有结果。若效果在外部系统，不能假定它和本地 ACK 同事务，必须用稳定 operationId、目的端幂等/查询和 UNKNOWN 对账。RECEIVED 不足以允许上游删除唯一副本。</p><h3 class=\"md-h md-h3\">背压必须覆盖应用队列</h3><p class=\"md-p\">限制单帧字节、排队条数/字节、每租户在途数量/字节、未确认窗口、worker 并发和最长等待。gRPC 流控保护接收与传输路径，应用持续读取后塞入无限列表仍会耗尽内存；模型供应商也未必随本地限流停止生成。到水位暂停读取、减少 credit，或明确拒绝/持久受理；可覆盖的进度只保留最新值，必需命令、终态和不可丢增量不能静默丢弃。</p><p class=\"md-p\">收和发分别推进，不能两端都堵在“先全部写完再读”。控制/取消消息也要有受控的可达路径，避免进度洪水挤掉终态。有限队列只能吸收突发，长期到达率高于处理率时仍需扩容、减少工作或按合同降级；按任务/租户公平调度并隔离热点 key。</p><h3 class=\"md-h md-h3\">Go 只是实现例，收发责任怎样安排</h3><p class=\"md-p\">以 grpc-go 为例，同一 stream 可由一个 goroutine 发送、另一个接收；不能让多个 goroutine 同时对同一 stream 调 SendMsg，也不能并发多次 RecvMsg。业务 worker 经有界 channel 交给单一发送协调者；接收后先校验，再派入有限 worker 池。CPU 重任务与 IO 分开，Python 异步 Runtime 也不能用长 CPU 循环阻塞事件循环。</p><p class=\"md-p\">连接可以按框架合同复用，编码 buffer 等可变对象不能并发乱用。合并小帧设大小和时间上限，压缩收益取决于消息分布与 CPU；少量长大流可能使负载不均，必要时按任务分配多个连接并实测。Java、Python 各自遵守客户端的线程/流控合同，不能直接照抄 Go 协程写法。</p><h3 class=\"md-h md-h3\">断线从哪里继续</h3><p class=\"md-p\">按持久 taskId、generation/epoch 和已确认 sequence 续接或查状态。累积 ACK 只能推进到最大连续、已经持久确认的序号；若 7 未完成而 8 已完成，不能确认“到 8 全部完成”，要保留缺口或逐消息确认。重放按 messageId 去重，同 ID 内容冲突应拒绝核查。</p><p class=\"md-p\">gRPC 在满足重试策略或透明重试条件时可以重放调用历史；响应头收到后，该 RPC 对重试机制而言已提交，不再由该机制自动重试。这与业务提交不是一回事，也不是按持久应用游标恢复已建立的长流；新建流不给跨重连恰好一次业务效果。远端可能已写成功但回包丢失，此时保持 UNKNOWN，并按 operationId 查询/对账，不把新连接当新业务。需要故障后继续的任务从 durable 账本恢复；恢复权、重放范围与保留窗口必须明确。</p><h3 class=\"md-h md-h3\">严格顺序约束哪一步</h3><p class=\"md-p\">先确定顺序范围是单任务、同订单/会话 key，还是全局。TCP 字节有序与 gRPC 流内保序，都不保证并发业务按请求顺序完成。同 key 可分区并由唯一权威执行者串行裁决；全局序列/提交点会约束吞吐与可用性。</p><p class=\"md-p\">并行计算后按序输出，只保证输出顺序；若外部副作用也必须严格有序，副作用提交本身就要受同一顺序裁决，不能提前并发写完再排响应。明确失败是否阻塞后续、能否跳号与怎样重放，重连后以 epoch 和已确认序号拒绝旧代际提交。</p><h3 class=\"md-h md-h3\">取消、升级和资源回收</h3><p class=\"md-p\">先持久标记取消请求，停止新派发，再向执行器、子任务与 IO 传播剩余 deadline/取消。处理器需检查取消并协作停止工作；关闭自己拥有的 channel/句柄，让 goroutine 能退出，清理队列项及关联 Future。用户断连是否继续执行按任务合同决定，收到取消与资源已经释放分别观测。</p><p class=\"md-p\">外部不可取消或已提交的效果继续核对，不能承诺关闭连接会回滚；旧 generation/epoch 的晚到结果不得覆盖新任务。升级时先停止接新流，通知重连窗口，再排空或保存 checkpoint；不能直接杀连接宣称无损迁移。完整任务状态和交接责任见 <a href=\"#/e/ai-agent-5/3\">多 Agent 的持久任务协作</a>。</p><h3 class=\"md-h md-h3\">怎样证明有界而且能恢复</h3><p class=\"md-p\">固定消息大小、速率、任务混合与网络条件，记录有效业务消息/秒和 bytes/s、P95/P99、排队时间、在途字节、拒绝率、重连恢复、CPU/堆/GC 与下游饱和度；空消息吞吐不能代表业务能力。</p><p class=\"md-p\">故障用例覆盖慢接收者、双向队列同时满、进度洪水、乱序/重复重放、ACK 前后崩溃、半关闭、进程重启、取消后晚回、旧代际提交和恶意大帧。验证内存回落、控制消息可达、必需事件不丢、外部效果不重复。Go/gRPC 的真实流控、协程退出与网络恢复需端到端测试，本地 Java 回调或纯状态模型只能证明自己的局部范围。</p>"
+  },
+  "commonPhrasings": [
+    "Runtime与Go服务怎样双向通信；断流后怎么恢复；怎样防发送方压垮接收方。",
+    "Agent Runtime 与 Go 业务服务间高吞吐双向通信设计",
+    "RPC 调用卡住如何处理；如何保证请求严格按序；速度不匹配导致堆积"
+  ],
+  "followUps": [],
+  "code": [],
+  "tags": [
+    "Agent",
+    "服务通信"
+  ],
+  "related": [
+    {
+      "entryId": "ai-agent-7",
+      "questionId": "7",
+      "label": "用户事件流、SSE 与可恢复游标"
+    },
+    {
+      "entryId": "ai-模型与评测-8",
+      "questionId": "2",
+      "label": "Java 客户端的流式适配、背压和取消"
+    },
+    {
+      "entryId": "own-mq-contracts",
+      "questionId": "q-own-mq-telemetry-resume",
+      "label": "逐跳持久 ACK 与遥测补缺口"
+    }
+  ],
+  "mustKnow": false
+}

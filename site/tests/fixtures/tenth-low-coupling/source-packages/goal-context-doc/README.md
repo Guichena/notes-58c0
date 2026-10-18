@@ -1,0 +1,1 @@
+Candidate only: one html leaf, four exact replacements. Main read original whole answer and authored consolidation; independent reviewer verified unique segments, full semantic conditions and byte-identical recovery tail. Original html/entry archived. No actual site edits or tests. Original citation identifier retained in archive rather than final learning copy.

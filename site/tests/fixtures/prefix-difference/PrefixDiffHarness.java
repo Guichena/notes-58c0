@@ -1,0 +1,4 @@
+import java.util.*; public class PrefixDiffCheck {
+/* ACTUAL_TEMPLATE */
+static long oracle(int[] a,int k){long n=0;for(int i=0;i<a.length;i++){long s=0;for(int j=i;j<a.length;j++){s+=a[j];if(s==k)n++;}}return n;}
+public static void main(String[]args){int[] v={Integer.MIN_VALUE,-1,0,1,Integer.MAX_VALUE};long n=0;for(int l=0;l<=6;l++){long total=1;for(int i=0;i<l;i++)total*=v.length;for(long mask=0;mask<total;mask++){int[] a=new int[l];long x=mask;for(int i=0;i<l;i++){a[i]=v[(int)(x%v.length)];x/=v.length;}for(int k:v){if(subarraySum(a,k)!=oracle(a,k))throw new AssertionError(Arrays.toString(a)+" k="+k);n++;}}}if(subarraySum(new int[]{Integer.MIN_VALUE,Integer.MAX_VALUE,1},Integer.MIN_VALUE)!=1)throw new AssertionError();System.out.println("PASS "+n+" exhaustive boundary cases and overflow counterexample");}}

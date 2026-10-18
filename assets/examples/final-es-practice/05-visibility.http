@@ -1,0 +1,104 @@
+# Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# visibility-version | HTTP 200；8.15.3
+GET /
+
+# visibility-create | HTTP 200；acknowledged=true；refresh_interval=-1
+PUT /interview_visibility_v1
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "-1",
+    "index.translog.durability": "request"
+  },
+  "mappings": {
+    "dynamic":"strict",
+    "properties": {
+      "title":{"type":"text"},
+      "version":{"type":"long","coerce":false},
+      "deleted":{"type":"boolean"}
+    }
+  }
+}
+
+# external-10 | HTTP 201；_version=10
+PUT /interview_visibility_v1/_doc/1?version=10&version_type=external&refresh=false
+{"title":"search visibility","version":10,"deleted":false}
+
+# search-before-refresh | HTTP 200；在未发生其他刷新条件下 0 命中
+GET /interview_visibility_v1/_search
+{"query":{"ids":{"values":["1"]}}}
+
+# realtime-get | HTTP 200；found=true；_version=10；_source.version=10
+GET /interview_visibility_v1/_doc/1
+
+# manual-refresh | HTTP 200；_shards.failed=0
+POST /interview_visibility_v1/_refresh
+
+# search-after-refresh | HTTP 200；命中 1；仍应检查 timed_out=false 与失败分片
+GET /interview_visibility_v1/_search
+{"query":{"ids":{"values":["1"]}}}
+
+# stale-9 | HTTP 409；version_conflict_engine_exception
+PUT /interview_visibility_v1/_doc/1?version=9&version_type=external
+{"title":"late old snapshot","version":9,"deleted":false}
+
+# same-10 | HTTP 409；external 要求严格大于当前版本
+PUT /interview_visibility_v1/_doc/1?version=10&version_type=external
+{"title":"search visibility","version":10,"deleted":false}
+
+# tombstone-11 | HTTP 200；_version=11；软墓碑仍是存活文档
+PUT /interview_visibility_v1/_doc/1?version=11&version_type=external&refresh=true
+{"title":"","version":11,"deleted":true}
+
+# stale-after-tombstone | HTTP 409；旧版本不能覆盖软墓碑
+PUT /interview_visibility_v1/_doc/1?version=10&version_type=external
+{"title":"late old snapshot","version":10,"deleted":false}
+
+# hide-tombstone | HTTP 200；0 命中；deleted=false 排除软墓碑
+GET /interview_visibility_v1/_search
+{"query":{"bool":{"filter":[{"term":{"deleted":false}}]}}}
+
+# restore-refresh | HTTP 200；acknowledged=true；之后才使用 wait_for
+PUT /interview_visibility_v1/_settings
+{"index":{"refresh_interval":"1s"}}
+
+# bulk-mixed | HTTP 200；errors=true；items[0].index.status=201，items[1].index.status=400 且含解析错误；成功项不回滚
+POST /interview_visibility_v1/_bulk?refresh=wait_for
+{"index":{"_id":"2","version":20,"version_type":"external"}}
+{"title":"valid bulk item","version":20,"deleted":false}
+{"index":{"_id":"3","version":20,"version_type":"external"}}
+{"title":"invalid bulk item","version":"not-a-long","deleted":false}
+
+# bulk-valid-get | HTTP 200；found=true；_source.version=20
+GET /interview_visibility_v1/_doc/2
+
+# flush | HTTP 200；_shards.failed=0；不从大小变化推断持久化全部边界
+POST /interview_visibility_v1/_flush
+
+# stats | HTTP 200；观察 docs/segments/translog/refresh/flush/merge；不硬编码计数
+GET /interview_visibility_v1/_stats/docs,segments,translog,refresh,flush,merge
+
+# occ-create | HTTP 201；内部版本文档4，与 external 文档分开
+PUT /interview_visibility_v1/_doc/4?refresh=wait_for
+{"title":"editable document","version":1,"deleted":false}
+
+# occ-get | HTTP 200；记录真实 _seq_no 与 _primary_term
+GET /interview_visibility_v1/_doc/4
+
+# occ-write | HTTP 200；在无并发写入条件下更新成功；必须替换真实 GET 令牌
+PUT /interview_visibility_v1/_doc/4?if_seq_no=REPLACE_WITH_SEQ_NO&if_primary_term=REPLACE_WITH_PRIMARY_TERM&refresh=wait_for
+{"title":"edited after conditional read","version":21,"deleted":false}
+
+# occ-stale-retry | HTTP 409；第一次成功后，故意重复使用旧令牌，应冲突；不能删除条件重试
+PUT /interview_visibility_v1/_doc/4?if_seq_no=REPLACE_WITH_SEQ_NO&if_primary_term=REPLACE_WITH_PRIMARY_TERM&refresh=wait_for
+{
+  "title": "edited after conditional read",
+  "version": 21,
+  "deleted": false
+}
+
+# bulk-invalid-absent | HTTP 404；found=false；失败 bulk item 没有写入
+GET /interview_visibility_v1/_doc/3

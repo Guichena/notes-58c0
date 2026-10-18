@@ -1,0 +1,772 @@
+{
+  "schemaVersion": 1,
+  "scope": "Five exact full-body prefixes; only sandbox q4 full object and MQ Kafka q1 final body change at old guards",
+  "records": [
+    {
+      "package": "integration-agent-capacity",
+      "entryId": "bg-kafka-4",
+      "itemIndex": 1,
+      "path": [
+        "items",
+        1,
+        "a"
+      ],
+      "questionGuard": "如果消费者处理速度跟不上，消息开始积压了，一般怎么处理？",
+      "questionId": null,
+      "questionSha256": "324aa2c9a5d95c89409e1ffdc13894bc7d345b7443690068ea4fa22e48f566b7",
+      "before": "<p class=\"md-p\">消息积压先分清真实业务未完成、业务已完成但位移提交落后、热点串行阻塞，以及开放事务限制可见性。先保护下游，再扩真正的处理瓶颈；不能靠跳过消息把 lag 清零。</p><span id=\"add-own-mq-bg-kafka-4-1\"></span><h3 class=\"md-h md-h3\">先看哪五组信号？</h3><p class=\"md-p\">入口：每分区输入率、字节率、日志末端和消费组提交 lag，不能只看 topic 平均。完成：对照业务持久完成水位与已提交位置，区分真积压、批量提交延迟与 commit 失败。</p><p class=\"md-p\">时限：最老未完成记录年龄、事件到达时间与业务 deadline。offset 差不是精确待办条数，压缩和事务空洞都会影响它。耗时：逐段看拉取、解码、计算、慢 SQL/HTTP、连接池、线程池、GC、重试与提交。</p><p class=\"md-p\">协议与热点：看 Rebalance、分区偏斜、ISR/网络及 read_committed 的 LSO 是否被开放事务挡住。RabbitMQ 则区分 ready 与 unacked，结合 ACK、prefetch、quorum 和资源告警；unacked 高可能是慢处理或囤积。毒消息无限重试时，增加 Broker 不会解决业务错误。</p><h3 class=\"md-h md-h3\">按瓶颈选择扩容、隔离或背压</h3><p class=\"md-p\">先限流保护下游，隔离慢依赖、拆重任务、降级非核心工作。CPU 密集优化计算和批量，I/O 密集用有界异步，数据库锁热点减少冲突与事务长度；目的端配额限制时控制调用速率，增加已发出却只能等待的请求只会占资源。</p><p class=\"md-p\">普通 Kafka 消费组可分配分区数限制有效消费者数量，严格热点 key 还有实体串行上限。RabbitMQ 同队列加消费者可能提高并发，却会改变完成顺序，并把瓶颈转移到数据库、外部配额或 CPU。线程、连接、内存和重试都有限；数据库连接池已满时加线程可能让有效完成率更低。</p><p class=\"md-p\">按业务 key 维持局部串行，热点拆分必须证明不变量可拆，余额和库存不能随机打散后期望 MQ 自动修好。扩分区还会改变常见 key 映射，要用旧新路由交接或迁移屏障。</p><p class=\"md-p\">应用等待队列到高水位时 pause，降到低水位再 resume，形成滞回并限制驻留工作；暂停期间仍按所选消费协议维持 poll 与存活。追赶流量也要限速，不能和新流量一起压垮依赖。</p><h3 class=\"md-h md-h3\">为什么恢复时间是 600 秒，而不是 120 秒？</h3><p class=\"md-p\">在恒定、同口径的假设下，持续输入 λ 为 800 条/秒，有效持久完成 μ 为 1000 条/秒，积压 B 为 120000 条，净消化只有 200 条/秒，约需 B / (μ − λ) = 600 秒。B / μ = 120 秒忽略追赶期间的新输入；若输入升到 1100 或 μ 不大于 λ，积压不会自行清空，加磁盘只能延后容量耗尽。</p><p class=\"md-p\">这里 B 应来自可比的未完成工作量，而不是直接把 Kafka offset 差当任务数；μ 应是有效持久完成率，不是拉取速率。估算加入分区偏斜、重试、下游配额和突发余量。剩余保留时间要覆盖发现修复与追赶时间；等价地，完整保留窗口要覆盖已有最老年龄、修复、追赶及不确定性余量。</p><h3 class=\"md-h md-h3\">失败消息与 RocketMQ 可见性如何处理？</h3><p class=\"md-p\">不能静默跳 offset 清积压。先可靠保存错误、原始输入与恢复依据，再按安全前缀推进；同实体后续依赖前序时保留版本门槛。有限重试、可靠隔离、背压和修复责任要一起设计，细节见 <a href=\"#/e/own-mq-kafka/q-own-mq-safe-offset-prefix\">安全位移前缀</a> 与 <a href=\"#/e/bg-kafka-3/0\">顺序与失败依赖</a>。</p><p class=\"md-p\">RocketMQ 积压也要分别看正常待消费、消费中、重试和死信，不能将它们混成一个 lag。5.x PushConsumer 返回消费失败或超时会进入重试流程；SimpleConsumer 涉及 InvisibleDuration 与确认，业务处理超过可见性期限可能重投。业务提交后再反馈成功，重投时用相同 eventId 去重；达到重试上限后治理死信。限流应延后领取或调度，不能把每条超配额消息都故意消费失败，借重试队列承接常态流控。</p><h3 class=\"md-h md-h3\">追问：不用 MQ，能否先缓解过载？</h3><p class=\"md-p\">不用MQ也可做令牌/信号量准入、有界线程池、请求合并、批量写、条件更新、合适索引、缩短事务、写合并与分片。数据库连接池大不等于吞吐高；把锁等待扩大只会增加尾延迟。需要持久异步责任时再引入任务表/MQ，避免把过载藏在另一个组件里。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li></ul><details class=\"qa-variants\"><summary>其他问法（11）</summary><ul class=\"md-list\"><li>某个 topic 突然积压或消费 lag 增大，怎样判断真实积压、提交滞后、热点和长期消费能力不足，再提高有效处理率？</li><li>接口突然变慢如何逐段排查，同时保证 MQ 不丢和业务不重复？见 <a href=\"#/e/bg-kafka-3/2\">可靠性</a> 与 <a href=\"#/e/bg-kafka-3/3\">业务幂等</a>。</li><li>日志突增、上游持续快于下游时，如何用背压、有界队列、降级和其他削峰方式保护系统？</li><li>Kafka 任务调度怎样重试、退避和恢复，何时需要 MySQL 状态表与定时扫描？见 <a href=\"#/e/own-mq-reliability/q-own-mq-unknown-recovery\">重试与 UNKNOWN</a>、<a href=\"#/e/own-mq-reliability/q-own-mq-propagation-transactions\">持久传播与扫描边界</a>。</li><li>MQ 用于哪些场景，为什么选择 RabbitMQ？见 <a href=\"#/e/bg-kafka-1/0\">MQ 的作用</a> 与 <a href=\"#/e/bg-kafka-5/0\">消息模型选型</a>；积压与告警仍按本题分别诊断。</li><li>RocketMQ 延迟消息积压时，怎样仍守住优惠券过期规则？分别见 <a href=\"#/e/bg-rocketmq-3/1\">到期投递与实际执行</a>、<a href=\"#/e/own-distributed-ch08/q-own-distributed-coupon-rights\">券的有效期与权威状态</a>。</li><li>RabbitMQ 大量积压或连接阻塞怎样区分 ready、unacked 与发布受阻？见 <a href=\"#/e/bg-rabbitmq-4/1\">prefetch、流控与回压</a>。</li><li>RocketMQ 分发限流放发送端还是消费端，消费端降速怎样反馈上游？</li><li>MQ 告警面板怎样监测积压、业务 deadline 和恢复风险？见 <a href=\"#/e/bg-kafka-4/3\">监控指标与统计口径</a>。</li><li>消息队列满了怎么办，怎样保护接纳和持久责任，而不是把压力转入内存？</li><li>数亿条积压怎样扩容且不破坏局部有序？见 <a href=\"#/e/bg-kafka-3/0\">因果与顺序域</a>、<a href=\"#/e/bg-kafka-4/2\">扩分区与路由迁移</a>。</li></ul></details>",
+      "after": "<p class=\"md-p\">消息积压先分清真实业务未完成、业务已完成但位移提交落后、热点串行阻塞，以及开放事务限制可见性。先保护下游，再扩真正的处理瓶颈；不能靠跳过消息把 lag 清零。</p><span id=\"add-own-mq-bg-kafka-4-1\"></span><h3 class=\"md-h md-h3\">先看哪五组信号？</h3><p class=\"md-p\">入口：每分区输入率、字节率、日志末端和消费组提交 lag，不能只看 topic 平均。完成：对照业务持久完成水位与已提交位置，区分真积压、批量提交延迟与 commit 失败。</p><p class=\"md-p\">时限：最老未完成记录年龄、事件到达时间与业务 deadline。offset 差不是精确待办条数，压缩和事务空洞都会影响它。耗时：逐段看拉取、解码、计算、慢 SQL/HTTP、连接池、线程池、GC、重试与提交。</p><p class=\"md-p\">协议与热点：看 Rebalance、分区偏斜、ISR/网络及 read_committed 的 LSO 是否被开放事务挡住。RabbitMQ 则区分 ready 与 unacked，结合 ACK、prefetch、quorum 和资源告警；unacked 高可能是慢处理或囤积。毒消息无限重试时，增加 Broker 不会解决业务错误。</p><h3 class=\"md-h md-h3\">按瓶颈选择扩容、隔离或背压</h3><p class=\"md-p\">先限流保护下游，隔离慢依赖、拆重任务、降级非核心工作。CPU 密集优化计算和批量，I/O 密集用有界异步，数据库锁热点减少冲突与事务长度；目的端配额限制时控制调用速率，增加已发出却只能等待的请求只会占资源。</p><p class=\"md-p\">普通 Kafka 消费组可分配分区数限制有效消费者数量，严格热点 key 还有实体串行上限。RabbitMQ 同队列加消费者可能提高并发，却会改变完成顺序，并把瓶颈转移到数据库、外部配额或 CPU。线程、连接、内存和重试都有限；数据库连接池已满时加线程可能让有效完成率更低。</p><p class=\"md-p\">按业务 key 维持局部串行，热点拆分必须证明不变量可拆，余额和库存不能随机打散后期望 MQ 自动修好。扩分区还会改变常见 key 映射，要用旧新路由交接或迁移屏障。</p><p class=\"md-p\">应用等待队列到高水位时 pause，降到低水位再 resume，形成滞回并限制驻留工作；暂停期间仍按所选消费协议维持 poll 与存活。追赶流量也要限速，不能和新流量一起压垮依赖。</p><h3 class=\"md-h md-h3\">为什么恢复时间是 600 秒，而不是 120 秒？</h3><p class=\"md-p\">在恒定、同口径的假设下，持续输入 λ 为 800 条/秒，有效持久完成 μ 为 1000 条/秒，积压 B 为 120000 条，净消化只有 200 条/秒，约需 B / (μ − λ) = 600 秒。B / μ = 120 秒忽略追赶期间的新输入；若输入升到 1100 或 μ 不大于 λ，积压不会自行清空，加磁盘只能延后容量耗尽。</p><p class=\"md-p\">这里 B 应来自可比的未完成工作量，而不是直接把 Kafka offset 差当任务数；μ 应是有效持久完成率，不是拉取速率。估算加入分区偏斜、重试、下游配额和突发余量。剩余保留时间要覆盖发现修复与追赶时间；等价地，完整保留窗口要覆盖已有最老年龄、修复、追赶及不确定性余量。</p><h3 class=\"md-h md-h3\">失败消息与 RocketMQ 可见性如何处理？</h3><p class=\"md-p\">不能静默跳 offset 清积压。先可靠保存错误、原始输入与恢复依据，再按安全前缀推进；同实体后续依赖前序时保留版本门槛。有限重试、可靠隔离、背压和修复责任要一起设计，细节见 <a href=\"#/e/own-mq-kafka/q-own-mq-safe-offset-prefix\">安全位移前缀</a> 与 <a href=\"#/e/bg-kafka-3/0\">顺序与失败依赖</a>。</p><p class=\"md-p\">RocketMQ 积压也要分别看正常待消费、消费中、重试和死信，不能将它们混成一个 lag。5.x PushConsumer 返回消费失败或超时会进入重试流程；SimpleConsumer 涉及 InvisibleDuration 与确认，业务处理超过可见性期限可能重投。业务提交后再反馈成功，重投时用相同 eventId 去重；达到重试上限后治理死信。限流应延后领取或调度，不能把每条超配额消息都故意消费失败，借重试队列承接常态流控。</p><h3 class=\"md-h md-h3\">追问：不用 MQ，能否先缓解过载？</h3><p class=\"md-p\">不用MQ也可做令牌/信号量准入、有界线程池、请求合并、批量写、条件更新、合适索引、缩短事务、写合并与分片。数据库连接池大不等于吞吐高；把锁等待扩大只会增加尾延迟。需要持久异步责任时再引入任务表/MQ，避免把过载藏在另一个组件里。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li></ul><details class=\"qa-variants\"><summary>其他问法（11）</summary><ul class=\"md-list\"><li>某个 topic 突然积压或消费 lag 增大，怎样判断真实积压、提交滞后、热点和长期消费能力不足，再提高有效处理率？</li><li>接口突然变慢如何逐段排查，同时保证 MQ 不丢和业务不重复？见 <a href=\"#/e/bg-kafka-3/2\">可靠性</a> 与 <a href=\"#/e/bg-kafka-3/3\">业务幂等</a>。</li><li>日志突增、上游持续快于下游时，如何用背压、有界队列、降级和其他削峰方式保护系统？</li><li>Kafka 任务调度怎样重试、退避和恢复，何时需要 MySQL 状态表与定时扫描？见 <a href=\"#/e/own-mq-reliability/q-own-mq-unknown-recovery\">重试与 UNKNOWN</a>、<a href=\"#/e/own-mq-reliability/q-own-mq-propagation-transactions\">持久传播与扫描边界</a>。</li><li>MQ 用于哪些场景，为什么选择 RabbitMQ？见 <a href=\"#/e/bg-kafka-1/0\">MQ 的作用</a> 与 <a href=\"#/e/bg-kafka-5/0\">消息模型选型</a>；积压与告警仍按本题分别诊断。</li><li>RocketMQ 延迟消息积压时，怎样仍守住优惠券过期规则？分别见 <a href=\"#/e/bg-rocketmq-3/1\">到期投递与实际执行</a>、<a href=\"#/e/own-distributed-ch08/q-own-distributed-coupon-rights\">券的有效期与权威状态</a>。</li><li>RabbitMQ 大量积压或连接阻塞怎样区分 ready、unacked 与发布受阻？见 <a href=\"#/e/bg-rabbitmq-4/1\">prefetch、流控与回压</a>。</li><li>RocketMQ 分发限流放发送端还是消费端，消费端降速怎样反馈上游？</li><li>MQ 告警面板怎样监测积压、业务 deadline 和恢复风险？见 <a href=\"#/e/bg-kafka-4/3\">监控指标与统计口径</a>。</li><li>消息队列满了怎么办，怎样保护接纳和持久责任，而不是把压力转入内存？</li><li>数亿条积压怎样扩容且不破坏局部有序？见 <a href=\"#/e/bg-kafka-3/0\">因果与顺序域</a>、<a href=\"#/e/bg-kafka-4/2\">扩分区与路由迁移</a>。</li></ul></details><h3 class=\"md-h md-h3\">短信每秒进入一万条，出口只有一百条怎么办？</h3><p class=\"md-p\">在持续进入 10,000 条/秒、供应商总出口 100 条/秒且忽略额外损耗时，每秒至少净增 9,900 条积压。有限队列和增加消费者都不能消除这个长期缺口；只能降低准入、按业务允许合并/过期/拒绝低价值消息，或确认这只是有限峰值，再按本题的净消化速率计算排空与保留时间。</p><p class=\"md-p\">发送前取得共享供应商额度，并兼顾租户公平。没令牌时受控暂停领取，或把原任务和 nextAllowedAt 可靠交给持久延迟调度，确认移交成功以后才能 ACK 原消息。ACK 或位移提交遵守所选 MQ 的协议；对支持 nack/requeue 的产品，不能立即重投形成热循环，也不让大量工作线程拿着槽位睡眠。恢复后沿原消息幂等键核对重复，观察最老积压年龄和过期率。</p><details class=\"qa-variants\"><summary>短信速率不匹配的常见问法</summary><ul class=\"md-list\"><li>- 短信平台只能承受 100 QPS，消息生产速度是 1 万 QPS，中间怎么做限流？怎么跟 MQ 消费结合？获取不到令牌时怎么处理？</li></ul></details>",
+      "beforeSha256": "b0b0a598e46942a5491050d342162056cecbc99f7841d07065e672ffc643ef88",
+      "afterSha256": "97b02598906b542b83aebef9c2ccebe8aaa6b777cb4a09b05a825c5393ffc1cf",
+      "mode": "append-only-unique-detail",
+      "reason": "Preserve source conditions and wording with substantive canonical destinations; no code or project claim invented.",
+      "exactAppendHtml": "<h3 class=\"md-h md-h3\">短信每秒进入一万条，出口只有一百条怎么办？</h3><p class=\"md-p\">在持续进入 10,000 条/秒、供应商总出口 100 条/秒且忽略额外损耗时，每秒至少净增 9,900 条积压。有限队列和增加消费者都不能消除这个长期缺口；只能降低准入、按业务允许合并/过期/拒绝低价值消息，或确认这只是有限峰值，再按本题的净消化速率计算排空与保留时间。</p><p class=\"md-p\">发送前取得共享供应商额度，并兼顾租户公平。没令牌时受控暂停领取，或把原任务和 nextAllowedAt 可靠交给持久延迟调度，确认移交成功以后才能 ACK 原消息。ACK 或位移提交遵守所选 MQ 的协议；对支持 nack/requeue 的产品，不能立即重投形成热循环，也不让大量工作线程拿着槽位睡眠。恢复后沿原消息幂等键核对重复，观察最老积压年龄和过期率。</p><details class=\"qa-variants\"><summary>短信速率不匹配的常见问法</summary><ul class=\"md-list\"><li>- 短信平台只能承受 100 QPS，消息生产速度是 1 万 QPS，中间怎么做限流？怎么跟 MQ 消费结合？获取不到令牌时怎么处理？</li></ul></details>",
+      "appendSha256": "b3ad73bb20706091ab14266093e3b41ac686b9f1cb569467300fffc181af23b2",
+      "oldBodyCodePoints": 3531,
+      "newBodyCodePoints": 4108,
+      "oldItem": {
+        "q": "如果消费者处理速度跟不上，消息开始积压了，一般怎么处理？",
+        "a": "<p class=\"md-p\">消息积压先分清真实业务未完成、业务已完成但位移提交落后、热点串行阻塞，以及开放事务限制可见性。先保护下游，再扩真正的处理瓶颈；不能靠跳过消息把 lag 清零。</p><span id=\"add-own-mq-bg-kafka-4-1\"></span><h3 class=\"md-h md-h3\">先看哪五组信号？</h3><p class=\"md-p\">入口：每分区输入率、字节率、日志末端和消费组提交 lag，不能只看 topic 平均。完成：对照业务持久完成水位与已提交位置，区分真积压、批量提交延迟与 commit 失败。</p><p class=\"md-p\">时限：最老未完成记录年龄、事件到达时间与业务 deadline。offset 差不是精确待办条数，压缩和事务空洞都会影响它。耗时：逐段看拉取、解码、计算、慢 SQL/HTTP、连接池、线程池、GC、重试与提交。</p><p class=\"md-p\">协议与热点：看 Rebalance、分区偏斜、ISR/网络及 read_committed 的 LSO 是否被开放事务挡住。RabbitMQ 则区分 ready 与 unacked，结合 ACK、prefetch、quorum 和资源告警；unacked 高可能是慢处理或囤积。毒消息无限重试时，增加 Broker 不会解决业务错误。</p><h3 class=\"md-h md-h3\">按瓶颈选择扩容、隔离或背压</h3><p class=\"md-p\">先限流保护下游，隔离慢依赖、拆重任务、降级非核心工作。CPU 密集优化计算和批量，I/O 密集用有界异步，数据库锁热点减少冲突与事务长度；目的端配额限制时控制调用速率，增加已发出却只能等待的请求只会占资源。</p><p class=\"md-p\">普通 Kafka 消费组可分配分区数限制有效消费者数量，严格热点 key 还有实体串行上限。RabbitMQ 同队列加消费者可能提高并发，却会改变完成顺序，并把瓶颈转移到数据库、外部配额或 CPU。线程、连接、内存和重试都有限；数据库连接池已满时加线程可能让有效完成率更低。</p><p class=\"md-p\">按业务 key 维持局部串行，热点拆分必须证明不变量可拆，余额和库存不能随机打散后期望 MQ 自动修好。扩分区还会改变常见 key 映射，要用旧新路由交接或迁移屏障。</p><p class=\"md-p\">应用等待队列到高水位时 pause，降到低水位再 resume，形成滞回并限制驻留工作；暂停期间仍按所选消费协议维持 poll 与存活。追赶流量也要限速，不能和新流量一起压垮依赖。</p><h3 class=\"md-h md-h3\">为什么恢复时间是 600 秒，而不是 120 秒？</h3><p class=\"md-p\">在恒定、同口径的假设下，持续输入 λ 为 800 条/秒，有效持久完成 μ 为 1000 条/秒，积压 B 为 120000 条，净消化只有 200 条/秒，约需 B / (μ − λ) = 600 秒。B / μ = 120 秒忽略追赶期间的新输入；若输入升到 1100 或 μ 不大于 λ，积压不会自行清空，加磁盘只能延后容量耗尽。</p><p class=\"md-p\">这里 B 应来自可比的未完成工作量，而不是直接把 Kafka offset 差当任务数；μ 应是有效持久完成率，不是拉取速率。估算加入分区偏斜、重试、下游配额和突发余量。剩余保留时间要覆盖发现修复与追赶时间；等价地，完整保留窗口要覆盖已有最老年龄、修复、追赶及不确定性余量。</p><h3 class=\"md-h md-h3\">失败消息与 RocketMQ 可见性如何处理？</h3><p class=\"md-p\">不能静默跳 offset 清积压。先可靠保存错误、原始输入与恢复依据，再按安全前缀推进；同实体后续依赖前序时保留版本门槛。有限重试、可靠隔离、背压和修复责任要一起设计，细节见 <a href=\"#/e/own-mq-kafka/q-own-mq-safe-offset-prefix\">安全位移前缀</a> 与 <a href=\"#/e/bg-kafka-3/0\">顺序与失败依赖</a>。</p><p class=\"md-p\">RocketMQ 积压也要分别看正常待消费、消费中、重试和死信，不能将它们混成一个 lag。5.x PushConsumer 返回消费失败或超时会进入重试流程；SimpleConsumer 涉及 InvisibleDuration 与确认，业务处理超过可见性期限可能重投。业务提交后再反馈成功，重投时用相同 eventId 去重；达到重试上限后治理死信。限流应延后领取或调度，不能把每条超配额消息都故意消费失败，借重试队列承接常态流控。</p><h3 class=\"md-h md-h3\">追问：不用 MQ，能否先缓解过载？</h3><p class=\"md-p\">不用MQ也可做令牌/信号量准入、有界线程池、请求合并、批量写、条件更新、合适索引、缩短事务、写合并与分片。数据库连接池大不等于吞吐高；把锁等待扩大只会增加尾延迟。需要持久异步责任时再引入任务表/MQ，避免把过载藏在另一个组件里。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li></ul><details class=\"qa-variants\"><summary>其他问法（11）</summary><ul class=\"md-list\"><li>某个 topic 突然积压或消费 lag 增大，怎样判断真实积压、提交滞后、热点和长期消费能力不足，再提高有效处理率？</li><li>接口突然变慢如何逐段排查，同时保证 MQ 不丢和业务不重复？见 <a href=\"#/e/bg-kafka-3/2\">可靠性</a> 与 <a href=\"#/e/bg-kafka-3/3\">业务幂等</a>。</li><li>日志突增、上游持续快于下游时，如何用背压、有界队列、降级和其他削峰方式保护系统？</li><li>Kafka 任务调度怎样重试、退避和恢复，何时需要 MySQL 状态表与定时扫描？见 <a href=\"#/e/own-mq-reliability/q-own-mq-unknown-recovery\">重试与 UNKNOWN</a>、<a href=\"#/e/own-mq-reliability/q-own-mq-propagation-transactions\">持久传播与扫描边界</a>。</li><li>MQ 用于哪些场景，为什么选择 RabbitMQ？见 <a href=\"#/e/bg-kafka-1/0\">MQ 的作用</a> 与 <a href=\"#/e/bg-kafka-5/0\">消息模型选型</a>；积压与告警仍按本题分别诊断。</li><li>RocketMQ 延迟消息积压时，怎样仍守住优惠券过期规则？分别见 <a href=\"#/e/bg-rocketmq-3/1\">到期投递与实际执行</a>、<a href=\"#/e/own-distributed-ch08/q-own-distributed-coupon-rights\">券的有效期与权威状态</a>。</li><li>RabbitMQ 大量积压或连接阻塞怎样区分 ready、unacked 与发布受阻？见 <a href=\"#/e/bg-rabbitmq-4/1\">prefetch、流控与回压</a>。</li><li>RocketMQ 分发限流放发送端还是消费端，消费端降速怎样反馈上游？</li><li>MQ 告警面板怎样监测积压、业务 deadline 和恢复风险？见 <a href=\"#/e/bg-kafka-4/3\">监控指标与统计口径</a>。</li><li>消息队列满了怎么办，怎样保护接纳和持久责任，而不是把压力转入内存？</li><li>数亿条积压怎样扩容且不破坏局部有序？见 <a href=\"#/e/bg-kafka-3/0\">因果与顺序域</a>、<a href=\"#/e/bg-kafka-4/2\">扩分区与路由迁移</a>。</li></ul></details>",
+        "sub": "",
+        "mk": 1,
+        "lead": "<p class=\"md-p\">消息积压先分清真实业务未完成、业务已完成但位移提交落后、热点串行阻塞，以及开放事务限制可见性。先保护下游，再扩真正的处理瓶颈；不能靠跳过消息把 lag 清零。</p>",
+        "leadType": "v9:排障/方案"
+      },
+      "sourceBlocks": [
+        {
+          "index": 0,
+          "html": "<p class=\"md-p\">消息积压先分清真实业务未完成、业务已完成但位移提交落后、热点串行阻塞，以及开放事务限制可见性。先保护下游，再扩真正的处理瓶颈；不能靠跳过消息把 lag 清零。</p>",
+          "sha256": "e305661b388c5dd32c65545bf247668a901eabdfeb8945ba66ced7e386855f01"
+        },
+        {
+          "index": 1,
+          "html": "<h3 class=\"md-h md-h3\">先看哪五组信号？</h3>",
+          "sha256": "cbdb10ec74c0b7268f65020803bc35e140949e934209f709cd2f0e14455b1267"
+        },
+        {
+          "index": 2,
+          "html": "<p class=\"md-p\">入口：每分区输入率、字节率、日志末端和消费组提交 lag，不能只看 topic 平均。完成：对照业务持久完成水位与已提交位置，区分真积压、批量提交延迟与 commit 失败。</p>",
+          "sha256": "81b77571fb89df0094dbe36ff9132298113efc2b9e2c332a3e9f06dd8dfe527b"
+        },
+        {
+          "index": 3,
+          "html": "<p class=\"md-p\">时限：最老未完成记录年龄、事件到达时间与业务 deadline。offset 差不是精确待办条数，压缩和事务空洞都会影响它。耗时：逐段看拉取、解码、计算、慢 SQL/HTTP、连接池、线程池、GC、重试与提交。</p>",
+          "sha256": "9343d8ae408a6377a11cc893e506fcf14f1c6c5c3f6c35b06d2e8004777f3536"
+        },
+        {
+          "index": 4,
+          "html": "<p class=\"md-p\">协议与热点：看 Rebalance、分区偏斜、ISR/网络及 read_committed 的 LSO 是否被开放事务挡住。RabbitMQ 则区分 ready 与 unacked，结合 ACK、prefetch、quorum 和资源告警；unacked 高可能是慢处理或囤积。毒消息无限重试时，增加 Broker 不会解决业务错误。</p>",
+          "sha256": "13aa927aa32e79c9273f3ca32bb25bc2e00c4d272ad30ed2b2adbca568842e25"
+        },
+        {
+          "index": 5,
+          "html": "<h3 class=\"md-h md-h3\">按瓶颈选择扩容、隔离或背压</h3>",
+          "sha256": "a14d5a4d7aa74ddff85082a03747f671c21ed207e77e6a2c1bce049507010775"
+        },
+        {
+          "index": 6,
+          "html": "<p class=\"md-p\">先限流保护下游，隔离慢依赖、拆重任务、降级非核心工作。CPU 密集优化计算和批量，I/O 密集用有界异步，数据库锁热点减少冲突与事务长度；目的端配额限制时控制调用速率，增加已发出却只能等待的请求只会占资源。</p>",
+          "sha256": "8cd451fb2a02a28fe882fae369450c840a2bcc3ba5e7cb06bed181df31663347"
+        },
+        {
+          "index": 7,
+          "html": "<p class=\"md-p\">普通 Kafka 消费组可分配分区数限制有效消费者数量，严格热点 key 还有实体串行上限。RabbitMQ 同队列加消费者可能提高并发，却会改变完成顺序，并把瓶颈转移到数据库、外部配额或 CPU。线程、连接、内存和重试都有限；数据库连接池已满时加线程可能让有效完成率更低。</p>",
+          "sha256": "5c76a89f4b4fd4a819b1891e3b0f92c622d3130b1beba02f04f9e23bd6f2e06e"
+        },
+        {
+          "index": 8,
+          "html": "<p class=\"md-p\">按业务 key 维持局部串行，热点拆分必须证明不变量可拆，余额和库存不能随机打散后期望 MQ 自动修好。扩分区还会改变常见 key 映射，要用旧新路由交接或迁移屏障。</p>",
+          "sha256": "3211fc001f7a86e25cf4743cc699840531f2f39efed0888bd7f9dc3ea8f57d42"
+        },
+        {
+          "index": 9,
+          "html": "<p class=\"md-p\">应用等待队列到高水位时 pause，降到低水位再 resume，形成滞回并限制驻留工作；暂停期间仍按所选消费协议维持 poll 与存活。追赶流量也要限速，不能和新流量一起压垮依赖。</p>",
+          "sha256": "c67f168caa963672d76c2c740eced6d49c0dd019fb6df9e40844ccf919502665"
+        },
+        {
+          "index": 10,
+          "html": "<h3 class=\"md-h md-h3\">为什么恢复时间是 600 秒，而不是 120 秒？</h3>",
+          "sha256": "6bcbaeb9815ba734669f271457514774194b0189ebd550bc2e5eeb7d3e1209a8"
+        },
+        {
+          "index": 11,
+          "html": "<p class=\"md-p\">在恒定、同口径的假设下，持续输入 λ 为 800 条/秒，有效持久完成 μ 为 1000 条/秒，积压 B 为 120000 条，净消化只有 200 条/秒，约需 B / (μ − λ) = 600 秒。B / μ = 120 秒忽略追赶期间的新输入；若输入升到 1100 或 μ 不大于 λ，积压不会自行清空，加磁盘只能延后容量耗尽。</p>",
+          "sha256": "a339457bc2d3d93b478e11914a83e84600389551045eb42d384c789bf21ee5fd"
+        },
+        {
+          "index": 12,
+          "html": "<p class=\"md-p\">这里 B 应来自可比的未完成工作量，而不是直接把 Kafka offset 差当任务数；μ 应是有效持久完成率，不是拉取速率。估算加入分区偏斜、重试、下游配额和突发余量。剩余保留时间要覆盖发现修复与追赶时间；等价地，完整保留窗口要覆盖已有最老年龄、修复、追赶及不确定性余量。</p>",
+          "sha256": "ab791bedc1ad7d258922689e312997645e26ce9b1c755127b1165e62b94ed31b"
+        },
+        {
+          "index": 13,
+          "html": "<h3 class=\"md-h md-h3\">失败消息与 RocketMQ 可见性如何处理？</h3>",
+          "sha256": "d2dbc031aaf1257c3ee12c9c332bf4b28e3701d74d69342f91b27dd69c0c895d"
+        },
+        {
+          "index": 14,
+          "html": "<p class=\"md-p\">不能静默跳 offset 清积压。先可靠保存错误、原始输入与恢复依据，再按安全前缀推进；同实体后续依赖前序时保留版本门槛。有限重试、可靠隔离、背压和修复责任要一起设计，细节见 <a href=\"#/e/own-mq-kafka/q-own-mq-safe-offset-prefix\">安全位移前缀</a> 与 <a href=\"#/e/bg-kafka-3/0\">顺序与失败依赖</a>。</p>",
+          "sha256": "5b09cc44dc482125e1f5738d0947401b05555705804a3095cd975cc69baf5839"
+        },
+        {
+          "index": 15,
+          "html": "<p class=\"md-p\">RocketMQ 积压也要分别看正常待消费、消费中、重试和死信，不能将它们混成一个 lag。5.x PushConsumer 返回消费失败或超时会进入重试流程；SimpleConsumer 涉及 InvisibleDuration 与确认，业务处理超过可见性期限可能重投。业务提交后再反馈成功，重投时用相同 eventId 去重；达到重试上限后治理死信。限流应延后领取或调度，不能把每条超配额消息都故意消费失败，借重试队列承接常态流控。</p>",
+          "sha256": "da752be775c5a3317c39c509c939a89e07082b3967aa0bba59c9347b2c25d364"
+        },
+        {
+          "index": 16,
+          "html": "<h3 class=\"md-h md-h3\">追问：不用 MQ，能否先缓解过载？</h3>",
+          "sha256": "920e06d98f6c37554efe4645dea4bd59ebd31f6430369452673044c3640e010b"
+        },
+        {
+          "index": 17,
+          "html": "<p class=\"md-p\">不用MQ也可做令牌/信号量准入、有界线程池、请求合并、批量写、条件更新、合适索引、缩短事务、写合并与分片。数据库连接池大不等于吞吐高；把锁等待扩大只会增加尾延迟。需要持久异步责任时再引入任务表/MQ，避免把过载藏在另一个组件里。</p>",
+          "sha256": "85d68a4d6d1c3bf7a652a85e6bc1674d32837378714f1d268227ea95291bde77"
+        },
+        {
+          "index": 18,
+          "html": "<h3 class=\"md-h md-h3\">关联知识</h3>",
+          "sha256": "b68ebd073cc187d056c87c5cf16455c08990da86282348d1a875d04a16a3240f"
+        },
+        {
+          "index": 19,
+          "html": "<li><a href=\"#/e/own-mq-source-guide\">适用版本与验证范围</a></li>",
+          "sha256": "92fdd25d0401fd7045e4ee121140733651eefd6027c37ae9841f0d8f52d33bb6"
+        },
+        {
+          "index": 20,
+          "html": "<summary>其他问法（11）</summary>",
+          "sha256": "b356d59a7b159c2be1038635171ca99b3ba5f033629d592632d3a71f143c52da"
+        },
+        {
+          "index": 21,
+          "html": "<li>某个 topic 突然积压或消费 lag 增大，怎样判断真实积压、提交滞后、热点和长期消费能力不足，再提高有效处理率？</li>",
+          "sha256": "96404c8e94e3a1e9e4006a6781785fc3f6226be50f436c48212a2721e6f7a448"
+        },
+        {
+          "index": 22,
+          "html": "<li>接口突然变慢如何逐段排查，同时保证 MQ 不丢和业务不重复？见 <a href=\"#/e/bg-kafka-3/2\">可靠性</a> 与 <a href=\"#/e/bg-kafka-3/3\">业务幂等</a>。</li>",
+          "sha256": "993aa7b4c71262c4070131d8bbb5bee6b1253f7fce830bcf8bd3d83905cf0e17"
+        },
+        {
+          "index": 23,
+          "html": "<li>日志突增、上游持续快于下游时，如何用背压、有界队列、降级和其他削峰方式保护系统？</li>",
+          "sha256": "cf674f07ca30cebb8473c8cf5efdf01eb24548f5feb9b697698041084b06de68"
+        },
+        {
+          "index": 24,
+          "html": "<li>Kafka 任务调度怎样重试、退避和恢复，何时需要 MySQL 状态表与定时扫描？见 <a href=\"#/e/own-mq-reliability/q-own-mq-unknown-recovery\">重试与 UNKNOWN</a>、<a href=\"#/e/own-mq-reliability/q-own-mq-propagation-transactions\">持久传播与扫描边界</a>。</li>",
+          "sha256": "d66c48b62c8ea2e24b98c619f763d95d4ec1fd6326178f316e05e38175c520f7"
+        },
+        {
+          "index": 25,
+          "html": "<li>MQ 用于哪些场景，为什么选择 RabbitMQ？见 <a href=\"#/e/bg-kafka-1/0\">MQ 的作用</a> 与 <a href=\"#/e/bg-kafka-5/0\">消息模型选型</a>；积压与告警仍按本题分别诊断。</li>",
+          "sha256": "e9f6c3b59890c44df874c0a9bdd03c0a1134be57da6cac3503d52ad276f47084"
+        },
+        {
+          "index": 26,
+          "html": "<li>RocketMQ 延迟消息积压时，怎样仍守住优惠券过期规则？分别见 <a href=\"#/e/bg-rocketmq-3/1\">到期投递与实际执行</a>、<a href=\"#/e/own-distributed-ch08/q-own-distributed-coupon-rights\">券的有效期与权威状态</a>。</li>",
+          "sha256": "f791b4f67545be1067cbc86e99770996f71d49484f0df76bbe9fca9c46a2e638"
+        },
+        {
+          "index": 27,
+          "html": "<li>RabbitMQ 大量积压或连接阻塞怎样区分 ready、unacked 与发布受阻？见 <a href=\"#/e/bg-rabbitmq-4/1\">prefetch、流控与回压</a>。</li>",
+          "sha256": "649ef0c2c16e647adde5320932bd93660275424c9f1d97efe9daf338f67837a2"
+        },
+        {
+          "index": 28,
+          "html": "<li>RocketMQ 分发限流放发送端还是消费端，消费端降速怎样反馈上游？</li>",
+          "sha256": "fbd82e94f34fba022abb92d46154da4260399d9e74d3fa3421eadb365a8120e6"
+        },
+        {
+          "index": 29,
+          "html": "<li>MQ 告警面板怎样监测积压、业务 deadline 和恢复风险？见 <a href=\"#/e/bg-kafka-4/3\">监控指标与统计口径</a>。</li>",
+          "sha256": "24422ba1302d69804719049fbfd6f2cea6b2d3bded3a8e7a64f06a98682c853b"
+        },
+        {
+          "index": 30,
+          "html": "<li>消息队列满了怎么办，怎样保护接纳和持久责任，而不是把压力转入内存？</li>",
+          "sha256": "2ed5b000b66050339b736c364684d5143278c9f60247e75055b9109a98a8aab5"
+        },
+        {
+          "index": 31,
+          "html": "<li>数亿条积压怎样扩容且不破坏局部有序？见 <a href=\"#/e/bg-kafka-3/0\">因果与顺序域</a>、<a href=\"#/e/bg-kafka-4/2\">扩分区与路由迁移</a>。</li>",
+          "sha256": "1c1b8f5d3910a39b62f1a1afd3cecdbcba361a2b88e01b20c96d48e902f48571"
+        }
+      ]
+    },
+    {
+      "package": "integration-agent-capacity",
+      "entryId": "own-juc-contexts",
+      "itemIndex": 4,
+      "path": [
+        "items",
+        4,
+        "a"
+      ],
+      "questionGuard": "@Async 为什么会失效，异步线程为什么不能自动加入外层事务？",
+      "questionId": "q-own-juc-spring-async-transactions",
+      "questionSha256": "a38ce3ea4332dc8d7d97b0fa38455189c91d272ea1d45fc9727b89b2a3642817",
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。</p><h3 class=\"md-h md-h3\">事务为什么不能靠复制 ThreadLocal 跨线程？</h3><p class=\"md-p\">绑定在线程上的不只是一个“有事务”标记，还可能包括连接等资源的持有者、提交或回滚时执行的同步回调，以及事务名、只读标记、隔离级别、活动状态。具体绑定哪些内容，由事务管理器决定。把 ThreadLocal 中的 ConnectionHolder 直接复制给另一个线程，不是合法的跨线程事务传播方案，还可能并发使用不允许共享的 JDBC 连接。</p><h3 class=\"md-h md-h3\">父事务最后回滚，异步发出的消息会怎样？</h3><p class=\"md-p\">假设父事务尚未提交，异步线程已经发出“已成功”消息，随后父事务回滚。消息已经跨过了另一个执行边界，父事务的回滚不会替你把它撤回。这正是不能靠复制 ThreadLocal 来补齐的业务问题。</p><h3 class=\"md-h md-h3\">怎样把两个独立执行边界连接起来？</h3><p class=\"md-p\">需要异步子操作参与可靠流程时，可以让它建立自己的事务，再以明确的提交后事件、outbox 或任务状态连接两个事务。至于响应式事务，通常使用 Reactor Context，不能继续只按 ThreadLocal 解释全部 Spring 事务。</p><p class=\"md-p\">@Async 返回 Future/CompletableFuture 时应观察异步失败；void 方法的异常不能靠调用者 try/catch 捕获，需要相应异常处理与监控。线程池参数、拒绝、上下文恢复、关闭时限和任务持久性都应由配置明确，注解本身不解决这些问题。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。</p><h3 class=\"md-h md-h3\">事务为什么不能靠复制 ThreadLocal 跨线程？</h3><p class=\"md-p\">绑定在线程上的不只是一个“有事务”标记，还可能包括连接等资源的持有者、提交或回滚时执行的同步回调，以及事务名、只读标记、隔离级别、活动状态。具体绑定哪些内容，由事务管理器决定。把 ThreadLocal 中的 ConnectionHolder 直接复制给另一个线程，不是合法的跨线程事务传播方案，还可能并发使用不允许共享的 JDBC 连接。</p><h3 class=\"md-h md-h3\">父事务最后回滚，异步发出的消息会怎样？</h3><p class=\"md-p\">假设父事务尚未提交，异步线程已经发出“已成功”消息，随后父事务回滚。消息已经跨过了另一个执行边界，父事务的回滚不会替你把它撤回。这正是不能靠复制 ThreadLocal 来补齐的业务问题。</p><h3 class=\"md-h md-h3\">怎样把两个独立执行边界连接起来？</h3><p class=\"md-p\">需要异步子操作参与可靠流程时，可以让它建立自己的事务，再以明确的提交后事件、outbox 或任务状态连接两个事务。至于响应式事务，通常使用 Reactor Context，不能继续只按 ThreadLocal 解释全部 Spring 事务。</p><p class=\"md-p\">@Async 返回 Future/CompletableFuture 时应观察异步失败；void 方法的异常不能靠调用者 try/catch 捕获，需要相应异常处理与监控。线程池参数、拒绝、上下文恢复、关闭时限和任务持久性都应由配置明确，注解本身不解决这些问题。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><h3 class=\"md-h md-h3\">同对象 A 调 B，为什么还可能看见已有事务？</h3><p class=\"md-p\">在常见 Spring 代理式事务模式下，A→B 的自调用不会触发 B 的事务注解拦截；如果 A 已经处在事务中，B 内的数据访问可能仍使用这个既有事务。这不能证明 B 单独声明的传播、隔离或超时配置已经生效。异步消费者另开事务，任务状态与 Outbox 在明确的本地事务内提交；不要靠复制 ThreadLocal 或连接把它伪装成父事务。</p>",
+      "beforeSha256": "ce94b0372525005f3efe14f7e6bdc79d191c044bbbf7bcb0cc9a2f559b532eb9",
+      "afterSha256": "88f244243c9b5b34fc07fb8c8aecea6491b497c49a57825779db8b5a24ffb52b",
+      "mode": "append-only-unique-detail",
+      "reason": "Preserve source conditions and wording with substantive canonical destinations; no code or project claim invented.",
+      "exactAppendHtml": "<h3 class=\"md-h md-h3\">同对象 A 调 B，为什么还可能看见已有事务？</h3><p class=\"md-p\">在常见 Spring 代理式事务模式下，A→B 的自调用不会触发 B 的事务注解拦截；如果 A 已经处在事务中，B 内的数据访问可能仍使用这个既有事务。这不能证明 B 单独声明的传播、隔离或超时配置已经生效。异步消费者另开事务，任务状态与 Outbox 在明确的本地事务内提交；不要靠复制 ThreadLocal 或连接把它伪装成父事务。</p>",
+      "appendSha256": "6e470eab3bea7a5e22605c558a0844db22fc7811a3af840af2715d5cc38f1325",
+      "oldBodyCodePoints": 975,
+      "newBodyCodePoints": 1215,
+      "oldItem": {
+        "id": "q-own-juc-spring-async-transactions",
+        "q": "@Async 为什么会失效，异步线程为什么不能自动加入外层事务？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。</p><h3 class=\"md-h md-h3\">事务为什么不能靠复制 ThreadLocal 跨线程？</h3><p class=\"md-p\">绑定在线程上的不只是一个“有事务”标记，还可能包括连接等资源的持有者、提交或回滚时执行的同步回调，以及事务名、只读标记、隔离级别、活动状态。具体绑定哪些内容，由事务管理器决定。把 ThreadLocal 中的 ConnectionHolder 直接复制给另一个线程，不是合法的跨线程事务传播方案，还可能并发使用不允许共享的 JDBC 连接。</p><h3 class=\"md-h md-h3\">父事务最后回滚，异步发出的消息会怎样？</h3><p class=\"md-p\">假设父事务尚未提交，异步线程已经发出“已成功”消息，随后父事务回滚。消息已经跨过了另一个执行边界，父事务的回滚不会替你把它撤回。这正是不能靠复制 ThreadLocal 来补齐的业务问题。</p><h3 class=\"md-h md-h3\">怎样把两个独立执行边界连接起来？</h3><p class=\"md-p\">需要异步子操作参与可靠流程时，可以让它建立自己的事务，再以明确的提交后事件、outbox 或任务状态连接两个事务。至于响应式事务，通常使用 Reactor Context，不能继续只按 ThreadLocal 解释全部 Spring 事务。</p><p class=\"md-p\">@Async 返回 Future/CompletableFuture 时应观察异步失败；void 方法的异常不能靠调用者 try/catch 捕获，需要相应异常处理与监控。线程池参数、拒绝、上下文恢复、关闭时限和任务持久性都应由配置明确，注解本身不解决这些问题。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。</p>",
+        "leadType": "authored"
+      },
+      "sourceBlocks": [
+        {
+          "index": 0,
+          "html": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>Spring 常见代理模式下，@Async 需要启用相关支持并通过代理调用；同类内部直接调用不会自动经过代理。@Transactional 管理的命令式事务通常绑定到当前执行线程，新建线程不会自动加入外层事务。</p>",
+          "sha256": "1c9519871beceea5f13f7dbf1beb73ff3d6813cf566ba10b0a2240f3b1a69303"
+        },
+        {
+          "index": 1,
+          "html": "<h3 class=\"md-h md-h3\">事务为什么不能靠复制 ThreadLocal 跨线程？</h3>",
+          "sha256": "0345e23edea19e1382c833758543709fb3fa53ff95d5a6d43812938a065ec83b"
+        },
+        {
+          "index": 2,
+          "html": "<p class=\"md-p\">绑定在线程上的不只是一个“有事务”标记，还可能包括连接等资源的持有者、提交或回滚时执行的同步回调，以及事务名、只读标记、隔离级别、活动状态。具体绑定哪些内容，由事务管理器决定。把 ThreadLocal 中的 ConnectionHolder 直接复制给另一个线程，不是合法的跨线程事务传播方案，还可能并发使用不允许共享的 JDBC 连接。</p>",
+          "sha256": "f94d06801cea3281c1c0b9494c9dd57efa620f6f745c53a6f190f2f19f60ef2f"
+        },
+        {
+          "index": 3,
+          "html": "<h3 class=\"md-h md-h3\">父事务最后回滚，异步发出的消息会怎样？</h3>",
+          "sha256": "1388d3369582fbb455595a7502750743a8e759bf2d19633913e659e753d0ec35"
+        },
+        {
+          "index": 4,
+          "html": "<p class=\"md-p\">假设父事务尚未提交，异步线程已经发出“已成功”消息，随后父事务回滚。消息已经跨过了另一个执行边界，父事务的回滚不会替你把它撤回。这正是不能靠复制 ThreadLocal 来补齐的业务问题。</p>",
+          "sha256": "6c3042fd2b7fcf05ea7f24b3c02176d26fa7223a9c678c4404d91e1bce63b6f7"
+        },
+        {
+          "index": 5,
+          "html": "<h3 class=\"md-h md-h3\">怎样把两个独立执行边界连接起来？</h3>",
+          "sha256": "10b44de965f79d9d67da5433a84be03fc4e8435cfab7ad58992a1f6d723b9349"
+        },
+        {
+          "index": 6,
+          "html": "<p class=\"md-p\">需要异步子操作参与可靠流程时，可以让它建立自己的事务，再以明确的提交后事件、outbox 或任务状态连接两个事务。至于响应式事务，通常使用 Reactor Context，不能继续只按 ThreadLocal 解释全部 Spring 事务。</p>",
+          "sha256": "47f1ec879f8c2af45de56757d6586a2706c43e8018c6ab03bf034a3e5bc01d01"
+        },
+        {
+          "index": 7,
+          "html": "<p class=\"md-p\">@Async 返回 Future/CompletableFuture 时应观察异步失败；void 方法的异常不能靠调用者 try/catch 捕获，需要相应异常处理与监控。线程池参数、拒绝、上下文恢复、关闭时限和任务持久性都应由配置明确，注解本身不解决这些问题。</p>",
+          "sha256": "cf6e94fdce66f1ecb58e6aa45c42f49498bea07d0f5be8ff60bbf0788b3e9a21"
+        },
+        {
+          "index": 8,
+          "html": "<h3 class=\"md-h md-h3\">标签</h3>",
+          "sha256": "30555e66cafb58eab9b1bd4de38bc94c08b36400a91b80a39c2e5aa84e7e7dea"
+        },
+        {
+          "index": 9,
+          "html": "<li>Java21教学</li>",
+          "sha256": "7240c106aacab7618fef8cfe9dd58276c9bbfd5f29ed1d7c26abb5cb5af1884d"
+        }
+      ]
+    },
+    {
+      "package": "integration-agent-capacity",
+      "entryId": "own-juc-systems",
+      "itemIndex": 6,
+      "path": [
+        "items",
+        6,
+        "a"
+      ],
+      "questionGuard": "如何限制每个用户在任意连续一分钟内最多点赞十次？",
+      "questionId": "q-own-juc-sliding-window-limit",
+      "questionSha256": "31bd640b3f5631f50b3b9b1ad2773d3f59da91a9c7043ce349700a81552e14d2",
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。</p><p class=\"md-p\">内存版把清理、判断、记录放在同一个原子边界：先删去 now−60s 及之前的记录，再检查剩余数量，允许后记录本次时间。这样另一个请求不能插进“检查通过但尚未记录”的空档。用户维度必须来自已认证身份，不能让调用方随意换一个名字绕开配额。</p><p class=\"md-p\">内存设计还应设置明确用户数上限，避免攻击者制造无界 Map；简单实现每次扫描清理用户，吞吐成本因此与保留用户数相关。更高吞吐可分片并用独立过期结构，但不能删除仍有人持有的锁对象后创建第二把锁，让同一用户出现两套并发计数。</p><p class=\"md-p\">协议推演模型：code/SlidingWindowLimiter.java。</p><p class=\"md-p\">多节点部署时，本地锁无法维持全局十次限制。Redis 版本把清理、计数和添加放进一个脚本，使用服务端时间和唯一请求标记区分同毫秒的不同请求。同一标记只代表同一次准入的幂等性，不等于点赞业务已经成功；脚本也不与数据库点赞提交自动组成事务。</p><p class=\"md-p\">协议推演模型：code/sliding_window.lua。</p><p class=\"md-p\">脚本执行期间只具有 Redis 单个执行域的原子边界，集群多 key 需满足同槽要求；时间精度、主从故障切换、异步复制丢失与 Redis 不可用时的放行或拒绝，都要按业务风险定义。严格计费或资金限额不应把一个可能丢失的限流计数当成唯一账本。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><details class=\"qa-variants\"><summary>其他问法（2）</summary><ul class=\"md-list\"><li>手撕：线程安全的滑动窗口限流算法（手撕：滑动窗口限流）</li><li>手撕：线程安全的滑动窗口限流算法</li></ul></details>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。</p><p class=\"md-p\">内存版把清理、判断、记录放在同一个原子边界：先删去 now−60s 及之前的记录，再检查剩余数量，允许后记录本次时间。这样另一个请求不能插进“检查通过但尚未记录”的空档。用户维度必须来自已认证身份，不能让调用方随意换一个名字绕开配额。</p><p class=\"md-p\">内存设计还应设置明确用户数上限，避免攻击者制造无界 Map；简单实现每次扫描清理用户，吞吐成本因此与保留用户数相关。更高吞吐可分片并用独立过期结构，但不能删除仍有人持有的锁对象后创建第二把锁，让同一用户出现两套并发计数。</p><p class=\"md-p\">协议推演模型：code/SlidingWindowLimiter.java。</p><p class=\"md-p\">多节点部署时，本地锁无法维持全局十次限制。Redis 版本把清理、计数和添加放进一个脚本，使用服务端时间和唯一请求标记区分同毫秒的不同请求。同一标记只代表同一次准入的幂等性，不等于点赞业务已经成功；脚本也不与数据库点赞提交自动组成事务。</p><p class=\"md-p\">协议推演模型：code/sliding_window.lua。</p><p class=\"md-p\">脚本执行期间只具有 Redis 单个执行域的原子边界，集群多 key 需满足同槽要求；时间精度、主从故障切换、异步复制丢失与 Redis 不可用时的放行或拒绝，都要按业务风险定义。严格计费或资金限额不应把一个可能丢失的限流计数当成唯一账本。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><details class=\"qa-variants\"><summary>其他问法（2）</summary><ul class=\"md-list\"><li>手撕：线程安全的滑动窗口限流算法（手撕：滑动窗口限流）</li><li>手撕：线程安全的滑动窗口限流算法</li></ul></details><h3 class=\"md-h md-h3\">把用户键换成租户键，最小合同是什么？</h3><p class=\"md-p\">如果题目只要求“各租户互不影响、每个租户采用同一窗口与额度”，可以把本题单 JVM 精确滑动窗口的隔离键换成已认证的租户 ID；跨业务共享时再加无歧义业务命名空间。这里“互不影响”指配额计数隔离，不承诺共享锁和调度时延互不影响。清理、计数和准入仍在同一把锁下，保留租户数有上限，用可注入的单调时钟验证窗口边界。</p><p class=\"md-p\">这不是不同租户等级、租户加用户双层配额、全局 provider 预算或跨节点一致限流的完整实现。每次清理扫描的代价仍与保留 key 数相关；改变参数名不会增加这些能力。要求扩展时，先重新定义多维额度的原子准入、回收和故障合同，再补实现与测试；分布式费用与速率调度另见<a href=\"#/e/own-distributed-ch06/q-own-distributed-model-queue\">模型配额与公平队列</a>。</p><details class=\"qa-variants\"><summary>多租户限流器常见问法</summary><ul class=\"md-list\"><li>- 手撕：手写一个支持多租户的限流器</li></ul></details>",
+      "beforeSha256": "12a960c4982e9415484f185b30e64dea1fbc8d3d87942452a388d1ce5ada9052",
+      "afterSha256": "bb1070a9928f5692b665469a0e30700d3f7140ddfd7e078b4b3f4aec9351a26a",
+      "mode": "append-only-unique-detail",
+      "reason": "Preserve source conditions and wording with substantive canonical destinations; no code or project claim invented.",
+      "exactAppendHtml": "<h3 class=\"md-h md-h3\">把用户键换成租户键，最小合同是什么？</h3><p class=\"md-p\">如果题目只要求“各租户互不影响、每个租户采用同一窗口与额度”，可以把本题单 JVM 精确滑动窗口的隔离键换成已认证的租户 ID；跨业务共享时再加无歧义业务命名空间。这里“互不影响”指配额计数隔离，不承诺共享锁和调度时延互不影响。清理、计数和准入仍在同一把锁下，保留租户数有上限，用可注入的单调时钟验证窗口边界。</p><p class=\"md-p\">这不是不同租户等级、租户加用户双层配额、全局 provider 预算或跨节点一致限流的完整实现。每次清理扫描的代价仍与保留 key 数相关；改变参数名不会增加这些能力。要求扩展时，先重新定义多维额度的原子准入、回收和故障合同，再补实现与测试；分布式费用与速率调度另见<a href=\"#/e/own-distributed-ch06/q-own-distributed-model-queue\">模型配额与公平队列</a>。</p><details class=\"qa-variants\"><summary>多租户限流器常见问法</summary><ul class=\"md-list\"><li>- 手撕：手写一个支持多租户的限流器</li></ul></details>",
+      "appendSha256": "f40eebc1b5d4e688c6b5275fd79f9d241f6097fc50ebedc1f75367a6ff3ad40d",
+      "oldBodyCodePoints": 1015,
+      "newBodyCodePoints": 1588,
+      "oldItem": {
+        "id": "q-own-juc-sliding-window-limit",
+        "q": "如何限制每个用户在任意连续一分钟内最多点赞十次？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。</p><p class=\"md-p\">内存版把清理、判断、记录放在同一个原子边界：先删去 now−60s 及之前的记录，再检查剩余数量，允许后记录本次时间。这样另一个请求不能插进“检查通过但尚未记录”的空档。用户维度必须来自已认证身份，不能让调用方随意换一个名字绕开配额。</p><p class=\"md-p\">内存设计还应设置明确用户数上限，避免攻击者制造无界 Map；简单实现每次扫描清理用户，吞吐成本因此与保留用户数相关。更高吞吐可分片并用独立过期结构，但不能删除仍有人持有的锁对象后创建第二把锁，让同一用户出现两套并发计数。</p><p class=\"md-p\">协议推演模型：code/SlidingWindowLimiter.java。</p><p class=\"md-p\">多节点部署时，本地锁无法维持全局十次限制。Redis 版本把清理、计数和添加放进一个脚本，使用服务端时间和唯一请求标记区分同毫秒的不同请求。同一标记只代表同一次准入的幂等性，不等于点赞业务已经成功；脚本也不与数据库点赞提交自动组成事务。</p><p class=\"md-p\">协议推演模型：code/sliding_window.lua。</p><p class=\"md-p\">脚本执行期间只具有 Redis 单个执行域的原子边界，集群多 key 需满足同槽要求；时间精度、主从故障切换、异步复制丢失与 Redis 不可用时的放行或拒绝，都要按业务风险定义。严格计费或资金限额不应把一个可能丢失的限流计数当成唯一账本。</p><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java21教学</li></ul><details class=\"qa-variants\"><summary>其他问法（2）</summary><ul class=\"md-list\"><li>手撕：线程安全的滑动窗口限流算法（手撕：滑动窗口限流）</li><li>手撕：线程安全的滑动窗口限流算法</li></ul></details>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。</p>",
+        "leadType": "authored"
+      },
+      "sourceBlocks": [
+        {
+          "index": 0,
+          "html": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>如果要求“任意连续一分钟最多十次”，就要看当前时刻往前的一分钟。按自然分钟清零不够：某人在上一分钟结束前用掉十次，下一分钟刚开始又用十次，短时间内便通过了二十次。</p>",
+          "sha256": "4c4281ae36144f4c6ae38761e582ae4e7350635efe46ff83c047c421b2345f5e"
+        },
+        {
+          "index": 1,
+          "html": "<p class=\"md-p\">内存版把清理、判断、记录放在同一个原子边界：先删去 now−60s 及之前的记录，再检查剩余数量，允许后记录本次时间。这样另一个请求不能插进“检查通过但尚未记录”的空档。用户维度必须来自已认证身份，不能让调用方随意换一个名字绕开配额。</p>",
+          "sha256": "c5402620cc6369da3b40494c2c5a70997f978923c12fd01d98ff354bcb5994d5"
+        },
+        {
+          "index": 2,
+          "html": "<p class=\"md-p\">内存设计还应设置明确用户数上限，避免攻击者制造无界 Map；简单实现每次扫描清理用户，吞吐成本因此与保留用户数相关。更高吞吐可分片并用独立过期结构，但不能删除仍有人持有的锁对象后创建第二把锁，让同一用户出现两套并发计数。</p>",
+          "sha256": "38a97eed543dc97fcd40bc13aed502f5031481fd7ae258fb7850a767f9d3d184"
+        },
+        {
+          "index": 3,
+          "html": "<p class=\"md-p\">协议推演模型：code/SlidingWindowLimiter.java。</p>",
+          "sha256": "976651aa657f0fcb6fce81cf6185e37f65a37198c369c60239b29cdceb7f7c79"
+        },
+        {
+          "index": 4,
+          "html": "<p class=\"md-p\">多节点部署时，本地锁无法维持全局十次限制。Redis 版本把清理、计数和添加放进一个脚本，使用服务端时间和唯一请求标记区分同毫秒的不同请求。同一标记只代表同一次准入的幂等性，不等于点赞业务已经成功；脚本也不与数据库点赞提交自动组成事务。</p>",
+          "sha256": "4914a44231324f706088122959694a3697d7e7c7f44d05752bc24dff5f70696f"
+        },
+        {
+          "index": 5,
+          "html": "<p class=\"md-p\">协议推演模型：code/sliding_window.lua。</p>",
+          "sha256": "60ff88be07cf21344a74d94e450857d20c454615f07bd234b73185b0932d8b57"
+        },
+        {
+          "index": 6,
+          "html": "<p class=\"md-p\">脚本执行期间只具有 Redis 单个执行域的原子边界，集群多 key 需满足同槽要求；时间精度、主从故障切换、异步复制丢失与 Redis 不可用时的放行或拒绝，都要按业务风险定义。严格计费或资金限额不应把一个可能丢失的限流计数当成唯一账本。</p>",
+          "sha256": "cda7ed852b701269abd4d6a5e71c6ce54dd59c9aca2f9abe4078d6ba14d4d659"
+        },
+        {
+          "index": 7,
+          "html": "<h3 class=\"md-h md-h3\">标签</h3>",
+          "sha256": "30555e66cafb58eab9b1bd4de38bc94c08b36400a91b80a39c2e5aa84e7e7dea"
+        },
+        {
+          "index": 8,
+          "html": "<li>Java21教学</li>",
+          "sha256": "7240c106aacab7618fef8cfe9dd58276c9bbfd5f29ed1d7c26abb5cb5af1884d"
+        },
+        {
+          "index": 9,
+          "html": "<summary>其他问法（2）</summary>",
+          "sha256": "49c8d1675c88fd95881f98afb4413775544743ee0ac3954a038f535d9f7d5535"
+        },
+        {
+          "index": 10,
+          "html": "<li>手撕：线程安全的滑动窗口限流算法（手撕：滑动窗口限流）</li>",
+          "sha256": "265a55c054c5e133e205aba6de78c461cf94f4362c88f7a63e6de26eec37886b"
+        },
+        {
+          "index": 11,
+          "html": "<li>手撕：线程安全的滑动窗口限流算法</li>",
+          "sha256": "1a6aa3c05c8d11cce706cfcd5164e2d7f8d92d887e3daa90856703054b5c7736"
+        }
+      ]
+    },
+    {
+      "package": "integration-agent-capacity",
+      "entryId": "own-mysql-ch04",
+      "itemIndex": 7,
+      "path": [
+        "items",
+        7,
+        "a"
+      ],
+      "questionGuard": "SQLite 为什么适合本地项目，慢了该优化还是迁移 MySQL？",
+      "questionId": "q-qb-database-theory-sqlite",
+      "questionSha256": "490fcfa0f795322ff01d0cfc9201ce35df7a7e0801ce188c8256f2b1e7ebbedf",
+      "before": "<p class=\"md-p\">SQLite 适合嵌入式、单机本地持久化和运维简单的应用；MySQL 更适合需要独立服务、多客户端并发写与成熟复制运维的场景；Redis 优先解决低延迟键值访问。选型要看实际读写模式、容量和恢复要求，不能只凭“数据变大”决定迁移。</p><p class=\"md-p\">定位先记录慢的是 SQL 执行、等待写锁、提交刷盘，还是应用反序列化与逐条往返。用 EXPLAIN QUERY PLAN 看索引与扫描，检查 N+1、取列、稳定分页和小事务提交次数；再观察文件所在磁盘、长读事务、WAL 文件与 checkpoint。WAL 通常允许读写并行，但同一数据库仍只有一个写者，增加连接并不能变成多写者。长读事务还可能阻碍 checkpoint 推进，不能只调大超时掩盖排队。</p><p class=\"md-p\">若索引、批量与短事务后仍被写并发或服务化需求限制，再评估迁移。先列 schema 映射：SQLite 的类型亲和性与 MySQL 严格类型、INTEGER PRIMARY KEY、自增、布尔、时间/时区、DECIMAL、NULL、外键、排序规则和 SQL 方言。用真实脏数据试导入，不能把 SQLite 的 .dump 原样当 MySQL 兼容脚本。</p><p class=\"md-p\">可停写时最简单：冻结写入，做受支持的一致备份/导出，在目标分批导入，核验主键集、约束、金额汇总和内容，再切连接并保留回滚点。不能停写时必须先有可靠变更捕获或事务内变更日志、稳定版本与删除记录，再做基线加增量；SQLite 没有可直接照搬的 MySQL binlog。切换时保持唯一权威写入口，回滚需覆盖切后新写。</p><p class=\"md-p\">验收比较相同业务数据下的并发、p99、锁等待、错误与恢复时间。只因迁移后单条查询快，不能证明整体吞吐、事务语义与恢复目标已满足。面试应先给出实际读写模式，再说明为何独立数据库服务的成本值得承担。</p><p class=\"md-p\">核验资料：<a href=\"https://www.sqlite.org/wal.html\">SQLite WAL</a></p><details class=\"qa-variants\"><summary>其他问法（3）</summary><ul><li>如何定位 SQLite 性能问题并迁移到 MySQL，数据如何迁移</li><li>SQLite、MySQL、Redis 区别与场景</li><li>项目为何选 SQLite 而非 MySQL</li></ul></details>",
+      "after": "<p class=\"md-p\">SQLite 适合嵌入式、单机本地持久化和运维简单的应用；MySQL 更适合需要独立服务、多客户端并发写与成熟复制运维的场景；Redis 优先解决低延迟键值访问。选型要看实际读写模式、容量和恢复要求，不能只凭“数据变大”决定迁移。</p><p class=\"md-p\">定位先记录慢的是 SQL 执行、等待写锁、提交刷盘，还是应用反序列化与逐条往返。用 EXPLAIN QUERY PLAN 看索引与扫描，检查 N+1、取列、稳定分页和小事务提交次数；再观察文件所在磁盘、长读事务、WAL 文件与 checkpoint。WAL 通常允许读写并行，但同一数据库仍只有一个写者，增加连接并不能变成多写者。长读事务还可能阻碍 checkpoint 推进，不能只调大超时掩盖排队。</p><p class=\"md-p\">若索引、批量与短事务后仍被写并发或服务化需求限制，再评估迁移。先列 schema 映射：SQLite 的类型亲和性与 MySQL 严格类型、INTEGER PRIMARY KEY、自增、布尔、时间/时区、DECIMAL、NULL、外键、排序规则和 SQL 方言。用真实脏数据试导入，不能把 SQLite 的 .dump 原样当 MySQL 兼容脚本。</p><p class=\"md-p\">可停写时最简单：冻结写入，做受支持的一致备份/导出，在目标分批导入，核验主键集、约束、金额汇总和内容，再切连接并保留回滚点。不能停写时必须先有可靠变更捕获或事务内变更日志、稳定版本与删除记录，再做基线加增量；SQLite 没有可直接照搬的 MySQL binlog。切换时保持唯一权威写入口，回滚需覆盖切后新写。</p><p class=\"md-p\">验收比较相同业务数据下的并发、p99、锁等待、错误与恢复时间。只因迁移后单条查询快，不能证明整体吞吐、事务语义与恢复目标已满足。面试应先给出实际读写模式，再说明为何独立数据库服务的成本值得承担。</p><p class=\"md-p\">核验资料：<a href=\"https://www.sqlite.org/wal.html\">SQLite WAL</a></p><details class=\"qa-variants\"><summary>其他问法（3）</summary><ul><li>如何定位 SQLite 性能问题并迁移到 MySQL，数据如何迁移</li><li>SQLite、MySQL、Redis 区别与场景</li><li>项目为何选 SQLite 而非 MySQL</li></ul></details><h3 class=\"md-h md-h3\">5000 用户、每天十几万请求，为什么仍可能用 SQLite？</h3><p class=\"md-p\">人数和日请求总量不能直接说明写竞争。先测峰值请求、每轮写次数、事务时长、数据库大小与恢复目标；模型推理和工具网络等待期间不要持有写事务。若实测短事务排队可控、单节点恢复满足要求，本机状态或能独立分区的工作负载可以先用 SQLite；需要多机共享事务数据、高写并发或服务型高可用时，再按本题的迁移合同评估。</p><p class=\"md-p\">WAL 的单写者边界沿用上文；WAL 要求访问同一数据库的进程位于同一主机，不能把同一个文件放在网络盘给多实例直连，就声称完成了横向扩容。扩 Agent worker 与扩权威状态存储是两件事。验收还应覆盖繁忙错误、进程崩溃与真实备份恢复；“十万次/天”不是硬阈值，也不能倒推一个未给出证据的项目为何选型。</p><details class=\"qa-variants\"><summary>Agent 存储选型的常见问法</summary><ul class=\"md-list\"><li>5000 用户、每天十几万请求，为何可能选 SQLite？</li><li>5000 人、每天十几万次请求的 Agent 服务如何扩容；为何选 SQLite</li></ul></details>",
+      "beforeSha256": "0179dc6f7a02b6f72eded1b47a0048527734ffca116408a37dd35f69b8ef2d22",
+      "afterSha256": "05355da46cd77b420157b521520576722bb0286b5bb71f8aa11fb9c3e95df0d5",
+      "mode": "append-only-unique-detail",
+      "reason": "Preserve source conditions and wording with substantive canonical destinations; no code or project claim invented.",
+      "exactAppendHtml": "<h3 class=\"md-h md-h3\">5000 用户、每天十几万请求，为什么仍可能用 SQLite？</h3><p class=\"md-p\">人数和日请求总量不能直接说明写竞争。先测峰值请求、每轮写次数、事务时长、数据库大小与恢复目标；模型推理和工具网络等待期间不要持有写事务。若实测短事务排队可控、单节点恢复满足要求，本机状态或能独立分区的工作负载可以先用 SQLite；需要多机共享事务数据、高写并发或服务型高可用时，再按本题的迁移合同评估。</p><p class=\"md-p\">WAL 的单写者边界沿用上文；WAL 要求访问同一数据库的进程位于同一主机，不能把同一个文件放在网络盘给多实例直连，就声称完成了横向扩容。扩 Agent worker 与扩权威状态存储是两件事。验收还应覆盖繁忙错误、进程崩溃与真实备份恢复；“十万次/天”不是硬阈值，也不能倒推一个未给出证据的项目为何选型。</p><details class=\"qa-variants\"><summary>Agent 存储选型的常见问法</summary><ul class=\"md-list\"><li>5000 用户、每天十几万请求，为何可能选 SQLite？</li><li>5000 人、每天十几万次请求的 Agent 服务如何扩容；为何选 SQLite</li></ul></details>",
+      "appendSha256": "38db586b3e0096fc50b36f0a9926ca6d6f277151aacefd0a91f677998d48515f",
+      "oldBodyCodePoints": 1104,
+      "newBodyCodePoints": 1693,
+      "oldItem": {
+        "id": "q-qb-database-theory-sqlite",
+        "q": "SQLite 为什么适合本地项目，慢了该优化还是迁移 MySQL？",
+        "a": "<p class=\"md-p\">SQLite 适合嵌入式、单机本地持久化和运维简单的应用；MySQL 更适合需要独立服务、多客户端并发写与成熟复制运维的场景；Redis 优先解决低延迟键值访问。选型要看实际读写模式、容量和恢复要求，不能只凭“数据变大”决定迁移。</p><p class=\"md-p\">定位先记录慢的是 SQL 执行、等待写锁、提交刷盘，还是应用反序列化与逐条往返。用 EXPLAIN QUERY PLAN 看索引与扫描，检查 N+1、取列、稳定分页和小事务提交次数；再观察文件所在磁盘、长读事务、WAL 文件与 checkpoint。WAL 通常允许读写并行，但同一数据库仍只有一个写者，增加连接并不能变成多写者。长读事务还可能阻碍 checkpoint 推进，不能只调大超时掩盖排队。</p><p class=\"md-p\">若索引、批量与短事务后仍被写并发或服务化需求限制，再评估迁移。先列 schema 映射：SQLite 的类型亲和性与 MySQL 严格类型、INTEGER PRIMARY KEY、自增、布尔、时间/时区、DECIMAL、NULL、外键、排序规则和 SQL 方言。用真实脏数据试导入，不能把 SQLite 的 .dump 原样当 MySQL 兼容脚本。</p><p class=\"md-p\">可停写时最简单：冻结写入，做受支持的一致备份/导出，在目标分批导入，核验主键集、约束、金额汇总和内容，再切连接并保留回滚点。不能停写时必须先有可靠变更捕获或事务内变更日志、稳定版本与删除记录，再做基线加增量；SQLite 没有可直接照搬的 MySQL binlog。切换时保持唯一权威写入口，回滚需覆盖切后新写。</p><p class=\"md-p\">验收比较相同业务数据下的并发、p99、锁等待、错误与恢复时间。只因迁移后单条查询快，不能证明整体吞吐、事务语义与恢复目标已满足。面试应先给出实际读写模式，再说明为何独立数据库服务的成本值得承担。</p><p class=\"md-p\">核验资料：<a href=\"https://www.sqlite.org/wal.html\">SQLite WAL</a></p><details class=\"qa-variants\"><summary>其他问法（3）</summary><ul><li>如何定位 SQLite 性能问题并迁移到 MySQL，数据如何迁移</li><li>SQLite、MySQL、Redis 区别与场景</li><li>项目为何选 SQLite 而非 MySQL</li></ul></details>",
+        "lead": "SQLite 适合嵌入式、单机本地持久化和运维简单的应用；MySQL 更适合需要独立服务、多客户端并发写与成熟复制运维的场景；Redis 优先解决低延迟键值访问。选型要看实际读写模式、容量和恢复要求，不能只凭“数据变大”决定迁移。",
+        "leadType": "authored",
+        "mk": false,
+        "sub": ""
+      },
+      "sourceBlocks": [
+        {
+          "index": 0,
+          "html": "<p class=\"md-p\">SQLite 适合嵌入式、单机本地持久化和运维简单的应用；MySQL 更适合需要独立服务、多客户端并发写与成熟复制运维的场景；Redis 优先解决低延迟键值访问。选型要看实际读写模式、容量和恢复要求，不能只凭“数据变大”决定迁移。</p>",
+          "sha256": "e761b72669342955eabc0e9b40e8a6e95c14472f90a75fe221be50ef3f59f149"
+        },
+        {
+          "index": 1,
+          "html": "<p class=\"md-p\">定位先记录慢的是 SQL 执行、等待写锁、提交刷盘，还是应用反序列化与逐条往返。用 EXPLAIN QUERY PLAN 看索引与扫描，检查 N+1、取列、稳定分页和小事务提交次数；再观察文件所在磁盘、长读事务、WAL 文件与 checkpoint。WAL 通常允许读写并行，但同一数据库仍只有一个写者，增加连接并不能变成多写者。长读事务还可能阻碍 checkpoint 推进，不能只调大超时掩盖排队。</p>",
+          "sha256": "809a595bbbd6f92357b941a20358a7d6da6869a8ac46b5af6d30140557d59545"
+        },
+        {
+          "index": 2,
+          "html": "<p class=\"md-p\">若索引、批量与短事务后仍被写并发或服务化需求限制，再评估迁移。先列 schema 映射：SQLite 的类型亲和性与 MySQL 严格类型、INTEGER PRIMARY KEY、自增、布尔、时间/时区、DECIMAL、NULL、外键、排序规则和 SQL 方言。用真实脏数据试导入，不能把 SQLite 的 .dump 原样当 MySQL 兼容脚本。</p>",
+          "sha256": "1d00facb9e2d4af0ca4cb331ed37651725cbe378d6e0ad4c53146d84ad5ae185"
+        },
+        {
+          "index": 3,
+          "html": "<p class=\"md-p\">可停写时最简单：冻结写入，做受支持的一致备份/导出，在目标分批导入，核验主键集、约束、金额汇总和内容，再切连接并保留回滚点。不能停写时必须先有可靠变更捕获或事务内变更日志、稳定版本与删除记录，再做基线加增量；SQLite 没有可直接照搬的 MySQL binlog。切换时保持唯一权威写入口，回滚需覆盖切后新写。</p>",
+          "sha256": "389ba184eda42fff3cfb9f53fcfc5bacc4513d713ff5c1e74079e2dd153a2d7f"
+        },
+        {
+          "index": 4,
+          "html": "<p class=\"md-p\">验收比较相同业务数据下的并发、p99、锁等待、错误与恢复时间。只因迁移后单条查询快，不能证明整体吞吐、事务语义与恢复目标已满足。面试应先给出实际读写模式，再说明为何独立数据库服务的成本值得承担。</p>",
+          "sha256": "298d9f9c33a9438852772b40d985aed53cd787e9ebfc8ddb1c3a37b0b361ee50"
+        },
+        {
+          "index": 5,
+          "html": "<p class=\"md-p\">核验资料：<a href=\"https://www.sqlite.org/wal.html\">SQLite WAL</a></p>",
+          "sha256": "3d64ec8dd983e1102fe2bc006ab41e3fea4dd9515b1d18b8b453729038b8a9de"
+        },
+        {
+          "index": 6,
+          "html": "<summary>其他问法（3）</summary>",
+          "sha256": "c6c6ef2c2f57bdc8b9aab889737b20bc4f37a6193b4c16b023cabb89d6254ef9"
+        },
+        {
+          "index": 7,
+          "html": "<li>如何定位 SQLite 性能问题并迁移到 MySQL，数据如何迁移</li>",
+          "sha256": "e85b0a99591f6cdbe5a4a4ceab2f39bc1b2145d8d51fdd850af588063fafab78"
+        },
+        {
+          "index": 8,
+          "html": "<li>SQLite、MySQL、Redis 区别与场景</li>",
+          "sha256": "52eb549dead8b9d550e668a0f562f3fbc7544b473eaf7cb112ab6512f91f138b"
+        },
+        {
+          "index": 9,
+          "html": "<li>项目为何选 SQLite 而非 MySQL</li>",
+          "sha256": "328322f64881930d4141bdaf10f09080d7e00d661de8bed1f0f6fad229a33517"
+        }
+      ]
+    },
+    {
+      "package": "integration-agent-capacity",
+      "extraSandbox": true,
+      "entryId": "own-os-sandbox",
+      "itemIndex": 4,
+      "path": [
+        "items",
+        4,
+        "a"
+      ],
+      "questionGuard": "Sandbox harness 怎样限制资源与并发，并管理多租户实例？",
+      "questionId": "q-agent-sandbox-capacity",
+      "questionSha256": "89c6318ecb1c635223577c814e71cdec7107a994ed491cd5220b1c31e8a06ad0",
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p><p class=\"md-p\">Sandbox harness 负责接收任务、配置环境、调用执行工具、收集结果和收尾。它不等同模型推理循环，也不等同一个普通子进程。全局预算之外再按租户、模型、数据库和工具设配额。控制平面管理责任，执行平面运行受限负载；并发数由最紧资源与下游额度决定，不能等同 CPU 核数或会话数。</p><h3 class=\"md-h md-h3\">控制平面和执行平面各有职责</h3><p class=\"md-p\">控制平面负责用户/租户身份、任务输入schema、环境版本、排队准入、状态机、期限、取消、审计和产物索引；执行平面在受限环境运行具体代码/工具，返回结构化结果、退出码、受限日志及产物manifest。模型生成的代码是工作负载，不能决定自己的权限或资源上限。</p><h3 class=\"md-h md-h3\">并发不是CPU核数的同义词</h3><p class=\"md-p\">粗略准入上限可从min(可用内存/每实例预算、可用CPU/每实例CPU需求、PID/FD/磁盘/网络及下游配额容量)取约束；整数向下取整且留控制面和突发余量。CPU需求是有测量口径的平均/峰值与配额，不是所有IO任务永远独占一核。</p><p class=\"md-p\">容量上限由最紧的约束决定。例如留出系统余量后还有 24GiB，每实例预算 1.5GiB，内存允许的候选上限是 16；但 CPU 或 API 并发只允许 8，就不能按 16 放行。</p><p class=\"md-p\">还要考虑长尾、同时峰值和启动峰值，不能简单拿平均 RSS 乘实例数。总在途资源需要上限，可按任务类型分池，并保留过载拒绝或排队策略。</p><h3 class=\"md-h md-h3\">把每一种可耗尽资源加上界</h3><p class=\"md-p\">CPU时间/核配额、memory.max、pids.max、工作目录大小/inode、FD、出站连接、stdout/stderr、产物数与运行期限分别限制；网络默认按任务需要开放目标，避免云元数据、宿主socket和无关内网暴露。cgroup的内存限制不自动等于磁盘配额，也不替代输出截断。</p><p class=\"md-p\">请求队列也必须有容量和排队超时。按租户公平调度、限制一个用户的大任务占满整个池，预热池只能复用已清洁或租户允许复用的环境；缩短冷启动不能以泄露上一任务文件/秘密为代价。</p><h3 class=\"md-h md-h3\">容量账与任务状态一起更新</h3><p class=\"md-p\">按任务 ID、attempt、代次与 deadline 跟踪 QUEUED、STARTING、RUNNING、DRAINING、FINISHED/FAILED/CANCELLED；取消后先停止分配新工作，资源实际收回后才释放容量，清理失败留待对账。完整终止合同见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>；结果未知时不能按失败盲重试，见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">失联恢复</a>。</p><p class=\"md-p\">replay 和 reset 要各自定义。重新发送一条相同命令，并不能证明执行环境已经干净。</p><h3 class=\"md-h md-h3\">验收以隔离和端到端行为为准</h3><p class=\"md-p\">压测正常、冷启动峰值、内存/磁盘/输出超额、进程派生、超时、取消竞态、执行器崩溃、租户交叉访问和回收失败；观察排队、启动/执行/清理时长、错误类别及稳态资源。只看请求成功数会漏掉后台进程与临时目录泄漏。</p><p class=\"md-p\">这里只给设计和容量推算，未创建容器、microVM或调用商业沙箱，也没有运行逃逸攻击。Java可用有界队列和Semaphore表达控制平面准入，但它们本身不限制恶意子进程的内存/系统调用，OS级隔离仍由运行环境落实。</p><p class=\"md-p\">每任务预算结合高分位消耗而不只看平均值，并留宿主与故障余量。CPU 任务增加线程不会线性加速，共享磁盘与下游模型可能先饱和。</p><h3 class=\"md-h md-h3\">状态通信与资源所有权</h3><p class=\"md-p\">多个Worker共享任务状态时使用单一拥有者、消息传递或版本化更新，避免丢失更新与锁内网络调用。跨进程通过IPC或RPC传有界结构化消息，不能以共享内存自动等于共享安全对象。LLM输出到SSE前需要有界缓冲、慢消费者策略和持久游标，不能任意堆积token片段。</p><p class=\"md-p\">上下文/缓存/向量检索结果都有生命周期，长期引用、后台任务和未关闭连接会形成资源泄漏；取消必须沿调用链传播，并最终回收进程、线程、句柄与订阅。不要把取消请求误认为远端工具副作用已回滚。</p><h3 class=\"md-h md-h3\">本地 Coding Agent 迁到多人云端</h3><p>把请求入口、任务账本、执行实例和成果存储拆开。受理后绑定租户、仓库提交、输入制品和环境版本，调度器创建或领取隔离执行环境；会话与任务状态在持久层，代码与产物通过受控版本化存储恢复，不能依赖某台容器的临时盘。</p><p>预热池减少启动延迟，但复用前要验证进程、文件、环境变量、凭据和网络状态已清理；无法证明干净就销毁，不跨租户复用脏工作区。空闲回收与业务取消分开，在途任务按租约和回执处理。扩容先测启动成本、CPU/内存/I/O与下游模型额度，不能从桌面能跑推断云端多租户已经安全。</p><p class=\"md-p\">空闲会话可只保留持久元数据，执行任务时再按风险领取实例，不同用户不必各常驻一个 Docker。共享进程避免全局可变用户状态，身份、工作区和产物归属按<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">工作区合同</a>校验。</p><p class=\"md-p\">隔离层的兼容性、启动开销和攻击面见<a href=\"#/e/ai-agent-8/6\">容器与 VM 取舍</a>；1000 个任务的集群容量、模型与沙箱两类配额见<a href=\"#/e/new-systems-sandbox-multitenant\">多租户沙箱设计</a>；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>不能简化为重发命令。</p>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p><p class=\"md-p\">Sandbox harness 负责接收任务、配置环境、调用执行工具、收集结果和收尾。它不等同模型推理循环，也不等同一个普通子进程。全局预算之外再按租户、模型、数据库和工具设配额。控制平面管理责任，执行平面运行受限负载；并发数由最紧资源与下游额度决定，不能等同 CPU 核数或会话数。</p><h3 class=\"md-h md-h3\">控制平面和执行平面各有职责</h3><p class=\"md-p\">控制平面负责用户/租户身份、任务输入schema、环境版本、排队准入、状态机、期限、取消、审计和产物索引；执行平面在受限环境运行具体代码/工具，返回结构化结果、退出码、受限日志及产物manifest。模型生成的代码是工作负载，不能决定自己的权限或资源上限。</p><h3 class=\"md-h md-h3\">并发不是CPU核数的同义词</h3><p class=\"md-p\">粗略准入上限可从min(可用内存/每实例预算、可用CPU/每实例CPU需求、PID/FD/磁盘/网络及下游配额容量)取约束；整数向下取整且留控制面和突发余量。CPU需求是有测量口径的平均/峰值与配额，不是所有IO任务永远独占一核。</p><p class=\"md-p\">容量上限由最紧的约束决定。例如留出系统余量后还有 24GiB，每实例预算 1.5GiB，内存允许的候选上限是 16；但 CPU 或 API 并发只允许 8，就不能按 16 放行。</p><p class=\"md-p\">还要考虑长尾、同时峰值和启动峰值，不能简单拿平均 RSS 乘实例数。总在途资源需要上限，可按任务类型分池，并保留过载拒绝或排队策略。</p><h3 class=\"md-h md-h3\">把每一种可耗尽资源加上界</h3><p class=\"md-p\">CPU时间/核配额、memory.max、pids.max、工作目录大小/inode、FD、出站连接、stdout/stderr、产物数与运行期限分别限制；网络默认按任务需要开放目标，避免云元数据、宿主socket和无关内网暴露。cgroup的内存限制不自动等于磁盘配额，也不替代输出截断。</p><p class=\"md-p\">请求队列也必须有容量和排队超时。按租户公平调度、限制一个用户的大任务占满整个池，预热池只能复用已清洁或租户允许复用的环境；缩短冷启动不能以泄露上一任务文件/秘密为代价。</p><h3 class=\"md-h md-h3\">容量账与任务状态一起更新</h3><p class=\"md-p\">按任务 ID、attempt、代次与 deadline 跟踪 QUEUED、STARTING、RUNNING、DRAINING、FINISHED/FAILED/CANCELLED；取消后先停止分配新工作，资源实际收回后才释放容量，清理失败留待对账。完整终止合同见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>；结果未知时不能按失败盲重试，见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">失联恢复</a>。</p><p class=\"md-p\">replay 和 reset 要各自定义。重新发送一条相同命令，并不能证明执行环境已经干净。</p><h3 class=\"md-h md-h3\">验收以隔离和端到端行为为准</h3><p class=\"md-p\">压测正常、冷启动峰值、内存/磁盘/输出超额、进程派生、超时、取消竞态、执行器崩溃、租户交叉访问和回收失败；观察排队、启动/执行/清理时长、错误类别及稳态资源。只看请求成功数会漏掉后台进程与临时目录泄漏。</p><p class=\"md-p\">这里只给设计和容量推算，未创建容器、microVM或调用商业沙箱，也没有运行逃逸攻击。Java可用有界队列和Semaphore表达控制平面准入，但它们本身不限制恶意子进程的内存/系统调用，OS级隔离仍由运行环境落实。</p><p class=\"md-p\">每任务预算结合高分位消耗而不只看平均值，并留宿主与故障余量。CPU 任务增加线程不会线性加速，共享磁盘与下游模型可能先饱和。</p><h3 class=\"md-h md-h3\">状态通信与资源所有权</h3><p class=\"md-p\">多个Worker共享任务状态时使用单一拥有者、消息传递或版本化更新，避免丢失更新与锁内网络调用。跨进程通过IPC或RPC传有界结构化消息，不能以共享内存自动等于共享安全对象。LLM输出到SSE前需要有界缓冲、慢消费者策略和持久游标，不能任意堆积token片段。</p><p class=\"md-p\">上下文/缓存/向量检索结果都有生命周期，长期引用、后台任务和未关闭连接会形成资源泄漏；取消必须沿调用链传播，并最终回收进程、线程、句柄与订阅。不要把取消请求误认为远端工具副作用已回滚。</p><h3 class=\"md-h md-h3\">本地 Coding Agent 迁到多人云端</h3><p>把请求入口、任务账本、执行实例和成果存储拆开。受理后绑定租户、仓库提交、输入制品和环境版本，调度器创建或领取隔离执行环境；会话与任务状态在持久层，代码与产物通过受控版本化存储恢复，不能依赖某台容器的临时盘。</p><p>预热池减少启动延迟，但复用前要验证进程、文件、环境变量、凭据和网络状态已清理；无法证明干净就销毁，不跨租户复用脏工作区。空闲回收与业务取消分开，在途任务按租约和回执处理。扩容先测启动成本、CPU/内存/I/O与下游模型额度，不能从桌面能跑推断云端多租户已经安全。</p><p class=\"md-p\">空闲会话可只保留持久元数据，执行任务时再按风险领取实例，不同用户不必各常驻一个 Docker。共享进程避免全局可变用户状态，身份、工作区和产物归属按<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">工作区合同</a>校验。</p><p class=\"md-p\">隔离层的兼容性、启动开销和攻击面见<a href=\"#/e/ai-agent-8/6\">容器与 VM 取舍</a>；1000 个任务的集群容量、模型与沙箱两类配额见<a href=\"#/e/new-systems-sandbox-multitenant\">多租户沙箱设计</a>；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>不能简化为重发命令。</p><h3 class=\"md-h md-h3\">工具 Pod 冷启动数十秒，ReAct 怎样等待？</h3><p class=\"md-p\">把执行环境准备与业务执行分开，区分排队、准备中、可执行、执行中和终态。先返回稳定任务 ID，通过查询或订阅进度等待；不要让模型反复调用同一工具探测启动，也不要让同步连接无限等待。</p><p class=\"md-p\">按业务 SLO 分别设置准备期限与执行期限，并共同受总 deadline 约束；预热或最小常驻副本减少等待，却增加空闲成本，应按负载比较。冷启动本身有独立并发上限，避免突发创建耗尽集群。ready 只证明可以接收请求，不是业务成功；准备已经超期或取消后到达的迟到 ready，必须核对当前任务代次与期限，不能重新派发。</p><p class=\"md-p\">取消后回收闲置资源，只有核对实际回收后才归还容量；已提交的写操作继续沿原身份查结果。重点测试启动失败、迟到 ready、重复提交和资源泄漏。生命周期、回收和未知副作用的完整处理沿用上文与关联题。</p><details class=\"qa-variants\"><summary>工具冷启动常见问法</summary><ul class=\"md-list\"><li>工具 Pod 冷启动数十秒，ReAct 应怎样等待？</li><li>ReAct Agent调用外部工具时，如果工具服务冷启动很慢（例如Pod需要数十秒），应该如何处理？</li></ul></details>",
+      "beforeSha256": "311a5f4f455af05adc5559d649d15dbd1e0b9415afdea5f76c7ba023f1f6e32b",
+      "afterSha256": "63f109051fe8a55a74a25ee73ac34d29fee07361563e13ba12125a2b70747347",
+      "mode": "append-only-unique-detail",
+      "reason": "Next-batch record after the real safety authoring compiler output; do not alter safety package.",
+      "exactAppendHtml": "<h3 class=\"md-h md-h3\">工具 Pod 冷启动数十秒，ReAct 怎样等待？</h3><p class=\"md-p\">把执行环境准备与业务执行分开，区分排队、准备中、可执行、执行中和终态。先返回稳定任务 ID，通过查询或订阅进度等待；不要让模型反复调用同一工具探测启动，也不要让同步连接无限等待。</p><p class=\"md-p\">按业务 SLO 分别设置准备期限与执行期限，并共同受总 deadline 约束；预热或最小常驻副本减少等待，却增加空闲成本，应按负载比较。冷启动本身有独立并发上限，避免突发创建耗尽集群。ready 只证明可以接收请求，不是业务成功；准备已经超期或取消后到达的迟到 ready，必须核对当前任务代次与期限，不能重新派发。</p><p class=\"md-p\">取消后回收闲置资源，只有核对实际回收后才归还容量；已提交的写操作继续沿原身份查结果。重点测试启动失败、迟到 ready、重复提交和资源泄漏。生命周期、回收和未知副作用的完整处理沿用上文与关联题。</p><details class=\"qa-variants\"><summary>工具冷启动常见问法</summary><ul class=\"md-list\"><li>工具 Pod 冷启动数十秒，ReAct 应怎样等待？</li><li>ReAct Agent调用外部工具时，如果工具服务冷启动很慢（例如Pod需要数十秒），应该如何处理？</li></ul></details>",
+      "appendSha256": "990aa58768f1fba8c95bf35a925c52f1c5929a868c8ea3dac0f3009e9eddcef5",
+      "oldBodyCodePoints": 2899,
+      "newBodyCodePoints": 3543,
+      "oldItem": {
+        "id": "q-agent-sandbox-capacity",
+        "q": "Sandbox harness 怎样限制资源与并发，并管理多租户实例？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p><p class=\"md-p\">Sandbox harness 负责接收任务、配置环境、调用执行工具、收集结果和收尾。它不等同模型推理循环，也不等同一个普通子进程。全局预算之外再按租户、模型、数据库和工具设配额。控制平面管理责任，执行平面运行受限负载；并发数由最紧资源与下游额度决定，不能等同 CPU 核数或会话数。</p><h3 class=\"md-h md-h3\">控制平面和执行平面各有职责</h3><p class=\"md-p\">控制平面负责用户/租户身份、任务输入schema、环境版本、排队准入、状态机、期限、取消、审计和产物索引；执行平面在受限环境运行具体代码/工具，返回结构化结果、退出码、受限日志及产物manifest。模型生成的代码是工作负载，不能决定自己的权限或资源上限。</p><h3 class=\"md-h md-h3\">并发不是CPU核数的同义词</h3><p class=\"md-p\">粗略准入上限可从min(可用内存/每实例预算、可用CPU/每实例CPU需求、PID/FD/磁盘/网络及下游配额容量)取约束；整数向下取整且留控制面和突发余量。CPU需求是有测量口径的平均/峰值与配额，不是所有IO任务永远独占一核。</p><p class=\"md-p\">容量上限由最紧的约束决定。例如留出系统余量后还有 24GiB，每实例预算 1.5GiB，内存允许的候选上限是 16；但 CPU 或 API 并发只允许 8，就不能按 16 放行。</p><p class=\"md-p\">还要考虑长尾、同时峰值和启动峰值，不能简单拿平均 RSS 乘实例数。总在途资源需要上限，可按任务类型分池，并保留过载拒绝或排队策略。</p><h3 class=\"md-h md-h3\">把每一种可耗尽资源加上界</h3><p class=\"md-p\">CPU时间/核配额、memory.max、pids.max、工作目录大小/inode、FD、出站连接、stdout/stderr、产物数与运行期限分别限制；网络默认按任务需要开放目标，避免云元数据、宿主socket和无关内网暴露。cgroup的内存限制不自动等于磁盘配额，也不替代输出截断。</p><p class=\"md-p\">请求队列也必须有容量和排队超时。按租户公平调度、限制一个用户的大任务占满整个池，预热池只能复用已清洁或租户允许复用的环境；缩短冷启动不能以泄露上一任务文件/秘密为代价。</p><h3 class=\"md-h md-h3\">容量账与任务状态一起更新</h3><p class=\"md-p\">按任务 ID、attempt、代次与 deadline 跟踪 QUEUED、STARTING、RUNNING、DRAINING、FINISHED/FAILED/CANCELLED；取消后先停止分配新工作，资源实际收回后才释放容量，清理失败留待对账。完整终止合同见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>；结果未知时不能按失败盲重试，见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">失联恢复</a>。</p><p class=\"md-p\">replay 和 reset 要各自定义。重新发送一条相同命令，并不能证明执行环境已经干净。</p><h3 class=\"md-h md-h3\">验收以隔离和端到端行为为准</h3><p class=\"md-p\">压测正常、冷启动峰值、内存/磁盘/输出超额、进程派生、超时、取消竞态、执行器崩溃、租户交叉访问和回收失败；观察排队、启动/执行/清理时长、错误类别及稳态资源。只看请求成功数会漏掉后台进程与临时目录泄漏。</p><p class=\"md-p\">这里只给设计和容量推算，未创建容器、microVM或调用商业沙箱，也没有运行逃逸攻击。Java可用有界队列和Semaphore表达控制平面准入，但它们本身不限制恶意子进程的内存/系统调用，OS级隔离仍由运行环境落实。</p><p class=\"md-p\">每任务预算结合高分位消耗而不只看平均值，并留宿主与故障余量。CPU 任务增加线程不会线性加速，共享磁盘与下游模型可能先饱和。</p><h3 class=\"md-h md-h3\">状态通信与资源所有权</h3><p class=\"md-p\">多个Worker共享任务状态时使用单一拥有者、消息传递或版本化更新，避免丢失更新与锁内网络调用。跨进程通过IPC或RPC传有界结构化消息，不能以共享内存自动等于共享安全对象。LLM输出到SSE前需要有界缓冲、慢消费者策略和持久游标，不能任意堆积token片段。</p><p class=\"md-p\">上下文/缓存/向量检索结果都有生命周期，长期引用、后台任务和未关闭连接会形成资源泄漏；取消必须沿调用链传播，并最终回收进程、线程、句柄与订阅。不要把取消请求误认为远端工具副作用已回滚。</p><h3 class=\"md-h md-h3\">本地 Coding Agent 迁到多人云端</h3><p>把请求入口、任务账本、执行实例和成果存储拆开。受理后绑定租户、仓库提交、输入制品和环境版本，调度器创建或领取隔离执行环境；会话与任务状态在持久层，代码与产物通过受控版本化存储恢复，不能依赖某台容器的临时盘。</p><p>预热池减少启动延迟，但复用前要验证进程、文件、环境变量、凭据和网络状态已清理；无法证明干净就销毁，不跨租户复用脏工作区。空闲回收与业务取消分开，在途任务按租约和回执处理。扩容先测启动成本、CPU/内存/I/O与下游模型额度，不能从桌面能跑推断云端多租户已经安全。</p><p class=\"md-p\">空闲会话可只保留持久元数据，执行任务时再按风险领取实例，不同用户不必各常驻一个 Docker。共享进程避免全局可变用户状态，身份、工作区和产物归属按<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">工作区合同</a>校验。</p><p class=\"md-p\">隔离层的兼容性、启动开销和攻击面见<a href=\"#/e/ai-agent-8/6\">容器与 VM 取舍</a>；1000 个任务的集群容量、模型与沙箱两类配额见<a href=\"#/e/new-systems-sandbox-multitenant\">多租户沙箱设计</a>；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>不能简化为重发命令。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p>",
+        "leadType": "authored"
+      },
+      "sourceBlocks": [
+        {
+          "index": 0,
+          "html": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p>",
+          "sha256": "469e1ab2719303b62a1f67c93cc80a0205de9095f2e56343f3e9cc2d7d6eca11"
+        },
+        {
+          "index": 1,
+          "html": "<p class=\"md-p\">Sandbox harness 负责接收任务、配置环境、调用执行工具、收集结果和收尾。它不等同模型推理循环，也不等同一个普通子进程。全局预算之外再按租户、模型、数据库和工具设配额。控制平面管理责任，执行平面运行受限负载；并发数由最紧资源与下游额度决定，不能等同 CPU 核数或会话数。</p>",
+          "sha256": "70d3c1b38aec81f3735392a58793355ef685f8089bfa04563d8f4d060fff1eb4"
+        },
+        {
+          "index": 2,
+          "html": "<h3 class=\"md-h md-h3\">控制平面和执行平面各有职责</h3>",
+          "sha256": "76dc6f9fa987c7478017bf01de013b6eb7b2404f2d2e14e5923dd84c28102020"
+        },
+        {
+          "index": 3,
+          "html": "<p class=\"md-p\">控制平面负责用户/租户身份、任务输入schema、环境版本、排队准入、状态机、期限、取消、审计和产物索引；执行平面在受限环境运行具体代码/工具，返回结构化结果、退出码、受限日志及产物manifest。模型生成的代码是工作负载，不能决定自己的权限或资源上限。</p>",
+          "sha256": "574cb733fe2ec18f684f01560f3ca53efd26ffa26142c684c97afdc677979da6"
+        },
+        {
+          "index": 4,
+          "html": "<h3 class=\"md-h md-h3\">并发不是CPU核数的同义词</h3>",
+          "sha256": "53e7bddd0b29a4f831669e38557359fd37f074d3f5d3ceaef6a4657eb2c45d76"
+        },
+        {
+          "index": 5,
+          "html": "<p class=\"md-p\">粗略准入上限可从min(可用内存/每实例预算、可用CPU/每实例CPU需求、PID/FD/磁盘/网络及下游配额容量)取约束；整数向下取整且留控制面和突发余量。CPU需求是有测量口径的平均/峰值与配额，不是所有IO任务永远独占一核。</p>",
+          "sha256": "1da696eb0abf583d333fc62838c407a029294df816124626fb1373b008429035"
+        },
+        {
+          "index": 6,
+          "html": "<p class=\"md-p\">容量上限由最紧的约束决定。例如留出系统余量后还有 24GiB，每实例预算 1.5GiB，内存允许的候选上限是 16；但 CPU 或 API 并发只允许 8，就不能按 16 放行。</p>",
+          "sha256": "a950eb313d869f0858f983e8286e9de9c94d94d60c3ae6ed2b559b3c7dd8fe39"
+        },
+        {
+          "index": 7,
+          "html": "<p class=\"md-p\">还要考虑长尾、同时峰值和启动峰值，不能简单拿平均 RSS 乘实例数。总在途资源需要上限，可按任务类型分池，并保留过载拒绝或排队策略。</p>",
+          "sha256": "77c3405e86ab1432b9f3d8c2613d655f844beed5a2795639ff64e2f6d93a02be"
+        },
+        {
+          "index": 8,
+          "html": "<h3 class=\"md-h md-h3\">把每一种可耗尽资源加上界</h3>",
+          "sha256": "ddf65cca2e050e7883afcbb15b31cdda8ad4b379477eaacd88f18e266505095d"
+        },
+        {
+          "index": 9,
+          "html": "<p class=\"md-p\">CPU时间/核配额、memory.max、pids.max、工作目录大小/inode、FD、出站连接、stdout/stderr、产物数与运行期限分别限制；网络默认按任务需要开放目标，避免云元数据、宿主socket和无关内网暴露。cgroup的内存限制不自动等于磁盘配额，也不替代输出截断。</p>",
+          "sha256": "be8ed9ed33e6d6c538445cd6b7d90036d3914a1528495e3a6353ca18c8532333"
+        },
+        {
+          "index": 10,
+          "html": "<p class=\"md-p\">请求队列也必须有容量和排队超时。按租户公平调度、限制一个用户的大任务占满整个池，预热池只能复用已清洁或租户允许复用的环境；缩短冷启动不能以泄露上一任务文件/秘密为代价。</p>",
+          "sha256": "f6f0768f95e9bcf6102c5b7a04ab6033d18abfc806f692d3739b0a43159cf4eb"
+        },
+        {
+          "index": 11,
+          "html": "<h3 class=\"md-h md-h3\">容量账与任务状态一起更新</h3>",
+          "sha256": "534fe81f8bd3833110e30b10a6d77bbe9949dda337f28462b7e3853cf0d5a7f2"
+        },
+        {
+          "index": 12,
+          "html": "<p class=\"md-p\">按任务 ID、attempt、代次与 deadline 跟踪 QUEUED、STARTING、RUNNING、DRAINING、FINISHED/FAILED/CANCELLED；取消后先停止分配新工作，资源实际收回后才释放容量，清理失败留待对账。完整终止合同见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>；结果未知时不能按失败盲重试，见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">失联恢复</a>。</p>",
+          "sha256": "074a4861db16f1d4702bf28f7c90ca2326a84620e35f7c2aed05550f8e62d17a"
+        },
+        {
+          "index": 13,
+          "html": "<p class=\"md-p\">replay 和 reset 要各自定义。重新发送一条相同命令，并不能证明执行环境已经干净。</p>",
+          "sha256": "593245f24b2eccaa69559cb76c32e107c7356bd031a46a035b29828ccae26a26"
+        },
+        {
+          "index": 14,
+          "html": "<h3 class=\"md-h md-h3\">验收以隔离和端到端行为为准</h3>",
+          "sha256": "da41f6d764538798cd762022fcf8636c90e38fcdf1e63b1d60bb549c46a87ef9"
+        },
+        {
+          "index": 15,
+          "html": "<p class=\"md-p\">压测正常、冷启动峰值、内存/磁盘/输出超额、进程派生、超时、取消竞态、执行器崩溃、租户交叉访问和回收失败；观察排队、启动/执行/清理时长、错误类别及稳态资源。只看请求成功数会漏掉后台进程与临时目录泄漏。</p>",
+          "sha256": "81f4ee3c6164b7f1c2364112523095e7bb98bd86f426ffaaf1c5d6258fe6db84"
+        },
+        {
+          "index": 16,
+          "html": "<p class=\"md-p\">这里只给设计和容量推算，未创建容器、microVM或调用商业沙箱，也没有运行逃逸攻击。Java可用有界队列和Semaphore表达控制平面准入，但它们本身不限制恶意子进程的内存/系统调用，OS级隔离仍由运行环境落实。</p>",
+          "sha256": "47ec61a6fe777a8bf78f939962725ffcc6f730495a7fbfa2bf8b4a0a060ea1ac"
+        },
+        {
+          "index": 17,
+          "html": "<p class=\"md-p\">每任务预算结合高分位消耗而不只看平均值，并留宿主与故障余量。CPU 任务增加线程不会线性加速，共享磁盘与下游模型可能先饱和。</p>",
+          "sha256": "6c78a38743ee24d9f6b2db25a550d55ace30dd8800fd10eaff45f3901c28df03"
+        },
+        {
+          "index": 18,
+          "html": "<h3 class=\"md-h md-h3\">状态通信与资源所有权</h3>",
+          "sha256": "f9c9db48cd92142fbfd5fd8905c88cb85c8dbe7f38c2add90f9ef2bda34bf3b1"
+        },
+        {
+          "index": 19,
+          "html": "<p class=\"md-p\">多个Worker共享任务状态时使用单一拥有者、消息传递或版本化更新，避免丢失更新与锁内网络调用。跨进程通过IPC或RPC传有界结构化消息，不能以共享内存自动等于共享安全对象。LLM输出到SSE前需要有界缓冲、慢消费者策略和持久游标，不能任意堆积token片段。</p>",
+          "sha256": "9b6b711a90b25903acf6a0e280bc243aa6b23df17e3a0eb660b28c9dfb417bf9"
+        },
+        {
+          "index": 20,
+          "html": "<p class=\"md-p\">上下文/缓存/向量检索结果都有生命周期，长期引用、后台任务和未关闭连接会形成资源泄漏；取消必须沿调用链传播，并最终回收进程、线程、句柄与订阅。不要把取消请求误认为远端工具副作用已回滚。</p>",
+          "sha256": "2c3c233c3389dacd4d7f845ea1fbd7e3afb25f0870a65f9902978c3bfe7e14fd"
+        },
+        {
+          "index": 21,
+          "html": "<h3 class=\"md-h md-h3\">本地 Coding Agent 迁到多人云端</h3>",
+          "sha256": "8d0c2d99f7add0bf538bb45522081cf130f17f14a124a8e66eae8ef2fb6f75c4"
+        },
+        {
+          "index": 22,
+          "html": "<p>把请求入口、任务账本、执行实例和成果存储拆开。受理后绑定租户、仓库提交、输入制品和环境版本，调度器创建或领取隔离执行环境；会话与任务状态在持久层，代码与产物通过受控版本化存储恢复，不能依赖某台容器的临时盘。</p>",
+          "sha256": "9eedf22c1a67017269cb714bdc860456a5aa4c99f6305c219deeeac3b8b0403f"
+        },
+        {
+          "index": 23,
+          "html": "<p>预热池减少启动延迟，但复用前要验证进程、文件、环境变量、凭据和网络状态已清理；无法证明干净就销毁，不跨租户复用脏工作区。空闲回收与业务取消分开，在途任务按租约和回执处理。扩容先测启动成本、CPU/内存/I/O与下游模型额度，不能从桌面能跑推断云端多租户已经安全。</p>",
+          "sha256": "6f487fc64602f316adcf7ee9a43f211682ba382a7c69e5d0224454831d06f59e"
+        },
+        {
+          "index": 24,
+          "html": "<p class=\"md-p\">空闲会话可只保留持久元数据，执行任务时再按风险领取实例，不同用户不必各常驻一个 Docker。共享进程避免全局可变用户状态，身份、工作区和产物归属按<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">工作区合同</a>校验。</p>",
+          "sha256": "ddf61ed82f8a6f95d70e2c1f46eb0496fa86bbbb136239fcb22dc510508ba54a"
+        },
+        {
+          "index": 25,
+          "html": "<p class=\"md-p\">隔离层的兼容性、启动开销和攻击面见<a href=\"#/e/ai-agent-8/6\">容器与 VM 取舍</a>；1000 个任务的集群容量、模型与沙箱两类配额见<a href=\"#/e/new-systems-sandbox-multitenant\">多租户沙箱设计</a>；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>不能简化为重发命令。</p>",
+          "sha256": "8a2c23db534bb381d276702a633ba4a46dc7b5b7a4898c3893fb6451b8a58440"
+        }
+      ]
+    }
+  ],
+  "originalFiles": {
+    "tests/fixtures/agent-execution-safety.json": "8ed659c51f6130ccdba7a437f4beba6701d577ebaf7d304da8502d984f3a4b38",
+    "tests/fixtures/agent-answer-contracts/expected.json": "510d039db7bdebf6ee15229dd45617fb9f394cf9cd56af9ce7c83989f21c24cf",
+    "tests/fixtures/agent-answer-contracts/phase3-migration-reconciliation.json": "1ade703eae8f6c0aa03068dde795cab3be126b25bccfc88f1da2fb5ebbc823a9",
+    "tests/fixtures/mq-semantic/expected.json": "d79b77161594204ab4349b8dee50c9a93c5bd40e7d5d34b969242a107a170367"
+  },
+  "sandboxBeforeEntry": {
+    "id": "own-os-sandbox",
+    "kind": "qa",
+    "mod": "bagu",
+    "part": "操作系统与 Linux",
+    "cat": "Agent受控执行",
+    "title": "Agent受控执行",
+    "number": "",
+    "source": "操作系统与 Linux 面试复习手册",
+    "items": [
+      {
+        "id": "q-own-os-reset-replay",
+        "q": "沙箱为什么需要reset和replay 怎样保证状态重置与可解释回放？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>reset 通过隔离旧任务并恢复明确的初始状态，让下一次运行可比较；replay 通过带版本与顺序的事件记录解释运行过程，必须区分不产生副作用的离线回放和重新执行。</p><h2 class=\"md-h md-h2\">沙箱为什么需要reset和replay 怎样保证状态重置与可解释回放</h2><h3 class=\"md-h md-h3\">相关追问</h3><ol class=\"md-list\"><li>为什么要reset replay怎么设计的，有什么用呢</li></ol><h3 class=\"md-h md-h3\">reset建立下一次运行的共同起点</h3><p class=\"md-p\">一次任务可能改变文件、进程、服务内存、工作目录、时间状态、端口、缓存、随机数和外部数据。若下一次接着用脏环境，结果受上次副作用影响，评测不公平、错误难复现，还可能跨租户泄漏。reset的契约应列清哪些状态恢复、哪些允许保留、完成后有哪些不变量。</p><p class=\"md-p\">可从固定镜像/快照新建环境，或停止全部任务后恢复受控卷、进程和服务状态；只清对话历史或rm几个文件不等于完整重置。快照可能含秘密、连接和随机状态，恢复时也需核对代次/身份、失效旧句柄并重新建立必要外部连接。</p><h3 class=\"md-h md-h3\">重置必须与活跃任务互斥</h3><p class=\"md-p\">reset 的关键，是先挡住旧任务，再发布新环境。先关闭当前代次入口，取消或排空所属执行，确认进程树和 I/O 结束，再撤销临时授权、恢复文件与服务，最后为新环境分配新的代次编号（epoch），再发布 READY 状态。</p><p class=\"md-p\">旧任务的迟到回调、续租和清理请求，都要因 epoch 不匹配而拒绝，否则环境刚重置，就可能又被旧写入污染。</p><p class=\"md-p\">崩溃后重试reset需幂等，步骤有记录并能对账。对于无法可靠清理的环境，销毁重建通常比猜测已经干净更稳妥。远程数据库、已发消息等外部副作用不会被VM快照回滚，必须用专用测试租户、事务/补偿或受控mock限制影响。</p><h3 class=\"md-h md-h3\">replay有两种不同目的</h3><p class=\"md-p\">replay 要先说明是“重放记录”，还是“重新做一遍”。离线事件回放把记录的输入、工具请求和响应、观察、退出或错误、时间顺序交给状态机，用于复现控制逻辑、调试和比较策略，不再次产生真实副作用。</p><p class=\"md-p\">重新执行则从同版本基线再跑动作，检查是否满足同一契约。这两种方式的保证不同，不能都笼统叫“完全复现”。</p><p class=\"md-p\">事件日志应有run/attempt/epoch、单调序号、环境/代码版本、输入产物hash、动作参数、已脱敏响应、取消及结果提交点。持久事件与状态发布需明确先后关系，否则崩溃在动作完成但记录未写入时会产生结果未知，不能凭缺日志就断言未执行。</p><h3 class=\"md-h md-h3\">随机种子不是完整确定性</h3><p class=\"md-p\">记录随机seed和必要RNG状态、依赖版本、数据与时间/网络响应；真实线程调度、异步竞态、GPU规约顺序和第三方服务仍会带不确定性。完全确定的模拟环境可比逐步状态hash；真实系统更多比较输出容差、允许事件顺序和业务不变量，而不是承诺每一个比特都完全一致（bitwise 一致）。</p><p class=\"md-p\">在Agent训练环境，reset使episode开始状态受控，step产生观察/奖励/终止信号；replay可用于定位失败、离线评估与复用已记录轨迹。它与算法里的经验回放buffer不是同一基础设施概念，两种含义应在讨论前明确区分。</p><h3 class=\"md-h md-h3\">如何证明恢复闭环有效</h3><p class=\"md-p\">构造写文件后崩溃、reset过程中再次崩溃、旧进程晚回写、重复事件、乱序消息、外部响应改变和版本变更；检查新run只看到允许的初始状态，离线回放不触发真副作用，重新执行有明确差异报告。</p><p class=\"md-p\">清理所有权结合Agent session临时文件该放主服务还是skill进程 怎样决定删除时机 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnKisLrpRAUwBZKI10CsZ8Oe)，资源和准入结合Sandbox harness怎样组织执行 并发沙箱数量如何受资源和隔离约束 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnjR1XkQWRqdTfspoWFJzKpm)；重建环境的成功证据不能只是一条“reset请求已发送”。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>沙箱为什么需要reset和replay 怎样保证状态重置与可解释回放？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Linux</li><li>Java后端</li><li>保留原始条件</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java后端</li><li>Linux</li><li>版本与边界</li></ul>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>reset 通过隔离旧任务并恢复明确的初始状态，让下一次运行可比较；replay 通过带版本与顺序的事件记录解释运行过程，必须区分不产生副作用的离线回放和重新执行。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-command-workspace",
+        "q": "Coding Agent 怎样限制命令、工作区与间接执行权限？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>审批绑定真实对象与参数，路径检查与实际打开绑定，窄工具和 OS 防线共同限制副作用。</p><p class=\"md-p\">把动作按读取/本地可恢复写入/外发数据/不可恢复删除/改权限与安全设置/执行未知代码等分类，再结合目标、数据敏感性、范围和可恢复性定策略。同名命令不同参数可能风险完全不同，读取文件也可能泄露秘密；模型说“安全”和返回schema合规都不是授权。</p><h3 class=\"md-h md-h3\">把授权绑定到可执行的请求</h3><p class=\"md-p\">尽量开放读取指定仓库、运行固定测试等窄工具。策略入口验证主体、资源和动作，可信审批绑定规范化参数、工作目录、最小环境、输入摘要与期限；外部 README、网页和工具输出不能扩大授权。执行前重新检查当前授权与资源版本，一次确认也不能变成任意脚本的永久许可。</p><h3 class=\"md-h md-h3\">不能只黑名单几个命令字符串</h3><p class=\"md-p\">危险执行不能靠搜索 rm、sudo 几个字符串拦住。shell 还有引用、变量展开、管道、重定向、子命令、脚本、解释器、符号链接和间接启动，字符串黑名单表达不了这些效果。</p><p class=\"md-p\">优先使用结构化 argv 和已知工具允许列表，固定可执行文件解析、受控 cwd 和最小环境。即使绕过 shell，git、配置、插件、编译器等程序自身也可能启动子命令，能力和输入仍要限制。</p><h3 class=\"md-h md-h3\">路径检查与实际打开绑定</h3><p class=\"md-p\">先限定根目录与操作类型，按平台规则处理路径，拒绝未获准的绝对路径、设备路径等形式。规范化后的目标仍须在授权根内；符号链接、硬链接、挂载点与并发替换可能绕过字符串前缀。只做 realpath 后再无条件打开仍有 TOCTOU：使用平台支持的目录 FD/句柄相对访问、受限制的解析 API 与链接策略，把检查绑定到实际打开；受限挂载与沙箱继续缩小可达范围。压缩包条目、上传文件名和工具 Resource 路径也使用同一合同。</p><h3 class=\"md-h md-h3\">工作区身份与真正的修改</h3><p class=\"md-p\">每次运行明确 tenant/user/workspace/run、私有临时目录和产物所有权；共享仓库用受控分支、worktree 或快照，并验证当前基线。工作区隔离不等于任意代码安全隔离，多人实例分配与回收见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-capacity\">并发资源池</a>。</p><p class=\"md-p\">记录基线、实际改动文件与完整 diff、工具动作和测试回执，摘要不能隐藏删除、重命名或未归类改动。提交时检查目标版本，只改批准范围，避免覆盖用户同时编辑。产物先放隔离区，校验后再按授权提交；日志脱敏，保留目标/参数摘要、批准、退出原因与结果核验。</p><p class=\"md-p\">测试应包含路径穿越、符号链接竞争、间接脚本、子进程遗留、网络外传、超限以及审批参数变化，不能只用一次“危险命令被拒绝”宣布安全。</p><h4>Coding Agent 怎样安全组织 ripgrep 查询</h4><p>用固定可执行文件和参数数组传入检索词、目录和选项，避免把模型文本拼成 shell。明确要字面匹配还是正则；字面匹配可用 fixed-strings，搜索词以短横线开头时也要明确作为模式而非选项传入。目录必须落在授权工作区，限制文件类型、输出量与运行时间。</p><p>无命中、参数错误和执行失败分别返回；被忽略或未扫描的文件不能算“证明不存在”。先搜索相关符号，再按位置读上下文，不能只凭一个命中行修改代码。</p><h4>Claude Code 的沙箱边界怎样说准确</h4><p>按当前官方文档，内置 Bash 沙箱由操作系统限制 shell 命令及子进程的文件和网络访问；它不是把整个产品的所有能力都装进同一个隔离边界。内置文件工具、MCP 服务和 hooks 等需按各自权限与执行方式另外审查，不能只看到 sandbox 开关就认为秘密不可读或所有网络访问都受同一规则约束。</p><p>说明实际平台、产品版本和生效配置，检查哪些路径可读写、哪些网络可达、环境变量是否含秘密，以及沙箱不可用时是拒绝运行还是降级。使用无敏感数据的受控测试验证边界；若要统一隔离所有进程，需要评估进程外容器或虚拟机等部署方式。</p><h3 class=\"md-h md-h3\">工具进程与 URL 入口</h3><p class=\"md-p\">stdio 不照搬 HTTP OAuth 握手。Host 启动本地工具进程时，按实现合同提供必要环境或其他受控凭据通道；原则是最小化环境继承、避免命令行泄漏、隔离工作目录和文件访问范围。继承整个 os.environ 很方便，但会扩大子进程能看到的秘密范围，不能把它当作安全最佳实践。</p><p class=\"md-p\">URL 工具还要约束 SSRF、重定向后的真实目标和下载大小；协议客户端能启动进程，不代表该进程已成为沙箱。命令运行时的预算、子孙进程终止与资源回收见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>。</p><p class=\"md-p\">审批、幂等与当前授权的关系见<a href=\"#/e/own-tools-governance/q-own-tools-approval-idempotency\">工具治理</a>；隔离机制选型见<a href=\"#/e/ai-agent-8/6\">容器、gVisor 与虚拟机</a>。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>审批绑定真实对象与参数，路径检查与实际打开绑定，窄工具和 OS 防线共同限制副作用。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-sandbox-lifecycle",
+        "q": "E2B 等沙箱怎样管理创建、暂停恢复、取消与销毁？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>把任务、命令、连接和沙箱状态分开；pause/resume 保存的状态与 kill 的终态不同。</p><p class=\"md-p\">E2B 是执行基础设施：可以用它管理隔离 Linux 环境，并另外负责工具授权、任务状态和结果验收。创建、连接、暂停恢复、终止是不同动作，不能把断流、超时和销毁混为一谈。</p><h3 class=\"md-h md-h3\">执行环境与Agent推理编排分层</h3><p class=\"md-p\">E2B提供可由SDK管理的隔离Linux执行环境，用于执行代码、命令和工具处理数据；它解决的是执行基础设施，不替代模型、规划、工具授权或结果校验。模板定义初始软件/文件环境，控制平面管理创建、连接、状态与销毁，工作负载在隔离环境里运行。</p><p class=\"md-p\">E2B的隔离设计以每沙箱一台Firecracker microVM和独立guest kernel为边界，与只共享宿主内核的普通容器不同。虚拟化可以减少部分共享攻击面，但不保证绝无漏洞，也不替代对文件、网络、凭据和用户数据的最小权限控制。</p><h3 class=\"md-h md-h3\">安全协议还要有最小权限和预算</h3><p class=\"md-p\">宿主执行器只接受通过鉴权的任务与限定参数，限制CPU/内存/PID/磁盘/输出体积/执行期限，按租户隔离文件与网络；出站网络、云元数据、挂载和凭据注入要有明确策略。模型生成命令或检索内容是待验证输入，不是自行扩大执行权限的授权。</p><p class=\"md-p\">只检查命令字符串不足以替代隔离，代码可通过文件、子进程或网络产生副作用。日志需脱敏，结果与产物按类型/大小校验，清理任务结束后的进程/临时文件与临时凭据。快照或复用环境可能保留旧状态，要确认租户边界与重置策略。</p><h3 class=\"md-h md-h3\">生命周期和取消是可观察状态机</h3><p class=\"md-p\">沙箱的“调用超时”“命令结束”“环境销毁”是三个不同状态。创建后记录 sandbox ID、任务 ID/代次、期限和资源归属，执行时逐项追踪；stream 断开不说明后台已经停止。</p><p class=\"md-p\">确实要停，就调用文档支持的命令或沙箱终止能力，再核对状态。清理失败要留记录，继续重试对账，不能把请求已发当成收尾完成。</p><p class=\"md-p\">当前生命周期文档有create/connect/pause/resume/kill及可配置到期行为；暂停可能保留内存和文件系统，并非销毁。不要把旧版“超时一定删除”或某套餐时长写成永久保证。恢复快照也不自动回滚已经写入外部数据库或第三方服务的副作用，仍需幂等与结果查询。</p><h3 class=\"md-h md-h3\">怎样诚实回答使用经历</h3><p class=\"md-p\">若确实用过，应补真实SDK/模板版本、创建和收尾流程、权限限制、超时/失败实验、延迟/资源与成本观测；如果只阅读或做过其他Sandbox方案，明确区分阅读了解、原型和生产使用。</p><h3 class=\"md-h md-h3\">取消等待与实际收尾分开</h3><p class=\"md-p\">父任务取消以后，停止提交新工具，向在途操作传递取消，收集各调用的最终或未知状态，再关闭自己拥有的资源。不能关闭借来的共享线程池或共享连接池。工具级 cancel 不代表整个业务工作流都回滚；对已生效步骤，补偿也要有独立权限、幂等和失败处理。</p><p class=\"md-p\">取消能否及时完成，取决于执行代码是否合作。Java 的 Future.cancel(true) 只是请求中断；忽略中断的 CPU 循环、不可中断的阻塞调用或本机扩展，仍可能继续占用资源。等待超时也不能证明任务退出。I/O 使用匹配的异步客户端或有界线程隔离，CPU 密集任务使用合适的工作池；需要故障隔离时评估独立进程或作业服务，并计入启动、序列化和内存复制成本。</p><p class=\"md-p\">面对不可信代码，进程隔离还不够，通常需要容器或沙箱、文件/网络访问策略、资源配额和清理子孙进程的能力。只运行受控本地函数的实验，不能据此声称能安全执行任意模型代码。</p><p class=\"md-p\">需要复用环境时，再按<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay 的合同</a>关闭旧代次、验证干净状态。重建环境后的业务接管见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">执行器失联恢复</a>。这里核对的是设计与文档，没有运行 E2B、容器或微虚机实验。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>把任务、命令、连接和沙箱状态分开；pause/resume 保存的状态与 kill 的终态不同。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-sandbox-build-test",
+        "q": "本地补丁怎样送入沙箱，构建、启动服务并完成集成验收？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>固定代码与环境版本，约束安装和构建权限，验证 readiness、真实效果与最终清理。</p><p class=\"md-p\">我会固定输入版本，在受限环境完成依赖安装、构建、服务就绪检查和端到端断言，最后回收进程与临时资源。Worker 先校验输入摘要再执行，保存有期限的受控证据。代码传到了沙箱、命令返回 0、服务可连通和业务通过验收是不同证据。</p><h3 class=\"md-h md-h3\">先固定要执行的版本和最小输入</h3><p class=\"md-p\">送去测试的，必须是明确的一版代码。先固定提交号，再列出允许带入的补丁和未跟踪文件，保留目录结构、锁文件、构建配置，并记录文件或归档哈希。</p><p class=\"md-p\">可以通过受控仓库 checkout、平台文件 API 或私有制品传入。本地有未提交改动时，只 clone 远端主分支会漏代码；反过来，复制整个家目录又可能带走凭据和无关数据。</p><p class=\"md-p\">包内路径必须限制在沙箱工作目录，拒绝路径穿越/不安全符号链接；限制文件数、总字节与解压膨胀。向任何远端传真实代码和秘密都要符合授权与数据边界，不能因为Agent生成了上传命令就认为获准。E2B示例files.write说明文件传入能力，不意味着自动同步整个仓库或自动管理所有依赖。</p><h3 class=\"md-h md-h3\">隔离环境要同时约束构建与测试</h3><p class=\"md-p\">根据语言/架构选固定模板或镜像，锁定依赖版本并校验来源，优先复用已准备依赖的环境以减少每次冷启动。安装脚本和编译插件也能执行代码，必须在与测试相同的权限、网络和资源边界内运行，不能只在测试阶段才隔离。</p><p class=\"md-p\">按项目定义执行编译/类型检查、单元、契约与集成测试，检查退出码、结构化报告和必要产物，区分编译失败、断言失败、依赖网络问题、超时和资源耗尽。测试通过只覆盖所测行为，不能自动证明代码没有安全问题或适合生产。</p><h3 class=\"md-h md-h3\">启动服务不是命令一返回就算成功</h3><p class=\"md-p\">确定工作目录、入口、环境的非秘密配置、监听地址与端口，启动拥有可追踪句柄的长运行进程，保留stdout/stderr和启动退出状态。普通前台运行会一直占着命令会话，后台模式必须保有PID/句柄与收尾责任；SDK超时或连接断开不自动证明服务已终止。</p><p class=\"md-p\">服务是否起来，要用有上限的 readiness 检查证明，不能只等两秒或看一行 started。至少核对进程仍存活、端口可连，以及健康接口返回的身份、版本和必要依赖状态。</p><p class=\"md-p\">在 Linux 容器或微 VM 内绑定 0.0.0.0，只说明监听那个网络边界内的接口。对外仍需要平台端口代理或转发与认证策略，不能把它等同安全公网发布。</p><h3 class=\"md-h md-h3\">集成验证和清理构成同一生命周期</h3><p class=\"md-p\">从测试客户端调用真实约定接口，断言状态、响应字段和副作用；依赖用明确的测试库/假服务或隔离实例，不能误连生产。失败时采集有界且脱敏的日志、退出码和报告，用任务/运行代次关联，输出文件再次校验类型/大小与授权目标。</p><p class=\"md-p\">在finally里停止所属服务和子进程，先合作退出并限时等待，再按平台能力终止整个任务边界；确认终态、关闭句柄、移除临时工作区或按政策销毁沙箱。暂停/快照不是销毁，重试也不能撤销已经发往外部系统的副作用。</p><p class=\"md-p\">测试清单既包括接口契约，也包括受影响页面或跨服务链路的真实行为；不因某个单元测试通过就代替整条集成验收。回传环境版本、实际 diff、受限日志、断言与产物引用，验收器按预先约定确认，不能误连生产或携带生产凭据。</p><p class=\"md-p\">工作区路径与审批参数的 TOCTOU 防线见<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">命令与工作区边界</a>；启动后丢失应答或执行器崩溃见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">持久恢复协议</a>。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>固定代码与环境版本，约束安装和构建权限，验证 readiness、真实效果与最终清理。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-sandbox-capacity",
+        "q": "Sandbox harness 怎样限制资源与并发，并管理多租户实例？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p><p class=\"md-p\">Sandbox harness 负责接收任务、配置环境、调用执行工具、收集结果和收尾。它不等同模型推理循环，也不等同一个普通子进程。全局预算之外再按租户、模型、数据库和工具设配额。控制平面管理责任，执行平面运行受限负载；并发数由最紧资源与下游额度决定，不能等同 CPU 核数或会话数。</p><h3 class=\"md-h md-h3\">控制平面和执行平面各有职责</h3><p class=\"md-p\">控制平面负责用户/租户身份、任务输入schema、环境版本、排队准入、状态机、期限、取消、审计和产物索引；执行平面在受限环境运行具体代码/工具，返回结构化结果、退出码、受限日志及产物manifest。模型生成的代码是工作负载，不能决定自己的权限或资源上限。</p><h3 class=\"md-h md-h3\">并发不是CPU核数的同义词</h3><p class=\"md-p\">粗略准入上限可从min(可用内存/每实例预算、可用CPU/每实例CPU需求、PID/FD/磁盘/网络及下游配额容量)取约束；整数向下取整且留控制面和突发余量。CPU需求是有测量口径的平均/峰值与配额，不是所有IO任务永远独占一核。</p><p class=\"md-p\">容量上限由最紧的约束决定。例如留出系统余量后还有 24GiB，每实例预算 1.5GiB，内存允许的候选上限是 16；但 CPU 或 API 并发只允许 8，就不能按 16 放行。</p><p class=\"md-p\">还要考虑长尾、同时峰值和启动峰值，不能简单拿平均 RSS 乘实例数。总在途资源需要上限，可按任务类型分池，并保留过载拒绝或排队策略。</p><h3 class=\"md-h md-h3\">把每一种可耗尽资源加上界</h3><p class=\"md-p\">CPU时间/核配额、memory.max、pids.max、工作目录大小/inode、FD、出站连接、stdout/stderr、产物数与运行期限分别限制；网络默认按任务需要开放目标，避免云元数据、宿主socket和无关内网暴露。cgroup的内存限制不自动等于磁盘配额，也不替代输出截断。</p><p class=\"md-p\">请求队列也必须有容量和排队超时。按租户公平调度、限制一个用户的大任务占满整个池，预热池只能复用已清洁或租户允许复用的环境；缩短冷启动不能以泄露上一任务文件/秘密为代价。</p><h3 class=\"md-h md-h3\">容量账与任务状态一起更新</h3><p class=\"md-p\">按任务 ID、attempt、代次与 deadline 跟踪 QUEUED、STARTING、RUNNING、DRAINING、FINISHED/FAILED/CANCELLED；取消后先停止分配新工作，资源实际收回后才释放容量，清理失败留待对账。完整终止合同见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>；结果未知时不能按失败盲重试，见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">失联恢复</a>。</p><p class=\"md-p\">replay 和 reset 要各自定义。重新发送一条相同命令，并不能证明执行环境已经干净。</p><h3 class=\"md-h md-h3\">验收以隔离和端到端行为为准</h3><p class=\"md-p\">压测正常、冷启动峰值、内存/磁盘/输出超额、进程派生、超时、取消竞态、执行器崩溃、租户交叉访问和回收失败；观察排队、启动/执行/清理时长、错误类别及稳态资源。只看请求成功数会漏掉后台进程与临时目录泄漏。</p><p class=\"md-p\">这里只给设计和容量推算，未创建容器、microVM或调用商业沙箱，也没有运行逃逸攻击。Java可用有界队列和Semaphore表达控制平面准入，但它们本身不限制恶意子进程的内存/系统调用，OS级隔离仍由运行环境落实。</p><p class=\"md-p\">每任务预算结合高分位消耗而不只看平均值，并留宿主与故障余量。CPU 任务增加线程不会线性加速，共享磁盘与下游模型可能先饱和。</p><h3 class=\"md-h md-h3\">状态通信与资源所有权</h3><p class=\"md-p\">多个Worker共享任务状态时使用单一拥有者、消息传递或版本化更新，避免丢失更新与锁内网络调用。跨进程通过IPC或RPC传有界结构化消息，不能以共享内存自动等于共享安全对象。LLM输出到SSE前需要有界缓冲、慢消费者策略和持久游标，不能任意堆积token片段。</p><p class=\"md-p\">上下文/缓存/向量检索结果都有生命周期，长期引用、后台任务和未关闭连接会形成资源泄漏；取消必须沿调用链传播，并最终回收进程、线程、句柄与订阅。不要把取消请求误认为远端工具副作用已回滚。</p><h3 class=\"md-h md-h3\">本地 Coding Agent 迁到多人云端</h3><p>把请求入口、任务账本、执行实例和成果存储拆开。受理后绑定租户、仓库提交、输入制品和环境版本，调度器创建或领取隔离执行环境；会话与任务状态在持久层，代码与产物通过受控版本化存储恢复，不能依赖某台容器的临时盘。</p><p>预热池减少启动延迟，但复用前要验证进程、文件、环境变量、凭据和网络状态已清理；无法证明干净就销毁，不跨租户复用脏工作区。空闲回收与业务取消分开，在途任务按租约和回执处理。扩容先测启动成本、CPU/内存/I/O与下游模型额度，不能从桌面能跑推断云端多租户已经安全。</p><p class=\"md-p\">空闲会话可只保留持久元数据，执行任务时再按风险领取实例，不同用户不必各常驻一个 Docker。共享进程避免全局可变用户状态，身份、工作区和产物归属按<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">工作区合同</a>校验。</p><p class=\"md-p\">隔离层的兼容性、启动开销和攻击面见<a href=\"#/e/ai-agent-8/6\">容器与 VM 取舍</a>；1000 个任务的集群容量、模型与沙箱两类配额见<a href=\"#/e/new-systems-sandbox-multitenant\">多租户沙箱设计</a>；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>不能简化为重发命令。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-executor-recovery",
+        "q": "沙箱或执行器失联后，怎样恢复任务而不重复外部副作用？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>恢复持久事实、沿稳定操作身份核对；纯计算与未知写入采用不同的重试条件。</p><p class=\"md-p\">我先恢复持久任务责任，再判断能否重新执行。重建容器只重建环境，不会恢复旧指令位置，也不会撤销外部副作用。先区分创建失败、执行中失联与回传失败，保存 task/attempt/sandbox ID 和输入、产物版本。约定脚本语言、资源、执行期限及输入输出合同，长任务再设步数和费用预算。</p><h3 class=\"md-h md-h3\">先持久受理，再授权执行</h3><p class=\"md-p\">以已鉴权的 tenant/requestId 绑定不可变 artifactHash、输入引用、运行时与镜像版本、资源和权限范围、deadline。同键同合同返回同一任务，同键异参拒绝；提供状态查询、取消请求及受限产物访问，绝不把 HTTP 字段拼成宿主 shell。权威存储同时保存任务与待派发事件，MQ 只负责唤醒。大输入与产物用不可变对象引用。</p><p class=\"md-p\">任务账保存 taskId、上述输入合同、状态、owner、attempt/epoch、租约和结果。领取是单一权威的条件转换，租约不得超过 deadline；执行器按可信能力领取，创建稳定 sandboxOperationId，启动前重验制品哈希、资源与当前权限。输出先写隔离临时区，校验后提交产物清单。HTTP 受理、环境启动和业务完成是三个不同状态。</p><h3 class=\"md-h md-h3\">运行中挂掉按最后持久状态处理</h3><p class=\"md-p\">监督器检查进程/环境健康，独立任务扫描器查租约和进展超时，不能只看心跳。环境崩溃后从最后已提交检查点在新环境重建所需输入，纯计算可重跑；未提交临时产物隔离并清理，不把半个文件作为最终结果。</p><p class=\"md-p\">普通重建不能恢复原CPU指令位置、内存变量、socket或远程调用。若业务支持应用级checkpoint，则恢复其明确内容；特殊进程快照另有内核/设备/连接兼容性，不作为默认能力。本地事务 checkpoint 与租约可以作为控制面实验，但这类状态保护不构成真实沙箱验证。</p><h3 class=\"md-h md-h3\">失联之后先处理 UNKNOWN</h3><p class=\"md-p\">控制面超时不证明执行已停止，网络分区后的旧环境可能仍运行。失联或租约过期且存在未知外部效果时进入 UNKNOWN，不能直接回 QUEUED。沿稳定 operationId 查询真实执行器或资源端，只接受有证据的结论：</p><ul class=\"md-list\"><li>已成功，且拿到验证过的产物。</li><li>已失败，并确认不会继续运行。</li><li>尚未启动，而且旧请求以后也不可能再启动。</li></ul><p class=\"md-p\">无外部副作用且输入固定的纯函数可在预算内重新计算。外部写入可以重做的条件是：目的端提供覆盖原操作、原载荷和重试窗口的有效幂等保证；或可信证据证明未执行/失败无效果，并且旧请求以后也不会生效。否则保持 UNKNOWN，继续查询、转人工或按业务协议补偿。不能换业务键重发，也不能把超时、缺日志或调用者自报未执行当证据。</p><p class=\"md-p\">新领取递增 epoch，提交核对当前 owner、epoch、租约与 deadline，拒绝旧回包覆盖新结果。涉及外部写入时，幂等或 fencing 还须在资源端生效；协调器拒绝旧结果不会撤销旧进程已发出的 HTTP 请求、邮件或扣款。</p><p class=\"md-p\">取消先持久化CANCEL_REQUESTED，阻止新步骤并请求环境终止，确认清理后转终态；已开始的副作用按协议补偿/待核实。异常分类决定重试预算：输入错误/权限拒绝不盲重试，节点故障可重新创建，重复OOM应调资源/输入或失败可见。</p><h3 class=\"md-h md-h3\">验收</h3><p class=\"md-p\">注入启动前后、输出上传中、效果完成但checkpoint前、租约过期旧环境复活等窗口；核对只有已校验产物被发布、任务不无故消失且不可重复效果受保护。度量排队、创建/运行时间、资源峰值、孤儿环境、最老无进展任务和恢复时间。</p><p class=\"md-p\">内存 ScriptControl 实验只在核实未启动且旧请求不能迟到启动后重排；本地持久 ScriptService 实验只运行两个有界纯函数，允许预算内重算。两者完整接口、Java 实现、精确限制及故障测试见<a href=\"#/e/own-practice-agent-script-recovery\">执行接管手撕实验</a>。<a href=\"#/e/handwrite-69\">任务 checkpoint/resume</a>另讲工作区漂移和本地事务；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>另讲环境状态与离线轨迹。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>恢复持久事实、沿稳定操作身份核对；纯计算与未知写入采用不同的重试条件。</p>",
+        "leadType": "authored"
+      }
+    ]
+  },
+  "sandboxAfterEntry": {
+    "id": "own-os-sandbox",
+    "kind": "qa",
+    "mod": "bagu",
+    "part": "操作系统与 Linux",
+    "cat": "Agent受控执行",
+    "title": "Agent受控执行",
+    "number": "",
+    "source": "操作系统与 Linux 面试复习手册",
+    "items": [
+      {
+        "id": "q-own-os-reset-replay",
+        "q": "沙箱为什么需要reset和replay 怎样保证状态重置与可解释回放？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>reset 通过隔离旧任务并恢复明确的初始状态，让下一次运行可比较；replay 通过带版本与顺序的事件记录解释运行过程，必须区分不产生副作用的离线回放和重新执行。</p><h2 class=\"md-h md-h2\">沙箱为什么需要reset和replay 怎样保证状态重置与可解释回放</h2><h3 class=\"md-h md-h3\">相关追问</h3><ol class=\"md-list\"><li>为什么要reset replay怎么设计的，有什么用呢</li></ol><h3 class=\"md-h md-h3\">reset建立下一次运行的共同起点</h3><p class=\"md-p\">一次任务可能改变文件、进程、服务内存、工作目录、时间状态、端口、缓存、随机数和外部数据。若下一次接着用脏环境，结果受上次副作用影响，评测不公平、错误难复现，还可能跨租户泄漏。reset的契约应列清哪些状态恢复、哪些允许保留、完成后有哪些不变量。</p><p class=\"md-p\">可从固定镜像/快照新建环境，或停止全部任务后恢复受控卷、进程和服务状态；只清对话历史或rm几个文件不等于完整重置。快照可能含秘密、连接和随机状态，恢复时也需核对代次/身份、失效旧句柄并重新建立必要外部连接。</p><h3 class=\"md-h md-h3\">重置必须与活跃任务互斥</h3><p class=\"md-p\">reset 的关键，是先挡住旧任务，再发布新环境。先关闭当前代次入口，取消或排空所属执行，确认进程树和 I/O 结束，再撤销临时授权、恢复文件与服务，最后为新环境分配新的代次编号（epoch），再发布 READY 状态。</p><p class=\"md-p\">旧任务的迟到回调、续租和清理请求，都要因 epoch 不匹配而拒绝，否则环境刚重置，就可能又被旧写入污染。</p><p class=\"md-p\">崩溃后重试reset需幂等，步骤有记录并能对账。对于无法可靠清理的环境，销毁重建通常比猜测已经干净更稳妥。远程数据库、已发消息等外部副作用不会被VM快照回滚，必须用专用测试租户、事务/补偿或受控mock限制影响。</p><h3 class=\"md-h md-h3\">replay有两种不同目的</h3><p class=\"md-p\">replay 要先说明是“重放记录”，还是“重新做一遍”。离线事件回放把记录的输入、工具请求和响应、观察、退出或错误、时间顺序交给状态机，用于复现控制逻辑、调试和比较策略，不再次产生真实副作用。</p><p class=\"md-p\">重新执行则从同版本基线再跑动作，检查是否满足同一契约。这两种方式的保证不同，不能都笼统叫“完全复现”。</p><p class=\"md-p\">事件日志应有run/attempt/epoch、单调序号、环境/代码版本、输入产物hash、动作参数、已脱敏响应、取消及结果提交点。持久事件与状态发布需明确先后关系，否则崩溃在动作完成但记录未写入时会产生结果未知，不能凭缺日志就断言未执行。</p><h3 class=\"md-h md-h3\">随机种子不是完整确定性</h3><p class=\"md-p\">记录随机seed和必要RNG状态、依赖版本、数据与时间/网络响应；真实线程调度、异步竞态、GPU规约顺序和第三方服务仍会带不确定性。完全确定的模拟环境可比逐步状态hash；真实系统更多比较输出容差、允许事件顺序和业务不变量，而不是承诺每一个比特都完全一致（bitwise 一致）。</p><p class=\"md-p\">在Agent训练环境，reset使episode开始状态受控，step产生观察/奖励/终止信号；replay可用于定位失败、离线评估与复用已记录轨迹。它与算法里的经验回放buffer不是同一基础设施概念，两种含义应在讨论前明确区分。</p><h3 class=\"md-h md-h3\">如何证明恢复闭环有效</h3><p class=\"md-p\">构造写文件后崩溃、reset过程中再次崩溃、旧进程晚回写、重复事件、乱序消息、外部响应改变和版本变更；检查新run只看到允许的初始状态，离线回放不触发真副作用，重新执行有明确差异报告。</p><p class=\"md-p\">清理所有权结合Agent session临时文件该放主服务还是skill进程 怎样决定删除时机 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnKisLrpRAUwBZKI10CsZ8Oe)，资源和准入结合Sandbox harness怎样组织执行 并发沙箱数量如何受资源和隔离约束 (https://my.feishu.cn/wiki/RSRkw1EaUiOJX8kB9DkcUJoDnFh#doxcnjR1XkQWRqdTfspoWFJzKpm)；重建环境的成功证据不能只是一条“reset请求已发送”。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>沙箱为什么需要reset和replay 怎样保证状态重置与可解释回放？</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Linux</li><li>Java后端</li><li>保留原始条件</li></ul><h3 class=\"md-h md-h3\">标签</h3><ul class=\"md-list\"><li>Java后端</li><li>Linux</li><li>版本与边界</li></ul>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>reset 通过隔离旧任务并恢复明确的初始状态，让下一次运行可比较；replay 通过带版本与顺序的事件记录解释运行过程，必须区分不产生副作用的离线回放和重新执行。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-command-workspace",
+        "q": "Coding Agent 怎样限制命令、工作区与间接执行权限？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>审批绑定真实对象与参数，路径检查与实际打开绑定，窄工具和 OS 防线共同限制副作用。</p><p class=\"md-p\">把动作按读取/本地可恢复写入/外发数据/不可恢复删除/改权限与安全设置/执行未知代码等分类，再结合目标、数据敏感性、范围和可恢复性定策略。同名命令不同参数可能风险完全不同，读取文件也可能泄露秘密；模型说“安全”和返回schema合规都不是授权。</p><h3 class=\"md-h md-h3\">把授权绑定到可执行的请求</h3><p class=\"md-p\">尽量开放读取指定仓库、运行固定测试等窄工具。策略入口验证主体、资源和动作，可信审批绑定规范化参数、工作目录、最小环境、输入摘要与期限；外部 README、网页和工具输出不能扩大授权。执行前重新检查当前授权与资源版本，一次确认也不能变成任意脚本的永久许可。</p><h3 class=\"md-h md-h3\">不能只黑名单几个命令字符串</h3><p class=\"md-p\">危险执行不能靠搜索 rm、sudo 几个字符串拦住。shell 还有引用、变量展开、管道、重定向、子命令、脚本、解释器、符号链接和间接启动，字符串黑名单表达不了这些效果。</p><p class=\"md-p\">优先使用结构化 argv 和已知工具允许列表，固定可执行文件解析、受控 cwd 和最小环境。即使绕过 shell，git、配置、插件、编译器等程序自身也可能启动子命令，能力和输入仍要限制。</p><h3 class=\"md-h md-h3\">路径检查与实际打开绑定</h3><p class=\"md-p\">先限定根目录与操作类型，按平台规则处理路径，拒绝未获准的绝对路径、设备路径等形式。规范化后的目标仍须在授权根内；符号链接、硬链接、挂载点与并发替换可能绕过字符串前缀。只做 realpath 后再无条件打开仍有 TOCTOU：使用平台支持的目录 FD/句柄相对访问、受限制的解析 API 与链接策略，把检查绑定到实际打开；受限挂载与沙箱继续缩小可达范围。压缩包条目、上传文件名和工具 Resource 路径也使用同一合同。</p><h3 class=\"md-h md-h3\">工作区身份与真正的修改</h3><p class=\"md-p\">每次运行明确 tenant/user/workspace/run、私有临时目录和产物所有权；共享仓库用受控分支、worktree 或快照，并验证当前基线。工作区隔离不等于任意代码安全隔离，多人实例分配与回收见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-capacity\">并发资源池</a>。</p><p class=\"md-p\">记录基线、实际改动文件与完整 diff、工具动作和测试回执，摘要不能隐藏删除、重命名或未归类改动。提交时检查目标版本，只改批准范围，避免覆盖用户同时编辑。产物先放隔离区，校验后再按授权提交；日志脱敏，保留目标/参数摘要、批准、退出原因与结果核验。</p><p class=\"md-p\">测试应包含路径穿越、符号链接竞争、间接脚本、子进程遗留、网络外传、超限以及审批参数变化，不能只用一次“危险命令被拒绝”宣布安全。</p><h4>Coding Agent 怎样安全组织 ripgrep 查询</h4><p>用固定可执行文件和参数数组传入检索词、目录和选项，避免把模型文本拼成 shell。明确要字面匹配还是正则；字面匹配可用 fixed-strings，搜索词以短横线开头时也要明确作为模式而非选项传入。目录必须落在授权工作区，限制文件类型、输出量与运行时间。</p><p>无命中、参数错误和执行失败分别返回；被忽略或未扫描的文件不能算“证明不存在”。先搜索相关符号，再按位置读上下文，不能只凭一个命中行修改代码。</p><h4>Claude Code 的沙箱边界怎样说准确</h4><p>按当前官方文档，内置 Bash 沙箱由操作系统限制 shell 命令及子进程的文件和网络访问；它不是把整个产品的所有能力都装进同一个隔离边界。内置文件工具、MCP 服务和 hooks 等需按各自权限与执行方式另外审查，不能只看到 sandbox 开关就认为秘密不可读或所有网络访问都受同一规则约束。</p><p>说明实际平台、产品版本和生效配置，检查哪些路径可读写、哪些网络可达、环境变量是否含秘密，以及沙箱不可用时是拒绝运行还是降级。使用无敏感数据的受控测试验证边界；若要统一隔离所有进程，需要评估进程外容器或虚拟机等部署方式。</p><h3 class=\"md-h md-h3\">工具进程与 URL 入口</h3><p class=\"md-p\">stdio 不照搬 HTTP OAuth 握手。Host 启动本地工具进程时，按实现合同提供必要环境或其他受控凭据通道；原则是最小化环境继承、避免命令行泄漏、隔离工作目录和文件访问范围。继承整个 os.environ 很方便，但会扩大子进程能看到的秘密范围，不能把它当作安全最佳实践。</p><p class=\"md-p\">URL 工具还要约束 SSRF、重定向后的真实目标和下载大小；协议客户端能启动进程，不代表该进程已成为沙箱。命令运行时的预算、子孙进程终止与资源回收见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>。</p><p class=\"md-p\">审批、幂等与当前授权的关系见<a href=\"#/e/own-tools-governance/q-own-tools-approval-idempotency\">工具治理</a>；隔离机制选型见<a href=\"#/e/ai-agent-8/6\">容器、gVisor 与虚拟机</a>。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>审批绑定真实对象与参数，路径检查与实际打开绑定，窄工具和 OS 防线共同限制副作用。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-sandbox-lifecycle",
+        "q": "E2B 等沙箱怎样管理创建、暂停恢复、取消与销毁？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>把任务、命令、连接和沙箱状态分开；pause/resume 保存的状态与 kill 的终态不同。</p><p class=\"md-p\">E2B 是执行基础设施：可以用它管理隔离 Linux 环境，并另外负责工具授权、任务状态和结果验收。创建、连接、暂停恢复、终止是不同动作，不能把断流、超时和销毁混为一谈。</p><h3 class=\"md-h md-h3\">执行环境与Agent推理编排分层</h3><p class=\"md-p\">E2B提供可由SDK管理的隔离Linux执行环境，用于执行代码、命令和工具处理数据；它解决的是执行基础设施，不替代模型、规划、工具授权或结果校验。模板定义初始软件/文件环境，控制平面管理创建、连接、状态与销毁，工作负载在隔离环境里运行。</p><p class=\"md-p\">E2B的隔离设计以每沙箱一台Firecracker microVM和独立guest kernel为边界，与只共享宿主内核的普通容器不同。虚拟化可以减少部分共享攻击面，但不保证绝无漏洞，也不替代对文件、网络、凭据和用户数据的最小权限控制。</p><h3 class=\"md-h md-h3\">安全协议还要有最小权限和预算</h3><p class=\"md-p\">宿主执行器只接受通过鉴权的任务与限定参数，限制CPU/内存/PID/磁盘/输出体积/执行期限，按租户隔离文件与网络；出站网络、云元数据、挂载和凭据注入要有明确策略。模型生成命令或检索内容是待验证输入，不是自行扩大执行权限的授权。</p><p class=\"md-p\">只检查命令字符串不足以替代隔离，代码可通过文件、子进程或网络产生副作用。日志需脱敏，结果与产物按类型/大小校验，清理任务结束后的进程/临时文件与临时凭据。快照或复用环境可能保留旧状态，要确认租户边界与重置策略。</p><h3 class=\"md-h md-h3\">生命周期和取消是可观察状态机</h3><p class=\"md-p\">沙箱的“调用超时”“命令结束”“环境销毁”是三个不同状态。创建后记录 sandbox ID、任务 ID/代次、期限和资源归属，执行时逐项追踪；stream 断开不说明后台已经停止。</p><p class=\"md-p\">确实要停，就调用文档支持的命令或沙箱终止能力，再核对状态。清理失败要留记录，继续重试对账，不能把请求已发当成收尾完成。</p><p class=\"md-p\">当前生命周期文档有create/connect/pause/resume/kill及可配置到期行为；暂停可能保留内存和文件系统，并非销毁。不要把旧版“超时一定删除”或某套餐时长写成永久保证。恢复快照也不自动回滚已经写入外部数据库或第三方服务的副作用，仍需幂等与结果查询。</p><h3 class=\"md-h md-h3\">怎样诚实回答使用经历</h3><p class=\"md-p\">若确实用过，应补真实SDK/模板版本、创建和收尾流程、权限限制、超时/失败实验、延迟/资源与成本观测；如果只阅读或做过其他Sandbox方案，明确区分阅读了解、原型和生产使用。</p><h3 class=\"md-h md-h3\">取消等待与实际收尾分开</h3><p class=\"md-p\">父任务取消以后，停止提交新工具，向在途操作传递取消，收集各调用的最终或未知状态，再关闭自己拥有的资源。不能关闭借来的共享线程池或共享连接池。工具级 cancel 不代表整个业务工作流都回滚；对已生效步骤，补偿也要有独立权限、幂等和失败处理。</p><p class=\"md-p\">取消能否及时完成，取决于执行代码是否合作。Java 的 Future.cancel(true) 只是请求中断；忽略中断的 CPU 循环、不可中断的阻塞调用或本机扩展，仍可能继续占用资源。等待超时也不能证明任务退出。I/O 使用匹配的异步客户端或有界线程隔离，CPU 密集任务使用合适的工作池；需要故障隔离时评估独立进程或作业服务，并计入启动、序列化和内存复制成本。</p><p class=\"md-p\">面对不可信代码，进程隔离还不够，通常需要容器或沙箱、文件/网络访问策略、资源配额和清理子孙进程的能力。只运行受控本地函数的实验，不能据此声称能安全执行任意模型代码。</p><p class=\"md-p\">需要复用环境时，再按<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay 的合同</a>关闭旧代次、验证干净状态。重建环境后的业务接管见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">执行器失联恢复</a>。这里核对的是设计与文档，没有运行 E2B、容器或微虚机实验。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>把任务、命令、连接和沙箱状态分开；pause/resume 保存的状态与 kill 的终态不同。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-sandbox-build-test",
+        "q": "本地补丁怎样送入沙箱，构建、启动服务并完成集成验收？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>固定代码与环境版本，约束安装和构建权限，验证 readiness、真实效果与最终清理。</p><p class=\"md-p\">我会固定输入版本，在受限环境完成依赖安装、构建、服务就绪检查和端到端断言，最后回收进程与临时资源。Worker 先校验输入摘要再执行，保存有期限的受控证据。代码传到了沙箱、命令返回 0、服务可连通和业务通过验收是不同证据。</p><h3 class=\"md-h md-h3\">先固定要执行的版本和最小输入</h3><p class=\"md-p\">送去测试的，必须是明确的一版代码。先固定提交号，再列出允许带入的补丁和未跟踪文件，保留目录结构、锁文件、构建配置，并记录文件或归档哈希。</p><p class=\"md-p\">可以通过受控仓库 checkout、平台文件 API 或私有制品传入。本地有未提交改动时，只 clone 远端主分支会漏代码；反过来，复制整个家目录又可能带走凭据和无关数据。</p><p class=\"md-p\">包内路径必须限制在沙箱工作目录，拒绝路径穿越/不安全符号链接；限制文件数、总字节与解压膨胀。向任何远端传真实代码和秘密都要符合授权与数据边界，不能因为Agent生成了上传命令就认为获准。E2B示例files.write说明文件传入能力，不意味着自动同步整个仓库或自动管理所有依赖。</p><h3 class=\"md-h md-h3\">隔离环境要同时约束构建与测试</h3><p class=\"md-p\">根据语言/架构选固定模板或镜像，锁定依赖版本并校验来源，优先复用已准备依赖的环境以减少每次冷启动。安装脚本和编译插件也能执行代码，必须在与测试相同的权限、网络和资源边界内运行，不能只在测试阶段才隔离。</p><p class=\"md-p\">按项目定义执行编译/类型检查、单元、契约与集成测试，检查退出码、结构化报告和必要产物，区分编译失败、断言失败、依赖网络问题、超时和资源耗尽。测试通过只覆盖所测行为，不能自动证明代码没有安全问题或适合生产。</p><h3 class=\"md-h md-h3\">启动服务不是命令一返回就算成功</h3><p class=\"md-p\">确定工作目录、入口、环境的非秘密配置、监听地址与端口，启动拥有可追踪句柄的长运行进程，保留stdout/stderr和启动退出状态。普通前台运行会一直占着命令会话，后台模式必须保有PID/句柄与收尾责任；SDK超时或连接断开不自动证明服务已终止。</p><p class=\"md-p\">服务是否起来，要用有上限的 readiness 检查证明，不能只等两秒或看一行 started。至少核对进程仍存活、端口可连，以及健康接口返回的身份、版本和必要依赖状态。</p><p class=\"md-p\">在 Linux 容器或微 VM 内绑定 0.0.0.0，只说明监听那个网络边界内的接口。对外仍需要平台端口代理或转发与认证策略，不能把它等同安全公网发布。</p><h3 class=\"md-h md-h3\">集成验证和清理构成同一生命周期</h3><p class=\"md-p\">从测试客户端调用真实约定接口，断言状态、响应字段和副作用；依赖用明确的测试库/假服务或隔离实例，不能误连生产。失败时采集有界且脱敏的日志、退出码和报告，用任务/运行代次关联，输出文件再次校验类型/大小与授权目标。</p><p class=\"md-p\">在finally里停止所属服务和子进程，先合作退出并限时等待，再按平台能力终止整个任务边界；确认终态、关闭句柄、移除临时工作区或按政策销毁沙箱。暂停/快照不是销毁，重试也不能撤销已经发往外部系统的副作用。</p><p class=\"md-p\">测试清单既包括接口契约，也包括受影响页面或跨服务链路的真实行为；不因某个单元测试通过就代替整条集成验收。回传环境版本、实际 diff、受限日志、断言与产物引用，验收器按预先约定确认，不能误连生产或携带生产凭据。</p><p class=\"md-p\">工作区路径与审批参数的 TOCTOU 防线见<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">命令与工作区边界</a>；启动后丢失应答或执行器崩溃见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">持久恢复协议</a>。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>固定代码与环境版本，约束安装和构建权限，验证 readiness、真实效果与最终清理。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-sandbox-capacity",
+        "q": "Sandbox harness 怎样限制资源与并发，并管理多租户实例？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p><p class=\"md-p\">Sandbox harness 负责接收任务、配置环境、调用执行工具、收集结果和收尾。它不等同模型推理循环，也不等同一个普通子进程。全局预算之外再按租户、模型、数据库和工具设配额。控制平面管理责任，执行平面运行受限负载；并发数由最紧资源与下游额度决定，不能等同 CPU 核数或会话数。</p><h3 class=\"md-h md-h3\">控制平面和执行平面各有职责</h3><p class=\"md-p\">控制平面负责用户/租户身份、任务输入schema、环境版本、排队准入、状态机、期限、取消、审计和产物索引；执行平面在受限环境运行具体代码/工具，返回结构化结果、退出码、受限日志及产物manifest。模型生成的代码是工作负载，不能决定自己的权限或资源上限。</p><h3 class=\"md-h md-h3\">并发不是CPU核数的同义词</h3><p class=\"md-p\">粗略准入上限可从min(可用内存/每实例预算、可用CPU/每实例CPU需求、PID/FD/磁盘/网络及下游配额容量)取约束；整数向下取整且留控制面和突发余量。CPU需求是有测量口径的平均/峰值与配额，不是所有IO任务永远独占一核。</p><p class=\"md-p\">容量上限由最紧的约束决定。例如留出系统余量后还有 24GiB，每实例预算 1.5GiB，内存允许的候选上限是 16；但 CPU 或 API 并发只允许 8，就不能按 16 放行。</p><p class=\"md-p\">还要考虑长尾、同时峰值和启动峰值，不能简单拿平均 RSS 乘实例数。总在途资源需要上限，可按任务类型分池，并保留过载拒绝或排队策略。</p><h3 class=\"md-h md-h3\">把每一种可耗尽资源加上界</h3><p class=\"md-p\">CPU时间/核配额、memory.max、pids.max、工作目录大小/inode、FD、出站连接、stdout/stderr、产物数与运行期限分别限制；网络默认按任务需要开放目标，避免云元数据、宿主socket和无关内网暴露。cgroup的内存限制不自动等于磁盘配额，也不替代输出截断。</p><p class=\"md-p\">请求队列也必须有容量和排队超时。按租户公平调度、限制一个用户的大任务占满整个池，预热池只能复用已清洁或租户允许复用的环境；缩短冷启动不能以泄露上一任务文件/秘密为代价。</p><h3 class=\"md-h md-h3\">容量账与任务状态一起更新</h3><p class=\"md-p\">按任务 ID、attempt、代次与 deadline 跟踪 QUEUED、STARTING、RUNNING、DRAINING、FINISHED/FAILED/CANCELLED；取消后先停止分配新工作，资源实际收回后才释放容量，清理失败留待对账。完整终止合同见<a href=\"#/e/own-os-sandbox/q-agent-sandbox-lifecycle\">生命周期与取消</a>；结果未知时不能按失败盲重试，见<a href=\"#/e/own-os-sandbox/q-agent-executor-recovery\">失联恢复</a>。</p><p class=\"md-p\">replay 和 reset 要各自定义。重新发送一条相同命令，并不能证明执行环境已经干净。</p><h3 class=\"md-h md-h3\">验收以隔离和端到端行为为准</h3><p class=\"md-p\">压测正常、冷启动峰值、内存/磁盘/输出超额、进程派生、超时、取消竞态、执行器崩溃、租户交叉访问和回收失败；观察排队、启动/执行/清理时长、错误类别及稳态资源。只看请求成功数会漏掉后台进程与临时目录泄漏。</p><p class=\"md-p\">这里只给设计和容量推算，未创建容器、microVM或调用商业沙箱，也没有运行逃逸攻击。Java可用有界队列和Semaphore表达控制平面准入，但它们本身不限制恶意子进程的内存/系统调用，OS级隔离仍由运行环境落实。</p><p class=\"md-p\">每任务预算结合高分位消耗而不只看平均值，并留宿主与故障余量。CPU 任务增加线程不会线性加速，共享磁盘与下游模型可能先饱和。</p><h3 class=\"md-h md-h3\">状态通信与资源所有权</h3><p class=\"md-p\">多个Worker共享任务状态时使用单一拥有者、消息传递或版本化更新，避免丢失更新与锁内网络调用。跨进程通过IPC或RPC传有界结构化消息，不能以共享内存自动等于共享安全对象。LLM输出到SSE前需要有界缓冲、慢消费者策略和持久游标，不能任意堆积token片段。</p><p class=\"md-p\">上下文/缓存/向量检索结果都有生命周期，长期引用、后台任务和未关闭连接会形成资源泄漏；取消必须沿调用链传播，并最终回收进程、线程、句柄与订阅。不要把取消请求误认为远端工具副作用已回滚。</p><h3 class=\"md-h md-h3\">本地 Coding Agent 迁到多人云端</h3><p>把请求入口、任务账本、执行实例和成果存储拆开。受理后绑定租户、仓库提交、输入制品和环境版本，调度器创建或领取隔离执行环境；会话与任务状态在持久层，代码与产物通过受控版本化存储恢复，不能依赖某台容器的临时盘。</p><p>预热池减少启动延迟，但复用前要验证进程、文件、环境变量、凭据和网络状态已清理；无法证明干净就销毁，不跨租户复用脏工作区。空闲回收与业务取消分开，在途任务按租约和回执处理。扩容先测启动成本、CPU/内存/I/O与下游模型额度，不能从桌面能跑推断云端多租户已经安全。</p><p class=\"md-p\">空闲会话可只保留持久元数据，执行任务时再按风险领取实例，不同用户不必各常驻一个 Docker。共享进程避免全局可变用户状态，身份、工作区和产物归属按<a href=\"#/e/own-os-sandbox/q-agent-command-workspace\">工作区合同</a>校验。</p><p class=\"md-p\">隔离层的兼容性、启动开销和攻击面见<a href=\"#/e/ai-agent-8/6\">容器与 VM 取舍</a>；1000 个任务的集群容量、模型与沙箱两类配额见<a href=\"#/e/new-systems-sandbox-multitenant\">多租户沙箱设计</a>；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>不能简化为重发命令。</p><h3 class=\"md-h md-h3\">工具 Pod 冷启动数十秒，ReAct 怎样等待？</h3><p class=\"md-p\">把执行环境准备与业务执行分开，区分排队、准备中、可执行、执行中和终态。先返回稳定任务 ID，通过查询或订阅进度等待；不要让模型反复调用同一工具探测启动，也不要让同步连接无限等待。</p><p class=\"md-p\">按业务 SLO 分别设置准备期限与执行期限，并共同受总 deadline 约束；预热或最小常驻副本减少等待，却增加空闲成本，应按负载比较。冷启动本身有独立并发上限，避免突发创建耗尽集群。ready 只证明可以接收请求，不是业务成功；准备已经超期或取消后到达的迟到 ready，必须核对当前任务代次与期限，不能重新派发。</p><p class=\"md-p\">取消后回收闲置资源，只有核对实际回收后才归还容量；已提交的写操作继续沿原身份查结果。重点测试启动失败、迟到 ready、重复提交和资源泄漏。生命周期、回收和未知副作用的完整处理沿用上文与关联题。</p><details class=\"qa-variants\"><summary>工具冷启动常见问法</summary><ul class=\"md-list\"><li>工具 Pod 冷启动数十秒，ReAct 应怎样等待？</li><li>ReAct Agent调用外部工具时，如果工具服务冷启动很慢（例如Pod需要数十秒），应该如何处理？</li></ul></details>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>控制平面持有任务责任，执行平面受限运行；并发由最紧资源、租户配额和下游容量决定。</p>",
+        "leadType": "authored"
+      },
+      {
+        "id": "q-agent-executor-recovery",
+        "q": "沙箱或执行器失联后，怎样恢复任务而不重复外部副作用？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>恢复持久事实、沿稳定操作身份核对；纯计算与未知写入采用不同的重试条件。</p><p class=\"md-p\">我先恢复持久任务责任，再判断能否重新执行。重建容器只重建环境，不会恢复旧指令位置，也不会撤销外部副作用。先区分创建失败、执行中失联与回传失败，保存 task/attempt/sandbox ID 和输入、产物版本。约定脚本语言、资源、执行期限及输入输出合同，长任务再设步数和费用预算。</p><h3 class=\"md-h md-h3\">先持久受理，再授权执行</h3><p class=\"md-p\">以已鉴权的 tenant/requestId 绑定不可变 artifactHash、输入引用、运行时与镜像版本、资源和权限范围、deadline。同键同合同返回同一任务，同键异参拒绝；提供状态查询、取消请求及受限产物访问，绝不把 HTTP 字段拼成宿主 shell。权威存储同时保存任务与待派发事件，MQ 只负责唤醒。大输入与产物用不可变对象引用。</p><p class=\"md-p\">任务账保存 taskId、上述输入合同、状态、owner、attempt/epoch、租约和结果。领取是单一权威的条件转换，租约不得超过 deadline；执行器按可信能力领取，创建稳定 sandboxOperationId，启动前重验制品哈希、资源与当前权限。输出先写隔离临时区，校验后提交产物清单。HTTP 受理、环境启动和业务完成是三个不同状态。</p><h3 class=\"md-h md-h3\">运行中挂掉按最后持久状态处理</h3><p class=\"md-p\">监督器检查进程/环境健康，独立任务扫描器查租约和进展超时，不能只看心跳。环境崩溃后从最后已提交检查点在新环境重建所需输入，纯计算可重跑；未提交临时产物隔离并清理，不把半个文件作为最终结果。</p><p class=\"md-p\">普通重建不能恢复原CPU指令位置、内存变量、socket或远程调用。若业务支持应用级checkpoint，则恢复其明确内容；特殊进程快照另有内核/设备/连接兼容性，不作为默认能力。本地事务 checkpoint 与租约可以作为控制面实验，但这类状态保护不构成真实沙箱验证。</p><h3 class=\"md-h md-h3\">失联之后先处理 UNKNOWN</h3><p class=\"md-p\">控制面超时不证明执行已停止，网络分区后的旧环境可能仍运行。失联或租约过期且存在未知外部效果时进入 UNKNOWN，不能直接回 QUEUED。沿稳定 operationId 查询真实执行器或资源端，只接受有证据的结论：</p><ul class=\"md-list\"><li>已成功，且拿到验证过的产物。</li><li>已失败，并确认不会继续运行。</li><li>尚未启动，而且旧请求以后也不可能再启动。</li></ul><p class=\"md-p\">无外部副作用且输入固定的纯函数可在预算内重新计算。外部写入可以重做的条件是：目的端提供覆盖原操作、原载荷和重试窗口的有效幂等保证；或可信证据证明未执行/失败无效果，并且旧请求以后也不会生效。否则保持 UNKNOWN，继续查询、转人工或按业务协议补偿。不能换业务键重发，也不能把超时、缺日志或调用者自报未执行当证据。</p><p class=\"md-p\">新领取递增 epoch，提交核对当前 owner、epoch、租约与 deadline，拒绝旧回包覆盖新结果。涉及外部写入时，幂等或 fencing 还须在资源端生效；协调器拒绝旧结果不会撤销旧进程已发出的 HTTP 请求、邮件或扣款。</p><p class=\"md-p\">取消先持久化CANCEL_REQUESTED，阻止新步骤并请求环境终止，确认清理后转终态；已开始的副作用按协议补偿/待核实。异常分类决定重试预算：输入错误/权限拒绝不盲重试，节点故障可重新创建，重复OOM应调资源/输入或失败可见。</p><h3 class=\"md-h md-h3\">验收</h3><p class=\"md-p\">注入启动前后、输出上传中、效果完成但checkpoint前、租约过期旧环境复活等窗口；核对只有已校验产物被发布、任务不无故消失且不可重复效果受保护。度量排队、创建/运行时间、资源峰值、孤儿环境、最老无进展任务和恢复时间。</p><p class=\"md-p\">内存 ScriptControl 实验只在核实未启动且旧请求不能迟到启动后重排；本地持久 ScriptService 实验只运行两个有界纯函数，允许预算内重算。两者完整接口、Java 实现、精确限制及故障测试见<a href=\"#/e/own-practice-agent-script-recovery\">执行接管手撕实验</a>。<a href=\"#/e/handwrite-69\">任务 checkpoint/resume</a>另讲工作区漂移和本地事务；<a href=\"#/e/own-os-sandbox/q-own-os-reset-replay\">reset/replay</a>另讲环境状态与离线轨迹。</p>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>恢复持久事实、沿稳定操作身份核对；纯计算与未知写入采用不同的重试条件。</p>",
+        "leadType": "authored"
+      }
+    ]
+  },
+  "sandboxBeforeSha256": "83f4462dfa4242f4d7ae00784c898314ce8db47d10c125e0fa6293ae40d236aa",
+  "sandboxAfterSha256": "d553dc849dddc3748f66f264a6eab3f0cbe8ba6fa06dc82e08f7db3c9999a966",
+  "mqOriginalVariants": [
+    "<details class=\"qa-variants\"><summary>其他问法（11）</summary><ul class=\"md-list\"><li>某个 topic 突然积压或消费 lag 增大，怎样判断真实积压、提交滞后、热点和长期消费能力不足，再提高有效处理率？</li><li>接口突然变慢如何逐段排查，同时保证 MQ 不丢和业务不重复？见 <a href=\"#/e/bg-kafka-3/2\">可靠性</a> 与 <a href=\"#/e/bg-kafka-3/3\">业务幂等</a>。</li><li>日志突增、上游持续快于下游时，如何用背压、有界队列、降级和其他削峰方式保护系统？</li><li>Kafka 任务调度怎样重试、退避和恢复，何时需要 MySQL 状态表与定时扫描？见 <a href=\"#/e/own-mq-reliability/q-own-mq-unknown-recovery\">重试与 UNKNOWN</a>、<a href=\"#/e/own-mq-reliability/q-own-mq-propagation-transactions\">持久传播与扫描边界</a>。</li><li>MQ 用于哪些场景，为什么选择 RabbitMQ？见 <a href=\"#/e/bg-kafka-1/0\">MQ 的作用</a> 与 <a href=\"#/e/bg-kafka-5/0\">消息模型选型</a>；积压与告警仍按本题分别诊断。</li><li>RocketMQ 延迟消息积压时，怎样仍守住优惠券过期规则？分别见 <a href=\"#/e/bg-rocketmq-3/1\">到期投递与实际执行</a>、<a href=\"#/e/own-distributed-ch08/q-own-distributed-coupon-rights\">券的有效期与权威状态</a>。</li><li>RabbitMQ 大量积压或连接阻塞怎样区分 ready、unacked 与发布受阻？见 <a href=\"#/e/bg-rabbitmq-4/1\">prefetch、流控与回压</a>。</li><li>RocketMQ 分发限流放发送端还是消费端，消费端降速怎样反馈上游？</li><li>MQ 告警面板怎样监测积压、业务 deadline 和恢复风险？见 <a href=\"#/e/bg-kafka-4/3\">监控指标与统计口径</a>。</li><li>消息队列满了怎么办，怎样保护接纳和持久责任，而不是把压力转入内存？</li><li>数亿条积压怎样扩容且不破坏局部有序？见 <a href=\"#/e/bg-kafka-3/0\">因果与顺序域</a>、<a href=\"#/e/bg-kafka-4/2\">扩分区与路由迁移</a>。</li></ul></details>"
+  ],
+  "mqAddedVariants": [
+    "<details class=\"qa-variants\"><summary>短信速率不匹配的常见问法</summary><ul class=\"md-list\"><li>- 短信平台只能承受 100 QPS，消息生产速度是 1 万 QPS，中间怎么做限流？怎么跟 MQ 消费结合？获取不到令牌时怎么处理？</li></ul></details>"
+  ]
+}

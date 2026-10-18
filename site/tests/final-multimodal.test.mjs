@@ -1,0 +1,8 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import{fileURLToPath}from'node:url';import{spawnSync}from'node:child_process';import{createHash}from'node:crypto';
+const root=fileURLToPath(new URL('../',import.meta.url)),dir=path.join(root,'tests/fixtures/multimodal');
+test('actual final visual and voice answers satisfy all24 preserved multimodal contracts',()=>{
+const expected=JSON.parse(fs.readFileSync(path.join(dir,'verifier-hashes.json'),'utf8'));
+const proofRaw=fs.readFileSync(path.join(dir,'sixth-archive-reconciliation.json'));assert.equal(createHash('sha256').update(proofRaw).digest('hex'),'7c63fa6ee3fdd4391cd7d2cad859341aa447f10dd1b26b5cf9a408c4085f7c9c');const proof=JSON.parse(proofRaw);assert.equal(createHash('sha256').update(fs.readFileSync(path.join(dir,'verifier-hashes.json'))).digest('hex'),proof.oldVerifierHashesSha256);for(const r of expected.files){const accepted=r.path==='test_multimodal.py'?(assert.equal(r.sha256,proof.oldVerifierSha256),'9fafd8cf3d78e444665a2c7baffd25507cd55bc7bb7b0cfe77846fcce02c4b95'):r.sha256;assert.equal(createHash('sha256').update(fs.readFileSync(path.join(dir,r.path))).digest('hex'),accepted,r.path);}
+const p=spawnSync('python3',[path.join(dir,'test_multimodal.py'),'--dist',path.join(root,'dist'),'--baseline-dist',path.join(dir,'baseline-dist')],{cwd:root,encoding:'utf8',timeout:60000,maxBuffer:4*1024*1024,env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}});
+assert.ifError(p.error);assert.equal(p.signal,null);assert.equal(p.status,0,p.stdout+'\n'+p.stderr);assert.match(p.stderr,/Ran 24 tests/);assert.match(p.stderr,/\nOK\s*$/);assert.doesNotMatch(p.stderr,/skipped|FAILED|ERROR/);
+});

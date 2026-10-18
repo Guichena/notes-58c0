@@ -1,0 +1,2 @@
+import test from 'node:test';import{execFileSync}from'node:child_process';import{fileURLToPath}from'node:url';
+test('Agent conflict main answer and code collaboration scenarios are separated without lost detail',()=>{execFileSync(process.execPath,[fileURLToPath(new URL('./fixtures/agent-conflict/verify-final.mjs',import.meta.url)),'--dist',fileURLToPath(new URL('../dist/',import.meta.url))],{stdio:'pipe'});});

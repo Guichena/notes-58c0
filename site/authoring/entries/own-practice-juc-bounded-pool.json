@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "draft": false,
+  "id": "own-practice-juc-bounded-pool",
+  "kind": "doc",
+  "module": "code",
+  "part": "代码手撕",
+  "category": "并发与任务调度",
+  "title": "有界线程池手写：接收、关闭与启动异常安全",
+  "sections": [
+    {
+      "id": "s-juc-pool-contract",
+      "title": "题目约定与可运行文件",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">实现固定 worker 数和有界等待队列：submit 明确接收或拒绝，返回 Future；shutdown 排空，shutdownNow 取消仍在队列的 Future 并中断 worker；awaitTermination 允许限时等待。先阅读<a href=\"#/e/own-juc-coordination/q-own-juc-bounded-pool\">状态机、所有权与关闭的口述答案</a>，再实现和验证。</p><p class=\"md-p\">使用 Java 21 API，无预览、第三方库、网络或真实服务。下载并解压完整包后，运行 python3 run_tests.py；Windows 可用 python run_tests.py。需要已有完整 JDK 21 或以上，运行器优先使用 JAVA_HOME，通过 jdk.compiler 模块编译。具体手动命令见包内 README。</p><p class=\"md-p\"><a href=\"assets/examples/juc-bounded-pool/bounded-pool-teaching.zip\" download>完整练习包</a>；<a href=\"assets/examples/juc-bounded-pool/BoundedPoolTeaching.java\" download>线程池源码</a>；<a href=\"assets/examples/juc-bounded-pool/Checks.java\" download>断言辅助类</a>；<a href=\"assets/examples/juc-bounded-pool/BoundedPoolStartupTest.java\" download>启动失败测试</a>；<a href=\"assets/examples/juc-bounded-pool/BoundedPoolContractTest.java\" download>所有权与取消测试</a>；<a href=\"assets/examples/juc-bounded-pool/run_tests.py\" download>本地运行器</a></p>"
+      }
+    },
+    {
+      "id": "s-juc-pool-source",
+      "title": "完整实现：BoundedPoolTeaching.java",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">gate 统一保护状态、队列和存活计数；worker 在锁外运行 FutureTask。先登记全部线程，再逐个预留计数并启动，已启动 worker 的计数只由自己的 finally 扣减。此文件的 main 使用同包 Checks.java，完整包已包含它。</p>"
+      },
+      "code": [
+        {
+          "language": "java",
+          "label": "BoundedPoolTeaching.java",
+          "value": "import java.util.*;\nimport java.util.concurrent.*;\n\n/** Fixed-size teaching pool with a bounded waiting queue.\n * Registration finishes before any start. Only failed start rolls back its reservation.\n * shutdownNow is cooperative: tasks ignoring interruption may keep workers alive.\n * This is a teaching pool, not a replacement for ThreadPoolExecutor.\n */\npublic final class BoundedPoolTeaching {\n    private enum State { RUNNING, SHUTDOWN, STOP }\n    private final Object gate = new Object();\n    private final ArrayDeque<FutureTask<?>> queue = new ArrayDeque<>();\n    private final Thread[] workers;\n    private final int capacity;\n    private State state = State.RUNNING;\n    private int alive;\n    // Package-private deterministic failure seam, not a public extension API.\n    // start must either start normally or throw BEFORE starting the thread.\n    interface Startup {\n        default void beforeRegister(BoundedPoolTeaching pool, int index) { }\n        default void start(Thread thread, int index) { thread.start(); }\n        default void afterStart(BoundedPoolTeaching pool, int index) { }\n    }\n    public BoundedPoolTeaching(int workerCount, int queueCapacity) {\n        this(workerCount, queueCapacity, new Startup() { });\n    }\n    BoundedPoolTeaching(int workerCount, int queueCapacity, Startup startup) {\n        if (workerCount <= 0 || queueCapacity <= 0) throw new IllegalArgumentException();\n        Objects.requireNonNull(startup);\n        capacity = queueCapacity;\n        workers = new Thread[workerCount];\n        try {\n            // Allocation/registration failure cannot strand a started, untracked worker.\n            for (int i = 0; i < workerCount; i++) {\n                startup.beforeRegister(this, i);\n                workers[i] = Thread.ofPlatform().name(\"bounded-r2-\" + i).unstarted(this::work);\n            }\n            for (int i = 0; i < workerCount; i++) {\n                synchronized (gate) { alive++; }\n                try { startup.start(workers[i], i); }\n                catch (RuntimeException | Error failure) {\n                    // No worker owns this reservation if start failed before starting.\n                    synchronized (gate) { alive--; gate.notifyAll(); }\n                    throw failure;\n                }\n                // Failure AFTER successful start must not decrement: work.finally owns it.\n                startup.afterStart(this, i);\n            }\n        } catch (RuntimeException | Error failure) { shutdownNow(); throw failure; }\n    }\n    Thread[] workersForTest() { return workers.clone(); }\n    int aliveForTest() { synchronized (gate) { return alive; } }\n    public <T> Future<T> submit(Callable<T> job) {\n        FutureTask<T> future = new FutureTask<>(Objects.requireNonNull(job));\n        synchronized (gate) {\n            if (state != State.RUNNING || queue.size() == capacity)\n                throw new RejectedExecutionException(\"closed or saturated\");\n            queue.addLast(future); gate.notifyAll();\n        }\n        return future;\n    }\n    private void work() {\n        try {\n            for (;;) {\n                FutureTask<?> task;\n                synchronized (gate) {\n                    while (queue.isEmpty() && state == State.RUNNING) {\n                        try { gate.wait(); }\n                        catch (InterruptedException ignored) { /* Recheck pool state under gate. */ }\n                    }\n                    if (state == State.STOP || (state == State.SHUTDOWN && queue.isEmpty())) return;\n                    // A previous task can leave its worker interrupted. Do not leak that status to the next task.\n                    Thread.interrupted();\n                    task = queue.removeFirst();\n                }\n                task.run(); // FutureTask captures ordinary task exceptions; no queue lock around user code.\n            }\n        } finally { synchronized (gate) { alive--; gate.notifyAll(); } }\n    }\n    public void shutdown() {\n        synchronized (gate) { if (state == State.RUNNING) state = State.SHUTDOWN; gate.notifyAll(); }\n    }\n    public List<Future<?>> shutdownNow() {\n        List<Future<?>> abandoned = new ArrayList<>();\n        synchronized (gate) {\n            state = State.STOP;\n            while (!queue.isEmpty()) abandoned.add(queue.removeFirst());\n            gate.notifyAll();\n        }\n        for (Future<?> future : abandoned) future.cancel(false);\n        for (Thread worker : workers) if (worker != null) worker.interrupt();\n        return List.copyOf(abandoned);\n    }\n    public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {\n        if (timeout < 0) throw new IllegalArgumentException();\n        long budget = unit.toNanos(timeout), start = System.nanoTime();\n        synchronized (gate) {\n            while (alive != 0) {\n                long remaining = budget - (System.nanoTime() - start);\n                if (remaining <= 0) return false;\n                TimeUnit.NANOSECONDS.timedWait(gate, remaining);\n            }\n            return true;\n        }\n    }\n    public static void main(String[] args) throws Exception {\n        BoundedPoolTeaching pool = new BoundedPoolTeaching(1, 1);\n        CountDownLatch running = new CountDownLatch(1), release = new CountDownLatch(1);\n        try {\n            Future<Integer> first = pool.submit(() -> { running.countDown(); Checks.await(release); return 1; });\n            Checks.await(running); Future<Integer> next = pool.submit(() -> 2);\n            try { pool.submit(() -> 3); throw new AssertionError(\"overflow accepted\"); }\n            catch (RejectedExecutionException expected) { }\n            pool.shutdown(); release.countDown();\n            Checks.that(Checks.get(first) == 1 && Checks.get(next) == 2, \"graceful drain\");\n            Checks.that(pool.awaitTermination(5, TimeUnit.SECONDS), \"graceful termination\");\n            try { pool.submit(() -> 4); throw new AssertionError(\"closed accepted\"); }\n            catch (RejectedExecutionException expected) { }\n        } finally { release.countDown(); pool.shutdownNow(); Checks.that(pool.awaitTermination(5, TimeUnit.SECONDS), \"pool stopped\"); }\n        BoundedPoolTeaching stopped = new BoundedPoolTeaching(1, 1);\n        CountDownLatch entered = new CountDownLatch(1), cleaned = new CountDownLatch(1);\n        try {\n            Future<?> active = stopped.submit(() -> {\n                entered.countDown(); try { new CountDownLatch(1).await(); }\n                finally { cleaned.countDown(); }\n                return null;\n            });\n            Checks.await(entered); Future<?> waiting = stopped.submit(() -> 9);\n            Checks.that(stopped.shutdownNow().size() == 1 && waiting.isCancelled(), \"queued future cancelled\");\n            Checks.await(cleaned); Checks.that(stopped.awaitTermination(5, TimeUnit.SECONDS), \"active task stopped\");\n            try { Checks.get(active); throw new AssertionError(\"expected interrupted task\"); }\n            catch (ExecutionException e) { Checks.that(e.getCause() instanceof InterruptedException, \"active interrupt\"); }\n        } finally { stopped.shutdownNow(); Checks.that(stopped.awaitTermination(5, TimeUnit.SECONDS), \"stop joined\"); }\n        BoundedPoolTeaching isolated = new BoundedPoolTeaching(1, 2);\n        try {\n            Checks.get(isolated.submit(() -> { Thread.currentThread().interrupt(); return 1; }));\n            Checks.that(!Checks.get(isolated.submit(() -> Thread.currentThread().isInterrupted())), \"worker interrupt state reset\");\n            Future<?> failed = isolated.submit(() -> { throw new IllegalArgumentException(\"task\"); });\n            try { Checks.get(failed); throw new AssertionError(\"lost failure\"); } catch (ExecutionException expected) { }\n            Checks.that(Checks.get(isolated.submit(() -> 7)) == 7, \"failure isolated\");\n        } finally { isolated.shutdownNow(); Checks.that(isolated.awaitTermination(5, TimeUnit.SECONDS), \"isolated pool stopped\"); }\n        System.out.println(\"BoundedPoolTeaching OK\");\n    }\n}\n"
+        }
+      ]
+    },
+    {
+      "id": "s-juc-pool-tests",
+      "title": "怎样验证正常路径和失败窗口",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">BoundedPoolStartupTest 分别在第二个线程登记前、第二个线程启动前和首个线程启动成功后注入受控 Error。断言原异常保留、拒绝新提交、alive 恰好归零，并 join 检查实际线程退出；还运行饱和拒绝、优雅排空、排队取消、任务异常隔离和中断复位。</p><p class=\"md-p\">BoundedPoolContractTest 用门闩控制：运行任务忽略中断时，awaitTermination 返回 false；任务已出队但尚未进入 Callable 时，shutdownNow 不能再把它取回，Callable 还可能随后开始。该测试通过反射在真实 gate 内放入一个测试专用 FutureTask 包装，包装只暂停 Callable 前的边界，不修改线程池实现；反射不是业务 API。</p><p class=\"md-p\">标准 ThreadPoolExecutor 对照测试让全部已运行任务受门闩阻塞：core=2、max=4、队列容量=2 时，前六项中四项运行、两项排队，第七项拒绝。CallerRuns 由提交线程执行；关闭后提交可能被该策略静默丢弃。标准池返回的排队 Future 由测试显式取消。</p><p class=\"md-p\">每次观察等待有上界，故意忽略中断的任务都有测试拥有者释放的退出门闩。通过测试不等于证明所有调度交错；验证不依赖 sleep 猜测，也不制造真实 OOM。</p>"
+      }
+    },
+    {
+      "id": "s-juc-pool-limits",
+      "title": "复杂度与适用边界",
+      "body": {
+        "format": "html",
+        "value": "<p class=\"md-p\">设 worker 数为 P、等待队列容量为 Q：正常提交和取队列为摊还 O(1)，shutdownNow 处理排队任务及发出中断请求为 O(Q+P)，管理空间为 O(Q+P)，任务闭包、线程栈和用户代码资源另计。锁竞争、任务耗时和调度等待不包含在这项操作计数里。</p><p class=\"md-p\">Startup 仅用于包内测试，start 必须正常启动或在真正启动前抛错。构造失败只请求已登记线程停止，不承诺返回时已经 join；VM 崩溃、不可恢复资源耗尽、interrupt 自身失败不在恢复保证内。</p><p class=\"md-p\">这个池主动取消被 shutdownNow 取回的排队 Future；标准 ThreadPoolExecutor 不保证替你做这一步。任务忽略中断可能不退出，必须检查 awaitTermination；也不能把 Future 的取消、任务结束和业务副作用回滚混为一谈。</p><p class=\"md-p\">教学实现没有动态扩缩容、业务钩子、线程工厂配置、完备监控或持久化。生产优先使用 ThreadPoolExecutor，按内存、等待时延、CPU/I/O 和下游容量配置，并给线程池明确的生命周期所有者。</p>"
+      }
+    }
+  ],
+  "related": [
+    {
+      "entryId": "own-juc-coordination",
+      "questionId": "q-own-juc-bounded-pool",
+      "label": "线程池设计的口述答案"
+    },
+    {
+      "entryId": "handwrite-58",
+      "label": "线程池参数与容量推导"
+    },
+    {
+      "entryId": "own-juc-execution",
+      "questionId": "q-own-juc-executor-termination",
+      "label": "终止确认与 Future 收尾"
+    }
+  ]
+}

@@ -192,6 +192,56 @@ export function compileAuthoring(originalEntries,documents,identity) {
  applyExtensions(originalEntries,entries,documents,new Map(entries.map(e=>[e.id,e])),snapshot);
  return entries;
 }
+
+// Questions for a registry-created QA entry cannot enter the frozen-original
+// compiler. Defer only those registered targets, then compile with the same
+// question validator/renderer after the merge's complete source guards run.
+export function prepareMergedQuestionAuthoring(documents,registry,{baselineTest=false}={}) {
+ if(baselineTest)return {documents,compile:entries=>entries};
+ if(!Array.isArray(registry?.records))fail('merged authoring','registry records required');
+ const targets=new Map();
+ for(const record of registry.records)if(record.type==='appendEntry') {
+  if(targets.has(record.entry?.id))fail('merged authoring','duplicate registered target');
+  targets.set(record.entry?.id,record.entry);
+ }
+ const early=[],late=[];
+ for(const doc of documents) {
+  if(doc.type!=='questions'||!targets.has(doc.data?.entryId)){early.push(doc);continue;}
+  const target=targets.get(doc.data.entryId);
+  if(target?.kind!=='qa'||!Array.isArray(target.items))fail(doc.file,'merged questions require a registered QA target');
+  validateQuestion(doc.data,doc.file);text(doc.data.entryId,doc.file+'.entryId');
+  if(doc.data.draft)fail(doc.file,'deferred merged question must not be draft');
+  late.push(doc);
+ }
+ return {documents:early,compile:input=>{
+  if(!late.length)return input;
+  const targetIds=new Set(late.map(doc=>doc.data.entryId));
+  const entries=input.map(entry=>targetIds.has(entry.id)?structuredClone(entry):entry),byId=new Map(entries.map(e=>[e.id,e]));
+  if(byId.size!==entries.length)fail('merged authoring','duplicate entry ID');
+  const additions=new Map(),seen=new Set();
+  for(const {data:q,file} of late) {
+   const entry=byId.get(q.entryId),expected=targets.get(q.entryId);
+   if(!entry||JSON.stringify(entry)!==JSON.stringify(expected))fail(file,'registered merged target changed or missing '+q.entryId);
+   const key=q.entryId+'#'+q.id;
+   if(seen.has(key)||entry.items.some(item=>item.id===q.id))fail(file,'duplicate question ID '+key);
+   seen.add(key);
+   if(!additions.has(q.entryId))additions.set(q.entryId,[]);
+   additions.get(q.entryId).push({q,file});
+  }
+  // Create stable identities before resolving references, just as the early
+  // compiler does. Every old question and entry metadata field stays intact.
+  for(const [entryId,items] of additions) {
+   items.sort((a,b)=>(a.q.order||0)-(b.q.order||0)||a.q.id.localeCompare(b.q.id,'en'));
+   byId.get(entryId).items.push(...items.map(({q})=>({id:q.id})));
+  }
+  for(const [entryId,items] of additions) {
+   const entry=byId.get(entryId),offset=entry.items.length-items.length;
+   items.forEach(({q,file},i)=>{entry.items[offset+i]=compileQuestion(q,file,byId);});
+  }
+  return entries;
+ }};
+}
+
 function authoredTarget(snapshot,type,data,where='extension') {
  if(type!=='answer-additions')fail(where,'authored targetOrigin supports answer-additions only');
  if(typeof data.questionId!=='string'||!/^q-[a-z0-9-]+$/.test(data.questionId))fail(where,'authored questionId must be a stable q- ID, never a numeric position');

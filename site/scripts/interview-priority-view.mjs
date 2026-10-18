@@ -1,6 +1,6 @@
 // Display-only ordering. Never sort canonical entries/items or derive keys from display rank.
 import {createHash} from 'node:crypto';
-export const PRIORITY_VIEW_SHA256 = 'a0ada9eaa320d6eefa4cc3cf80d7e715d932e93d2ebf3e2cd326b1af00fb7ef8';
+export const PRIORITY_VIEW_SHA256 = '879033a5247e775cb95ba49f3eff8b8ad33a146678925f3a95a1fc38b431c1c1';
 const fail = message => { throw Error('Priority view: '+message); };
 export function priorityQuestionView(entry, registry) {
   const rule = registry?.records?.find(r=>r.entryId===entry.id);
@@ -40,10 +40,24 @@ export function validatePriorityView(entries, registry) {
 }
 export function projectPriorityViewRuntime(file,text,registry,{baselineTest=false}={}) {
   if(baselineTest) return text;
-  if(!['src/app/structure.js','src/app/renderers.js','src/app/highlight-map.js'].includes(file)) return text;
+  if(!['src/app/structure.js','src/app/renderers.js','src/app/highlight-map.js','src/app/questions.js'].includes(file)) return text;
   if(createHash('sha256').update(JSON.stringify(registry)).digest('hex')!==PRIORITY_VIEW_SHA256) fail('unreviewed registry drift');
   const replace=(before,after)=>{if(text.split(before).length!==2) fail('expected exactly one runtime target in '+file+': '+before.slice(0,70));text=text.replace(before,after);};
   if(file==='src/app/structure.js') return text+'\n'+priorityQuestionView.toString()+'\nconst PRIORITY_VIEW_REGISTRY = '+JSON.stringify(registry).replaceAll('<','\\u003c')+';\nconst orderedQuestionView = e => priorityQuestionView(e, PRIORITY_VIEW_REGISTRY);\nconst priorityChip = key => PRIORITY_VIEW_REGISTRY.records.some(r=>r.emphasis.includes(key)) ? \'<span class="cmp-tag priority-tag">重点</span>\' : \'\';\n';
+  if(file==='src/app/questions.js') {
+    replace("  const card = document.getElementById('q-' + anchor) || qaCards()[+anchor];\n  if (!card) return;", `  let card = document.getElementById('q-' + anchor);
+  // Legacy numeric bookmarks address canonical items, never the display rank.
+  if (!card && /^(0|[1-9]\\d*)$/.test(String(anchor))) {
+    const index = Number(anchor);
+    const item = Number.isSafeInteger(index) && byId.get(state.route?.id)?.items?.[index];
+    if (item) card = document.getElementById('q-' + (item.id || index));
+  }
+  if (!card) {
+    const section = document.getElementById(anchor);
+    if (scroll && section) requestAnimationFrame(() => section.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+    return;
+  }`);
+  }
   if(file==='src/app/renderers.js') {
     replace('const items = e.items.map((it, i) => ({ ...it, key: qKey(e.id, i), no: i + 1, anchor: qAnchor(e.id, i) }));','const items = orderedQuestionView(e).map(({item, canonicalIndex}) => ({ ...item, key: qKey(e.id, canonicalIndex), no: canonicalIndex + 1, anchor: qAnchor(e.id, canonicalIndex) }));');
     replace('<div class="qa-tags">${HLC[it.key]', '<div class="qa-tags">${priorityChip(it.key)}${HLC[it.key]');

@@ -1,8 +1,9 @@
 import {readFile,readdir,writeFile,mkdir,access} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {compileAuthoring,readAuthoring,MODULES,extensionTarget,authoredExtensionTarget,originalContentHash} from './authoring.mjs';
+import {compileAuthoring,readAuthoring,prepareMergedQuestionAuthoring,MODULES,extensionTarget,authoredExtensionTarget,originalContentHash} from './authoring.mjs';
 const argv=process.argv.slice(2),command=argv.shift();
 const flags={};
 while(argv.length){const k=argv.shift();if(!k.startsWith('--'))throw new Error('Expected --option, got '+k);flags[k.slice(2)]=argv[0]&&!argv[0].startsWith('--')?argv.shift():true;}
@@ -20,8 +21,22 @@ async function create(file,data) {
 }
 try {
  if(command==='validate') {
-  const source=await originals(),identity=await readJSON('content/legacy-identities.json');const docs=await readAuthoring(root);const result=compileAuthoring(source,docs,identity);
-  console.log(`Valid: ${result.length} entries, ${result.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0)} review units; ${docs.length} authoring files checked. Drafts excluded from the compiled corpus.`);
+  const docs=await readAuthoring(root);let registry=null;
+  try{registry=await readJSON('content/question-bank-merge.json');}catch(error){if(error.code!=='ENOENT')throw error;}
+  const prepared=registry?prepareMergedQuestionAuthoring(docs,registry):{documents:docs};
+  if(prepared.documents.length!==docs.length) {
+   // Only the real merge pipeline can validate registry-created targets. Do not
+   // synthesize target entries or treat a deferred document as already checked.
+   const validationScript=path.join(root,'scripts/build.mjs');
+   let validationSource;try{validationSource=await readFile(validationScript,'utf8');}catch(error){throw new Error('Selected root lacks scripts/build.mjs for complete merge-target validation: '+root+'; '+error.message);}
+   if(!validationSource.includes("if(process.argv.includes('--validate-only'))"))throw new Error('Selected root build lacks validate-only support: '+root);
+   const checked=JSON.parse(execFileSync(process.execPath,[validationScript,'--validate-only'],{encoding:'utf8'}));
+   if(checked.mode!=='validate-only'||checked.authoringFiles!==docs.length)throw new Error('complete compile validation result mismatch');
+   console.log(`Valid: ${checked.entries} entries, ${checked.reviewUnits} review units; ${docs.length} authoring files checked. ${checked.deferredQuestionFiles.length} merge-target questions checked through the complete pipeline; dist unchanged.`);
+  } else {
+   const source=await originals(),identity=await readJSON('content/legacy-identities.json'),result=compileAuthoring(source,docs,identity);
+   console.log(`Valid: ${result.length} entries, ${result.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0)} review units; ${docs.length} authoring files checked. Drafts excluded from the compiled corpus.`);
+  }
  } else if(command==='new-answer-addition'||command==='new-supplement') {
   const type=command==='new-answer-addition'?'answer-additions':'supplements';
   const id=validateID(requireFlag('id'));if(!id.startsWith('add-'))throw new Error('Extension ID must start with add-');

@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "originalDestination": {
+    "stableReviewKey": "ai-agent-5#11",
+    "entryId": "ai-agent-5",
+    "questionId": "11",
+    "question": "当 Agent 需要调用多个工具且存在依赖关系时，调度引擎怎么设计？",
+    "label": "依赖调度与 Join",
+    "observedBodySha256": "6c02f8bf22fb17b2e312b6445642f627d7356113eb53d19357c79fe42c290e67",
+    "witnesses": [
+      {
+        "html": "<p class=\"md-p\">我先把任务拆成可验证节点，用 DAG 表达谁必须等谁。节点保存输入版本、依赖、资源读写集合、预算和验收条件；拓扑入度为零的节点进入有界 ready queue，完成事件经过幂等状态更新后释放后继。并行结果汇合，也就是 Join，必须先约定等全部、约定数量还是首个合格结果。需要重规划，就生成新计划版本，保留仍有效的完成节点，作废受影响的未完成节点。</p>",
+        "sha256": "4a41d4200d4902a99e3813139382ad827c11d22e4280bb655bf79ac9e0b02f48"
+      },
+      {
+        "html": "<p class=\"md-p\">边 A→B 表示 B 需要 A 的结果，不是“两个框画在一起”。先检查重复节点、缺失依赖和环，再执行，避免执行到一半才发现非法图。Kahn 算法维护未完成前驱数，初始化和遍历为 O(V+E)。图的层次批次适合解释依赖；真实执行不必等整层最慢节点，只要某节点的全部前驱完成就可启动。</p>",
+        "sha256": "a54b4f819edf3d49171033dc5a9b3dc3f26bd65278853709ad505b8fdce1b643"
+      },
+      {
+        "html": "<p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p>",
+        "sha256": "ac38b9d90b9597d895660b9e101cdb8cb8972f42548564571c6e8639571592b3"
+      },
+      {
+        "html": "<p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p>",
+        "sha256": "13fbb1d00ac7a25abb095ba289ddd63fd00a5dd13fbc209601609424d7687c0b"
+      }
+    ],
+    "guard": "Exact substantive witness; whole-answer hash is snapshot evidence, allowing unrelated reviewed appends."
+  },
+  "record": {
+    "entryId": "ai-agent-5",
+    "path": [
+      "items",
+      11,
+      "a"
+    ],
+    "before": "<p class=\"md-p\">我会先画出哪些工具依赖谁的结果，再用显式状态机或有向无环图（DAG）表达这些关系。每个节点定义输入、输出、前置依赖、超时、重试策略和必要的失败补偿；调度器只有在依赖满足、资源和权限允许时才推进。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>依赖驱动推进</b>：没有依赖的节点并发执行；有依赖的节点等上游结果 ready 再推进。</li><li><b>结果持久化</b>：中间结果落下来，中途失败才能断点续跑。</li><li><b>执行幂等</b>：节点执行要幂等，重试才不会放大副作用。</li><li><b>失败分类型</b>：暂态只读故障可在预算内重试；写超时先核对未知效果，参数错误尽快失败回传。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不要把全部逻辑塞进 Prompt 里硬扛，调度器该关心的是状态流转。</p><p class=\"md-p qa-sum\"><span class=\"sx-tag sum\">口径</span>调度引擎的价值，是让多工具协作变成可恢复、可审计、可治理的执行系统。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-distributed-s8681\">并发、持久化与故障推演</h2><h2 class=\"md-h md-h2\">大型或小型仓库多Agent开发插件怎样调度与恢复</h2><p class=\"md-p\">代码仓库多执行者协作应隔离工作副本、持久调度任务、按内存限并发，并围绕不可变产物进行集成验收。</p><p class=\"md-p\">常见问法：大仓库多Agent怎样开发；tasks.md能否当任务数据库；QA Agent怎样绑定代码版本。</p><h3 class=\"md-h md-h3\">适用条件</h3><p class=\"md-p\">以模块摘要、任务清单、资源并发预算和独立QA为设计材料，规模大小不改变版本与提交协议。</p><h3 class=\"md-h md-h3\">按依赖和冲突拆任务，而不是按文件数决定Agent数</h3><p class=\"md-p\">先固定baseCommit、需求版本和可修改范围，分析模块接口与变更依赖。独立读取/分析可并行，产出带路径、commit和证据链接的摘要；开发节点依赖相应分析结果，摘要过时要重做。AGENTS.md等仓库规范按明确可信层级读取，不能让任意外部内容扩大权限。</p><p class=\"md-p\">小仓库或单条强耦合修改通常一个执行者更省上下文/协调成本；大型仓库也可能有不可并行热点文件。用户可选择并行度，但系统应根据冲突图和资源预算给可解释建议。多Agent各读全仓库会造成重复token/IO，并行总工作更多不保证关键路径更短。</p><h3 class=\"md-h md-h3\">崩溃恢复不靠一个勾选框</h3><p class=\"md-p\">任务恢复不能只依赖tasks.md上的一个勾。持久记录应包含taskId、baseCommit、输入摘要、状态、attempt/lease、已提交产物、测试命令和退出码，以及待处理错误。</p><p class=\"md-p\">宣布完成时，把不可变commit/patch和对应检查结果一起登记。tasks.md可以给人看进度，但它单独被勾选，既不能证明代码已保存，也不能证明测试针对的是正确版本。</p><p class=\"md-p\">每个修改者独立worktree/分支，单owner管理冲突文件，串行集成最终版本，并在最终集成版本上重新验证。恢复时核对工作树/commit与已登记状态；未提交改动保留隔离，不能在不明基线下接着覆盖。旧attempt结果以epoch拒绝，不让重启后的两份worker同时宣布完成。</p><h3 class=\"md-h md-h3\">并发受多资源共同限制</h3><p class=\"md-p\">并发上限要同时受机器资源和模型额度约束。机器侧检查CPU、RAM、磁盘/文件句柄、编译器、测试服务和网络；模型侧检查供应商QPM/TPM及总费用预算。</p><p class=\"md-p\">可用min(各资源安全预算/每任务估算)作为初始上限。但任务耗用不同，均值也会变化，所以还需要队列、动态测量和过载退让。只按内存决定Agent数量，无法保证CPU和供应商额度不超。</p><p class=\"md-p\">按读分析、编译、测试、写入和外部工具分资源池；同一热点仓库文件串行，长测试与交互任务隔离。各维度额度需要原子准入，租户公平/优先级独立于线程数；取消后尚在远端运行的请求不能立即假定资源/费用已释放。</p><h3 class=\"md-h md-h3\">插件接口与QA产物</h3><p class=\"md-p\">插件提供创建任务、计划预览、开始/暂停/取消、进度、产物审查和恢复接口，事件携带schemaVersion、taskId、attempt、artifactCommit及错误类型。权限按仓库路径/允许命令/网络目标限定，秘密由安全运行时提供，不进入摘要。执行前校验输入与预算，发布/发消息等外部动作按授权单独控制。</p><p class=\"md-p\">QA读取指定最终commit，根据需求运行真实编译/单测/集成或界面测试并返回命令、退出码、日志和未测范围；作者改了代码后旧QA结论失效。可观测指标包括关键路径时长、重复工作/冲突率、每任务token/成本和恢复失败，而不是仅统计多少Agent同时在跑。</p><h3 class=\"md-h md-h3\">验证</h3><p class=\"md-p\">注入进程退出、写文件一半、patch保存但状态未提交、重复派发、供应商限流、并发修改接口与取消后迟到结果；确定恢复不会丢已完成产物或沿用错误版本测试。</p><h4>工作流 DSL 和节点怎样设计</h4><p>DSL 描述版本、节点类型、输入输出端口、参数、依赖、条件与失败策略，先解析成受控结构再校验类型、引用、可达性、循环规则和权限，不能把用户配置直接当任意代码执行。节点可分模型、检索、工具、转换、条件、汇总、人工审批与输出；运行时固定发布版本，状态更新和重试沿既有任务合同。</p><p>性能靠减少无效步骤、独立分支有界并行、版本化缓存与资源隔离；灵活性通过受控节点扩展提供，扩展仍需注册合同、测试和权限审查。TTS 节点应声明文本、语言、获准声音、格式与输出音频引用，处理长度限制、超时和音频完整性；多段语音按段序和版本组装，取消后不把旧段继续交付。语音生成完成与客户端播放完成是不同状态。</p><p>意图识别先确定目标与缺失条件，计划再推导工具的输入输出依赖，例如先得到订单身份才能查询其物流。工具是否可执行还取决于权限与当前状态，不是识别出一个标签就固定跑完整链。失败先分参数、权限、暂时不可用、业务拒绝和结果未知；只有新证据改变可行方案时才重规划。替代工具也必须满足同样的事实与权限合同，不能为了完成目标绕过拒绝。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-distributed-guide\">分布式系统学习路线</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-practice-e49214ab73d0e15b\">任务队列怎样防并发调度冲突，多Agent路由如何平衡准确性与效率</h2><p class=\"md-p\">原子认领、版本或 epoch 提交校验、外部效果幂等是三道不同保证；模型路由负责提出候选，确定性调度器负责权限、依赖和可靠派发。</p><p class=\"md-p\">也可能这样问：</p><p class=\"md-p\">- 任务队列怎么设计的，怎么保证调度的时候不会冲突。</p><p class=\"md-p\">- 如果让你设计一个调度的agent，你会怎么做呢，需要哪些数据</p><h4 class=\"md-h md-h4\">先分开业务任务、派发尝试与Agent路由</h4><p class=\"md-p\">持久任务包含taskId、tenant、输入/计划版本、依赖、优先级、deadline、状态、attempt、owner和lease/epoch；同一业务操作另有稳定operationId。任务队列存待执行责任或其引用，模型决定交哪个专业Agent只是路由提案，可靠派发和权限裁决属于确定性调度器。</p><p class=\"md-p\">依赖完成才能入ready队列，检测DAG环；新请求幂等入账，任务与outbox同事务避免“已建任务未发消息”。多实例竞争用DB条件claim/锁定读SKIP LOCKED或队列认领协议，不用每进程一把锁假装全局互斥。租约过期可重取，但旧worker可能仍活着，提交必须携epoch并被权威状态/目的端拒绝旧版本。</p><h4 class=\"md-h md-h4\">不冲突需要三道不同保证</h4><p class=\"md-p\">可以用同一个任务说明三道保护。原子 claim 让当前任务记录只有一个 owner；提交状态时用 expectedVersion/epoch，拒绝已经失去资格的旧 worker；真正的外部业务效果，再用 operationId+唯一约束/条件状态机防止第二次发生。</p><p class=\"md-p\">前两道检查管不到已经发往不支持 fencing 的外部服务的旧请求。因此还要有目的端幂等或可查询动作账。例如租约过期前发出的请求可能晚到：新 owner 领取成功，只能说明本地归属变了，不能撤回那条已经发出的外部请求。</p><p class=\"md-p\">完成结果和后继任务责任原子提交，再ACK；完成后未ACK导致重投时读已完成回执，不再执行。超时不等确定失败，查原operation；永久失败/次数用尽进入可查询失败或人工待办。任务优先级需要老化/公平配额，长任务不能永久饿死，取消也要检查在途效果。</p><h4 class=\"md-h md-h4\">路由准确与开销怎么权衡</h4><p class=\"md-p\">先用可确定的规则和输入/权限/能力过滤，简单确定任务直达固定流程；多候选或复杂语义可用轻量分类/检索路由，必要时主模型规划。用标注集校准阈值和混淆矩阵，低置信度澄清/退到通用只读，不把模型自己报0.99当真实概率。错误路由要有可恢复的“能力不匹配”反馈，限制转交次数和A→B→A循环。</p><p class=\"md-p\">独立子任务可有限并行，存在数据依赖或共同写资源的任务排顺序；共享只读artifact而非复制整段历史，按任务需要裁剪上下文。路由缓存绑定任务特征、权限与能力/Prompt版本，不能把不同租户相似问题混用。多Agent准确率提升需和额外模型调用、通信、排队和汇总错误一起衡量。</p><h4 class=\"md-h md-h4\">例子和验证</h4><p class=\"md-p\">两个调度器同时领取T，只有一次claim成功；owner1停顿租约过期，owner2以epoch2完成，owner1恢复的epoch1结果必须被拒，若外部写已发生则由稳定operationId核对。测试重复消息、失联、lease续期失败、状态提交前后崩溃、乱序回执和取消；路由测长尾/跨域/歧义及成本。</p><p class=\"md-p\">合理承诺是明确故障模型下的幂等效果与可恢复责任；真实broker、Rust/Java服务和多实例调度仍需端到端故障验证。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/ai-agent-5/3\">相关知识与练习</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-runtime-ai-agent-5-11\">运行机制与失败恢复</h2><h2 class=\"md-h md-h2\">DAG 调度 fan out join 与动态重规划怎么实现</h2><p class=\"md-p\">我先把任务拆成可验证节点，用 DAG 表达谁必须等谁。节点保存输入版本、依赖、资源读写集合、预算和验收条件；拓扑入度为零的节点进入有界 ready queue，完成事件经过幂等状态更新后释放后继。并行结果汇合，也就是 Join，必须先约定等全部、约定数量还是首个合格结果。需要重规划，就生成新计划版本，保留仍有效的完成节点，作废受影响的未完成节点。</p><h3 class=\"md-h md-h3\">图的含义与并行性</h3><p class=\"md-p\">边 A→B 表示 B 需要 A 的结果，不是“两个框画在一起”。先检查重复节点、缺失依赖和环，再执行，避免执行到一半才发现非法图。Kahn 算法维护未完成前驱数，初始化和遍历为 O(V+E)。图的层次批次适合解释依赖；真实执行不必等整层最慢节点，只要某节点的全部前驱完成就可启动。</p><p class=\"md-p\">并行安全还需资源约束。A、B 若满足 W(A)∩R(B)=∅、W(B)∩R(A)=∅、W(A)∩W(B)=∅，且没有隐含业务依赖，才可以独立提交。不同文件也可能共享全局不变量。只读查询仍受权限、配额和下游容量约束。</p><h3 class=\"md-h md-h3\">Join 必须先定义失败语义</h3><p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p><p class=\"md-p\">如果业务允许部分交付，可以用 Best-effort join，但输出要列出缺失证据。若只要首个合格结果，就用验证器判定 First-valid；anyOf 只说明某个 Future 已完成，最快返回的异常不是合格答案。Quorum join 等待约定数量，也不能把数量当事实多数决：三个 Worker 复制同一错误来源，仍只算一个证据簇。</p><h3 class=\"md-h md-h3\">重规划不是重跑全部</h3><p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p><p class=\"md-p\">取消分支要传播给排队及运行节点。动态 fan-out 必须限制子节点总数、深度、并发和共享预算，否则一个 Query 可制造指数级任务树。调度公平性按租户或 Run 分配，长任务不要占满所有 Worker。</p><h3 class=\"md-h md-h3\">手撕变式 保留指定终点的 DAG 重构</h3><p class=\"md-p\">题目给定 DAG、入度为零的起点集合、要保留的出度为零终点集合，要求删除不保留的终点及专属于它们的上游路径，同时保留共享路径。不能从待删终点反向一路删除，那会误删共享祖先。正确方法是：从起点正向求可达集合 F；从保留终点沿反图求可达集合 B；保留 F∩B 中的点以及两端均保留的边。若题面保证所有点从给定起点可达，F 可省，但面试时应先明确。空终点集合得到空图；非法终点、环、重复边和孤立点需说明契约。该变式可分别验证可达集合、反向可达集合及其交集，不把这里的思路说明当作完整实现。</p><h3 class=\"md-h md-h3\">调度 Agent 需要哪些输入，三个 DAG 为什么不能只看长相</h3><p class=\"md-p\">调度输入至少有任务依赖、目标与优先级、资源需求、期限、当前可用容量、已完成结果、重试/取消和权限。模型可建议拆分，但依赖合法性、配额与状态迁移由调度器验证。数据处理 DAG、模型调用 DAG、业务动作 DAG 即使画法一样，其可重试性、状态持续时间、外部副作用、验收和失败恢复也不同；比较三个系统时，先逐项核对这些属性，再结合各自实际职责说明，不应只用同一张 DAG 概括。</p><p class=\"md-p\">课程表的“可行学习路径”一般是满足先修约束的拓扑序，不要求相邻两门课之间都有边。将拓扑排序产生的各批次顺序拼接即可得到一种合法顺序；同层有多解。若题目要的是图中的单条路径，应另外确认，不能把这两种输出混为一谈。</p><h3 class=\"md-h md-h3\">同题换问与连续追问</h3><p class=\"md-p\">- 多 Agent 系统里，你怎么设计任务分配？</p><p class=\"md-p\">- Workflow 中的原子性在项目里怎么体现的？</p><p class=\"md-p\">- 追问 1：调度器怎么实现？简单路由还是中心化规划？有没有任务踢皮球、循环调用？怎么解决？</p><p class=\"md-p\">- 三个系统都涉及 DAG，区别是什么？</p><p class=\"md-p\">- 任务拆分以后是串行执行还是并行执行？</p><p class=\"md-p\">- Multi-Agent 中的任务拆分如何避免子任务重复和依赖关系错误？</p><p class=\"md-p\">- 这两个 Agent 是串行执行还是支持并行 DAG 编排？</p><p class=\"md-p\">- 动态控制是怎么实现的？怎么让 AI Agent 准确识别和路由？子 Agent 执行是串行的还是并行的？</p><p class=\"md-p\">- 多 Agent 并行执行，怎么防止上下文和状态互相污染。</p><p class=\"md-p\">- 怎么判定该预取哪些工具、如何判断取了但不用？预取完背后是串行还是并行？</p><p class=\"md-p\">- 并行工具里有长尾接口把耗时打高、或者绑定过多把执行线程打爆，这两种怎么解？</p><p class=\"md-p\">- 业务题：重构 DAG</p><p class=\"md-p\">- 输入一个 DAG、入度为 0 的点集合（起点）、要保留的出度为 0 的点集合（终点）。</p><p class=\"md-p\">- 要求删除未保留的终点以及其上游的路径，但是不能删除所保留终点的路径。</p><p class=\"md-p\">- 手撕题：任务依赖调度器</p><p class=\"md-p\">- 手撕：课程表进阶题，输出可行学习路径（拓扑排序；入度归零记录前驱或课程层级；处理节点数少于总数说明有环；O(V+E)）</p><p class=\"md-p\">- 依赖关系（N（&lt;100）个任务，任务间有依赖关系，某任务如要执行，它所有依赖的任务都要完成才能执行)，输出一个可行的运行顺序</p><p class=\"md-p\">- 手撕算法-拓扑排序板子</p><p class=\"md-p\">- 问大模型相关：现在大模型落地应用有哪些方式；复杂业务问题如何拆分让大模型分析等等。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-runtime-guide\">Agent Runtime 学习路线与运行条件</a></li><li><a href=\"#/e/own-juc-execution/q-own-juc-dependent-workflow\">非阻塞前置任务合同</a></li></ul><h2 class=\"md-h md-h2\" id=\"add-own-tools-ai-agent-5-11\">工具调用的工程边界</h2><h3 class=\"md-h md-h3\">并行工具、资源隔离与输出治理</h3><p class=\"md-p\">并行度必须受依赖关系和最窄下游资源约束，取消、上下文传播和结果大小也要进入同一执行设计。</p><h3 class=\"md-h md-h3\">可能问法</h3><p class=\"md-p\">“模型一次给十个工具调用，能全部并行吗？”“100 个进程但只允许 5 个并发怎么做？”“四个线程都在等子任务，为什么不动了？”“ToolResult 超过上下文怎么办？”“Python async 会自动变快吗？”</p><h3 class=\"md-h md-h3\">并行条件先于线程池大小</h3><p class=\"md-p\">互不依赖、资源隔离且没有冲突副作用的只读任务适合并行。B 需要 A 的输出，就先等待 A 通过输出校验；C 需要 B 的确认成功，则 B 失败时 C 阻塞。不能把 CompletableFuture.allOf 当作依赖分析器，也不能把空对象传给 C 假装依赖已经满足。</p><p class=\"md-p\">写同一个资源的任务需要按业务键串行、版本 CAS 或事务约束。即使不同 callId、不同 Agent，也可能修改同一条记录。并发的权限检查与幂等 claim 必须具有原子性，不能只在模型层说“请不要重复”。</p><p class=\"md-p\">“100 个进程、5 个并发”是容量约束：可以维护最多五个活动任务的有界调度，完成一个再放一个，队列与排队期限也有限。它不自动意味着需要提前启动一百个昂贵进程，更不能推导出某个准确率或性能收益。并发上限取决于连接池、外部 API 配额、CPU、内存、磁盘和每租户公平性，线程数量不是唯一资源。</p><p class=\"md-p\">判断能否并行，除了任务名，还要列出读集、写集和全局不变量。两个 Agent 即使写不同文件，也可能一起破坏同一配置版本或跨文件引用；单文件原子替换并不等于多文件事务。</p><p class=\"md-p\">再按冲突条件选择：低并发可以由单写者提交；独立候选可以在隔离工作区生成补丁，统一验证合并；乐观方案用版本 CAS；悲观方案用有序多资源锁和租约，并由目标端 fencing 拒绝过期持有者。无论哪条路径，合并器都不能按最后到达者无条件覆盖。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-tools-guide\">相关概念与验证方法</a></li></ul><ol><li>冻结输入版本 v7，分别读取模块 C 与规则 v3。</li><li>合并读取结果并生成候选补丁，依次验证、人工审批，再以 CAS 提交。</li><li>失败进入有界重规划，生成新计划 v2。</li></ol><details class=\"qa-variants\"><summary>其他问法（23）</summary><ul class=\"md-list\"><li>为何用 DAG，边构建边执行还是构建完再执行，后者在长任务中的弊端</li><li>拓扑排序规则式管理任务依赖 vs 大模型自主决策的问题</li><li>Modular Agent 如何实现多步规划；多工具调用链路的调度策略与异常 fallback</li><li>多工具编排与异步调度如何实现</li><li>Modular Agent 多步规划、调度策略与异常 fallback</li><li>Agent 串行调用的工具如何判断并改为并行？</li><li>execute 支持多次工具调用怎么做？Agent 循环（死循环）怎么办？</li><li>Agent 系统状态机如何设计？工具调用的并发与顺序问题如何解决？</li><li>Agent Executor 如何保证执行顺序与失败处理？</li><li>Agent 调用多个工具时执行流程如何设计、如何管理调用顺序</li><li>Function Calling 中模型实际做了什么？多工具有依赖顺序时怎么处理？</li><li>一个 Agent 调用多个工具时执行流程怎么设计？如何管理工具调用顺序？</li><li>多 Agent 同时执行争抢哪些资源；上下文和状态如何隔离</li><li>多 Agent 同时执行时争抢哪些资源？怎么隔离？</li><li>Workflow 节点与依赖如何注册；是 DAG、规则编排还是硬编码，由什么调度引擎驱动</li><li>AI 工作流编排平台的 DSL 设计与节点分类；TTS 节点实现</li><li>低代码平台如何兼顾性能与灵活、支持自定义 AI 编排</li><li>Agent 调度层的 Planner/Executor 如何实现？为什么用异步而不是同步？异步任务状态如何持久化？</li><li>Agent 调度层的 Planner 与 Executor 如何分工实现？为什么采用异步而不是同步，异步任务状态如何持久化？</li><li>Agent 工作流应如何编排？</li><li>多 Agent 协同时，任务分发、结果汇总和状态同步应通过什么机制实现？</li><li>多 Agent 的运行状态以及 Agent 之间需要同步的数据应该存放在哪里？存储应如何选型？</li><li>Agent 的任务规划应如何做？是否先识别意图再推导工具依赖？工具执行报错后如何多步推理并重新规划？</li></ul></details>",
+    "after": "<p class=\"md-p\">我会先把工具的输入输出依赖画清楚，用 DAG 表达前后关系，用持久状态机记录每个节点执行到哪里。模型可以提议拆分与工具选择，程序负责校验依赖、权限和预算；只有前置结果通过验收、资源也允许，节点才进入有界执行队列。</p><h3 class=\"md-h md-h3\">节点需要保存什么，如何从依赖推进？</h3><p class=\"md-p\">每个节点有稳定 ID、输入与计划版本、工具版本、前置依赖、读写资源、输出验收、超时、重试和补偿策略。调度输入还包括目标、优先级、deadline、当前容量、已完成结果与取消状态。参数缺失先补齐，例如订单身份未确定就不能查物流；识别出意图标签不等于已经满足执行条件。</p><p class=\"md-p\">边 A→B 表示 B 依赖 A 的结果。执行前检查重复节点、缺失依赖与环；普通“全部成功”依赖维护未完成前驱数，无前驱节点进入 ready queue。A 首次提交合格结果后，才更新后继条件；重复回执不能重复减入度、重复启动 B。Kahn 的静态建图与遍历是 O(V+E)，实际运行还包含工具耗时和状态存储开销。</p><p class=\"md-p\">真实执行不必等待整层最慢节点，只要某节点的前置条件全部满足就可启动。条件分支、任一成功和普通全部成功不是同一种入度规则，未选分支记录 SKIPPED，按发布定义中的 Join 规则裁决。<a href=\"#/e/doc-14\">事件驱动编排与分支语义</a>给出更完整的状态推进例子。</p><h3 class=\"md-h md-h3\" id=\"add-own-tools-ai-agent-5-11\">没有依赖，就能全部并行吗？</h3><p class=\"md-p\">并行安全还需资源约束。A、B 若满足 W(A)∩R(B)=∅、W(B)∩R(A)=∅、W(A)∩W(B)=∅，且没有隐含业务依赖，才可以独立提交。不同文件也可能共享全局不变量。只读查询仍受权限、配额和下游容量约束。</p><p class=\"md-p\">“100 个进程、5 个并发”是容量约束：可以维护最多五个活动任务的有界调度，完成一个再放一个，队列与排队期限也有限。它不自动意味着需要提前启动一百个昂贵进程，更不能推导出某个准确率或性能收益。并发上限取决于连接池、外部 API 配额、CPU、内存、磁盘和每租户公平性，线程数量不是唯一资源。</p><p class=\"md-p\">共享写资源按业务键串行、版本 CAS 或事务约束；不同 callId 不等于修改对象不同。取消要传到排队与运行节点，但本地等待结束不能证明远端请求停止或额度已经释放。大结果按字节和入模预算设限，分支使用不可变输入快照，具体见<a href=\"#/e/own-tools-parallel/q-own-tools-output-limits\">ToolResult 输出限制</a>和<a href=\"#/e/ai-agent-5/4\">上下文隔离</a>。</p><h3 class=\"md-h md-h3\" id=\"add-own-runtime-ai-agent-5-11\">并行结果怎样 Join，失败能否继续？</h3><p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p><p class=\"md-p\">如果业务允许部分交付，可以用 Best-effort join，但输出要列出缺失证据。若只要首个合格结果，就用验证器判定 First-valid；anyOf 只说明某个 Future 已完成，最快返回的异常不是合格答案。Quorum join 等待约定数量，也不能把数量当事实多数决：三个 Worker 复制同一错误来源，仍只算一个证据簇。</p><p class=\"md-p\">Java 中可以用 CompletableFuture 组合依赖，但 allOf 不会分析业务依赖、收集所有类型化结果或自动取消兄弟任务；anyOf 跟随首个完成的结果或异常，见<a href=\"https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html\">Java 21 API</a>。调用线程不想等待时返回最终阶段，用明确执行器承接后续动作；不要让父任务占满池再 get 同池子任务。<a href=\"#/e/own-juc-execution/q-own-juc-dependent-workflow\">非阻塞前置任务</a>和<a href=\"#/e/own-juc-execution/q-own-juc-resource-dependency-cycle\">资源依赖环</a>分别展开。</p><h3 class=\"md-h md-h3\">动态计划什么时候生成，失败后何时重规划？</h3><p class=\"md-p\">已知且稳定的流程先校验完整图，便于发现缺依赖与预算风险；长任务后续步骤可能依赖新观察，一次生成完整计划会推迟首步，且后半段容易过时。可以分阶段扩图，但新增节点和边要先校验、登记新计划版本，再进入 ready；不能把尚未明确的输入当已满足，也不能靠给运行中节点补一条边修复已经执行的副作用。</p><p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p><p class=\"md-p\">取消分支要传播给排队及运行节点。动态 fan-out 必须限制子节点总数、深度、并发和共享预算，否则一个 Query 可制造指数级任务树。调度公平性按租户或 Run 分配，长任务不要占满所有 Worker。</p><p class=\"md-p\">参数错误先修输入，权限或业务拒绝不能换工具绕过；暂时不可用在共享预算内重试，写操作超时先核对 UNKNOWN。只有新证据改变可行路径时才重规划，次数、总 deadline 与费用都有上限。替代工具仍满足相同事实、权限和验收；补偿是受授权的另一项动作，不能宣称回滚一切。</p><p class=\"md-p\">例如冻结输入 v7，分别读取模块 C 与规则 v3；两份读取结果验收后生成候选补丁，依次验证、人工审批，再按预期版本 CAS 提交。失败后生成有界的新计划 v2，仍沿用已确认的输入与已发生效果，不能把重规划当作重新获得写权限。</p><h3 class=\"md-h md-h3\" id=\"add-own-practice-e49214ab73d0e15b\">队列怎样避免多个调度器重复推进？</h3><p class=\"md-p\">要分三道保证：原子 claim 决定当前 owner，提交时的 expectedVersion/epoch 拒绝旧 Worker，稳定 operationId 与目的端幂等约束外部效果。租约过期不能撤回已发出的请求，也不能保证远端从未执行。任务与 Outbox 同事务受理，结果与后继责任在同一本地事务提交后再 ACK；重投读取已完成回执，未知结果按原操作身份核对。</p><p class=\"md-p\">多实例可以用数据库条件更新或事务中的锁定读领取，不能用各进程自己的锁替代全局裁决。MySQL 的 SKIP LOCKED 可减少队列式表的锁等待，但它会跳过已锁行，不适合拿来取得一般业务的一致快照，见<a href=\"https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html\">MySQL 8.4 锁定读</a>。完整受理、状态存储与恢复见<a href=\"#/e/ai-agent-5/3\">任务交接合同</a>及<a href=\"#/e/scenario-distributed-scheduler\">分布式任务调度</a>。</p><p class=\"md-p\">两个调度器同时领取T，只有一次claim成功；owner1停顿租约过期，owner2以epoch2完成，owner1恢复的epoch1结果必须被拒，若外部写已发生则由稳定operationId核对。测试重复消息、失联、lease续期失败、状态提交前后崩溃、乱序回执和取消；路由测长尾/跨域/歧义及成本。</p><p class=\"md-p\">永久失败或预算耗尽要进入可查询失败、待核实或人工待办；优先级配合老化或公平配额，避免长任务永久饿死。真实 broker、Java/Rust 服务和多实例仍要做端到端故障验证，不能把本地状态更新测试当完整可靠性证明。</p><h3 class=\"md-h md-h3\">路由准确性与执行效率怎样平衡？</h3><p class=\"md-p\">规则先过滤权限、输入和能力，简单任务直达固定流程，语义复杂时再用分类、检索或主模型规划。低置信度靠标注验证与澄清，Worker 不适用时返回可恢复原因，并限制转交次数和 A→B→A 循环。路由缓存绑定租户、任务特征、权限和能力/Prompt 版本；共享有权读取的产物引用，避免复制整段历史。准确性要连同额外模型调用、通信、排队和汇总错误一起评估，详见<a href=\"#/e/doc-17\">意图识别与误路由恢复</a>。</p><h3 class=\"md-h md-h3\">三个系统都画 DAG，设计就一样吗？</h3><p class=\"md-p\">数据处理 DAG、模型调用 DAG、业务动作 DAG 即使长得相同，其可重试性、状态持续时间、外部副作用、验收和失败恢复仍可能不同。面试先说明各自真实职责和这些属性，再解释为什么采用相同或不同的执行机制；不能只展示同一张图。</p><h3 class=\"md-h md-h3\" id=\"add-own-distributed-s8681\">场景追问怎样展开？</h3><p class=\"md-p\">代码仓库场景继续看<a href=\"#/e/own-agent-collaboration-scenarios/q-agent-repository-orchestration\">大仓库插件的任务账本、资源池与 QA</a>；低代码平台继续看<a href=\"#/e/own-agent-runtime-design/q-agent-workflow-dsl-tts\">工作流 DSL、自定义节点与 TTS</a>；要求手推“保留指定终点”或输出任务顺序时，见<a href=\"#/e/p-graph\">DAG 裁剪与拓扑算法</a>。生产调度还需真实状态和外部效果协议，算法题则先明确输入输出与边界。</p><h3 class=\"md-h md-h3\">预取、长尾和异步还有哪些边界？</h3><p class=\"md-p\">预取只考虑已授权、无副作用、输入可提前确定且有较高复用机会的查询；绑定输入与权限版本，需求改变就丢弃旧结果。记录最终采用率、无用请求成本与关键路径收益，再决定是否保留；不预执行付款、发送等写动作。候选之间独立才有界并行，存在参数依赖仍串行。长尾接口按整体 deadline、每来源预算与可接受的部分结果处理，不能单靠增加线程。</p><p class=\"md-p\">异步用于减少占着线程等待，不保证 CPU 计算更快，也不消除依赖或下游限流；Java 用异步阶段组织等待，也不会让底层阻塞调用自动变成非阻塞；耗时或阻塞动作仍需明确执行器、容量与超时。<a href=\"#/e/own-juc-execution/q-own-juc-stage-composition\">Java 阶段执行位置</a>、<a href=\"#/e/own-juc-execution/q-own-juc-two-level-admission\">入口与下游两级预算</a>和<a href=\"#/e/ai-agent-5/14\">工具链路延迟拆解</a>可继续展开。</p><details class=\"qa-variants\"><summary>继续追问（46）</summary><ul class=\"md-list\"><li>常见问法：大仓库多Agent怎样开发；tasks.md能否当任务数据库；QA Agent怎样绑定代码版本。 <a href=\"#/e/own-agent-collaboration-scenarios/q-agent-repository-orchestration\">仓库编排与 QA</a></li><li>- 任务队列怎么设计的，怎么保证调度的时候不会冲突。 <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- 如果让你设计一个调度的agent，你会怎么做呢，需要哪些数据 <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- 多 Agent 系统里，你怎么设计任务分配？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- Workflow 中的原子性在项目里怎么体现的？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- 追问 1：调度器怎么实现？简单路由还是中心化规划？有没有任务踢皮球、循环调用？怎么解决？ <a href=\"#/e/doc-17\">路由与误派恢复</a></li><li>- 三个系统都涉及 DAG，区别是什么？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- 任务拆分以后是串行执行还是并行执行？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- Multi-Agent 中的任务拆分如何避免子任务重复和依赖关系错误？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- 这两个 Agent 是串行执行还是支持并行 DAG 编排？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>- 动态控制是怎么实现的？怎么让 AI Agent 准确识别和路由？子 Agent 执行是串行的还是并行的？ <a href=\"#/e/doc-17\">路由与误派恢复</a></li><li>- 多 Agent 并行执行，怎么防止上下文和状态互相污染。 <a href=\"#/e/ai-agent-5/4\">状态与上下文隔离</a></li><li>- 怎么判定该预取哪些工具、如何判断取了但不用？预取完背后是串行还是并行？ <a href=\"#/e/ai-agent-5/11\">预取与依赖边界</a></li><li>- 并行工具里有长尾接口把耗时打高、或者绑定过多把执行线程打爆，这两种怎么解？ <a href=\"#/e/ai-agent-5/14\">长尾与资源治理</a></li><li>- 业务题：重构 DAG <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 输入一个 DAG、入度为 0 的点集合（起点）、要保留的出度为 0 的点集合（终点）。 <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 要求删除未保留的终点以及其上游的路径，但是不能删除所保留终点的路径。 <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 手撕题：任务依赖调度器 <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 手撕：课程表进阶题，输出可行学习路径（拓扑排序；入度归零记录前驱或课程层级；处理节点数少于总数说明有环；O(V+E)） <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 依赖关系（N（&lt;100）个任务，任务间有依赖关系，某任务如要执行，它所有依赖的任务都要完成才能执行)，输出一个可行的运行顺序 <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 手撕算法-拓扑排序板子 <a href=\"#/e/p-graph\">DAG 裁剪与拓扑顺序</a></li><li>- 问大模型相关：现在大模型落地应用有哪些方式；复杂业务问题如何拆分让大模型分析等等。 <a href=\"#/e/own-agent-runtime-design/q-agent-foundation-runtime-boundaries\">业务落地与运行时分层</a></li><li>“模型一次给十个工具调用，能全部并行吗？”“100 个进程但只允许 5 个并发怎么做？”“四个线程都在等子任务，为什么不动了？”“ToolResult 超过上下文怎么办？”“异步会自动变快吗？” <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>为何用 DAG，边构建边执行还是构建完再执行，后者在长任务中的弊端 <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>拓扑排序规则式管理任务依赖 vs 大模型自主决策的问题 <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Modular Agent 如何实现多步规划；多工具调用链路的调度策略与异常 fallback <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>多工具编排与异步调度如何实现 <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Modular Agent 多步规划、调度策略与异常 fallback <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Agent 串行调用的工具如何判断并改为并行？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>execute 支持多次工具调用怎么做？Agent 循环（死循环）怎么办？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Agent 系统状态机如何设计？工具调用的并发与顺序问题如何解决？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Agent Executor 如何保证执行顺序与失败处理？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Agent 调用多个工具时执行流程如何设计、如何管理调用顺序 <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Function Calling 中模型实际做了什么？多工具有依赖顺序时怎么处理？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>一个 Agent 调用多个工具时执行流程怎么设计？如何管理工具调用顺序？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>多 Agent 同时执行争抢哪些资源；上下文和状态如何隔离 <a href=\"#/e/ai-agent-5/4\">状态与上下文隔离</a></li><li>多 Agent 同时执行时争抢哪些资源？怎么隔离？ <a href=\"#/e/ai-agent-5/4\">状态与上下文隔离</a></li><li>Workflow 节点与依赖如何注册；是 DAG、规则编排还是硬编码，由什么调度引擎驱动 <a href=\"#/e/own-agent-runtime-design/q-agent-workflow-dsl-tts\">DSL、节点与 TTS</a></li><li>AI 工作流编排平台的 DSL 设计与节点分类；TTS 节点实现 <a href=\"#/e/own-agent-runtime-design/q-agent-workflow-dsl-tts\">DSL、节点与 TTS</a></li><li>低代码平台如何兼顾性能与灵活、支持自定义 AI 编排 <a href=\"#/e/own-agent-runtime-design/q-agent-workflow-dsl-tts\">DSL、节点与 TTS</a></li><li>Agent 调度层的 Planner/Executor 如何实现？为什么用异步而不是同步？异步任务状态如何持久化？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Agent 调度层的 Planner 与 Executor 如何分工实现？为什么采用异步而不是同步，异步任务状态如何持久化？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>Agent 工作流应如何编排？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li><li>多 Agent 协同时，任务分发、结果汇总和状态同步应通过什么机制实现？ <a href=\"#/e/ai-agent-5/3\">通信与持久任务状态</a></li><li>多 Agent 的运行状态以及 Agent 之间需要同步的数据应该存放在哪里？存储应如何选型？ <a href=\"#/e/ai-agent-5/3\">通信与持久任务状态</a></li><li>Agent 的任务规划应如何做？是否先识别意图再推导工具依赖？工具执行报错后如何多步推理并重新规划？ <a href=\"#/e/ai-agent-5/11\">依赖、Join 与恢复</a></li></ul></details>",
+    "beforeSha256": "6c02f8bf22fb17b2e312b6445642f627d7356113eb53d19357c79fe42c290e67",
+    "afterSha256": "1af1393f678b4a89d9e0bef6bad171687a41c28cfe074d41cdd5449372f286fe",
+    "reason": "Reorganize dependency scheduling; move distinct repository/DSL/algorithm cases and retain every phrasing with an explicit substantive destination."
+  },
+  "rows": [
+    {
+      "witnessIndex": 0,
+      "originalWitness": {
+        "html": "<p class=\"md-p\">我先把任务拆成可验证节点，用 DAG 表达谁必须等谁。节点保存输入版本、依赖、资源读写集合、预算和验收条件；拓扑入度为零的节点进入有界 ready queue，完成事件经过幂等状态更新后释放后继。并行结果汇合，也就是 Join，必须先约定等全部、约定数量还是首个合格结果。需要重规划，就生成新计划版本，保留仍有效的完成节点，作废受影响的未完成节点。</p>",
+        "sha256": "4a41d4200d4902a99e3813139382ad827c11d22e4280bb655bf79ac9e0b02f48"
+      },
+      "evidence": [
+        {
+          "html": "<p class=\"md-p\">我会先把工具的输入输出依赖画清楚，用 DAG 表达前后关系，用持久状态机记录每个节点执行到哪里。模型可以提议拆分与工具选择，程序负责校验依赖、权限和预算；只有前置结果通过验收、资源也允许，节点才进入有界执行队列。</p>",
+          "sha256": "049730e05e433fd5bb7f226a3d8aa3910a074b521daa54eac18a68a1292951ed"
+        },
+        {
+          "html": "<p class=\"md-p\">每个节点有稳定 ID、输入与计划版本、工具版本、前置依赖、读写资源、输出验收、超时、重试和补偿策略。调度输入还包括目标、优先级、deadline、当前容量、已完成结果与取消状态。参数缺失先补齐，例如订单身份未确定就不能查物流；识别出意图标签不等于已经满足执行条件。</p>",
+          "sha256": "2989aaa831b529f08864049ac084c4648c09ec2ef012e0cfdfa663d12b69a2b4"
+        },
+        {
+          "html": "<p class=\"md-p\">边 A→B 表示 B 依赖 A 的结果。执行前检查重复节点、缺失依赖与环；普通“全部成功”依赖维护未完成前驱数，无前驱节点进入 ready queue。A 首次提交合格结果后，才更新后继条件；重复回执不能重复减入度、重复启动 B。Kahn 的静态建图与遍历是 O(V+E)，实际运行还包含工具耗时和状态存储开销。</p>",
+          "sha256": "64fe9d302b7da968473636a3554c390f0f05236c19ad423f8d389fbdccc189a5"
+        },
+        {
+          "html": "<p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p>",
+          "sha256": "ac38b9d90b9597d895660b9e101cdb8cb8972f42548564571c6e8639571592b3"
+        },
+        {
+          "html": "<p class=\"md-p\">如果业务允许部分交付，可以用 Best-effort join，但输出要列出缺失证据。若只要首个合格结果，就用验证器判定 First-valid；anyOf 只说明某个 Future 已完成，最快返回的异常不是合格答案。Quorum join 等待约定数量，也不能把数量当事实多数决：三个 Worker 复制同一错误来源，仍只算一个证据簇。</p>",
+          "sha256": "2dea68af2385fec3e5e3ca70e2778f308138e6ad9bfb04b0f4cc3944c3b401ca"
+        },
+        {
+          "html": "<p class=\"md-p\">已知且稳定的流程先校验完整图，便于发现缺依赖与预算风险；长任务后续步骤可能依赖新观察，一次生成完整计划会推迟首步，且后半段容易过时。可以分阶段扩图，但新增节点和边要先校验、登记新计划版本，再进入 ready；不能把尚未明确的输入当已满足，也不能靠给运行中节点补一条边修复已经执行的副作用。</p>",
+          "sha256": "74d62b2e7d52e4b13b24369525411d1838453e2fd5b4baaf02393649c11567aa"
+        },
+        {
+          "html": "<p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p>",
+          "sha256": "13fbb1d00ac7a25abb095ba289ddd63fd00a5dd13fbc209601609424d7687c0b"
+        }
+      ],
+      "decision": "Preserve all original clauses: dependency graph and bounded readiness, input/resource/budget/acceptance contract, idempotent completion, all/first/quorum Join, plan version and invalidation; no title or alias substitutes."
+    },
+    {
+      "witnessIndex": 1,
+      "originalWitness": {
+        "html": "<p class=\"md-p\">边 A→B 表示 B 需要 A 的结果，不是“两个框画在一起”。先检查重复节点、缺失依赖和环，再执行，避免执行到一半才发现非法图。Kahn 算法维护未完成前驱数，初始化和遍历为 O(V+E)。图的层次批次适合解释依赖；真实执行不必等整层最慢节点，只要某节点的全部前驱完成就可启动。</p>",
+        "sha256": "a54b4f819edf3d49171033dc5a9b3dc3f26bd65278853709ad505b8fdce1b643"
+      },
+      "evidence": [
+        {
+          "html": "<p class=\"md-p\">边 A→B 表示 B 依赖 A 的结果。执行前检查重复节点、缺失依赖与环；普通“全部成功”依赖维护未完成前驱数，无前驱节点进入 ready queue。A 首次提交合格结果后，才更新后继条件；重复回执不能重复减入度、重复启动 B。Kahn 的静态建图与遍历是 O(V+E)，实际运行还包含工具耗时和状态存储开销。</p>",
+          "sha256": "64fe9d302b7da968473636a3554c390f0f05236c19ad423f8d389fbdccc189a5"
+        },
+        {
+          "html": "<p class=\"md-p\">真实执行不必等待整层最慢节点，只要某节点的前置条件全部满足就可启动。条件分支、任一成功和普通全部成功不是同一种入度规则，未选分支记录 SKIPPED，按发布定义中的 Join 规则裁决。<a href=\"#/e/doc-14\">事件驱动编排与分支语义</a>给出更完整的状态推进例子。</p>",
+          "sha256": "e39ceaaef20c6763455093acca1ad5f661a03751da0de2d9f38b095bce606249"
+        }
+      ],
+      "decision": "Preserve all original clauses: dependency graph and bounded readiness, input/resource/budget/acceptance contract, idempotent completion, all/first/quorum Join, plan version and invalidation; no title or alias substitutes."
+    },
+    {
+      "witnessIndex": 2,
+      "originalWitness": {
+        "html": "<p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p>",
+        "sha256": "ac38b9d90b9597d895660b9e101cdb8cb8972f42548564571c6e8639571592b3"
+      },
+      "evidence": [
+        {
+          "html": "<p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p>",
+          "sha256": "ac38b9d90b9597d895660b9e101cdb8cb8972f42548564571c6e8639571592b3"
+        }
+      ],
+      "decision": "Preserve all original clauses: dependency graph and bounded readiness, input/resource/budget/acceptance contract, idempotent completion, all/first/quorum Join, plan version and invalidation; no title or alias substitutes."
+    },
+    {
+      "witnessIndex": 3,
+      "originalWitness": {
+        "html": "<p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p>",
+        "sha256": "13fbb1d00ac7a25abb095ba289ddd63fd00a5dd13fbc209601609424d7687c0b"
+      },
+      "evidence": [
+        {
+          "html": "<p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p>",
+          "sha256": "13fbb1d00ac7a25abb095ba289ddd63fd00a5dd13fbc209601609424d7687c0b"
+        }
+      ],
+      "decision": "Preserve all original clauses: dependency graph and bounded readiness, input/resource/budget/acceptance contract, idempotent completion, all/first/quorum Join, plan version and invalidation; no title or alias substitutes."
+    }
+  ],
+  "expectedDestination": {
+    "stableReviewKey": "ai-agent-5#11",
+    "entryId": "ai-agent-5",
+    "questionId": "11",
+    "question": "当 Agent 需要调用多个工具且存在依赖关系时，调度引擎怎么设计？",
+    "label": "依赖调度与 Join",
+    "observedBodySha256": "1af1393f678b4a89d9e0bef6bad171687a41c28cfe074d41cdd5449372f286fe",
+    "witnesses": [
+      {
+        "html": "<p class=\"md-p\">我会先把工具的输入输出依赖画清楚，用 DAG 表达前后关系，用持久状态机记录每个节点执行到哪里。模型可以提议拆分与工具选择，程序负责校验依赖、权限和预算；只有前置结果通过验收、资源也允许，节点才进入有界执行队列。</p>",
+        "sha256": "049730e05e433fd5bb7f226a3d8aa3910a074b521daa54eac18a68a1292951ed"
+      },
+      {
+        "html": "<p class=\"md-p\">每个节点有稳定 ID、输入与计划版本、工具版本、前置依赖、读写资源、输出验收、超时、重试和补偿策略。调度输入还包括目标、优先级、deadline、当前容量、已完成结果与取消状态。参数缺失先补齐，例如订单身份未确定就不能查物流；识别出意图标签不等于已经满足执行条件。</p>",
+        "sha256": "2989aaa831b529f08864049ac084c4648c09ec2ef012e0cfdfa663d12b69a2b4"
+      },
+      {
+        "html": "<p class=\"md-p\">边 A→B 表示 B 依赖 A 的结果。执行前检查重复节点、缺失依赖与环；普通“全部成功”依赖维护未完成前驱数，无前驱节点进入 ready queue。A 首次提交合格结果后，才更新后继条件；重复回执不能重复减入度、重复启动 B。Kahn 的静态建图与遍历是 O(V+E)，实际运行还包含工具耗时和状态存储开销。</p>",
+        "sha256": "64fe9d302b7da968473636a3554c390f0f05236c19ad423f8d389fbdccc189a5"
+      },
+      {
+        "html": "<p class=\"md-p\">先拿“读取模块 C”和“读取规则”两个分支推演：如果生成补丁必须同时依赖它们，就用 All-success join。一个必需分支失败，后继就应阻塞，不能把缺失结果当成空字符串继续生成。</p>",
+        "sha256": "ac38b9d90b9597d895660b9e101cdb8cb8972f42548564571c6e8639571592b3"
+      },
+      {
+        "html": "<p class=\"md-p\">如果业务允许部分交付，可以用 Best-effort join，但输出要列出缺失证据。若只要首个合格结果，就用验证器判定 First-valid；anyOf 只说明某个 Future 已完成，最快返回的异常不是合格答案。Quorum join 等待约定数量，也不能把数量当事实多数决：三个 Worker 复制同一错误来源，仍只算一个证据簇。</p>",
+        "sha256": "2dea68af2385fec3e5e3ca70e2778f308138e6ad9bfb04b0f4cc3944c3b401ca"
+      },
+      {
+        "html": "<p class=\"md-p\">已知且稳定的流程先校验完整图，便于发现缺依赖与预算风险；长任务后续步骤可能依赖新观察，一次生成完整计划会推迟首步，且后半段容易过时。可以分阶段扩图，但新增节点和边要先校验、登记新计划版本，再进入 ready；不能把尚未明确的输入当已满足，也不能靠给运行中节点补一条边修复已经执行的副作用。</p>",
+        "sha256": "74d62b2e7d52e4b13b24369525411d1838453e2fd5b4baaf02393649c11567aa"
+      },
+      {
+        "html": "<p class=\"md-p\">计算每个节点的内容签名，至少覆盖代码/Prompt/工具版本、规范化输入、依赖产物版本、授权边界和验收器版本。新计划中相同签名且仍有效的已完成节点可复用；受变更影响的后代失效。已执行写操作的历史不能删除，应作为事实约束新计划。旧计划迟到结果带 plan_revision，若不匹配只能归档或重新验证，不能直接合并。</p>",
+        "sha256": "13fbb1d00ac7a25abb095ba289ddd63fd00a5dd13fbc209601609424d7687c0b"
+      },
+      {
+        "html": "<p class=\"md-p\">真实执行不必等待整层最慢节点，只要某节点的前置条件全部满足就可启动。条件分支、任一成功和普通全部成功不是同一种入度规则，未选分支记录 SKIPPED，按发布定义中的 Join 规则裁决。<a href=\"#/e/doc-14\">事件驱动编排与分支语义</a>给出更完整的状态推进例子。</p>",
+        "sha256": "e39ceaaef20c6763455093acca1ad5f661a03751da0de2d9f38b095bce606249"
+      }
+    ],
+    "guard": "All four original substantive witnesses are independently reconciled in phase2-dag-witness-reconciliation.json; final DAG body is exact."
+  },
+  "sourceBlockMapSha256": "8f89bdafe9b859525ec2bab01799e5f3516c599574006a769e984acb1711561d",
+  "variantMapSha256": "9034651c3b2d4c2feacde1041a0222908f713daf6a463edc79ccde461a7fe0ed"
+}

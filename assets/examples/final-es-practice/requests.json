@@ -1,0 +1,412 @@
+{
+  "schemaVersion": 1,
+  "targetVersion": "8.15.3",
+  "liveExecutionPerformed": false,
+  "groups": {
+    "00-preflight.http": [
+      {
+        "id": "version",
+        "method": "GET",
+        "path": "/",
+        "body": "",
+        "expect": "HTTP 200；version.number 必须为 8.15.3，其他版本先核对接口，不把本清单当已验证"
+      },
+      {
+        "id": "absent-interview_docs_v1",
+        "method": "HEAD",
+        "path": "/interview_docs_v1?expand_wildcards=all",
+        "body": "",
+        "expect": "HTTP 404 才继续；200 表示已有索引/别名/数据流，401/403 或其他状态均停止"
+      },
+      {
+        "id": "absent-interview_java_demo",
+        "method": "HEAD",
+        "path": "/interview_java_demo?expand_wildcards=all",
+        "body": "",
+        "expect": "HTTP 404 才继续；200 表示已有索引/别名/数据流，401/403 或其他状态均停止"
+      },
+      {
+        "id": "absent-interview_visibility_v1",
+        "method": "HEAD",
+        "path": "/interview_visibility_v1?expand_wildcards=all",
+        "body": "",
+        "expect": "HTTP 404 才继续；200 表示已有索引/别名/数据流，401/403 或其他状态均停止"
+      }
+    ],
+    "01-mapping.http": [
+      {
+        "method": "GET",
+        "path": "/",
+        "body": "",
+        "id": "mapping-version",
+        "expect": "HTTP 200；8.15.3",
+        "origin": "examples/own-es/fences/05-example-05.http#1"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_docs_v1",
+        "body": "{\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"refresh_interval\": \"1s\",\n    \"index.translog.durability\": \"request\",\n    \"analysis\": {\n      \"filter\": {\n        \"tech_synonyms\": {\n          \"type\": \"synonym_graph\",\n          \"synonyms\": [\"es, elasticsearch\", \"db, database\"]\n        }\n      },\n      \"analyzer\": {\n        \"cjk_mixed\": {\n          \"type\": \"custom\",\n          \"char_filter\": [\"html_strip\"],\n          \"tokenizer\": \"standard\",\n          \"filter\": [\"cjk_width\", \"lowercase\", \"cjk_bigram\"]\n        },\n        \"en_index\": {\n          \"type\": \"custom\",\n          \"tokenizer\": \"standard\",\n          \"filter\": [\"lowercase\"]\n        },\n        \"en_search\": {\n          \"type\": \"custom\",\n          \"tokenizer\": \"standard\",\n          \"filter\": [\"lowercase\", \"tech_synonyms\"]\n        }\n      }\n    }\n  },\n  \"mappings\": {\n    \"dynamic\": \"strict\",\n    \"_source\": {\"enabled\": true},\n    \"properties\": {\n      \"tenant_id\": {\"type\": \"keyword\"},\n      \"doc_id\": {\"type\": \"keyword\"},\n      \"title\": {\n        \"type\": \"text\",\n        \"analyzer\": \"cjk_mixed\",\n        \"search_analyzer\": \"cjk_mixed\",\n        \"fields\": {\"raw\": {\"type\": \"keyword\", \"ignore_above\": 256}}\n      },\n      \"body\": {\"type\": \"text\", \"analyzer\": \"cjk_mixed\", \"store\": true},\n      \"english\": {\n        \"type\": \"text\",\n        \"analyzer\": \"en_index\",\n        \"search_analyzer\": \"en_search\"\n      },\n      \"code_id\": {\"type\": \"keyword\"},\n      \"tags\": {\"type\": \"keyword\"},\n      \"price_cents\": {\"type\": \"long\", \"coerce\": false},\n      \"created_at\": {\"type\": \"date\", \"format\": \"strict_date_optional_time||epoch_millis\"},\n      \"location\": {\"type\": \"geo_point\"},\n      \"version\": {\"type\": \"long\", \"coerce\": false},\n      \"deleted\": {\"type\": \"boolean\"},\n      \"authors_object\": {\n        \"type\": \"object\",\n        \"properties\": {\"name\": {\"type\": \"keyword\"}, \"role\": {\"type\": \"keyword\"}}\n      },\n      \"authors_nested\": {\n        \"type\": \"nested\",\n        \"properties\": {\"name\": {\"type\": \"keyword\"}, \"role\": {\"type\": \"keyword\"}}\n      },\n      \"metadata\": {\"type\": \"object\", \"enabled\": false}\n    }\n  }\n}",
+        "id": "mapping-create",
+        "expect": "HTTP 200；acknowledged=true；新建隔离索引",
+        "origin": "examples/own-es/fences/05-example-05.http#2"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_docs_v1/_analyze",
+        "body": "{\"analyzer\":\"cjk_mixed\",\"text\":\"<b>缓存一致性</b> ＥＳ RedisCache\",\"explain\":true}",
+        "id": "analyze-cjk",
+        "expect": "HTTP 200；检查最后一级 tokenfilter 的 token/position，含 es、rediscache 及中文二元组",
+        "origin": "examples/own-es/fences/05-example-05.http#3"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_docs_v1/_analyze",
+        "body": "{\"analyzer\":\"en_search\",\"text\":\"ES database\",\"explain\":true}",
+        "id": "analyze-synonyms",
+        "expect": "HTTP 200；检查 es/elasticsearch 与 db/database 同义词图，不固定内部详情格式",
+        "origin": "examples/own-es/fences/05-example-05.http#4"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_docs_v1/_analyze",
+        "body": "{\"field\":\"title.raw\",\"text\":\"RedisCache ES\"}",
+        "id": "analyze-raw",
+        "expect": "HTTP 200；tokens 只有完整的 RedisCache ES",
+        "origin": "examples/own-es/fences/05-example-05.http#5"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_docs_v1/_analyze",
+        "body": "{\"field\":\"code_id\",\"text\":\"ERR_HTTP_409-v2\"}",
+        "id": "analyze-code",
+        "expect": "HTTP 200；tokens 只有完整的 ERR_HTTP_409-v2",
+        "origin": "examples/own-es/fences/05-example-05.http#6"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_docs_v1/_doc/1?refresh=wait_for",
+        "body": "{\n  \"tenant_id\":\"demo\",\n  \"doc_id\":\"1\",\n  \"title\":\"缓存一致性与 ES\",\n  \"body\":\"Elasticsearch 搜索使用索引。\",\n  \"english\":\"Elasticsearch database guide\",\n  \"code_id\":\"ERR_HTTP_409-v2\",\n  \"tags\":[\"search\",\"java\"],\n  \"price_cents\":990,\n  \"created_at\":\"2026-10-10T00:00:00Z\",\n  \"location\":{\"lat\":31.23,\"lon\":121.47},\n  \"version\":1,\n  \"deleted\":false,\n  \"authors_object\":[{\"name\":\"Alice\",\"role\":\"writer\"},{\"name\":\"Bob\",\"role\":\"editor\"}],\n  \"authors_nested\":[{\"name\":\"Alice\",\"role\":\"writer\"},{\"name\":\"Bob\",\"role\":\"editor\"}],\n  \"metadata\":{\"arbitrary_key\":\"kept only in source\"}\n}",
+        "id": "mapping-seed",
+        "expect": "HTTP 201；result=created；wait_for 返回后可搜索",
+        "origin": "examples/own-es/fences/05-example-05.http#7"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_docs_v1/_search",
+        "body": "{\n  \"query\":{\"bool\":{\"must\":[{\"match\":{\"english\":\"es\"}}],\"filter\":[{\"term\":{\"tenant_id\":\"demo\"}},{\"term\":{\"deleted\":false}}]}},\n  \"sort\":[{\"price_cents\":\"asc\"},{\"doc_id\":\"asc\"}],\n  \"aggs\":{\"by_tag\":{\"terms\":{\"field\":\"tags\"}}}\n}",
+        "id": "synonym-search",
+        "expect": "HTTP 200；命中 1；tags 的 java/search 各 1",
+        "origin": "examples/own-es/fences/05-example-05.http#8"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_docs_v1/_search",
+        "body": "{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"authors_object.name\":\"Alice\"}},{\"term\":{\"authors_object.role\":\"editor\"}}]}}}",
+        "id": "object-cross-match",
+        "expect": "HTTP 200；命中 1，演示 object 跨元素串配",
+        "origin": "examples/own-es/fences/05-example-05.http#9"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_docs_v1/_search",
+        "body": "{\"query\":{\"nested\":{\"path\":\"authors_nested\",\"query\":{\"bool\":{\"filter\":[{\"term\":{\"authors_nested.name\":\"Alice\"}},{\"term\":{\"authors_nested.role\":\"editor\"}}]}}}}}",
+        "id": "nested-no-cross-match",
+        "expect": "HTTP 200；0 命中，nested 要求同一元素满足两条件",
+        "origin": "examples/own-es/fences/05-example-05.http#10"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_docs_v1/_search",
+        "body": "{\"_source\":false,\"stored_fields\":[\"body\"],\"docvalue_fields\":[\"price_cents\"],\"query\":{\"ids\":{\"values\":[\"1\"]}}}",
+        "id": "stored-values",
+        "expect": "HTTP 200；命中 1；无 _source，fields.body 与 fields.price_cents 为数组",
+        "origin": "examples/own-es/fences/05-example-05.http#11"
+      },
+      {
+        "id": "strict-negative",
+        "method": "PUT",
+        "path": "/interview_docs_v1/_doc/strict-rejected",
+        "body": "{\n  \"title\": \"should reject\",\n  \"unexpected_field\": true\n}",
+        "expect": "HTTP 400；error.type=strict_dynamic_mapping_exception；不写入"
+      },
+      {
+        "id": "strict-absent",
+        "method": "GET",
+        "path": "/interview_docs_v1/_doc/strict-rejected",
+        "body": "",
+        "expect": "HTTP 404；found=false"
+      },
+      {
+        "id": "long-title",
+        "method": "PUT",
+        "path": "/interview_docs_v1/_doc/long-title?refresh=wait_for",
+        "body": "{\n  \"tenant_id\": \"demo\",\n  \"doc_id\": \"long-title\",\n  \"title\": \"a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a b\",\n  \"deleted\": false\n}",
+        "expect": "HTTP 201；title 恰为 257 个 ASCII 字符，原始 _source 保留"
+      },
+      {
+        "id": "long-source",
+        "method": "GET",
+        "path": "/interview_docs_v1/_doc/long-title",
+        "body": "",
+        "expect": "HTTP 200；_source.title 长度为 257"
+      },
+      {
+        "id": "long-raw-absent",
+        "method": "POST",
+        "path": "/interview_docs_v1/_search",
+        "body": "{\n  \"query\": {\n    \"bool\": {\n      \"filter\": [\n        {\n          \"ids\": {\n            \"values\": [\n              \"long-title\"\n            ]\n          }\n        },\n        {\n          \"exists\": {\n            \"field\": \"title.raw\"\n          }\n        }\n      ]\n    }\n  }\n}",
+        "expect": "HTTP 200；0 命中；ignore_above 只影响 keyword 子字段"
+      },
+      {
+        "id": "long-text-present",
+        "method": "POST",
+        "path": "/interview_docs_v1/_search",
+        "body": "{\n  \"query\": {\n    \"bool\": {\n      \"filter\": [\n        {\n          \"ids\": {\n            \"values\": [\n              \"long-title\"\n            ]\n          }\n        },\n        {\n          \"exists\": {\n            \"field\": \"title\"\n          }\n        }\n      ]\n    }\n  }\n}",
+        "expect": "HTTP 200；命中 long-title；父 text 字段仍有索引值"
+      }
+    ],
+    "02-filter.http": [
+      {
+        "id": "filter-create",
+        "method": "PUT",
+        "path": "/interview_java_demo",
+        "body": "{\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"refresh_interval\": \"1s\",\n    \"analysis\": {\n      \"analyzer\": {\n        \"cjk_mixed\": {\n          \"type\": \"custom\",\n          \"char_filter\": [\n            \"html_strip\"\n          ],\n          \"tokenizer\": \"standard\",\n          \"filter\": [\n            \"cjk_width\",\n            \"lowercase\",\n            \"cjk_bigram\"\n          ]\n        }\n      }\n    }\n  },\n  \"mappings\": {\n    \"dynamic\": \"strict\",\n    \"properties\": {\n      \"tenant_id\": {\n        \"type\": \"keyword\"\n      },\n      \"acl\": {\n        \"type\": \"keyword\"\n      },\n      \"generation\": {\n        \"type\": \"keyword\"\n      },\n      \"tags\": {\n        \"type\": \"keyword\"\n      },\n      \"doc_id\": {\n        \"type\": \"keyword\"\n      },\n      \"deleted\": {\n        \"type\": \"boolean\"\n      },\n      \"created_at\": {\n        \"type\": \"date\",\n        \"format\": \"strict_date_optional_time||epoch_millis\"\n      },\n      \"body\": {\n        \"type\": \"text\",\n        \"analyzer\": \"cjk_mixed\",\n        \"search_analyzer\": \"cjk_mixed\"\n      },\n      \"version\": {\n        \"type\": \"long\",\n        \"coerce\": false\n      }\n    }\n  }\n}",
+        "expect": "HTTP 200；acknowledged=true；实际新建索引，未创建/切换任何别名"
+      },
+      {
+        "id": "filter-seed",
+        "method": "POST",
+        "path": "/interview_java_demo/_bulk?refresh=wait_for",
+        "body": "{\"create\":{\"_id\":\"a\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"reader\"],\"generation\":\"r1\",\"deleted\":false,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"缓存指南\",\"tags\":[\"java\",\"search\"],\"version\":1,\"doc_id\":\"a\"}\n{\"create\":{\"_id\":\"b\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"reader\"],\"generation\":\"r1\",\"deleted\":false,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"database guide\",\"tags\":[\"java\"],\"version\":1,\"doc_id\":\"b\"}\n{\"create\":{\"_id\":\"c\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"reader\"],\"generation\":\"r1\",\"deleted\":false,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"database guide\",\"tags\":[\"python\"],\"version\":1,\"doc_id\":\"c\"}\n{\"create\":{\"_id\":\"d\"}}\n{\"tenant_id\":\"other\",\"acl\":[\"reader\"],\"generation\":\"r1\",\"deleted\":false,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"缓存指南\",\"tags\":[\"java\",\"search\"],\"version\":1,\"doc_id\":\"d\"}\n{\"create\":{\"_id\":\"e\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"admin\"],\"generation\":\"r1\",\"deleted\":false,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"缓存指南\",\"tags\":[\"java\",\"search\"],\"version\":1,\"doc_id\":\"e\"}\n{\"create\":{\"_id\":\"f\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"reader\"],\"generation\":\"r2\",\"deleted\":false,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"缓存指南\",\"tags\":[\"java\",\"search\"],\"version\":1,\"doc_id\":\"f\"}\n{\"create\":{\"_id\":\"g\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"reader\"],\"generation\":\"r1\",\"deleted\":true,\"created_at\":\"2026-10-10T00:00:00Z\",\"body\":\"缓存指南\",\"tags\":[\"java\",\"search\"],\"version\":1,\"doc_id\":\"g\"}\n{\"create\":{\"_id\":\"h\"}}\n{\"tenant_id\":\"demo\",\"acl\":[\"reader\"],\"generation\":\"r1\",\"deleted\":false,\"created_at\":\"2026-10-11T00:00:00Z\",\"body\":\"缓存指南\",\"tags\":[\"java\",\"search\"],\"version\":1,\"doc_id\":\"h\"}\n",
+        "expect": "HTTP 200；errors=false；8 个 create item 均 status=201"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_java_demo/_search?allow_partial_search_results=false",
+        "body": "{\n  \"size\": 10,\n  \"track_total_hits\": true,\n  \"timeout\": \"5s\",\n  \"query\": {\n    \"bool\": {\n      \"filter\": [\n        {\"term\":{\"tenant_id\":\"demo\"}},\n        {\"term\":{\"acl\":\"reader\"}},\n        {\"term\":{\"generation\":\"r1\"}},\n        {\"term\":{\"deleted\":false}},\n        {\"range\":{\"created_at\":{\"lte\":\"2026-10-10T12:00:00Z\"}}}\n      ],\n      \"should\": [\n        {\"match\":{\"body\":{\"query\":\"缓存\",\"boost\":2}}},\n        {\"term\":{\"tags\":\"java\"}}\n      ],\n      \"minimum_should_match\": 1\n    }\n  },\n  \"sort\": [{\"_score\":\"desc\"},{\"doc_id\":\"asc\"}],\n  \"_source\": [\"doc_id\",\"body\",\"tags\",\"version\"]\n}",
+        "id": "qualified-query",
+        "expect": "HTTP 200；timed_out=false，_shards.failed=0；仅 a、b，不能以得分补回 c–h",
+        "origin": "examples/own-es/fences/11-example-11.http#1"
+      }
+    ],
+    "03-composite.http": [
+      {
+        "method": "POST",
+        "path": "/interview_java_demo/_search?allow_partial_search_results=false",
+        "body": "{\n  \"size\":0,\n  \"query\":{\"bool\":{\"filter\":[\n    {\"term\":{\"tenant_id\":\"demo\"}},\n    {\"term\":{\"acl\":\"reader\"}},\n    {\"term\":{\"generation\":\"r1\"}},\n    {\"term\":{\"deleted\":false}},\n    {\"range\":{\"created_at\":{\"lte\":\"2026-10-10T12:00:00Z\"}}}\n  ]}},\n  \"aggs\":{\"all_tags\":{\"composite\":{\"size\":1,\"sources\":[\n    {\"tag\":{\"terms\":{\"field\":\"tags\",\"order\":\"asc\"}}}\n  ]}}}\n}",
+        "id": "composite-first",
+        "expect": "HTTP 200；桶按 java、python、search 顺序分页；计数分别为 2、1、1；检查 timed_out 和失败分片",
+        "origin": "examples/own-es/fences/15-example-15.http#1"
+      },
+      {
+        "id": "composite-next",
+        "method": "POST",
+        "path": "/interview_java_demo/_search?allow_partial_search_results=false",
+        "body": "{\n  \"size\": 0,\n  \"query\": {\n    \"bool\": {\n      \"filter\": [\n        {\n          \"term\": {\n            \"tenant_id\": \"demo\"\n          }\n        },\n        {\n          \"term\": {\n            \"acl\": \"reader\"\n          }\n        },\n        {\n          \"term\": {\n            \"generation\": \"r1\"\n          }\n        },\n        {\n          \"term\": {\n            \"deleted\": false\n          }\n        },\n        {\n          \"range\": {\n            \"created_at\": {\n              \"lte\": \"2026-10-10T12:00:00Z\"\n            }\n          }\n        }\n      ]\n    }\n  },\n  \"aggs\": {\n    \"all_tags\": {\n      \"composite\": {\n        \"size\": 1,\n        \"sources\": [\n          {\n            \"tag\": {\n              \"terms\": {\n                \"field\": \"tags\",\n                \"order\": \"asc\"\n              }\n            }\n          }\n        ],\n        \"after\": {\n          \"tag\": \"REPLACE_WITH_RETURNED_AFTER_KEY_TAG\"\n        }\n      }\n    }\n  }\n}",
+        "expect": "HTTP 200；用真实 after_key 整体替换 after，再重复至空桶或无 after_key；不是固定 java 游标"
+      }
+    ],
+    "04-pit.http": [
+      {
+        "method": "POST",
+        "path": "/interview_java_demo/_pit?keep_alive=1m",
+        "body": "",
+        "id": "pit-open",
+        "expect": "HTTP 200；保存响应 id；先完成并刷新 filter 样本",
+        "origin": "examples/own-es/fences/17-example-17.http#1"
+      },
+      {
+        "method": "POST",
+        "path": "/_search?allow_partial_search_results=false",
+        "body": "{\n  \"size\":1,\n  \"track_total_hits\":false,\n  \"timeout\":\"5s\",\n  \"pit\":{\"id\":\"REPLACE_WITH_LATEST_PIT_ID\",\"keep_alive\":\"1m\"},\n  \"query\":{\"bool\":{\"filter\":[\n    {\"term\":{\"tenant_id\":\"demo\"}},\n    {\"term\":{\"acl\":\"reader\"}},\n    {\"term\":{\"generation\":\"r1\"}},\n    {\"term\":{\"deleted\":false}},\n    {\"range\":{\"created_at\":{\"lte\":\"2026-10-10T12:00:00Z\"}}}\n  ]}},\n  \"sort\":[{\"doc_id\":\"asc\"},{\"_shard_doc\":\"asc\"}]\n}",
+        "id": "pit-first",
+        "expect": "HTTP 200；第一页 a；保存最新 pit_id 与完整 sort 数组；失败/超时不推进游标",
+        "origin": "examples/own-es/fences/17-example-17.http#2"
+      },
+      {
+        "method": "DELETE",
+        "path": "/_pit",
+        "body": "{\"id\":\"REPLACE_WITH_LATEST_PIT_ID\"}",
+        "id": "pit-close",
+        "expect": "HTTP 200；succeeded=true；关闭最新 ID；num_freed 不写死",
+        "origin": "examples/own-es/fences/18-example-18.http#1"
+      }
+    ],
+    "05-visibility.http": [
+      {
+        "method": "GET",
+        "path": "/",
+        "body": "",
+        "id": "visibility-version",
+        "expect": "HTTP 200；8.15.3",
+        "origin": "examples/own-es/fences/06-example-06.http#1"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1",
+        "body": "{\n  \"settings\": {\n    \"number_of_shards\": 1,\n    \"number_of_replicas\": 0,\n    \"refresh_interval\": \"-1\",\n    \"index.translog.durability\": \"request\"\n  },\n  \"mappings\": {\n    \"dynamic\":\"strict\",\n    \"properties\": {\n      \"title\":{\"type\":\"text\"},\n      \"version\":{\"type\":\"long\",\"coerce\":false},\n      \"deleted\":{\"type\":\"boolean\"}\n    }\n  }\n}",
+        "id": "visibility-create",
+        "expect": "HTTP 200；acknowledged=true；refresh_interval=-1",
+        "origin": "examples/own-es/fences/06-example-06.http#2"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/1?version=10&version_type=external&refresh=false",
+        "body": "{\"title\":\"search visibility\",\"version\":10,\"deleted\":false}",
+        "id": "external-10",
+        "expect": "HTTP 201；_version=10",
+        "origin": "examples/own-es/fences/06-example-06.http#3"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_search",
+        "body": "{\"query\":{\"ids\":{\"values\":[\"1\"]}}}",
+        "id": "search-before-refresh",
+        "expect": "HTTP 200；在未发生其他刷新条件下 0 命中",
+        "origin": "examples/own-es/fences/06-example-06.http#5"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_doc/1",
+        "body": "",
+        "id": "realtime-get",
+        "expect": "HTTP 200；found=true；_version=10；_source.version=10",
+        "origin": "examples/own-es/fences/06-example-06.http#4"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_visibility_v1/_refresh",
+        "body": "",
+        "id": "manual-refresh",
+        "expect": "HTTP 200；_shards.failed=0",
+        "origin": "examples/own-es/fences/06-example-06.http#6"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_search",
+        "body": "{\"query\":{\"ids\":{\"values\":[\"1\"]}}}",
+        "id": "search-after-refresh",
+        "expect": "HTTP 200；命中 1；仍应检查 timed_out=false 与失败分片",
+        "origin": "examples/own-es/fences/06-example-06.http#7"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/1?version=9&version_type=external",
+        "body": "{\"title\":\"late old snapshot\",\"version\":9,\"deleted\":false}",
+        "id": "stale-9",
+        "expect": "HTTP 409；version_conflict_engine_exception",
+        "origin": "examples/own-es/fences/06-example-06.http#8"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/1?version=10&version_type=external",
+        "body": "{\"title\":\"search visibility\",\"version\":10,\"deleted\":false}",
+        "id": "same-10",
+        "expect": "HTTP 409；external 要求严格大于当前版本",
+        "origin": "examples/own-es/fences/06-example-06.http#9"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/1?version=11&version_type=external&refresh=true",
+        "body": "{\"title\":\"\",\"version\":11,\"deleted\":true}",
+        "id": "tombstone-11",
+        "expect": "HTTP 200；_version=11；软墓碑仍是存活文档",
+        "origin": "examples/own-es/fences/06-example-06.http#10"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/1?version=10&version_type=external",
+        "body": "{\"title\":\"late old snapshot\",\"version\":10,\"deleted\":false}",
+        "id": "stale-after-tombstone",
+        "expect": "HTTP 409；旧版本不能覆盖软墓碑",
+        "origin": "examples/own-es/fences/06-example-06.http#11"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_search",
+        "body": "{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"deleted\":false}}]}}}",
+        "id": "hide-tombstone",
+        "expect": "HTTP 200；0 命中；deleted=false 排除软墓碑",
+        "origin": "examples/own-es/fences/06-example-06.http#12"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_settings",
+        "body": "{\"index\":{\"refresh_interval\":\"1s\"}}",
+        "id": "restore-refresh",
+        "expect": "HTTP 200；acknowledged=true；之后才使用 wait_for",
+        "origin": "examples/own-es/fences/06-example-06.http#13"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_visibility_v1/_bulk?refresh=wait_for",
+        "body": "{\"index\":{\"_id\":\"2\",\"version\":20,\"version_type\":\"external\"}}\n{\"title\":\"valid bulk item\",\"version\":20,\"deleted\":false}\n{\"index\":{\"_id\":\"3\",\"version\":20,\"version_type\":\"external\"}}\n{\"title\":\"invalid bulk item\",\"version\":\"not-a-long\",\"deleted\":false}",
+        "id": "bulk-mixed",
+        "expect": "HTTP 200；errors=true；items[0].index.status=201，items[1].index.status=400 且含解析错误；成功项不回滚",
+        "origin": "examples/own-es/fences/06-example-06.http#14"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_doc/2",
+        "body": "",
+        "id": "bulk-valid-get",
+        "expect": "HTTP 200；found=true；_source.version=20",
+        "origin": "examples/own-es/fences/06-example-06.http#15"
+      },
+      {
+        "method": "POST",
+        "path": "/interview_visibility_v1/_flush",
+        "body": "",
+        "id": "flush",
+        "expect": "HTTP 200；_shards.failed=0；不从大小变化推断持久化全部边界",
+        "origin": "examples/own-es/fences/06-example-06.http#16"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_stats/docs,segments,translog,refresh,flush,merge",
+        "body": "",
+        "id": "stats",
+        "expect": "HTTP 200；观察 docs/segments/translog/refresh/flush/merge；不硬编码计数",
+        "origin": "examples/own-es/fences/06-example-06.http#17"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/4?refresh=wait_for",
+        "body": "{\"title\":\"editable document\",\"version\":1,\"deleted\":false}",
+        "id": "occ-create",
+        "expect": "HTTP 201；内部版本文档4，与 external 文档分开",
+        "origin": "examples/own-es/fences/07-example-07.http#1"
+      },
+      {
+        "method": "GET",
+        "path": "/interview_visibility_v1/_doc/4",
+        "body": "",
+        "id": "occ-get",
+        "expect": "HTTP 200；记录真实 _seq_no 与 _primary_term",
+        "origin": "examples/own-es/fences/07-example-07.http#2"
+      },
+      {
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/4?if_seq_no=REPLACE_WITH_SEQ_NO&if_primary_term=REPLACE_WITH_PRIMARY_TERM&refresh=wait_for",
+        "body": "{\"title\":\"edited after conditional read\",\"version\":21,\"deleted\":false}",
+        "id": "occ-write",
+        "expect": "HTTP 200；在无并发写入条件下更新成功；必须替换真实 GET 令牌",
+        "origin": "examples/own-es/fences/08-example-08.http#1"
+      },
+      {
+        "id": "occ-stale-retry",
+        "method": "PUT",
+        "path": "/interview_visibility_v1/_doc/4?if_seq_no=REPLACE_WITH_SEQ_NO&if_primary_term=REPLACE_WITH_PRIMARY_TERM&refresh=wait_for",
+        "body": "{\n  \"title\": \"edited after conditional read\",\n  \"version\": 21,\n  \"deleted\": false\n}",
+        "expect": "HTTP 409；第一次成功后，故意重复使用旧令牌，应冲突；不能删除条件重试"
+      },
+      {
+        "id": "bulk-invalid-absent",
+        "method": "GET",
+        "path": "/interview_visibility_v1/_doc/3",
+        "body": "",
+        "expect": "HTTP 404；found=false；失败 bulk item 没有写入"
+      }
+    ]
+  }
+}

@@ -1,0 +1,74 @@
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.Scanner;
+
+public final class ScannerLineContractTest {
+    private static int checks;
+    static void eq(Object expected, Object actual) {
+        checks++;
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected [" + expected + "] got [" + actual + "]");
+    }
+    static void missing(Runnable read) {
+        checks++;
+        try { read.run(); } catch (NoSuchElementException expected) { return; }
+        throw new AssertionError("missing line must not be invented");
+    }
+    static String sameLine(Scanner sc) {
+SAME_LINE_SNIPPET
+        return line;
+    }
+    static String nextLine(Scanner sc) {
+NEXT_LINE_SNIPPET
+        return line;
+    }
+    static String wholeLine(Scanner sc) {
+WHOLE_LINE_SNIPPET
+        return line;
+    }
+    public static void main(String[] args) {
+        try (Scanner sc = new Scanner("1 hello world\nworld\n")) {
+            eq(" hello world", sameLine(sc));
+            eq("world", sc.nextLine());
+        }
+        try (Scanner sc = new Scanner("1  \t文 本  \r\nnext\r\n")) {
+            eq("  \t文 本  ", sameLine(sc));
+            eq("next", sc.nextLine());
+        }
+        try (Scanner sc = new Scanner("1\nnext\n")) {
+            eq("", sameLine(sc));
+            eq("next", sc.nextLine());
+        }
+        try (Scanner sc = new Scanner("1 final suffix  ")) {
+            eq(" final suffix  ", sameLine(sc));
+            eq(false, sc.hasNextLine());
+        }
+        try (Scanner sc = new Scanner("1\n  hello world  \n")) {
+            eq("  hello world  ", nextLine(sc));
+        }
+        try (Scanner sc = new Scanner("1 \t\r\n  正文  \r\nnext\r\n")) {
+            eq("  正文  ", nextLine(sc));
+            eq("next", sc.nextLine());
+        }
+        try (Scanner sc = new Scanner("1\n\nworld\n")) {
+            eq("", nextLine(sc));
+            eq("world", sc.nextLine());
+        }
+        try (Scanner sc = new Scanner("1\nlast without newline")) {
+            eq("last without newline", nextLine(sc));
+            eq(false, sc.hasNextLine());
+        }
+        try (Scanner sc = new Scanner("1\n")) { missing(() -> nextLine(sc)); }
+        try (Scanner sc = new Scanner("1")) { missing(() -> sameLine(sc)); }
+        try (Scanner sc = new Scanner("1 hello\nworld\n")) {
+            sc.nextInt(); sc.nextLine();
+            eq("world", sc.nextLine()); // The discarded " hello" is the actual defect.
+        }
+        try (Scanner sc = new Scanner("  full line  \n\nlast")) {
+            eq("  full line  ", wholeLine(sc));
+            eq("", wholeLine(sc));
+            eq("last", wholeLine(sc));
+            missing(() -> wholeLine(sc));
+        }
+        System.out.println("ScannerLineContractTest PASS: " + checks + " checks; same-line suffix vs next-line whole text, LF/CRLF, spaces, empty text, EOF, and reproduced dropped-text counterexample");
+    }
+}

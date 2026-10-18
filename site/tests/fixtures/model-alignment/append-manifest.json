@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "additions": [
+    {
+      "entryId": "ai-模型与评测-4",
+      "questionId": "q-model-dpo-objective-data",
+      "expectedOldCount": 15,
+      "expectedIndex": 15,
+      "order": 10003,
+      "authoringFile": "authoring/questions/ai-模型与评测-4--q-model-dpo-objective-data.json",
+      "expectedItem": {
+        "id": "q-model-dpo-objective-data",
+        "q": "标准 DPO 怎样定义目标、构造偏好数据，并进行迭代？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>标准离线 DPO 用同一上下文下的 prompt、chosen、rejected，直接优化策略相对 reference 的偏好概率差；本轮训练内循环无需在线 rollout、显式奖励模型或 PPO。它是优化目标，与 LoRA/QLoRA 选择更新哪些参数是两个维度。数据采集或后续迭代仍可生成新候选。</p><h3 class=\"md-h md-h3\">目标约束相对优势，不保证绝对概率</h3><p class=\"md-p\">对同一 x、优选 yw 与较差 yl，单对损失为 L_DPO=−log σ{β[log πθ(yw|x)−log πref(yw|x)−log πθ(yl|x)+log πref(yl|x)]}；训练在偏好数据上取期望或平均。reference 通常为固定 SFT 模型或基座，β&gt;0；改变 reference 或目标形式需说明。</p><p class=\"md-p\">每个概率对应整条有效回答，序列 log-prob 是有效回答 token 的 log-prob 之和。sum 改成长度 mean 会改变标准目标；长 GUI/工具轨迹还要检查长度差与冗长偏好，可做长度匹配、标注审查、显式长度正则或注明变体，并分长度评测。</p><p class=\"md-p\">固定 reference、同一偏好对且 β 为正时，chosen/rejected 概率从 0.2/0.1 变为 0.15/0.05，比值从 2 增到 3；两者都下降，单对 DPO 损失仍降低。因此还要看 chosen NLL、偏好 margin、长度、通用回归和 reference 偏移，必要时调整数据、β、学习率、训练时长，或明确增加 chosen SFT 辅助项。</p><p class=\"md-p\">β 与推导中的 KL 控制有关，但有限数据、参数化和优化都会影响实际结果，不能背成“β 越大一定越保守”。公式推导的约束作用与训练中实际漂移要分别检查。</p><h3 class=\"md-h md-h3\">怎样构造可比较的首轮与多轮偏好</h3><p class=\"md-p\">从真实首轮意图分布取 prompt，同一上下文可用当前模型、历史版本或合成器给候选；按正确性、相关性、格式、安全和简洁程度比较。chosen/rejected 表示经过审定的偏好，可以来自人工或经独立核验的 AI/程序信号，不是必须有人类逐条标签。</p><p class=\"md-p\">双方必须具有相同的上下文、证据、工具可用性、时点和权限，不能给 chosen 额外资料。保留来源、理由与争议标记，剔除无可辨优劣、双错和恶意样本；否则可能学到条件差异或标注偏见。具体共享底稿、合法 Schema 语义负例和分组隔离见<a href=\"#/e/ai-模型与评测-5/q-longdoc-training-shared-data-pipeline\">SFT/DPO 共用业务事实</a>。</p><p class=\"md-p\">多轮对话偏好可以比较同一历史下的下一回合，也可以比较完整交互轨迹。若轨迹的工具观测不同，要控制初始任务/环境并检查最终成功，避免把外部随机性当模型优劣。按会话/任务划分训练与验证；单轮和多轮比例根据分布与消融决定，不存在普适 3:7。</p><h3 class=\"md-h md-h3\">多轮对话与迭代式训练不同</h3><p class=\"md-p\">迭代式 DPO 用当前策略生成新候选，经人工或已校准独立评分形成新偏好，再做下一轮；它刷新策略遇到的输出分布，可能补固定旧数据的盲区，不等于同一批样本多训几个 epoch。</p><p class=\"md-p\">每轮保存 prompt、候选、标注、策略与 reference 版本，声明 reference 固定初始模型还是按轮更新。更新 reference 会改变锚点与累计漂移；保留高质旧样本和独立评测，检查自标偏见、难题被筛掉、长度偏好累积与记住 judge。</p><p class=\"md-p\">先 DPO 再 SFT 技术上可行，但后面的 SFT 可能覆盖偏好；常见先 SFT 再 DPO 也不是定律。DPO 后接 GRPO 需基模能产生可用候选、在线奖励可靠，并保留偏好/通用回归，记录采样、KL 与 reference，不能把多一次训练量算成算法优势。</p><h3 class=\"md-h md-h3\">单正例、多负例与分类任务</h3><p class=\"md-p\">同一个 chosen 分别配多个 rejected，只给出了正负关系，没有给出负例之间的顺序。需要细排序时，应取得可靠的负例间偏好或采用明确排序目标，并控制重复 prompt 的总权重，不能把负例排列凭空当标签。</p><p class=\"md-p\">分类任务里，若优劣对可靠且工程预算有限，DPO 可能适合，但没有“DPO 一定优于 GRPO”。先比较监督分类/SFT，再在相同基座、数据质量和生成加训练总预算下做 DPO、GRPO、PPO 或顺序消融。评测报告独立任务指标的前后差、样本数及波动，并检查切片退化，不能只报 DPO loss 下降。</p><h3 class=\"md-h md-h3\">线上点赞点踩怎样变成数据</h3><p class=\"md-p\">保存当时 prompt、历史、可见证据、模型版本和候选，先查反馈针对事实、语气、等待还是业务结果。未展示候选不能因“没赞”而变负例，不同问题的赞和踩不能直接配对。</p><p class=\"md-p\">在同一上下文生成可比较候选，经规则与独立人工核验形成偏好对；过滤恶意、双错和无差异样本，按会话和时间隔离验证。用户反馈有选择与展示偏差，要检查采样和权重；线上奖励上涨不证明偏好数据足够好。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>DPO 为什么不需要在线采样？DPO 的数据格式一般是什么样的？</li></ul>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>标准离线 DPO 用同一上下文下的 prompt、chosen、rejected，直接优化策略相对 reference 的偏好概率差；本轮训练内循环无需在线 rollout、显式奖励模型或 PPO。它是优化目标，与 LoRA/QLoRA 选择更新哪些参数是两个维度。数据采集或后续迭代仍可生成新候选。</p>",
+        "leadType": "authored"
+      },
+      "afterSha256": "70d7051f30e03aa5c2ec00aacfb67d587c80e45b0764de92bec824e3992b16dd"
+    },
+    {
+      "entryId": "ai-模型与评测-4",
+      "questionId": "q-model-r1-training-stages",
+      "expectedOldCount": 15,
+      "expectedIndex": 16,
+      "order": 10004,
+      "authoringFile": "authoring/questions/ai-模型与评测-4--q-model-r1-training-stages.json",
+      "expectedItem": {
+        "id": "q-model-r1-training-stages",
+        "q": "DeepSeek-R1 的训练路线是什么，怎样理解两阶段强化学习？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>先确认题目所指版本与“两阶段”的含义。2025 年 1 月原版 DeepSeek-R1 是两次 SFT 加两次 RL；两次 RL 之间还隔着数据采集和重新从 DeepSeek-V3-Base 做 SFT，不能画成同一个 RL checkpoint 连续优化。R1-Zero 是另一条从基座直接 RL 的路线。</p><h3 class=\"md-h md-h3\">原版 R1 的四阶段与基座重启</h3><p class=\"md-p\">R1-Zero 不先做 SFT，直接从基座大规模 RL，观察到推理行为，也存在可读性和语言混用问题。R1 则先用少量高质冷启动示范对 DeepSeek-V3-Base 做 SFT，再做推理导向 RL，重点覆盖数学、代码等可验收任务，并加入语言一致性信号。</p><p class=\"md-p\">从推理 RL checkpoint 拒绝采样，筛出正确推理示范并混入非推理任务数据。下一轮 SFT 的起点是 DeepSeek-V3-Base，而非默认接着该 RL checkpoint 训练；随后再做覆盖更多场景的 RL。</p><p class=\"md-p\">第二次 RL 在推理任务继续用规则验证，一般任务引入偏好奖励，兼顾推理、有帮助与无害性。该版本论文中，有帮助主要评价最终摘要，无害性评价整个回答；这是具体奖励范围，不是所有模型的通用规范。</p><p class=\"md-p\">强模型生成并筛选示范后可以 SFT 蒸馏小模型，不表示学生经历同样的 RL。原版发布的蒸馏路线需按具体型号核对。“aha moment”是训练中观察到的现象，不是可开关的网络模块；验收仍看正确率、可读性与独立任务结果。</p><h3 class=\"md-h md-h3\">“两阶段强化学习”不是固定配方</h3><p class=\"md-p\">先问清是某篇论文的两次 RL，还是先学任务能力、再优化综合约束的项目安排；SFT→RL 不能直接叫两个 RL 阶段，也不能默认第一阶段 GRPO、第二阶段 PPO，或短答案→长答案。</p><p class=\"md-p\">逐阶段说明任务/prompt/环境分布、奖励来源与组合、策略和 reference 的起点、切换条件和旧能力保留；两阶段可以用相同优化器。规则、结果验证、偏好模型与过程信号的差别要明确。</p><p class=\"md-p\">Agent 候选方案可先学完成任务，再在保持成功率时加入效率、恢复与安全约束。切换前检查基础成功率能否提供有效信号、奖励是否校准、独立验证是否趋稳；第二阶段保留基础任务回放，监测遗忘和奖励作弊。</p><p class=\"md-p\">是否分阶段应与一次联合训练在相同总 rollout、算力和数据预算下比较基础任务保留、综合约束与最终收益。没有项目配置就谈设计条件，不编造阶段阈值、实际卡数和效果。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>DeepSeek R1 和 V3 区别</li><li>是否了解DeepSeek R1</li><li>已有推理示范为什么还需要 RL？</li><li>两阶段强化学习的起点、奖励和切换条件是什么？</li></ul>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>先确认题目所指版本与“两阶段”的含义。2025 年 1 月原版 DeepSeek-R1 是两次 SFT 加两次 RL；两次 RL 之间还隔着数据采集和重新从 DeepSeek-V3-Base 做 SFT，不能画成同一个 RL checkpoint 连续优化。R1-Zero 是另一条从基座直接 RL 的路线。</p>",
+        "leadType": "authored"
+      },
+      "afterSha256": "9338ff750facef31c363637aaeca2af5426049003436dacbf060f719e6055602"
+    },
+    {
+      "entryId": "own-theory-math",
+      "questionId": "q-model-bias-variance-boundary",
+      "expectedOldCount": 5,
+      "expectedIndex": 5,
+      "order": 10000,
+      "authoringFile": "authoring/questions/own-theory-math--q-model-bias-variance-boundary.json",
+      "expectedItem": {
+        "id": "q-model-bias-variance-boundary",
+        "q": "偏差与方差怎样权衡，误差分解有哪些成立条件？",
+        "a": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>偏差是平均预测相对目标的系统性偏离，方差是更换训练样本后预测的波动。平方损失回归下可以做精确分解；换成分类损失或任意深度网络学习曲线，不能原样套用这个结论。</p><h3 class=\"md-h md-h3\">先说明公式成立的条件</h3><p class=\"md-p\">固定 x，设 y=f(x)+ε，E[ε|x]=0，测试噪声与训练集 D 独立，并有有限二阶矩；若预测为 f̂_D(x)，则 E[(y−f̂_D(x))²|x]=(E_D f̂_D(x)−f(x))²+Var_D(f̂_D(x))+Var(ε|x)。三项分别是偏差平方、模型方差、不可约噪声。</p><p class=\"md-p\">高偏差可能来自表达不足、遗漏特征或正则过强；高方差可能来自样本少、对偶然模式过敏。更多合适数据、正则、早停、交叉验证与集成分别改变训练或估计过程，不能保证某个旋钮同时降低所有项；用独立数据比较任务误差和稳定性。</p><p class=\"md-p\">交叉验证主要估计泛化与辅助选型，本身不保证降低模型偏差或方差。随机森林的聚合条件见<a href=\"#/e/own-theory-math/q-own-theory-random-forest\">随机森林方差与相关性</a>；RL 的 Monte Carlo、TD、GAE 讨论的是回报/优势估计器，详见<a href=\"#/e/own-theory-rl-foundations/q-own-theory-gae\">GAE 的偏差方差条件</a>，不能只背“λ 越大越好”。</p><h3 class=\"md-h md-h3\">常见问法</h3><ul class=\"md-list\"><li>偏差与方差怎样权衡？</li><li>高偏差与高方差分别怎样处理？</li></ul>",
+        "sub": "",
+        "mk": false,
+        "lead": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>偏差是平均预测相对目标的系统性偏离，方差是更换训练样本后预测的波动。平方损失回归下可以做精确分解；换成分类损失或任意深度网络学习曲线，不能原样套用这个结论。</p>",
+        "leadType": "authored"
+      },
+      "afterSha256": "df17699c11325f2f052ca3e52840ce5b1a293def0a16390675dcf8fae52eb47a"
+    }
+  ]
+}

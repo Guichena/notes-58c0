@@ -1,0 +1,533 @@
+<p class="md-p"><strong>执行合同：</strong>下面按 Elasticsearch 8.15.3 编写，用已获准的独立练习环境。先执行版本和名称预检；三个名称均须不存在，HEAD 200（含别名/数据流）、401、403 或未知状态都不能继续。确认没有匹配这些名称的自定义索引模板、默认/最终 ingest pipeline 和并发写者；建索引后可读 _mapping、_settings 核对实际合同。8.15 文档已停止更新，这里固定历史接口用于学习，不是当前生产版本推荐。所有结果都是待观察的预期，本页未声称已连接真实 ES 验收。</p><p class="md-p">用 Kibana Dev Tools Console 逐条执行，代码块保留 JSON 与 NDJSON 的真实行边界。不要把包含预期错误的整份文件不加判断地一次执行。独立下载的 .ndjson 必须保留末尾换行；通过 HTTP 客户端发送时用 Content-Type: application/x-ndjson 与原始二进制请求体。PIT、composite 和条件更新的响应令牌需读取真实响应；可用下方无依赖 Node.js 辅助程序完成，不能把占位符当真实值。</p><details class="reading-example"><summary>展开可复制请求：00-preflight.http</summary><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">00-preflight.http</span></div><div class="code-scroll"><pre class="md-pre" data-lang="http"># Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# version | HTTP 200；version.number 必须为 8.15.3，其他版本先核对接口，不把本清单当已验证
+GET /
+
+# absent-interview_docs_v1 | HTTP 404 才继续；200 表示已有索引/别名/数据流，401/403 或其他状态均停止
+HEAD /interview_docs_v1?expand_wildcards=all
+
+# absent-interview_java_demo | HTTP 404 才继续；200 表示已有索引/别名/数据流，401/403 或其他状态均停止
+HEAD /interview_java_demo?expand_wildcards=all
+
+# absent-interview_visibility_v1 | HTTP 404 才继续；200 表示已有索引/别名/数据流，401/403 或其他状态均停止
+HEAD /interview_visibility_v1?expand_wildcards=all
+</pre></div></div></details><p><a href="assets/examples/final-es-practice/00-preflight.http" download="00-preflight.http">下载 00-preflight.http</a></p><h2 class="md-h md-h2" id="s-es-mapping">mapping 与分析器</h2><p class="md-p">先核对<a href="#/e/bg-elasticsearch-2/0">原知识问答中的原理、字段合同与安全边界</a>，再逐段执行本节请求。以下示例给出教学条件与预期，实际结果需在获准的独立测试环境中验证；不代表生产配置。仅使用未占用的练习索引名，不要在生产索引执行。</p><h3 class="md-h md-h3">用分析结果与查询反例验证字段模型</h3><p class="md-p">分析器与映射的教学验证应在有权限的独立测试环境逐段进行：先检查服务版本并确认目标名称不存在，不能在业务索引执行。一个主分片、零副本只是简化单节点实验的条件，不代表生产高可用配置；教学请求清单也不是已经执行的集群结果。</p><p class="md-p">逐项观察的目标是：</p><ol class="md-list"><li>CJK 分析链移除标签、归一全角 ES 并转小写，再产生中文二元组；RedisCache 转小写但不自动拆 camelCase。以 explain 的实际 token 和位置为准。</li><li>en_search 对 es 引入 elasticsearch 词项，使正文只有 Elasticsearch 的文档也能进入候选；keyword 分析保持完整值，code_id 不被拆成多个编号片段。</li><li>普通 object 的 Alice/editor 查询体现跨元素串配风险，nested 查询在本例中应无命中。</li><li>排序与 tags 聚合使用数值/keyword 的 doc values；stored_fields 可取 body，即使响应关闭 _source。</li><li>未声明字段触发 strict mapping 错误。title.raw 超过 256 字符会失去该子字段的索引值，title 与普通 _source 的情况要分别判断。</li></ol><p class="md-p">这个实验没有覆盖权限系统：tenant_id 只是数据过滤字段，调用方仍需根据已验证身份构造过滤，不能允许用户传任意 tenant_id 就算授权完成。</p><p class="md-p">store: true 为字段增加独立取回能力，需要额外空间；字段合同中的 body 开启独立存储，用于比较 stored_fields，真实设计不应对所有字段重复保存。doc values 默认为多数支持它的字段启用，text 不支持常规 doc values。部分数字、keyword、日期、地理点等字段即使 index:false，仍可能利用 doc values 查询，只是通常更慢；因此“关闭 index 一定完全不可查询”不普遍成立。需要真正不检索的字段要结合类型和 doc_values 设置判断。</p><p class="md-p">补齐两个负例：strict-rejected 应返回 HTTP 400 且文档不存在；long-title 的 title 恰好 257 个 ASCII 字符，_source 与父 text 字段仍保留，title.raw 的 exists 查询应为 0。原样本 ID 1 的 nested/object、同义词、独立存储与 doc values 请求保持不变，先运行原样本查询再运行长标题负例。</p><details class="reading-example"><summary>展开可复制请求：01-mapping.http</summary><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">01-mapping.http</span></div><div class="code-scroll"><pre class="md-pre" data-lang="http"># Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# mapping-version | HTTP 200；8.15.3
+GET /
+
+# mapping-create | HTTP 200；acknowledged=true；新建隔离索引
+PUT /interview_docs_v1
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s",
+    "index.translog.durability": "request",
+    "analysis": {
+      "filter": {
+        "tech_synonyms": {
+          "type": "synonym_graph",
+          "synonyms": ["es, elasticsearch", "db, database"]
+        }
+      },
+      "analyzer": {
+        "cjk_mixed": {
+          "type": "custom",
+          "char_filter": ["html_strip"],
+          "tokenizer": "standard",
+          "filter": ["cjk_width", "lowercase", "cjk_bigram"]
+        },
+        "en_index": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase"]
+        },
+        "en_search": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "tech_synonyms"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "_source": {"enabled": true},
+    "properties": {
+      "tenant_id": {"type": "keyword"},
+      "doc_id": {"type": "keyword"},
+      "title": {
+        "type": "text",
+        "analyzer": "cjk_mixed",
+        "search_analyzer": "cjk_mixed",
+        "fields": {"raw": {"type": "keyword", "ignore_above": 256}}
+      },
+      "body": {"type": "text", "analyzer": "cjk_mixed", "store": true},
+      "english": {
+        "type": "text",
+        "analyzer": "en_index",
+        "search_analyzer": "en_search"
+      },
+      "code_id": {"type": "keyword"},
+      "tags": {"type": "keyword"},
+      "price_cents": {"type": "long", "coerce": false},
+      "created_at": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
+      "location": {"type": "geo_point"},
+      "version": {"type": "long", "coerce": false},
+      "deleted": {"type": "boolean"},
+      "authors_object": {
+        "type": "object",
+        "properties": {"name": {"type": "keyword"}, "role": {"type": "keyword"}}
+      },
+      "authors_nested": {
+        "type": "nested",
+        "properties": {"name": {"type": "keyword"}, "role": {"type": "keyword"}}
+      },
+      "metadata": {"type": "object", "enabled": false}
+    }
+  }
+}
+
+# analyze-cjk | HTTP 200；检查最后一级 tokenfilter 的 token/position，含 es、rediscache 及中文二元组
+POST /interview_docs_v1/_analyze
+{"analyzer":"cjk_mixed","text":"&lt;b&gt;缓存一致性&lt;/b&gt; ＥＳ RedisCache","explain":true}
+
+# analyze-synonyms | HTTP 200；检查 es/elasticsearch 与 db/database 同义词图，不固定内部详情格式
+POST /interview_docs_v1/_analyze
+{"analyzer":"en_search","text":"ES database","explain":true}
+
+# analyze-raw | HTTP 200；tokens 只有完整的 RedisCache ES
+POST /interview_docs_v1/_analyze
+{"field":"title.raw","text":"RedisCache ES"}
+
+# analyze-code | HTTP 200；tokens 只有完整的 ERR_HTTP_409-v2
+POST /interview_docs_v1/_analyze
+{"field":"code_id","text":"ERR_HTTP_409-v2"}
+
+# mapping-seed | HTTP 201；result=created；wait_for 返回后可搜索
+PUT /interview_docs_v1/_doc/1?refresh=wait_for
+{
+  "tenant_id":"demo",
+  "doc_id":"1",
+  "title":"缓存一致性与 ES",
+  "body":"Elasticsearch 搜索使用索引。",
+  "english":"Elasticsearch database guide",
+  "code_id":"ERR_HTTP_409-v2",
+  "tags":["search","java"],
+  "price_cents":990,
+  "created_at":"2026-10-10T00:00:00Z",
+  "location":{"lat":31.23,"lon":121.47},
+  "version":1,
+  "deleted":false,
+  "authors_object":[{"name":"Alice","role":"writer"},{"name":"Bob","role":"editor"}],
+  "authors_nested":[{"name":"Alice","role":"writer"},{"name":"Bob","role":"editor"}],
+  "metadata":{"arbitrary_key":"kept only in source"}
+}
+
+# synonym-search | HTTP 200；命中 1；tags 的 java/search 各 1
+GET /interview_docs_v1/_search
+{
+  "query":{"bool":{"must":[{"match":{"english":"es"}}],"filter":[{"term":{"tenant_id":"demo"}},{"term":{"deleted":false}}]}},
+  "sort":[{"price_cents":"asc"},{"doc_id":"asc"}],
+  "aggs":{"by_tag":{"terms":{"field":"tags"}}}
+}
+
+# object-cross-match | HTTP 200；命中 1，演示 object 跨元素串配
+GET /interview_docs_v1/_search
+{"query":{"bool":{"filter":[{"term":{"authors_object.name":"Alice"}},{"term":{"authors_object.role":"editor"}}]}}}
+
+# nested-no-cross-match | HTTP 200；0 命中，nested 要求同一元素满足两条件
+GET /interview_docs_v1/_search
+{"query":{"nested":{"path":"authors_nested","query":{"bool":{"filter":[{"term":{"authors_nested.name":"Alice"}},{"term":{"authors_nested.role":"editor"}}]}}}}}
+
+# stored-values | HTTP 200；命中 1；无 _source，fields.body 与 fields.price_cents 为数组
+GET /interview_docs_v1/_search
+{"_source":false,"stored_fields":["body"],"docvalue_fields":["price_cents"],"query":{"ids":{"values":["1"]}}}
+
+# strict-negative | HTTP 400；error.type=strict_dynamic_mapping_exception；不写入
+PUT /interview_docs_v1/_doc/strict-rejected
+{
+  "title": "should reject",
+  "unexpected_field": true
+}
+
+# strict-absent | HTTP 404；found=false
+GET /interview_docs_v1/_doc/strict-rejected
+
+# long-title | HTTP 201；title 恰为 257 个 ASCII 字符，原始 _source 保留
+PUT /interview_docs_v1/_doc/long-title?refresh=wait_for
+{
+  "tenant_id": "demo",
+  "doc_id": "long-title",
+  "title": "a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a a b",
+  "deleted": false
+}
+
+# long-source | HTTP 200；_source.title 长度为 257
+GET /interview_docs_v1/_doc/long-title
+
+# long-raw-absent | HTTP 200；0 命中；ignore_above 只影响 keyword 子字段
+POST /interview_docs_v1/_search
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "ids": {
+            "values": [
+              "long-title"
+            ]
+          }
+        },
+        {
+          "exists": {
+            "field": "title.raw"
+          }
+        }
+      ]
+    }
+  }
+}
+
+# long-text-present | HTTP 200；命中 long-title；父 text 字段仍有索引值
+POST /interview_docs_v1/_search
+{
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "ids": {
+            "values": [
+              "long-title"
+            ]
+          }
+        },
+        {
+          "exists": {
+            "field": "title"
+          }
+        }
+      ]
+    }
+  }
+}
+</pre></div></div></details><p><a href="assets/examples/final-es-practice/01-mapping.http" download="01-mapping.http">下载 01-mapping.http</a></p><h2 class="md-h md-h2" id="s-es-filter">filter 与可信资格</h2><p class="md-p">先核对<a href="#/e/bg-elasticsearch-2/3">原知识问答中的原理、字段合同与安全边界</a>，再逐段执行本节请求。以下示例给出教学条件与预期，实际结果需在获准的独立测试环境中验证；不代表生产配置。仅使用未占用的练习索引名，不要在生产索引执行。</p><h3 class="md-h md-h3">一个带硬资格的完整查询</h3><p class="md-p">下面先完整创建 interview_java_demo 隔离测试索引与八条样本：tenant_id、acl、generation、tags、doc_id 为 keyword，deleted 为布尔、created_at 为日期、body 使用本页 CJK 分析链，version 保存 long 业务版本。它是本练习新建的物理索引，不创建或切换别名，也不依赖未展示的 Java 工程。</p><p class="md-p">这个条件表示：demo 租户、reader 权限、r1 教学发布代、未删除、固定时间之前的数据，而且正文命中“缓存”或标签为 java，满足至少一个即可。两路都命中可贡献更多分数。若需求是正文必须匹配，标签只加分，应把正文移到 must，保留标签 should，不能继续把二者当同一种逻辑。</p><p class="md-p">tenant_id 与 acl 必须来自可信身份和授权计算，不能由浏览器任意指定。示例中的固定 reader 只是测试数据，不是完整身份系统。应用也不能让一个用户自带的 query_string 或未经约束的 DSL 替换服务端构造的硬过滤。缓存键要包含租户、授权范围或 ACL 版本、查询、索引代、模型/策略版本；缓存命中后若权限可能撤销，仍需做当前资格核验。</p><p class="md-p">有 version 字段还不够，查询还要知道哪个版本当前有效。当前版本可用已发布索引代、当前快照标记或受控版本目录表达；生效区间应按业务时区转换成明确时间。查历史规定与查当前规定是两个契约，不能先混排再把得分最高的一份叫最新版。异步索引可用于召回，最终详情可按 ID 回权威状态核对权限、删除和版本；过滤掉候选后可能不足一页，应有界补召回，不能悄悄放宽资格。</p><p class="md-p">样本 a、b 满足硬过滤并至少命中一路 should；c 满足硬过滤但两路都不命中；d–h 分别因其他租户、缺少 reader、其他发布代、软删除、晚于固定截止时间被排除。查询的命中 ID 集合应为 a、b，不固定精确分数。检查 timed_out=false 与 _shards.failed=0 后才接受结果。后两节只沿用硬过滤，因此 c 会出现在聚合/PIT 中，这个差异是查询合同的一部分。</p><details class="reading-example"><summary>展开可复制请求：02-filter.http</summary><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">02-filter.http</span></div><div class="code-scroll"><pre class="md-pre" data-lang="http"># Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# filter-create | HTTP 200；acknowledged=true；实际新建索引，未创建/切换任何别名
+PUT /interview_java_demo
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s",
+    "analysis": {
+      "analyzer": {
+        "cjk_mixed": {
+          "type": "custom",
+          "char_filter": [
+            "html_strip"
+          ],
+          "tokenizer": "standard",
+          "filter": [
+            "cjk_width",
+            "lowercase",
+            "cjk_bigram"
+          ]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "tenant_id": {
+        "type": "keyword"
+      },
+      "acl": {
+        "type": "keyword"
+      },
+      "generation": {
+        "type": "keyword"
+      },
+      "tags": {
+        "type": "keyword"
+      },
+      "doc_id": {
+        "type": "keyword"
+      },
+      "deleted": {
+        "type": "boolean"
+      },
+      "created_at": {
+        "type": "date",
+        "format": "strict_date_optional_time||epoch_millis"
+      },
+      "body": {
+        "type": "text",
+        "analyzer": "cjk_mixed",
+        "search_analyzer": "cjk_mixed"
+      },
+      "version": {
+        "type": "long",
+        "coerce": false
+      }
+    }
+  }
+}
+
+# filter-seed | HTTP 200；errors=false；8 个 create item 均 status=201
+POST /interview_java_demo/_bulk?refresh=wait_for
+{"create":{"_id":"a"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"a"}
+{"create":{"_id":"b"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"database guide","tags":["java"],"version":1,"doc_id":"b"}
+{"create":{"_id":"c"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"database guide","tags":["python"],"version":1,"doc_id":"c"}
+{"create":{"_id":"d"}}
+{"tenant_id":"other","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"d"}
+{"create":{"_id":"e"}}
+{"tenant_id":"demo","acl":["admin"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"e"}
+{"create":{"_id":"f"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r2","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"f"}
+{"create":{"_id":"g"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":true,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"g"}
+{"create":{"_id":"h"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-11T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"h"}
+
+# qualified-query | HTTP 200；timed_out=false，_shards.failed=0；仅 a、b，不能以得分补回 c–h
+POST /interview_java_demo/_search?allow_partial_search_results=false
+{
+  "size": 10,
+  "track_total_hits": true,
+  "timeout": "5s",
+  "query": {
+    "bool": {
+      "filter": [
+        {"term":{"tenant_id":"demo"}},
+        {"term":{"acl":"reader"}},
+        {"term":{"generation":"r1"}},
+        {"term":{"deleted":false}},
+        {"range":{"created_at":{"lte":"2026-10-10T12:00:00Z"}}}
+      ],
+      "should": [
+        {"match":{"body":{"query":"缓存","boost":2}}},
+        {"term":{"tags":"java"}}
+      ],
+      "minimum_should_match": 1
+    }
+  },
+  "sort": [{"_score":"desc"},{"doc_id":"asc"}],
+  "_source": ["doc_id","body","tags","version"]
+}
+</pre></div></div></details><p><a href="assets/examples/final-es-practice/02-filter.http" download="02-filter.http">下载 02-filter.http</a></p><p><a href="assets/examples/final-es-practice/filter-seed.ndjson" download="filter-seed.ndjson">下载八条样本 NDJSON</a></p><h2 class="md-h md-h2" id="s-es-aggregation">聚合与 composite 分页</h2><p class="md-p">先核对<a href="#/e/bg-elasticsearch-2/5">原知识问答中的原理、字段合同与安全边界</a>，再逐段执行本节请求。以下示例给出教学条件与预期，实际结果需在获准的独立测试环境中验证；不代表生产配置。仅使用未占用的练习索引名，不要在生产索引执行。</p><h3 class="md-h md-h3">composite 怎样遍历全部分组</h3><p class="md-p">需要逐页枚举分组 key 时，composite 提供按 sources 定义顺序的桶分页。每次使用响应返回的 after_key 构造下一次 after，不能自行假定它一定等于最后一个桶的 key；query、sources、顺序和固定时间边界保持不变。</p><p class="md-p">聚合字段合同沿用租户、reader 权限、r1 发布代、未删除与固定绝对时间条件，tags 为 keyword。第一页按 tag 升序每次一个桶；下一页原样使用真实响应中的 after_key，查询范围与 sources 保持不变。</p><p class="md-p">若实际响应 after_key 为 {&quot;tag&quot;:&quot;java&quot;}，下一页的 composite 部分是：</p><p class="md-p">这是一种按 key 枚举方式，不是按全局文档数倒序的任意 Top 桶分页。多值字段的组合会生成多种 bucket key，需控制 sources 与每页 size。分页减小每次响应和 reduce 状态，不代表整次全量遍历免费；支持的 pipeline 组合也受限制，不能跨独立页面直接计算一个全局导数后假称没有边界问题。</p><p class="md-p">持续写入时，after_key 不冻结数据，可能跨页改变桶内容。需要可复核报表时，用受控只读索引代，或在经验证支持的搜索路径里结合 PIT，并明确它只固定 ES 视图。任何页超时、失败分片或上下文失效都不能推进游标并标记全量统计完成。</p><p class="md-p">在这八条固定样本、没有并发写入的条件下，桶顺序为 java、python、search，文档数分别为 2、1、1。第二条请求中的 after 只是明确标记的占位对象，必须整体替换为上页真实 after_key，再重复至空桶或没有 after_key；不要由最后一个桶推算。</p><details class="reading-example"><summary>展开可复制请求：03-composite.http</summary><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">03-composite.http</span></div><div class="code-scroll"><pre class="md-pre" data-lang="http"># Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# composite-first | HTTP 200；桶按 java、python、search 顺序分页；计数分别为 2、1、1；检查 timed_out 和失败分片
+POST /interview_java_demo/_search?allow_partial_search_results=false
+{
+  "size":0,
+  "query":{"bool":{"filter":[
+    {"term":{"tenant_id":"demo"}},
+    {"term":{"acl":"reader"}},
+    {"term":{"generation":"r1"}},
+    {"term":{"deleted":false}},
+    {"range":{"created_at":{"lte":"2026-10-10T12:00:00Z"}}}
+  ]}},
+  "aggs":{"all_tags":{"composite":{"size":1,"sources":[
+    {"tag":{"terms":{"field":"tags","order":"asc"}}}
+  ]}}}
+}
+
+# composite-next | HTTP 200；用真实 after_key 整体替换 after，再重复至空桶或无 after_key；不是固定 java 游标
+POST /interview_java_demo/_search?allow_partial_search_results=false
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        {
+          "term": {
+            "tenant_id": "demo"
+          }
+        },
+        {
+          "term": {
+            "acl": "reader"
+          }
+        },
+        {
+          "term": {
+            "generation": "r1"
+          }
+        },
+        {
+          "term": {
+            "deleted": false
+          }
+        },
+        {
+          "range": {
+            "created_at": {
+              "lte": "2026-10-10T12:00:00Z"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "aggs": {
+    "all_tags": {
+      "composite": {
+        "size": 1,
+        "sources": [
+          {
+            "tag": {
+              "terms": {
+                "field": "tags",
+                "order": "asc"
+              }
+            }
+          }
+        ],
+        "after": {
+          "tag": "REPLACE_WITH_RETURNED_AFTER_KEY_TAG"
+        }
+      }
+    }
+  }
+}
+</pre></div></div></details><p><a href="assets/examples/final-es-practice/03-composite.http" download="03-composite.http">下载 03-composite.http</a></p><h2 class="md-h md-h2" id="s-es-pagination">PIT 与 search_after</h2><p class="md-p">先核对<a href="#/e/bg-elasticsearch-5/1">原知识问答中的原理、字段合同与安全边界</a>，再逐段执行本节请求。以下示例给出教学条件与预期，实际结果需在获准的独立测试环境中验证；不代表生产配置。仅使用未占用的练习索引名，不要在生产索引执行。</p><h3 class="md-h md-h3">PIT 的开启 续期与关闭</h3><p class="md-p">PIT 引用一组搜索上下文，让后续请求沿用此前打开的索引视图。它不是把整个索引复制一份，更不是与 MySQL 同时开始的跨库事务。</p><p class="md-p">PIT 的概念验证应先明确目标索引及可信 routing，再从开启响应取得真实 PIT ID。后续固定 query、sort 与绝对时间，响应带新 ID 就保存，完整处理一页后才推进排序边界。占位 ID 不能用于真实请求。</p><p class="md-p">后续仍发 POST /_search，query、sort、绝对时间条件完全不变；把最新 PIT ID 放回 pit.id，把上一页最后命中的完整 sort 数组放进 search_after。若真实响应最后值是 [&quot;a&quot;,0]，增加的字段就是 &quot;search_after&quot;:[&quot;a&quot;,0]；零只是说明类型与顺序，不能代替实际响应值。</p><p class="md-p">带 pit 的 search 不再指定 index、routing、preference，这些取自打开 PIT 的上下文。需要自定义 routing，应在开启 PIT 时正确限定，并在整个遍历中保持一致。8.15 的 PIT 搜索有 _shard_doc 作为稳定的内部 tie-break，它只在这个 PIT 生命周期内有意义；不能持久保存它并用于新 PIT 的续跑。</p><p class="md-p">开启和后续搜索可能返回不同 ID，始终保留最新返回的 ID。keep_alive 只需覆盖下一请求间隔，可在每次请求延长；它不是必须一次预留整份导出耗时。结束、取消或异常时尽力关闭最新上下文：</p><p class="md-p">客户端应从真实响应提取 PIT ID 与完整 sort 值，空页结束，并在 finally 或等价清理路径关闭最新上下文。这里按8.15接口讨论，不把新版开启 PIT 的额外参数倒推到8.15。</p><h3 class="md-h md-h3">数据快照不能保留已经失去的权限</h3><p class="md-p">用户打开 PIT 后，管理员可能撤销访问。旧 PIT 能保留旧文档视图，不代表旧权限继续有效。每页必须验证当前请求是否仍允许访问该范围，必要时整份游标作废；结果输出前对敏感详情做权威资格检查。</p><p class="md-p">严格一致导出和即时撤权有不同目标：一份历史快照的结果集合不能优先于当前安全边界。若撤权导致候选被移除，可返回短页或按有界预算继续扫描，但必须明示业务合同；不能为了补满页面扩大租户、忽略 deleted 或取另一个旧版本。最终授权检查还要考虑检查到发送之间的并发窗口，敏感系统需要明确由哪一层负责最终放行。</p><p class="md-p">索引可见性不足也不能由 PIT 弥补。某条源库更新尚未进入 ES，打开 PIT 只会稳定保留“尚未到达”的旧视图。需要读己之写或达到某个发布水位，应在打开 PIT 前等待相应投影状态，并验证它不是仅某个分区的最大时间戳。</p><p class="md-p">同一份固定样本的完整 PIT 遍历应按 doc_id 得到 a、b、c；每页 size=1。下面展示开启、首查与关闭请求。下一页需要完整 sort 数组与最新 PIT ID，下载的辅助程序直接从响应构造，不使用虚构的 shard_doc 数字。它检查超时/失败分片，异常时仍尽力关闭最新 PIT；关闭失败必须显式报告。</p><details class="reading-example"><summary>展开可复制请求：04-pit.http</summary><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">04-pit.http</span></div><div class="code-scroll"><pre class="md-pre" data-lang="http"># Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# pit-open | HTTP 200；保存响应 id；先完成并刷新 filter 样本
+POST /interview_java_demo/_pit?keep_alive=1m
+
+# pit-first | HTTP 200；第一页 a；保存最新 pit_id 与完整 sort 数组；失败/超时不推进游标
+POST /_search?allow_partial_search_results=false
+{
+  "size":1,
+  "track_total_hits":false,
+  "timeout":"5s",
+  "pit":{"id":"REPLACE_WITH_LATEST_PIT_ID","keep_alive":"1m"},
+  "query":{"bool":{"filter":[
+    {"term":{"tenant_id":"demo"}},
+    {"term":{"acl":"reader"}},
+    {"term":{"generation":"r1"}},
+    {"term":{"deleted":false}},
+    {"range":{"created_at":{"lte":"2026-10-10T12:00:00Z"}}}
+  ]}},
+  "sort":[{"doc_id":"asc"},{"_shard_doc":"asc"}]
+}
+
+# pit-close | HTTP 200；succeeded=true；关闭最新 ID；num_freed 不写死
+DELETE /_pit
+{"id":"REPLACE_WITH_LATEST_PIT_ID"}
+</pre></div></div></details><p><a href="assets/examples/final-es-practice/04-pit.http" download="04-pit.http">下载 04-pit.http</a></p><h2 class="md-h md-h2" id="s-es-visibility">写入与搜索可见性</h2><p class="md-p">先核对<a href="#/e/bg-elasticsearch-3/1">原知识问答中的原理、字段合同与安全边界</a>，再逐段执行本节请求。以下示例给出教学条件与预期，实际结果需在获准的独立测试环境中验证；不代表生产配置。仅使用未占用的练习索引名，不要在生产索引执行。</p><h3 class="md-h md-h3">3.12 完整写入与可见性教学请求</h3><p class="md-p">写入可见性的教学实验条件是独立 Elasticsearch 8.15.3 测试环境与未使用的索引名。关闭自动刷新用于观察窗口，恢复为 1 秒后才使用 wait_for；没有其他写者、refresh、flush 或读操作触发刷新，是解释前半段预期的条件。</p><p class="md-p">观察顺序如下，不预设一份虚构响应：</p><ol class="md-list"><li>v10 写确认后，先在尚未发生 refresh 的新索引上 search 观察 0 命中，再用默认实时 GET 读取当前文档。两种可见性分别检查，不把实时 GET 当作搜索状态保持不变的证明。手工 refresh 后再搜索，应进入可见视图。</li><li>external v9 和再次提交 v10 都应发生版本冲突。接着以 v11 写软墓碑，再提交 v10，应仍被拒绝；带 deleted=false 的搜索不返回该墓碑。</li><li>bulk 的 ID 2 为合法 long，ID 3 的 version 是非法字符串，应分别检查成功与失败 item。整批不回滚，不能只看 HTTP 层。NDJSON 最后一行后须保留换行；index 操作是动作行加文档行，delete 则只有动作行。</li><li>_flush 与 _stats 用于观察提交和运行计数，不能通过某次磁盘大小变化推断所有持久化/删除边界。零副本实验不能验证复制故障。</li></ol><p class="md-p">条件更新另用未采用 external 协议的文档4：先初始化，再实时读取该文档的序列号与任期。</p><p class="md-p">再从真实 GET 返回的两个值构造条件请求。请求中的 REPLACE_WITH_SEQ_NO 与 REPLACE_WITH_PRIMARY_TERM 必须替换为该文档实际读到的整数；示意数字 7、2 不是真实令牌。第一次更新成功后，再故意用旧令牌重复一次，应得到 409。</p><p class="md-p">文档 4 演示 ES 令牌流程，文档 1 和 2 演示 external 流程；不要在真实系统中对同一文档混用这两种写协议，更不能在冲突后直接丢掉条件。本页 HTTP 清单与游标辅助程序只用于讲清机制，不声称完成节点故障、掉电、MQ 重投或源库 CDC 的集成验证。</p><p class="md-p">单条 external 旧版本/同版本写入与旧 OCC 令牌重放均预期 HTTP 409；strict/类型错误是 HTTP 400。bulk 则可能整体 HTTP 200 但 errors=true，应逐个检查 item。混合 bulk 中 ID 2 的 _version 是 external 20，文档里的 version 只是另一个业务字段；ID 3 为 long 的非法值，预期解析失败且文档不存在。不要只看整个请求的状态码，也不要把 _version 与 _source.version 混为一个字段。</p><details class="reading-example"><summary>展开可复制请求：05-visibility.http</summary><div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">05-visibility.http</span></div><div class="code-scroll"><pre class="md-pre" data-lang="http"># Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# visibility-version | HTTP 200；8.15.3
+GET /
+
+# visibility-create | HTTP 200；acknowledged=true；refresh_interval=-1
+PUT /interview_visibility_v1
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "-1",
+    "index.translog.durability": "request"
+  },
+  "mappings": {
+    "dynamic":"strict",
+    "properties": {
+      "title":{"type":"text"},
+      "version":{"type":"long","coerce":false},
+      "deleted":{"type":"boolean"}
+    }
+  }
+}
+
+# external-10 | HTTP 201；_version=10
+PUT /interview_visibility_v1/_doc/1?version=10&amp;version_type=external&amp;refresh=false
+{"title":"search visibility","version":10,"deleted":false}
+
+# search-before-refresh | HTTP 200；在未发生其他刷新条件下 0 命中
+GET /interview_visibility_v1/_search
+{"query":{"ids":{"values":["1"]}}}
+
+# realtime-get | HTTP 200；found=true；_version=10；_source.version=10
+GET /interview_visibility_v1/_doc/1
+
+# manual-refresh | HTTP 200；_shards.failed=0
+POST /interview_visibility_v1/_refresh
+
+# search-after-refresh | HTTP 200；命中 1；仍应检查 timed_out=false 与失败分片
+GET /interview_visibility_v1/_search
+{"query":{"ids":{"values":["1"]}}}
+
+# stale-9 | HTTP 409；version_conflict_engine_exception
+PUT /interview_visibility_v1/_doc/1?version=9&amp;version_type=external
+{"title":"late old snapshot","version":9,"deleted":false}
+
+# same-10 | HTTP 409；external 要求严格大于当前版本
+PUT /interview_visibility_v1/_doc/1?version=10&amp;version_type=external
+{"title":"search visibility","version":10,"deleted":false}
+
+# tombstone-11 | HTTP 200；_version=11；软墓碑仍是存活文档
+PUT /interview_visibility_v1/_doc/1?version=11&amp;version_type=external&amp;refresh=true
+{"title":"","version":11,"deleted":true}
+
+# stale-after-tombstone | HTTP 409；旧版本不能覆盖软墓碑
+PUT /interview_visibility_v1/_doc/1?version=10&amp;version_type=external
+{"title":"late old snapshot","version":10,"deleted":false}
+
+# hide-tombstone | HTTP 200；0 命中；deleted=false 排除软墓碑
+GET /interview_visibility_v1/_search
+{"query":{"bool":{"filter":[{"term":{"deleted":false}}]}}}
+
+# restore-refresh | HTTP 200；acknowledged=true；之后才使用 wait_for
+PUT /interview_visibility_v1/_settings
+{"index":{"refresh_interval":"1s"}}
+
+# bulk-mixed | HTTP 200；errors=true；items[0].index.status=201，items[1].index.status=400 且含解析错误；成功项不回滚
+POST /interview_visibility_v1/_bulk?refresh=wait_for
+{"index":{"_id":"2","version":20,"version_type":"external"}}
+{"title":"valid bulk item","version":20,"deleted":false}
+{"index":{"_id":"3","version":20,"version_type":"external"}}
+{"title":"invalid bulk item","version":"not-a-long","deleted":false}
+
+# bulk-valid-get | HTTP 200；found=true；_source.version=20
+GET /interview_visibility_v1/_doc/2
+
+# flush | HTTP 200；_shards.failed=0；不从大小变化推断持久化全部边界
+POST /interview_visibility_v1/_flush
+
+# stats | HTTP 200；观察 docs/segments/translog/refresh/flush/merge；不硬编码计数
+GET /interview_visibility_v1/_stats/docs,segments,translog,refresh,flush,merge
+
+# occ-create | HTTP 201；内部版本文档4，与 external 文档分开
+PUT /interview_visibility_v1/_doc/4?refresh=wait_for
+{"title":"editable document","version":1,"deleted":false}
+
+# occ-get | HTTP 200；记录真实 _seq_no 与 _primary_term
+GET /interview_visibility_v1/_doc/4
+
+# occ-write | HTTP 200；在无并发写入条件下更新成功；必须替换真实 GET 令牌
+PUT /interview_visibility_v1/_doc/4?if_seq_no=REPLACE_WITH_SEQ_NO&amp;if_primary_term=REPLACE_WITH_PRIMARY_TERM&amp;refresh=wait_for
+{"title":"edited after conditional read","version":21,"deleted":false}
+
+# occ-stale-retry | HTTP 409；第一次成功后，故意重复使用旧令牌，应冲突；不能删除条件重试
+PUT /interview_visibility_v1/_doc/4?if_seq_no=REPLACE_WITH_SEQ_NO&amp;if_primary_term=REPLACE_WITH_PRIMARY_TERM&amp;refresh=wait_for
+{
+  "title": "edited after conditional read",
+  "version": 21,
+  "deleted": false
+}
+
+# bulk-invalid-absent | HTTP 404；found=false；失败 bulk item 没有写入
+GET /interview_visibility_v1/_doc/3
+</pre></div></div></details><p><a href="assets/examples/final-es-practice/05-visibility.http" download="05-visibility.http">下载 05-visibility.http</a></p><p><a href="assets/examples/final-es-practice/visibility-mixed.ndjson" download="visibility-mixed.ndjson">下载四行混合结果 NDJSON</a></p><h3 class="md-h md-h3">动态响应辅助与验证边界</h3><p class="md-p">先下载 <a href="assets/examples/final-es-practice/run-cursors.mjs" download="run-cursors.mjs">run-cursors.mjs</a> 和同目录的 <a href="assets/examples/final-es-practice/requests.json" download="requests.json">requests.json</a>。Node.js 20+ 内置模块，无需安装包。仅在完成相应 HTTP 建索引和样本步骤后，选择 composite、pit 或 occ 模式；occ 模式要求文档 4 已初始化。程序默认只显示用法，没有隐式联网或建索引。</p><p class="md-p">示例命令：node run-cursors.mjs pit http://127.0.0.1:9200 --isolated-test。脚本仅接受本机回环 HTTP 的隔离实验，不支持生产端点、登录或绕过证书；已有安全环境请在已登录的 Console 中执行对应 HTTP 请求。测试结果只覆盖 JSON/NDJSON 结构、静态合同与模拟响应推进逻辑，不等于 ES 执行、生产授权、复制故障或端到端 CDC 验收。</p><p class="md-p">练习索引不会被脚本自动删除。需要重跑时自行确认并换一套未占用名称，或在授权范围内清理这三个练习索引；不要为让示例成功去删除已有业务索引或修改别名。</p><p class="md-p">版本核对资料（Elastic 官方 8.15，2026-10-17 核对）：<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/indices-analyze.html">分析接口</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/analysis-synonym-graph-tokenfilter.html">搜索同义词图</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/ignore-above.html">ignore_above</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/dynamic.html">strict mapping</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/docs-bulk.html">Bulk NDJSON 与 item 响应</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/docs-refresh.html">refresh 与 wait_for</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/docs-index_.html">external 与条件更新</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/point-in-time-api.html">PIT</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/paginate-search-results.html">search_after</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/search-aggregations-bucket-composite-aggregation.html">composite 游标</a>；<a href="https://www.elastic.co/guide/en/elasticsearch/reference/8.15/indices-exists.html">索引/别名/数据流名称预检</a>。</p>

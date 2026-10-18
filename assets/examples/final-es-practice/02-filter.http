@@ -1,0 +1,109 @@
+# Kibana Dev Tools Console syntax; Elasticsearch 8.15.3 isolated exercise only.
+# Run one request at a time. Expected failures are deliberate. Never execute on production.
+
+# filter-create | HTTP 200；acknowledged=true；实际新建索引，未创建/切换任何别名
+PUT /interview_java_demo
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "refresh_interval": "1s",
+    "analysis": {
+      "analyzer": {
+        "cjk_mixed": {
+          "type": "custom",
+          "char_filter": [
+            "html_strip"
+          ],
+          "tokenizer": "standard",
+          "filter": [
+            "cjk_width",
+            "lowercase",
+            "cjk_bigram"
+          ]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "tenant_id": {
+        "type": "keyword"
+      },
+      "acl": {
+        "type": "keyword"
+      },
+      "generation": {
+        "type": "keyword"
+      },
+      "tags": {
+        "type": "keyword"
+      },
+      "doc_id": {
+        "type": "keyword"
+      },
+      "deleted": {
+        "type": "boolean"
+      },
+      "created_at": {
+        "type": "date",
+        "format": "strict_date_optional_time||epoch_millis"
+      },
+      "body": {
+        "type": "text",
+        "analyzer": "cjk_mixed",
+        "search_analyzer": "cjk_mixed"
+      },
+      "version": {
+        "type": "long",
+        "coerce": false
+      }
+    }
+  }
+}
+
+# filter-seed | HTTP 200；errors=false；8 个 create item 均 status=201
+POST /interview_java_demo/_bulk?refresh=wait_for
+{"create":{"_id":"a"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"a"}
+{"create":{"_id":"b"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"database guide","tags":["java"],"version":1,"doc_id":"b"}
+{"create":{"_id":"c"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"database guide","tags":["python"],"version":1,"doc_id":"c"}
+{"create":{"_id":"d"}}
+{"tenant_id":"other","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"d"}
+{"create":{"_id":"e"}}
+{"tenant_id":"demo","acl":["admin"],"generation":"r1","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"e"}
+{"create":{"_id":"f"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r2","deleted":false,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"f"}
+{"create":{"_id":"g"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":true,"created_at":"2026-10-10T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"g"}
+{"create":{"_id":"h"}}
+{"tenant_id":"demo","acl":["reader"],"generation":"r1","deleted":false,"created_at":"2026-10-11T00:00:00Z","body":"缓存指南","tags":["java","search"],"version":1,"doc_id":"h"}
+
+# qualified-query | HTTP 200；timed_out=false，_shards.failed=0；仅 a、b，不能以得分补回 c–h
+POST /interview_java_demo/_search?allow_partial_search_results=false
+{
+  "size": 10,
+  "track_total_hits": true,
+  "timeout": "5s",
+  "query": {
+    "bool": {
+      "filter": [
+        {"term":{"tenant_id":"demo"}},
+        {"term":{"acl":"reader"}},
+        {"term":{"generation":"r1"}},
+        {"term":{"deleted":false}},
+        {"range":{"created_at":{"lte":"2026-10-10T12:00:00Z"}}}
+      ],
+      "should": [
+        {"match":{"body":{"query":"缓存","boost":2}}},
+        {"term":{"tags":"java"}}
+      ],
+      "minimum_should_match": 1
+    }
+  },
+  "sort": [{"_score":"desc"},{"doc_id":"asc"}],
+  "_source": ["doc_id","body","tags","version"]
+}

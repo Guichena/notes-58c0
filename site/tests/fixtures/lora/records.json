@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "scope": "Four LoRA answers and their leads only; parent is sole integration writer.",
+  "sourceFile": "audit-20261017/integration-site/dist/data/chapters/ai-af1299db0fde.json",
+  "sourceObservedAt": "2026-10-17T23:50:05.289594+00:00",
+  "records": [
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        0,
+        "a"
+      ],
+      "before": "<p class=\"md-p\">LoRA 冻结基座大权重，在选定线性映射上学习低秩增量。新增参数虽然增加了一条分支，但只有这部分需要保存梯度和优化器状态，因此相对全参微调可降低训练资源需求；基座权重、激活和反向计算仍然存在。</p><p class=\"md-p\">它的依据是：一些任务适配需要的有效变化，可以由较少方向近似表达，不必把整个权重矩阵都重新训练。这适合基座已有较好能力时做垂域或指令适配；如果任务跨度很大、基座能力不足，小 adapter 未必够用。</p><p class=\"md-p\">基座与任务适配器还可以分开管理，便于多任务或多租户切换，也引出 QLoRA、adapter merge 和通用能力回退等问题。是否真的省时、能保住多少能力，要在具体任务与部署方式下验证。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>不宜把它讲成低成本万能解；基座差或任务跨度太大时，小规模 adapter 不一定够。</p></div><h2 class=\"md-h md-h2\" id=\"add-own-theory-training-cfd3b412bc\">继续展开：参数、梯度、初始化与低秩边界</h2><h3 class=\"md-h md-h3\">LoRA 为什么增加参数反而省显存</h3><p class=\"md-p\">可能的问法： LoRA 增加参数为什么省显存？A/B 都初始化为零会怎样？能放 LayerNorm 后吗？rank 与 alpha 怎么选？</p><p class=\"md-p\">核心回答：LoRA 冻结大权重，只为小规模低秩增量保存梯度与优化器状态。</p><p class=\"md-p\">原参数 W0∈R^(d_out×d_in)，增量 ΔW=(α/r)BA，其中 A∈R^(r×d_in)，B∈R^(d_out×r)，前向 y=W0x+(α/r)BAx。新增可训练参数约 r(d_in+d_out)，相比全参 d_in·d_out 更少。</p><p class=\"md-p\">常见初始化 A 随机、B 为零，使初始 ΔW=0，保持基座行为。</p><p class=\"md-p\">此时第一步 B 可以有梯度，A 的梯度因 B=0 为零，后续 B 更新后 A 才收到信号；若 A、B 同时为零，双线性分支双方梯度都可能为零而学不起来。</p><p class=\"md-p\">其他初始化如数据驱动分解或不同缩放方法需要分别说明，不把一种默认设置当全部 LoRA 的定理。</p><p class=\"md-p\">关键是一个因子会参与另一个因子的梯度计算，所以双零可能互相阻断学习；这一判断要按具体初始化与参数化推导，不能套到所有初始化方式。</p><p class=\"md-p\">追问：除了随机 A、零 B，还能怎样初始化？ PiSSA 的 2024 年原始方案按基座权重的主奇异子空间初始化。</p><p class=\"md-p\">沿本章 W0∈R^(d_out×d_in)、B∈R^(d_out×r)、A∈R^(r×d_in) 的记法，做 W0=UΣVᵀ，取前 r 个奇异方向，令 B0=Ur√Σr、A0=√ΣrVrᵀ，并将冻结部分改为 Wres=W0−B0A0。</p><p class=\"md-p\">起点满足 Wres+B0A0=W0，所以不是在原基座上无条件再叠一份非零主成分。</p><p class=\"md-p\">随后冻结 Wres、训练 A/B，直接调整主要奇异方向；与随机 A、零 B 的增量起点不同，两矩阵初始一般都有非零值，第一步都可能获得梯度。</p><p class=\"md-p\">这里把缩放吸收到因子中；若实现使用 sBA，就必须在因子和残差构造时一致计入 s。标准 LoRA adapter 与 PiSSA 的基座配套关系、保存和合并方式也要核对，不能把 PiSSA 初始主成分直接加载到未减残差的原 W0 上。</p><p class=\"md-p\">PiSSA 需要对权重做 SVD 或近似快速分解，增加初始化时间、工作内存与近似误差；它是权重驱动的方法，不必然需要任务激活数据。比较时固定 rank、目标模块、数据、学习率和总预算，同时核对初始输出与基座一致性、训练质量和合并结果。原论文报告的优势不保证在每个任务成立，具体配置接口以所用 PEFT/框架版本为准。</p><p class=\"md-p\">LoRA 省去冻结参数的梯度和 Adam 状态，但仍需基座权重、激活、适配器及反向计算。</p><p class=\"md-p\">rank 增大提高更新子空间容量，也增加参数、内存与过拟合风险。</p><p class=\"md-p\">α/r 控制增量尺度；α 过大可能扰动强、训练不稳，过小可能适应不足，不能脱离学习率、rank、初始化和训练步数单看 α。</p><p class=\"md-p\">只能加在线性层吗，不能放 LayerNorm 后吗？ 低秩分解天然适用于矩阵映射，常加 Q/K/V/O 与 FFN，也可以扩展到 embedding、卷积等。LayerNorm 的缩放向量不是同样的二维投影矩阵，但“在 LayerNorm 后接一个可训练适配器”并非数学禁令；它是另一种结构，会改变残差/尺度与初始化，需要设计和实验。不能以“LoRA 无法放 Norm 后”作为普遍结论。</p><p class=\"md-p\">推理时对兼容浮点权重可合并 W=W0+ΔW，消除独立分支计算；多租户动态 adapter 常不合并，便于切换但有调度与算子开销。</p><p class=\"md-p\">量化基座合并可能涉及反量化/重新量化及误差，不能保证简单相加仍保留原量化精度。切换 adapter 也会影响 KV/prefix cache 兼容性。</p><p class=\"md-p\">LoRA 效果不好时，先检查 labels/mask、模板、目标模块是否实际命中、trainable 参数、学习率与数据，再试 rank/α/dropout/层覆盖，最后比较全参。DoRA 分离幅度与方向，AdaLoRA 动态分配秩，rsLoRA 调整缩放，QLoRA 改冻结权重存储，它们解决的问题不同，不是越多组合越好。</p><h3 class=\"md-h md-h3\">低秩更新为什么有时能接近全参数微调</h3><p class=\"md-p\">LoRA 的依据是：预训练模型已经拥有大量可复用能力，适配某些下游任务所需的有效变化，可能集中在较少的方向上，因此受限的低秩更新也能找到足够好的解；这是一种有实验支持的假设，不是对所有任务的等价保证。</p><p class=\"md-p\">可能的问法： 参数少为什么不一定效果差？低秩的是原权重还是更新？rank 很小为何还能有效？是不是对全量微调后的矩阵做一次 SVD 就是 LoRA？</p><p class=\"md-p\">设原权重 W₀ 的形状为 d_out×d_in，把缩放系数吸收到因子后，LoRA 学习 ΔW=BA，其中 A 为 r×d_in、B 为 d_out×r。</p><p class=\"md-p\">受限的是本层新增矩阵的秩，至多为 r；W₀ 本身仍然存在，W₀+BA 并不因此变成秩 r 的权重。</p><p class=\"md-p\">可以把 A 理解为提取少量可调整方向，B 把这些方向的影响送回输出空间，但这些方向由训练学习，不能直接解释成固定的人类语义维度。</p><p class=\"md-p\">全参数微调能搜索更大的参数空间，并不意味着较小的数据集需要其中所有自由度。预训练已经学到通用结构，下游训练可能只需重组、强调或抑制某些特征。</p><p class=\"md-p\">多层 LoRA 更新与原网络非线性组合，还能产生复杂的输入输出变化；单层矩阵的秩限制不等于整个模型只能完成 r 种任务。</p><p class=\"md-p\">减少可训练参数同时减少梯度和优化器状态，也可能限制小样本过拟合，但不能保证总训练内存、训练时间或泛化一定按参数比例改善。</p><p class=\"md-p\">这里要区分两个命题：任务在参数空间中可能有较低的有效适配维度，不等于每个全量微调结果都严格低秩。</p><p class=\"md-p\">若某个理想更新矩阵的奇异值很快衰减，低秩近似可以保留其主要能量，这是理解压缩方向的直觉；但 LoRA 是直接优化两个因子，不是先得到全量微调最优解再做 SVD，而且参数矩阵误差小也不自动保证任务输出误差小。</p><p class=\"md-p\">什么时候容易不够？ 领域和任务与预训练差异很大、必须学习较多新模式，或者只在少数不合适的模块加适配器时，过小的 r 可能形成欠拟合。相反，r 增大又会增加状态和优化难度，小数据下未必更好。不能只靠一次验证分数低就断定 rank 太小，还要排查数据、模板、loss mask、目标模块、学习率和训练步数。</p><p class=\"md-p\">比较时固定基座、数据划分、训练与评测合同，报告 r、缩放、目标模块和预算；同时看目标任务、保留能力、不同随机种子、训练与验证差距，再比较扩大 rank、扩大目标模块或全量微调。只有这组同条件结果，才能说某个 LoRA 配置在当前任务上接近全量微调；不能把论文中的一个结果当作自己的部署成绩。</p><h3 class=\"md-h md-h3\">关联知识</h3><ul class=\"md-list\"><li><a href=\"#/e/own-theory-training-guide\">使用与验证边界</a></li></ul><details class=\"qa-variants\"><summary>其他问法（15）</summary><ul class=\"md-list\"><li>LoRA 原理、常见超参、一般加在哪些模块</li><li>全参微调还是 LoRA 及理由；LoRA 原理</li><li>LoRA 原理、挂载层选择及 rank/alpha 影响；全参/LoRA/QLoRA 如何选</li><li>LoRA 与 QLoRA 区别</li><li>LoRA 的 rank 与 alpha 参数</li><li>LoRA 与全参数微调区别</li><li>LoRA 与 QLoRA 区别与场景</li><li>LoRA 变体</li><li>LoRA 与全量微调区别</li><li>为什么用 LoRA 而不是全参数微调？</li><li>LoRA 原理是什么？rank 怎么选？</li><li>LoRA vs 全参数微调适用场景；QLoRA原理；SFT/DPO区别，什么时候用DPO？</li><li>为什么使用LoRA而不是全参数微调？LoRA有什么缺点？</li><li>什么是LoRA和QLoRA？</li><li>全参数微调和 LoRA 怎么选？全参数适合什么场景，代价是什么？</li></ul></details>",
+      "after": "<p class=\"md-p\">LoRA 是一种参数高效微调方法：冻结基座主体，在选定权重映射旁训练低秩增量。它把任务适配限制在少量可训练参数内，因此通常能用更少训练状态完成微调；是否接近全参效果，还要看基座能力、任务差异和具体配置。</p><h2 class=\"md-h md-h2\" id=\"add-own-theory-training-cfd3b412bc\">继续展开：更新机制、资源与适用边界</h2><h3 class=\"md-h md-h3\">怎样增加一条分支，训练状态却更少</h3><p class=\"md-p\">设冻结权重 W0∈R^(d_out×d_in)，标准 LoRA 写成 ΔW=sBA，s=α/r，A∈R^(r×d_in)，B∈R^(d_out×r)，前向 y=W0x+sBAx。若把缩放吸收到因子中，也可写成 ΔW=BA；两种记法不能混用缩放。</p><p class=\"md-p\">这一层新增的可训练参数是 r(d_in+d_out)，全参更新对应 d_in·d_out；在 r(d_in+d_out)&lt;d_in·d_out 的常用低秩设置下，前者更少。虽然模型总参数多了一点，但冻结的 W0 不再需要保存参数梯度和 Adam 等优化器状态，主要为 A/B 保存这些训练状态。基座权重、激活、适配器和反向计算仍然存在，所以总显存与训练时间不会必然按可训练参数比例下降；限制自由度也可能抑制小样本过拟合，但不是泛化保证。</p><p class=\"md-p\">可把 A 理解为提取少量可调整方向，B 把这些方向的影响送回输出空间。方向由训练学习，不能直接当作固定的人类语义维度。受限的是本层更新 rank(ΔW)≤r；W0 本身以及 W0+ΔW 不因此成为秩 r 的矩阵。多层增量与原网络非线性组合，仍能产生复杂行为，r 也不等于模型只能完成 r 种任务。</p><h3 class=\"md-h md-h3\">低秩更新为什么有时接近全参数微调</h3><p class=\"md-p\">预训练已经提供很多可复用结构，下游任务有时只需重新组合、强调或抑制其中的特征，其有效适配变化可能集中在较少方向上。全参微调的搜索空间更大，但小数据任务未必需要全部自由度。这是有实验支持的适配假设，不是所有任务都与全参等价的定理，也不意味着每个全参最优更新都严格低秩。</p><p class=\"md-p\">若某个理想更新矩阵的奇异值快速衰减，低秩近似能保留其主要能量，可用来理解“少数方向也可能有效”。但常规 LoRA 直接优化两个因子，并不是先完成全量微调，再对结果做一次 SVD；参数矩阵近似误差小，也不自动保证任务输出误差小。</p><p class=\"md-p\">基座已有较好能力、需要垂域或指令适配、训练预算有限时，LoRA 值得作为基线。任务跨度大、必须学习很多新模式，或仅在少数不合适的模块挂载时，小 adapter 可能欠拟合；基座能力不足也不能靠“参数高效”自动解决。全参能放开更多更新自由度，代价是更大的训练状态和每个版本的维护成本，是否值得应由目标任务与保留能力共同判断。</p><h3 class=\"md-h md-h3\">挂在哪些层，和 LayerNorm 后插模块有什么区别</h3><p class=\"md-p\">低秩分解适合矩阵映射，常见目标包括注意力的 Q/K/V/O 投影与 FFN，也可按实现扩展到 embedding、卷积等。LayerNorm 的缩放参数通常是向量，不是同样的二维投影矩阵；但在 LayerNorm 后接一个可训练适配器并非数学禁令。那是另一种插入结构，需要重新设计残差、尺度和初始化，不能概括成“LoRA 无法放 Norm 后”。</p><h3 class=\"md-h md-h3\">初始化、调参、部署分别追问什么</h3><p class=\"md-p\">遇到“A/B 都初始化为零会怎样”，看<a href=\"#/e/ai-模型与评测-5/1\">初始化与梯度</a>；遇到“rank 与 alpha 怎么选、效果不好怎么排查”，看<a href=\"#/e/ai-模型与评测-5/3\">容量消融与调参</a>；基座和任务适配器可以分开管理，是否合并上线、怎样多租户切换与验证，见<a href=\"#/e/ai-模型与评测-5/4\">Merge 部署选择</a>。三种追问分别检查起点是否可学、容量是否够用和部署是否正确。</p><p class=\"md-p\">常见变体改动的维度不同：DoRA 分开建模幅度与方向，AdaLoRA 动态分配秩预算，rsLoRA 调整随 rank 变化的缩放，PiSSA 改初始化及配套冻结残差，<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>侧重冻结基座的低比特存储与训练资源。应先找到瓶颈再选择，不是组合越多越好。SFT/DPO 讨论的是训练目标，和可训练参数范围是不同的选择，分别见<a href=\"#/e/ai-模型与评测-5/7\">SFT</a>与<a href=\"#/e/ai-模型与评测-5/6\">DPO</a>。</p><p class=\"md-p\"><a href=\"#/e/own-theory-training-guide\">使用与验证边界</a>；微调后通用能力下降见<a href=\"#/e/ai-模型与评测-5/5\">能力保留与回退</a>。</p><details class=\"qa-variants\"><summary>其他问法（24）</summary><ul class=\"md-list\"><li>LoRA 原理、常见超参、一般加在哪些模块（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha</a>）</li><li>全参微调还是 LoRA 及理由；LoRA 原理（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>LoRA 原理、挂载层选择及 rank/alpha 影响；全参/LoRA/QLoRA 如何选（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha</a>；<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>）</li><li>LoRA 与 QLoRA 区别（对应：<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>）</li><li>LoRA 的 rank 与 alpha 参数（对应：<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha</a>）</li><li>LoRA 与全参数微调区别（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>LoRA 与 QLoRA 区别与场景（对应：<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>）</li><li>LoRA 变体（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/1\">初始化变体</a>）</li><li>LoRA 与全量微调区别（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>为什么用 LoRA 而不是全参数微调？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>LoRA 原理是什么？rank 怎么选？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha</a>）</li><li>LoRA vs 全参数微调适用场景；QLoRA原理；SFT/DPO区别，什么时候用DPO？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>；<a href=\"#/e/ai-模型与评测-5/7\">SFT 目标</a>；<a href=\"#/e/ai-模型与评测-5/6\">DPO 目标</a>）</li><li>为什么使用LoRA而不是全参数微调？LoRA有什么缺点？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>什么是LoRA和QLoRA？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>）</li><li>全参数微调和 LoRA 怎么选？全参数适合什么场景，代价是什么？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>LoRA 增加参数为什么省显存？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>A/B 都初始化为零会怎样？（对应：<a href=\"#/e/ai-模型与评测-5/1\">初始化变体</a>）</li><li>能放 LayerNorm 后吗？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>rank 与 alpha 怎么选？（对应：<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha</a>）</li><li>参数少为什么不一定效果差？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>低秩的是原权重还是更新？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>rank 很小为何还能有效？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>；<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha</a>）</li><li>是不是对全量微调后的矩阵做一次 SVD 就是 LoRA？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li><li>只能加在线性层吗，不能放 LayerNorm 后吗？（对应：<a href=\"#/e/ai-模型与评测-5/0\">机制与全参取舍</a>）</li></ul></details>",
+      "beforeSha256": "1c20f794b62404ee511db1ff34feaa4f10b1481d9bcf8b0573eb781b2a04ce99",
+      "afterSha256": "07391ca0d2b078ffd069a5248baf1e28345357598c4b96d600669ebd1dd1ebaf",
+      "reason": "LoRA 家族语义去重：保留第 0 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#0"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        0,
+        "lead"
+      ],
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LoRA的本质是冻结大模型主体，只训练挂在部分线性层旁的低秩增量。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>冻结主体训增量 / 低秩近似任务变化 / 显存少且好切换 / 基座差时不够 / 适配器可分离</p>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>LoRA 冻结基座，直接学习低秩权重增量，主要减少可训练参数对应的状态；效果与总资源收益都要按任务验证。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>更新非原权重低秩 / 参数与状态 / 目标模块 / 适用边界</p>",
+      "beforeSha256": "08191fddb731323512c2dcdca15e027a0cfee159bc2a1a9ccebf01ef28e328b4",
+      "afterSha256": "2d159c4075084f9f8fc78b299c2427387c7ed1a220c126203fe7c33fef7fd168",
+      "reason": "LoRA 家族语义去重：保留第 0 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#0"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        1,
+        "a"
+      ],
+      "before": "<p class=\"md-p\">常见做法是把增量权重写成 <code class=\"tok-inline\">ΔW = B * A</code>。</p>\n<div class=\"md-list-wrap\"><ol class=\"md-list md-depth-0\"><li><b>怎么初始化</b>：一个矩阵按小随机值初始化，另一个初始化为 0，这样一开始 <code class=\"tok-inline\">ΔW</code> 等于 0，不会在训练刚开始就把原模型行为大幅打乱。更常见的口径是 <code class=\"tok-inline\">A</code> 随机初始化、<code class=\"tok-inline\">B</code> 零初始化，训练再慢慢把增量学出来。</li><li><b>初始化目标</b>：一开始尽量不破坏基座模型，只让训练逐步学习一个受控的增量更新。</li></ol></div><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>在这里的 ΔW=BA 记法下，常见约定是 A 随机、B 为零。其他实现可能使用不同记法或初始化，需核对增量起点和梯度能否正常传递。</p></div>",
+      "after": "<p class=\"md-p\">在本章 ΔW=sBA 的记法下，常规 LoRA 通常让 A 随机、B 为零：初始增量是零，先保持基座行为，同时给后续更新留下可学习的入口。关键是同时检查“起点输出”和“梯度能否传递”，而不只是背下 A/B 的名字。</p><h3 class=\"md-h md-h3\">为什么一个为零可以，两个同时为零会卡住</h3><p class=\"md-p\">沿用机制题的形状与固定缩放 s，令 G=∂L/∂ΔW，则通过这条双线性分支的任务梯度为 ∂L/∂A=sBᵀG、∂L/∂B=sGAᵀ。A 随机而 B=0 时，第一步 A 的任务梯度为零，B 的梯度可能非零；B 更新以后，A 才可能收到非零信号。“可能”取决于实际输入和损失，不代表每个 batch 都必有梯度。</p><p class=\"md-p\">若 A=B=0，上面两项任务梯度都为零，仅靠这条标准双线性分支无法启动学习。这一结论限定在该参数化和梯度路径；加入其他参数化、额外目标或特殊更新时要重新推导，不能把“双零不可学”套到所有适配器初始化上。</p><h3 class=\"md-h md-h3\">实现时怎样验证</h3><p class=\"md-p\">随机初始化的分布不是统一规定：原始 LoRA 论文采用随机高斯 A、零 B，PEFT 常规默认实现使用 Kaiming-uniform A、零 B。其他库还可能交换 A/B 命名。应按实际矩阵形状、缩放和乘法顺序核对，固定输入比较初始化前后输出，再检查一次反向传播的梯度与可训练参数；数值精度和其他可训练模块也会影响整体一致性。数据驱动分解、非零起点及不同缩放的初始化需要各自说明，不把默认约定当作全部 LoRA 的定理。</p><details class=\"qa-followup\"><summary>进阶追问：除了随机 A、零 B，还能怎样初始化？以 PiSSA 为例</summary><p class=\"md-p\">PiSSA 的 2024 年原始方案按基座权重的主奇异子空间初始化可训练部分，而不是无条件往原基座上再叠一份非零主成分。它是权重驱动的方法，不必然需要任务激活数据。</p><p class=\"md-p\">沿用 W0∈R^(d_out×d_in)、B∈R^(d_out×r)、A∈R^(r×d_in) 的记法，做 W0=UΣVᵀ，取前 r 个奇异方向，令 B0=Ur√Σr、A0=√ΣrVrᵀ，并构造冻结部分 Wres=W0−B0A0。起点满足 Wres+B0A0=W0；随后冻结 Wres、训练 A/B，主要奇异方向可以从第一步开始调整。两矩阵初始一般都有非零值，因此第一步都可能获得梯度。</p><p class=\"md-p\">上式已把缩放吸收到因子中。若实现显式使用 sBA，就必须在因子和残差构造时一致计入 s，使 Wres+sB0A0=W0。保存、加载和合并时必须配套同一残差基座；把初始主成分直接加载到未减残差的原 W0 上会重复加入它。若要转成对原 W0 的增量，应按相同缩放计算 s(BA−B0A0)，而不是直接把训练后的 sBA 当成普通 LoRA 增量。</p><p class=\"md-p\">PiSSA 需要 SVD 或近似快速分解，有初始化时间、工作内存与近似误差的取舍。比较时固定 rank、目标模块、数据、学习率和总预算，核对初始输出与基座的一致性、训练质量和合并结果。原论文的实验优势不保证在每个任务成立；是否适合当前任务，还要在同条件下实际评测。具体保存、转换和合并接口按实际 PEFT/框架版本验证。</p></details><p class=\"md-p\">形状、参数量与低秩适用边界见<a href=\"#/e/ai-模型与评测-5/0\">LoRA 机制</a>；初始化或缩放变化怎样进入公平比较，见<a href=\"#/e/ai-模型与评测-5/3\">rank/alpha 消融</a>；产物加载与合并验收见<a href=\"#/e/ai-模型与评测-5/4\">Merge 部署</a>。</p>",
+      "beforeSha256": "c924124541efdc48fbd169429ebd84085f7e43cb57fee24e4ee86a5ca253fd42",
+      "afterSha256": "7cd4e8717d6252e1e4724ca9610aff318a60620e86f68d6a43518c8117e952a7",
+      "reason": "LoRA 家族语义去重：保留第 1 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#1"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        1,
+        "lead"
+      ],
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>初始化的目标是一开始不破坏基座，从零增量开始学习；其他初始化另按其合同解释。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>ΔW=B*A / A随机B置零 / 开训不打乱基座</p>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>常规 LoRA 用一随机一零兼顾零增量起点与可学习梯度；PiSSA 等非零初始化要连同配套基座一起解释。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>A随机B为零 / 双零梯度 / 实现记法 / PiSSA残差</p>",
+      "beforeSha256": "f1639d995452947062cd52cee0676e4c8d0efbc9d36069a6b3c838fb8a115363",
+      "afterSha256": "2196dcd62c4e6a7b6f63ad59e68ea50eb07b6c096f6ba2f3ab3bd88b4ee984be",
+      "reason": "LoRA 家族语义去重：保留第 1 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#1"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        3,
+        "a"
+      ],
+      "before": "<p class=\"md-p\">我会从较小的 rank 开始做对照，再看是否需要增大，而不是因为是逻辑推理就默认用大秩。rank 决定低秩更新的容量，更大意味着能调整的方向更多，也增加训练状态、成本和过拟合风险。</p><p class=\"md-p\">先检查推理轨迹是否正确、题型与难度是否覆盖，以及验证集是否真正独立。数据或监督本身有问题，扩大 rank 只可能更充分地学到这些问题。</p><p class=\"md-p\">然后固定基座、数据划分和评测口径，比较不同 rank 的目标任务、通用能力和训练成本。若小秩已达标，就没有必要只为容量继续增大；若仍有稳定缺口，也要结合任务复杂度、样本规模和预算判断，不能只凭一次低分认定秩太小。</p>",
+      "after": "<p class=\"md-p\">没有“逻辑推理就一定用大秩”的规则。我会把较小 rank 作为节省预算的对照起点，再根据稳定的质量缺口决定是否增大；这是一种实验策略，不是小秩普遍最优。rank 扩大更新子空间容量，同时增加参数、训练状态和优化难度，小数据下也可能加重过拟合。</p><h3 class=\"md-h md-h3\">先区分数据、实现和容量问题</h3><p class=\"md-p\">先检查推理轨迹是否正确，题型、难度与长度是否覆盖，验证集是否真正独立。错误监督、模板问题或数据泄漏不会因增大 rank 而消失，反而可能被更充分地拟合。然后检查 labels/loss mask、目标模块是否实际命中、trainable 参数是否正确，以及学习率和训练步数。不能只看一次验证低分就认定秩太小。</p><p class=\"md-p\">如果训练和验证都存在稳定缺口，在排除上述问题后，才比较扩大 rank、扩大目标层覆盖，以及全参微调等方向；只在少数不合适的模块挂载，单纯提高这些层的 rank 未必解决问题。如果训练继续改善而验证变差，应优先检查过拟合、分布差异和数据质量，而不是把它当作扩容证据。</p><h3 class=\"md-h md-h3\">rank 与 alpha 为什么要一起说明</h3><p class=\"md-p\">标准 LoRA 的缩放是 α/r。α 过大可能带来过强扰动或不稳定，过小可能适应不足，但不能脱离学习率、rank、初始化和训练步数解释。固定 α 再增大 r，也同时改变了缩放，因此比较结果不能简单归因于“容量变大”。应声明固定有效缩放还是分别调优，并给不同配置同等调参预算；rsLoRA 使用 α/√r 等不同约定时更要分开记录。</p><h3 class=\"md-h md-h3\">怎样得到可复述的选型结论</h3><p class=\"md-p\">固定基座、数据划分、训练目标与评测口径，报告 rank、缩放、初始化、目标模块、dropout、学习率、训练步数和预算。比较不同随机种子的目标任务、通用保留能力、训练/验证差距与实际训练成本；扩 rank、改层覆盖或换全参是不同实验，不混成一个原因。根据任务复杂度、样本规模和预算选择已经达标的方案，质量未稳定提升时不为了“更大”继续加秩。</p><p class=\"md-p\">用于选择 rank 的验证集已经参与决策，最后还要用未参与调参的保留集验收。只有同条件结果，才能说当前配置在这个任务上接近全参；选型结论只覆盖同条件实际测得的任务和配置。基座能力不足时，也应重新比较更合适的基座。</p><p class=\"md-p\">rank 约束的是哪一个矩阵，见<a href=\"#/e/ai-模型与评测-5/0\">LoRA 机制</a>；PiSSA 等初始化怎样改变起点，见<a href=\"#/e/ai-模型与评测-5/1\">初始化与梯度</a>；量化引入的另一组资源与精度取舍见<a href=\"#/e/ai-模型与评测-5/2\">QLoRA</a>。</p>",
+      "beforeSha256": "895bb679fa05c213480fe8a1be3999443d919759f8947d5234c0bbd0318c0483",
+      "afterSha256": "8cfa5c39fddfc9fa1acc30a8ea125ca8c1b089828a5c2def525252d89381a3ad",
+      "reason": "LoRA 家族语义去重：保留第 3 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#3"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        3,
+        "lead"
+      ],
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>逻辑推理调秩没有固定值，一般不先开很大，要和复杂度、数据、预算一起平衡。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>不先开大秩 / 容量与过拟合 / 数据与评测更关键</p>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>逻辑推理没有固定最优秩，先排查数据与实现，再把容量、缩放和预算放在同条件实验中比较。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>小秩作对照 / 排查监督与实现 / rank与alpha / 独立验收</p>",
+      "beforeSha256": "c8113deaeb9649ee59b7c83aa47ee4d52d92bfc6c516000aaf2e94fbc6778104",
+      "afterSha256": "eee6ceba068abafd4d6ab2054699f8585d0744d9af38117cc5534224ac27d88d",
+      "reason": "LoRA 家族语义去重：保留第 3 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#3"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        4,
+        "a"
+      ],
+      "before": "<p class=\"md-p\">不一定要 Merge。单任务长期稳定部署时，把兼容权重与 LoRA 增量合并，通常能简化推理路径，免去独立适配器分支，某些场景延迟也更稳定。</p><p class=\"md-p\">如果一套基座需要服务多任务、多租户，或频繁切换与灰度，保留多个 adapter 往往更灵活。选择取决于部署与切换需求，合并不是训练结束后的必选步骤。</p><div class=\"qa-end\"><p class=\"md-p sx-pit\"><span class=\"sx-tag pit\">易错</span>要不要 Merge 是部署决策；具体合并仍须验证数值等价性、量化误差和版本兼容，不能跳过正确性检查。</p></div><p class=\"md-p\">合并前要核对模型 revision、目标层、缩放与权重格式。兼容浮点路径可把 W0 与增量相加；量化基座可能需要反量化和重新量化，产生额外误差或不被后端支持。对固定输入比较合并前后输出及任务指标，并让旧 adapter 对应的 KV/prefix 缓存失效，不能只看服务成功加载。</p><details class=\"qa-variants\"><summary>其他问法（1）</summary><ul class=\"md-list\"><li>线上推理是否将 LoRA 权重与基座合并；领域微调后通用能力衰减如何缓解</li></ul></details>",
+      "after": "<p class=\"md-p\">不一定要 Merge。单任务长期稳定部署时，合并兼容权重通常能简化推理路径；同一基座要服务多个任务或租户、频繁切换与灰度时，保留独立 adapter 往往更灵活。合并是部署选择，不能代替正确性验收。</p><h3 class=\"md-h md-h3\">合并改变了什么</h3><p class=\"md-p\">对兼容的浮点线性映射，在推理模式下可令 W=W0+ΔW，使 Wx 与 W0x+ΔWx 在实数运算中等价，从而去掉独立分支计算。浮点运算顺序、精度转换及后端内核仍可能造成数值差异，所以不承诺逐比特相同，也不保证端到端延迟一定改善；要在实际负载下测量。</p><p class=\"md-p\">不合并可以共享基座、独立保存多个任务适配器并切换版本，但要承担适配器调度、算子和混合批处理等开销。合并成每任务完整权重后，切换方式与存储成本会变化；需保留可恢复的基座、adapter 和配置，不能假定任何导出后的权重都能无损拆回。</p><h3 class=\"md-h md-h3\">上线前怎样检查</h3><p class=\"md-p\">先核对基座模型 revision、目标层名称与形状、缩放、权重格式和后端支持。标准 LoRA 与 PiSSA 的配套基座不同，PiSSA 的残差/增量转换关系见<a href=\"#/e/ai-模型与评测-5/1\">初始化追问</a>，不能把任何名为 adapter 的文件都直接加到同一个 W0。</p><p class=\"md-p\">量化基座的合并可能需要反量化、相加和重新量化，带来额外误差，有些组合或后端不支持。不能保证“简单相加”保留原量化精度，也不能用浮点合并正确代替量化产物验收。应先确认具体实现支持的路径，再比较最终要部署的产物。</p><p class=\"md-p\">固定输入、tokenizer、模板、推理模式与解码条件，比较合并前后 logits/输出的数值差异以及目标任务、通用能力指标，再测真实负载下的延迟和吞吐。随机采样得到相同或不同的一次回答都不足以证明数值等价；“文件成功加载”也不是验收结论。</p><p class=\"md-p\">切换 adapter 或合并产物版本时，要按实际有效模型隔离 KV/prefix cache。旧 adapter 产生的缓存不能只因文本前缀一样就给新版本复用；让不兼容缓存失效或使用独立版本命名空间，只有证明计算、位置等条件兼容才考虑复用。</p><p class=\"md-p\">基础增量机制见<a href=\"#/e/ai-模型与评测-5/0\">LoRA 原理</a>。领域微调后的通用能力衰减属于<a href=\"#/e/ai-模型与评测-5/5\">训练与能力保留</a>问题；Merge 只改变部署表示，不会自动修复训练已经造成的退化。</p><details class=\"qa-variants\"><summary>其他问法（2）</summary><ul class=\"md-list\"><li>线上推理是否将 LoRA 权重与基座合并</li><li>领域微调后通用能力衰减如何缓解（另题：<a href=\"#/e/ai-模型与评测-5/5\">能力保留与回退</a>）</li></ul></details>",
+      "beforeSha256": "f58c86ca244f8c25399f4c0c3fea644aeaee1c433588914845422990b5bb63db",
+      "afterSha256": "4e28fa5fda793ce90c28f3675f7376f93bdfb8183312bfbdaf360ff6ff15f695",
+      "reason": "LoRA 家族语义去重：保留第 4 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#4"
+      }
+    },
+    {
+      "entryId": "ai-模型与评测-5",
+      "path": [
+        "items",
+        4,
+        "lead"
+      ],
+      "before": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>是否Merge是部署决策：单任务长期上线更省事，多租户频繁切换宜保留适配器。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>Merge路径更简单 / 不Merge更好切换 / 看单任务或多租户</p>",
+      "after": "<p class=\"md-p sx-ess\"><span class=\"sx-tag\">本质</span>是否 Merge 取决于部署和切换需求；合并后的版本、数值、量化与缓存兼容都必须验收。</p><p class=\"md-p lead-outline\"><span class=\"lead-tag\">要点</span>稳定单任务 / 多adapter切换 / 合并回归 / 缓存隔离</p>",
+      "beforeSha256": "45eab1ee31512b1f43cafccd564ceeb20583ad94abeea2936eb68bd13d10687e",
+      "afterSha256": "e21127dcd8cb2bb0ba3fb479b120b32a2236f2da553569fe70ee51f8fe8cecd6",
+      "reason": "LoRA 家族语义去重：保留第 4 题身份与题目，按机制、初始化、容量实验和部署四种问题目标分工。",
+      "detailPreservation": {
+        "mappingFile": "preservation-map.json",
+        "mappingScope": "ai-模型与评测-5#4"
+      }
+    }
+  ]
+}
