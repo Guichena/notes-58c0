@@ -1,0 +1,41 @@
+name: Restore verified learning notes snapshot
+on:
+  push:
+    branches: [main]
+    paths: ['.release/manifest.json']
+permissions:
+  contents: write
+concurrency:
+  group: notes-snapshot-publication
+  cancel-in-progress: false
+jobs:
+  restore:
+    if: startsWith(github.event.head_commit.message, 'publish-bootstrap:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify current branch and restore audited files
+        run: |
+          set -eu
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          python3 .release/restore.py
+      - name: Rebuild and verify current compatibility
+        run: |
+          set -eu
+          node scripts/prepare-pages.mjs
+          cd site
+          npm run test:release
+      - name: Commit restored source and static site without rewriting history
+        run: |
+          set -eu
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Publish verified 2026-10-18 learning notes and maintainable source'
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
+          git push origin HEAD:main
