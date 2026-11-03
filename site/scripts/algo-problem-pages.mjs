@@ -167,6 +167,84 @@ function boundaryOf(section) {
     .filter(Boolean);
 }
 
+// Four source entries had no Java block at all; these are the standard
+// LeetCode-style solutions for them.
+const CODE_FALLBACK = {
+  'own-algo-gap-bst-greater-tree': [
+    'class Solution {',
+    '    private int sum = 0;',
+    '    public TreeNode convertBST(TreeNode root) {',
+    '        if (root == null) return null;',
+    '        convertBST(root.right);',
+    '        sum += root.val;',
+    '        root.val = sum;',
+    '        convertBST(root.left);',
+    '        return root;',
+    '    }',
+    '}'
+  ].join('\n'),
+  'own-algo-gap-collinear-points': [
+    'class Solution {',
+    '    public int maxPoints(int[][] points) {',
+    '        int n = points.length;',
+    '        if (n <= 2) return n;',
+    '        int best = 2;',
+    '        for (int i = 0; i < n; i++) {',
+    '            Map<String, Integer> slope = new HashMap<>();',
+    '            for (int j = i + 1; j < n; j++) {',
+    '                int dx = points[j][0] - points[i][0];',
+    '                int dy = points[j][1] - points[i][1];',
+    '                int g = gcd(dx, dy);',
+    '                String key = (dx / g) + "/" + (dy / g);',
+    '                int count = slope.merge(key, 1, Integer::sum) + 1;',
+    '                best = Math.max(best, count);',
+    '            }',
+    '        }',
+    '        return best;',
+    '    }',
+    '    private int gcd(int a, int b) {',
+    '        return b == 0 ? Math.abs(a) : gcd(b, a % b);',
+    '    }',
+    '}'
+  ].join('\n'),
+  'own-algo-gap-exclusive-time': [
+    'class Solution {',
+    '    public int[] exclusiveTime(int n, List<String> logs) {',
+    '        int[] res = new int[n];',
+    '        Deque<Integer> stack = new ArrayDeque<>();',
+    '        int prev = 0;',
+    '        for (String log : logs) {',
+    '            String[] parts = log.split(":");',
+    '            int id = Integer.parseInt(parts[0]);',
+    '            int time = Integer.parseInt(parts[2]);',
+    '            if (parts[1].equals("start")) {',
+    '                if (!stack.isEmpty()) res[stack.peek()] += time - prev;',
+    '                stack.push(id);',
+    '                prev = time;',
+    '            } else {',
+    '                res[id] += time - prev + 1;',
+    '                stack.pop();',
+    '                prev = time + 1;',
+    '            }',
+    '        }',
+    '        return res;',
+    '    }',
+    '}'
+  ].join('\n'),
+  'own-algo-gap-tree-subtree': [
+    'class Solution {',
+    '    public boolean isSubtree(TreeNode root, TreeNode subRoot) {',
+    '        if (root == null) return false;',
+    '        return same(root, subRoot) || isSubtree(root.left, subRoot) || isSubtree(root.right, subRoot);',
+    '    }',
+    '    private boolean same(TreeNode a, TreeNode b) {',
+    '        if (a == null || b == null) return a == b;',
+    '        return a.val == b.val && same(a.left, b.left) && same(a.right, b.right);',
+    '    }',
+    '}'
+  ].join('\n')
+};
+
 export function projectAlgoProblemPages(entries, { baselineTest = false } = {}) {
   if (baselineTest) return entries;
   return entries.map((entry) => {
@@ -185,7 +263,7 @@ export function projectAlgoProblemPages(entries, { baselineTest = false } = {}) 
     const followups = pick('可能的问法');
 
     const rawCode = pickJavaPre(answer);
-    const code = rawCode.trim() ? solutionOnly(formatJava(rawCode)) : '';
+    const code = rawCode.trim() ? solutionOnly(formatJava(rawCode)) : (CODE_FALLBACK[entry.id] || '');
 
     // Worked examples read as part of the breakdown; the related links are
     // already served by the "同类题" section, so nothing is left dangling.
