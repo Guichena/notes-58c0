@@ -15,6 +15,7 @@ import {addReadingPresentationLifecycle} from './reading-presentation-runtime.mj
 import {projectExactIntroRuntime} from './exact-intro-runtime.mjs';
 import {projectNoteDisplay,projectNoteDisplayRuntime} from './note-display-cleanup.mjs';
 import {projectAlgoFocusRuntime} from './algo-focus-runtime.mjs';
+import {projectAlgoProblemPages} from './algo-problem-pages.mjs';
 import {projectAlgorithmCorrections} from './algorithm-corrections.mjs';
 import {projectReviewedContent} from './reviewed-content-projection.mjs';
 import {projectInterviewEditorial} from './interview-editorial-projection.mjs';
@@ -141,17 +142,21 @@ const entries=projectFinalAuditCorrections(practiceEntries,baselineTest ? null :
 const reviewedMetadata=projectReviewedComparisonMetadata(metadata,practiceEntries,baselineTest ? null : await readReviewedComparisonCorrections(),{baselineTest});
 const {entryOrder: reviewedEntryOrder,...meta}=validateFinalAuditMetadata(reviewedMetadata,practiceEntries,entries,baselineTest ? null : await readJSON(src('content/final-audit-comparison-review.json')),{baselineTest});
 if (!baselineTest) validatePriorityView(entries,priorityView);
+// One page shape for every problem: the retired practice-part QA documents are
+// re-projected onto the algorithm problem template here, after every registry
+// guard has validated the QA source shape it was reviewed against.
+const focusedEntries=projectAlgoProblemPages(entries,{baselineTest});
 // The CLI validator uses the same complete, guarded content pipeline without
 // touching dist. Asset bundling/publication is intentionally not requested.
 if(process.argv.includes('--validate-only')) {
  if(baselineTest)throw new Error('validate-only requires the complete current pipeline');
- console.log(JSON.stringify({mode:'validate-only',entries:entries.length,reviewUnits:entries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),qaQuestions:entries.filter(e=>e.kind==='qa').reduce((n,e)=>n+e.items.length,0),authoringFiles:authoringDocuments.length,deferredQuestionFiles:authoringDocuments.filter(doc=>!mergedQuestionAuthoring.documents.includes(doc)).map(doc=>doc.file)}));
+ console.log(JSON.stringify({mode:'validate-only',entries:focusedEntries.length,reviewUnits:focusedEntries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),qaQuestions:focusedEntries.filter(e=>e.kind==='qa').reduce((n,e)=>n+e.items.length,0),authoringFiles:authoringDocuments.length,deferredQuestionFiles:authoringDocuments.filter(doc=>!mergedQuestionAuthoring.documents.includes(doc)).map(doc=>doc.file)}));
  process.exit(0);
 }
 // Preserve existing chunk URLs; new categories receive deterministic group IDs.
 const groupPaths = new Map(originalEntries.map(e=>[JSON.stringify([e.mod,e.part,e.cat]), entriesById.get(e.id).chunk]));
 const compiledChunks = new Map();
-for(const entry of entries) {
+for(const entry of focusedEntries) {
  const group=JSON.stringify([entry.mod,entry.part,entry.cat]);
  const chunk=groupPaths.get(group)||'data/chapters/'+entry.mod+'-'+sha(group).slice(0,12)+'.json';
  groupPaths.set(group,chunk);
@@ -160,9 +165,9 @@ for(const entry of entries) {
  compiledChunks.get(chunk).entries.push(entry);
 }
 const fields = ['id','kind','mod','part','cat','title','number','progressKey'];
-const catalog = {...meta, ...(baselineTest ? {} : {archivedRoutes:reading.archivedRoutes}), entries: entries.map(e => {
+const catalog = {...meta, ...(baselineTest ? {} : {archivedRoutes:reading.archivedRoutes}), entries: focusedEntries.map(e => {
   const record = Object.fromEntries(fields.filter(k=>Object.hasOwn(e,k)).map(k=>[k,e[k]]));
-  if(e.items) record.items=e.items.map(it=>({mk:it.mk,...(it.id?{id:it.id}:{})}));
+  if(e.kind==='qa'&&e.items) record.items=e.items.map(it=>({mk:it.mk,...(it.id?{id:it.id}:{})}));
   record._chunk=entriesById.get(e.id).chunk;
   return record;
 })};
@@ -185,12 +190,12 @@ if(!baselineTest) {
  await write('data/archives/source-entries.json',json(reading.sourceArchive));
  await write('reading-report.json',json(reading.report));
 }
-await write('data/search.json',json(buildSearchRecords(entries,meta.TOPICS)));
+await write('data/search.json',json(buildSearchRecords(focusedEntries,meta.TOPICS)));
 for(const [file,chunk] of compiledChunks) await write(file,json(chunk));
 const files=[];
 async function walk(dir) { for(const name of (await readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name,'en'))){ const p=path.join(dir,name.name); if(name.isDirectory()) await walk(p); else {const b=await readFile(p); files.push({path:path.relative(out,p).split(path.sep).join('/'),bytes:b.length,sha256:sha(b)});}} }
 await walk(out);
-const report={sourceCommit:'a1b8e212f32e23c7a29c1a695bb1255d93ee18a4',entries:entries.length,reviewUnits:entries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),chapters:compiledChunks.size,files};
+const report={sourceCommit:'a1b8e212f32e23c7a29c1a695bb1255d93ee18a4',entries:focusedEntries.length,reviewUnits:focusedEntries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),chapters:compiledChunks.size,files};
 await write('build-manifest.json',json(report));
-console.log(`Built ${entries.length} entries, ${report.reviewUnits} review units, ${compiledChunks.size} lazy chapters.`);
+console.log(`Built ${focusedEntries.length} entries, ${report.reviewUnits} review units, ${compiledChunks.size} lazy chapters.`);
 for(const name of ['index.html','data/catalog.json','data/search.json','assets/app.js','assets/visuals.js']) console.log(name,files.find(f=>f.path===name).bytes+' bytes');

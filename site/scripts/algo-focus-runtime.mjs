@@ -7,8 +7,12 @@
 // keeps its pinned hashes; only the final text is rewritten here.
 const RENDERERS = 'src/app/renderers.js';
 
-const FOLD_SECTION_FROM = "  ${e.folds.length?sec('原专题笔记与精讲（折叠）',renderNoteTopicFolds(e)):''}\n";
-const FOLD_SECTION_TO = "  ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}\n";
+// Move the knowledge block above the problem navigation so the topic page reads
+// identify -> template -> variants -> pitfalls -> knowledge -> navigation.
+const PROBLEMS_LINE =
+  "  ${sec('代表题',e.groups.map(g=>`<div class=\"rs-group\"><h4>${h(g.name)}</h4><p class=\"prose\">${h(g.note)}</p><div class=\"rs-jumps\">${g.items.map(([hr,t])=>`<a class=\"jump-btn\" href=\"${hr}\">${h(t)}</a>`).join('')}</div></div>`).join(''))}\n";
+const FOLD_SECTION_FROM = PROBLEMS_LINE + "  ${e.folds.length?sec('原专题笔记与精讲（折叠）',renderNoteTopicFolds(e)):''}\n";
+const FOLD_SECTION_TO = "  ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}\n" + PROBLEMS_LINE;
 
 const FUSION_FROM =
   "  const t = (e.topic && TOPICS[e.topic]) || (e.topicExplains ? { patterns: [], explains: [] } : null);\n" +
