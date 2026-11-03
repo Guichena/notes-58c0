@@ -26,7 +26,8 @@ const NUMBER_AND_SLUG = {
   'own-algo-gap-tree-subtree': ['572', 'subtree-of-another-tree'],
   'own-algo-gap-unsorted-segment': ['581', 'shortest-unsorted-continuous-subarray'],
   'own-algo-gap-validate-stack': ['946', 'validate-stack-sequences'],
-  'own-algo-gap-zero-flip-window': ['1004', 'max-consecutive-ones-iii']
+  'own-algo-gap-zero-flip-window': ['1004', 'max-consecutive-ones-iii'],
+  'lc-754': ['754', 'reach-a-number']
 };
 
 function decode(s) {

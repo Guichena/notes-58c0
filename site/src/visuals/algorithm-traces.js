@@ -3650,6 +3650,23 @@ T('36', '一遍扫描 9 个格子：用计数数组查重复，而不是 27 份�
   F({ cap: ok ? '这一组（行/列/宫）没有重复' : '有重复', blocks: [TX(String(ok))], done: true, ans: ok });
 });
 
+T('754', '累加到不小于目标，并且多出的距离必须是偶数', 'target = 2', 3, (F) => {
+  const goal = 2;
+  let sum = 0, steps = 0;
+  F({ cap: '第 k 步必须走 k 格。全部朝目标走，最远是 S=1+…+k；把一步反向会让位移减少 2 倍步长', blocks: [V(['target', goal, 'sum', 0, 'steps', 0])] });
+  while (sum < goal || ((sum - goal) & 1) !== 0) {
+    steps++;
+    sum += steps;
+    const enough = sum >= goal;
+    const even = ((sum - goal) & 1) === 0;
+    F({
+      cap: `走完 ${steps} 步，S=${sum}，差 ${sum - goal}${!enough ? '，还不够远' : even ? '，差为偶数，可以靠反转补齐' : '，差为奇数，再走一步'}`,
+      blocks: [V(['steps', steps, 'sum', sum, '差', sum - goal])]
+    });
+  }
+  F({ cap: 'k=3 时 S=6，差为 4。把长度为 2 的那一步反向：+1,-2,+3', blocks: [TX('3')], done: true, ans: 3 });
+});
+
 return TRACES;
 })();
 
