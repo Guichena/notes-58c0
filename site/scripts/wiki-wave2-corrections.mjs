@@ -2,12 +2,12 @@ import {createHash} from 'node:crypto';
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const at=(v,p)=>p.reduce((x,k)=>x?.[k],v);
 const fail=m=>{throw Error('Wiki wave 2 correction: '+m);};
-const REGISTRY_HASH="626338cfb97a2c6ac0f5ff26d6d9b0ef41035ad15c948f27c8d6428be768f13a";
+const REGISTRY_HASH="f5ad012613fa1aaee021a954f6ee4d5145dc6b1e777d3e1c00d59b806b771cd3";
 const CARD_HASH="833af57074c6a8ab8dbf2d09bb12dbba90b032a06bcc52133427e7b913f357a3";
 /** Run after existing corrections, before display/reading. Sources are immutable parsed files keyed by relative path. */
 export function correctWikiWave2(entries,sources,registry,{baselineTest=false}={}){
  if(baselineTest)return entries;
- if(hash(registry)!==REGISTRY_HASH||registry.schemaVersion!==1||registry.corrections.length!==7)fail('registry scope/output drift');
+ if(hash(registry)!==REGISTRY_HASH||registry.schemaVersion!==1||registry.corrections.length!==6)fail('registry scope/output drift');
  const map=new Map(entries.map(e=>[e.id,e]));if(map.size!==entries.length)fail('duplicate entry identity');
  for(const r of registry.corrections){
   if(!sources.has(r.sourceFile)||hash(at(sources.get(r.sourceFile),r.sourcePath))!==r.sourceHash||hash(r.sourceValue)!==r.sourceHash)fail('source drift '+r.id);
