@@ -117,10 +117,43 @@ function splitSections(html) {
 }
 
 const listItems = (html) => [...html.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)].map((m) => flat(m[1])).filter(Boolean);
-const firstPre = (html) => {
-  const m = /<pre[^>]*>([\s\S]*?)<\/pre>/.exec(html);
-  return m ? decode(m[1]) : '';
-};
+
+// The source blocks are runnable programs (solution + brute-force oracle + a
+// self-test main). A problem page only wants the LeetCode-style solution.
+const looksLikeJavaSource = (text) => /\b(class|interface)\s+\w+/.test(text) && /[;{}]/.test(text);
+function pickJavaPre(html) {
+  const re = /<pre[^>]*>([\s\S]*?)<\/pre>/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const text = decode(m[1]);
+    if (looksLikeJavaSource(text)) return text;
+  }
+  return '';
+}
+
+const TEST_MEMBER = /^(main|oracle|brute|bruteForce|check|verify|enumerate|permutations|generate|validate|require|selfTest|selftest|test|benchmark)$/;
+
+// Drop `main` and brute-force/self-test helpers, keeping the class and the
+// methods that make up the answer.
+export function solutionOnly(code) {
+  const lines = code.split('\n');
+  const keep = [];
+  let depth = 0;
+  let skipUntil = null;
+  for (const line of lines) {
+    const opens = (line.match(/\{/g) || []).length;
+    const closes = (line.match(/\}/g) || []).length;
+    if (skipUntil === null && depth === 1) {
+      const ident = /([A-Za-z_$][\w$]*)\s*\(/.exec(line);
+      if (ident && TEST_MEMBER.test(ident[1]) && !line.trim().endsWith(';')) skipUntil = depth;
+    }
+    if (skipUntil === null) keep.push(line);
+    depth += opens - closes;
+    if (skipUntil !== null && depth <= skipUntil) skipUntil = null;
+  }
+  return keep.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '');
+}
+
 const bodyText = (html) => flat(html.replace(/<h[2-4][^>]*>[\s\S]*?<\/h[2-4]>/, ''));
 
 // "边界、反例与追问" is sometimes a list, sometimes one dense paragraph.
@@ -151,8 +184,8 @@ export function projectAlgoProblemPages(entries, { baselineTest = false } = {}) 
     const boundary = pick('边界、反例与追问') || pick('边界');
     const followups = pick('可能的问法');
 
-    const rawCode = firstPre(answer);
-    const code = rawCode.trim() ? formatJava(rawCode) : '';
+    const rawCode = pickJavaPre(answer);
+    const code = rawCode.trim() ? solutionOnly(formatJava(rawCode)) : '';
 
     // Worked examples read as part of the breakdown; the related links are
     // already served by the "同类题" section, so nothing is left dangling.
