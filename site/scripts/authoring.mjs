@@ -103,7 +103,9 @@ export async function readAuthoring(root) {
   const dir=path.join(root,'authoring',type);let names=[];
   try{names=await readdir(dir);}catch(error){if(error.code!=='ENOENT')throw error;}
   for(const name of names.filter(n=>n.endsWith('.json')).sort()) {
-   const file=path.join('authoring',type,name);let data;
+   // Registry keys and source references are POSIX-style paths; normalize so the
+   // same build works on Windows, where path.join emits backslashes.
+   const file=path.join('authoring',type,name).split(path.sep).join('/');let data;
    try{data=JSON.parse(await readFile(path.join(root,file),'utf8'));}catch(error){fail(file,'invalid JSON: '+error.message);}
    // Only vetted local image paths are inspected; never resolve author-supplied
    // arbitrary paths or follow symlinks outside the imported asset tree.
