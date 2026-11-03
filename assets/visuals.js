@@ -6988,6 +6988,335 @@ T('145', '迭代后序：用栈做「根→右→左」，再整体反转', 'roo
   F({ cap: `反转得后序：**${ans.join(' ')}**`, blocks: [TRO(root, { hl: hlOf(done, 'ok') }), A(ans, { id: 'r', label: '后序', cw: 34, hl: rng(0, ans.length - 1, 'ok') })], done: true, ans });
 });
 
+/* v14: 归位到题型的面试原题（132模式 / BST累加树 / 共线点 / 解码 / 子序列 …）逐步演示 */
+const nil = (v) => (v === Infinity ? '+∞' : v === -Infinity ? '−∞' : v);
+
+T('456', '从右往左扫描：栈里存候选的「3」，second 存已经配好的「2」', 'nums = [3,1,4,2]', true, (F) => {
+  const a = [3, 1, 4, 2], st = [];
+  let second = -Infinity;
+  F({ cap: '从右往左扫。栈底到栈顶递减，`second` 是「已经找到的 3 后面那个 2」的最大值', blocks: [A(a), S([]), V(['second', nil(second)])] });
+  for (let i = a.length - 1; i >= 0; i--) {
+    if (a[i] < second) {
+      F({ cap: `a[${i}]=${a[i]} < second=${second} → 存在 i<j<k 且 a[i]<a[k]<a[j]`, blocks: [A(a, { hl: hl(i, 'ok'), p: { i } }), S(st), V(['second', second])], done: true, ans: true });
+      return;
+    }
+    while (st.length && a[i] > st[st.length - 1]) second = Math.max(second, st.pop());
+    st.push(a[i]);
+    F({ cap: `a[${i}]=${a[i]} 不满足；把比它小的栈元素弹出来升级为 second，再把 ${a[i]} 入栈`, blocks: [A(a, { hl: hl(i, 'cur'), p: { i } }), S([...st]), V(['second', nil(second)])] });
+  }
+  F({ cap: '扫完了，没有满足条件的三个位置', blocks: [A(a), TX('false')], done: true, ans: false });
+});
+
+T('485', '一次遍历：遇到 1 就累加，遇到 0 就归零', 'nums = [1,1,0,1,1,1]', 3, (F) => {
+  const a = [1, 1, 0, 1, 1, 1];
+  let run = 0, best = 0;
+  F({ cap: '`run` 记当前连续 1 的长度，`best` 记历史最大', blocks: [A(a), V(['run', 0, 'best', 0])] });
+  for (let i = 0; i < a.length; i++) {
+    run = a[i] === 1 ? run + 1 : 0;
+    best = Math.max(best, run);
+    F({ cap: `a[${i}]=${a[i]} → run=${run}，best=${best}`, blocks: [A(a, { hl: hl([i - run + 1, i], 'ok'), p: { i } }), V(['run', run, 'best', best])] });
+  }
+  F({ cap: `最长连续 1 的长度是 ${best}`, blocks: [A(a), TX(String(best))], done: true, ans: best });
+});
+
+T('71', '用栈按 / 切分：空段和 . 丢掉，.. 弹栈', 'path = "/a/./b/../../c/"', '/c', (F) => {
+  const path = '/a/./b/../../c/';
+  const parts = path.split('/');
+  const st = [];
+  F({ cap: '按 `/` 切分，栈里只留真实目录名', blocks: [A(parts), S([])] });
+  for (const p of parts) {
+    if (!p || p === '.') { F({ cap: `"${p}" 是空段或当前目录 → 忽略`, blocks: [A(parts, { hl: hl(parts.indexOf(p), 'dim') }), S([...st])] }); continue; }
+    if (p === '..') { const out = st.pop(); F({ cap: `".." 回到上层${out ? '，弹出 ' + out : '（已在根，什么都不做）'}`, blocks: [A(parts), S([...st])] }); continue; }
+    st.push(p);
+    F({ cap: `"${p}" 是普通目录 → 入栈`, blocks: [A(parts), S([...st])] });
+  }
+  const ans = '/' + st.join('/');
+  F({ cap: `拼回绝对路径：${ans}`, blocks: [S([...st]), TX(ans)], done: true, ans });
+});
+
+T('316', '单调栈 + 剩余计数：能弹就弹，保证字典序最小', 's = "bcabc"', 'abc', (F) => {
+  const s = 'bcabc';
+  const cnt = {};
+  for (const ch of s) cnt[ch] = (cnt[ch] || 0) + 1;
+  const st = [];
+  const used = new Set();
+  F({ cap: '先统计每个字符剩余次数；栈内字符保持递增，且每个字符只用一次', blocks: [A(s.split('')), S([])] });
+  for (const ch of s) {
+    cnt[ch]--;
+    if (used.has(ch)) { F({ cap: `"${ch}" 已经在栈里 → 跳过`, blocks: [A(s.split('')), S([...st])] }); continue; }
+    while (st.length && st[st.length - 1] > ch && cnt[st[st.length - 1]] > 0) {
+      const gone = st.pop();
+      used.delete(gone);
+      F({ cap: `栈顶 "${gone}" 比 "${ch}" 大，且后面还会出现 → 弹出`, blocks: [S([...st])] });
+    }
+    st.push(ch);
+    used.add(ch);
+    F({ cap: `"${ch}" 入栈`, blocks: [A(s.split('')), S([...st])] });
+  }
+  const ans = st.join('');
+  F({ cap: `得到字典序最小的结果 ${ans}`, blocks: [S([...st]), TX(ans)], done: true, ans });
+});
+
+T('636', '遇到 start 压栈并结算上一段，遇到 end 结算当前函数', 'n = 2, logs = ["0:start:0","1:start:2","1:end:5","0:end:6"]', [3, 4], (F) => {
+  const logs = ['0:start:0', '1:start:2', '1:end:5', '0:end:6'];
+  const res = [0, 0];
+  const st = [];
+  let prev = 0;
+  F({ cap: '栈里是被调用但还没结束的函数；`prev` 是上一次处理到的时间点', blocks: [A(logs), S([]), V(['res', '[0,0]'])] });
+  for (const log of logs) {
+    const [id, kind, t] = log.split(':');
+    const time = Number(t);
+    if (kind === 'start') {
+      if (st.length) res[st[st.length - 1]] += time - prev;
+      st.push(Number(id));
+      prev = time;
+      F({ cap: `${log} → 先把上一段 ${time - prev + (time - prev)} 记给栈顶函数，再压入 ${id}`, blocks: [A(logs), S([...st]), V(['res', fmt(res)])] });
+    } else {
+      res[Number(id)] += time - prev + 1;
+      st.pop();
+      prev = time + 1;
+      F({ cap: `${log} → 当前函数独占 ${time}−prev+1 个时间单位，出栈`, blocks: [A(logs), S([...st]), V(['res', fmt(res)])] });
+    }
+  }
+  F({ cap: `独占时间分别是 ${res.join(' 和 ')}`, blocks: [V(['res', fmt(res)]), TX(fmt(res))], done: true, ans: res.slice() });
+});
+
+T('946', '按 pushed 入栈，能弹就弹，最后看是否弹空', 'pushed = [1,2,3,4,5], popped = [4,5,3,2,1]', true, (F) => {
+  const pushed = [1, 2, 3, 4, 5], popped = [4, 5, 3, 2, 1];
+  const st = [];
+  let j = 0;
+  F({ cap: '贪心：每次压入后就尽可能按 popped 弹出', blocks: [A(pushed), S([]), V(['j', 0])] });
+  for (let i = 0; i < pushed.length; i++) {
+    st.push(pushed[i]);
+    F({ cap: `压入 ${pushed[i]}`, blocks: [A(pushed, { hl: hl(i, 'cur'), p: { i } }), S([...st])] });
+    while (st.length && st[st.length - 1] === popped[j]) {
+      F({ cap: `栈顶 ${st[st.length - 1]} 正好是下一个要弹的 → 弹出`, blocks: [A(popped, { hl: hl(j, 'ok'), p: { j } }), S([...st])] });
+      st.pop();
+      j++;
+    }
+  }
+  const ans = st.length === 0 && j === popped.length;
+  F({ cap: ans ? '全部弹出，序列合法' : '还有残留，序列非法', blocks: [S([...st]), V(['j', j]), TX(String(ans))], done: true, ans });
+});
+
+T('581', '从左找第一个破坏升序的位置，从右找最后一个，再向两侧扩展到真正边界', 'nums = [2,6,4,8,10,9,15]', 5, (F) => {
+  const a = [2, 6, 4, 8, 10, 9, 15];
+  let lo = 0, hi = a.length - 1;
+  while (lo < hi && a[lo] <= a[lo + 1]) lo++;
+  while (hi > lo && a[hi - 1] <= a[hi]) hi--;
+  const mn = Math.min(...a.slice(lo, hi + 1)), mx = Math.max(...a.slice(lo, hi + 1));
+  F({ cap: `先框出中间那段 [${lo}, ${hi}]`, blocks: [A(a, { hl: rng(lo, hi, 'sel'), p: { lo, hi } }), V(['min', mn, 'max', mx])] });
+  while (lo > 0 && a[lo - 1] > mn) lo--;
+  while (hi < a.length - 1 && a[hi + 1] < mx) hi++;
+  F({ cap: `扩展后最短待排序段是 [${lo}, ${hi}]`, blocks: [A(a, { hl: rng(lo, hi, 'ok'), p: { lo, hi } })] });
+  const ans = hi - lo + 1;
+  F({ cap: `长度 ${ans}`, blocks: [A(a, { hl: rng(lo, hi, 'ok') }), TX(String(ans))], done: true, ans });
+});
+
+T('1004', '滑窗：窗口内最多 k 个 0，超了就左移', 'nums = [1,1,1,0,0,0,1,1,1,1,0], k = 2', 6, (F) => {
+  const a = [1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0], k = 2;
+  let l = 0, zeros = 0, best = 0;
+  F({ cap: '窗口内 0 的个数不超过 k；超过就收缩左边界', blocks: [A(a), V(['l', 0, 'zeros', 0, 'best', 0])] });
+  for (let r = 0; r < a.length; r++) {
+    if (a[r] === 0) zeros++;
+    while (zeros > k) { if (a[l] === 0) zeros--; l++; }
+    best = Math.max(best, r - l + 1);
+    F({ cap: `右界到 ${r}：窗口 [${l}, ${r}]，0 有 ${zeros} 个，最长 ${best}`, blocks: [A(a, { hl: rng(l, r, 'ok'), p: { l, r } }), V(['zeros', zeros, 'best', best])] });
+  }
+  F({ cap: `最多翻 ${k} 个 0，得到最长 ${best}`, blocks: [A(a), TX(String(best))], done: true, ans: best });
+});
+
+T('538', '反向中序：右 → 根 → 左，边走边累加', 'root = [2,1,3]', [5, 6, 3], (F) => {
+  const mk = (v, l, r) => ({ v, l, r });
+  const root = mk(2, mk(1), mk(3));
+  let sum = 0;
+  const order = [];
+  const walk = (n, path) => {
+    if (!n) return;
+    walk(n.r, path + 'R');
+    sum += n.v;
+    order.push(n.v + '→' + sum);
+    n.v = sum;
+    F({ cap: `访问 ${path || 'root'}：累加到 ${sum}，该节点改成 ${sum}`, blocks: [A(order), V(['sum', sum])] });
+    walk(n.l, path + 'L');
+  };
+  F({ cap: 'BST 的中序是升序；反向中序（右根左）就是「从大到小」，累加即得累加树', blocks: [A([2, 1, 3])] });
+  walk(root, '');
+  const ans = [root.v, root.l.v, root.r.v];
+  F({ cap: `得到的累加树（层序）= ${fmt(ans)}`, blocks: [A(ans), TX(fmt(ans))], done: true, ans });
+});
+
+T('572', '先比「以当前节点为根是否相同」，再递归左右子树', 'root = [3,4,5,1,2], subRoot = [4,1,2]', true, (F) => {
+  const mk = (v, l, r) => ({ v, l, r });
+  const root = mk(3, mk(4, mk(1), mk(2)), mk(5));
+  const sub = mk(4, mk(1), mk(2));
+  const same = (a, b) => {
+    if (!a || !b) return a === b;
+    return a.v === b.v && same(a.l, b.l) && same(a.r, b.r);
+  };
+  F({ cap: '两棵树「完全相同」比对：值相等且左右子树都相等', blocks: [A([3, 4, 5, 1, 2]), A([4, 1, 2])] });
+  const walk = (n, path) => {
+    if (!n) return false;
+    const hit = same(n, sub);
+    F({ cap: `以节点 ${n.v}（${path}）为根与 subRoot 比对 → ${hit ? '相同' : '不同'}`, blocks: [A([3, 4, 5, 1, 2], { hl: hl([3, 4, 5, 1, 2].indexOf(n.v), hit ? 'ok' : 'cur') }), V(['当前根', n.v])] });
+    if (hit) return true;
+    return walk(n.l, path + 'L') || walk(n.r, path + 'R');
+  };
+  const ans = walk(root, 'root');
+  F({ cap: ans ? '找到了与 subRoot 完全相同的子树' : '不存在这样的子树', blocks: [TX(String(ans))], done: true, ans });
+});
+
+T('149', '枚举基准点，用最简分数 (dx/g, dy/g) 做斜率键统计', 'points = [[1,1],[2,2],[3,3]]', 3, (F) => {
+  const pts = [[1, 1], [2, 2], [3, 3]];
+  const gcd = (a, b) => (b === 0 ? Math.abs(a) : gcd(b, a % b));
+  let best = pts.length <= 2 ? pts.length : 2;
+  F({ cap: '同一基准点上，斜率相同的点共线；斜率要约分并统一符号', blocks: [A(pts.map((p) => fmt(p)))] });
+  for (let i = 0; i < pts.length; i++) {
+    const cnt = new Map();
+    for (let j = i + 1; j < pts.length; j++) {
+      const dx = pts[j][0] - pts[i][0], dy = pts[j][1] - pts[i][1];
+      const g = gcd(dx, dy) || 1;
+      const key = dx / g + '/' + dy / g;
+      cnt.set(key, (cnt.get(key) || 0) + 1);
+      best = Math.max(best, cnt.get(key) + 1);
+      F({ cap: `基准 (${pts[i]}) 与 (${pts[j]})：斜率键 ${key}，当前共线 ${cnt.get(key) + 1} 个`, blocks: [A(pts.map((p) => fmt(p)), { hl: hl(i, 'cur', [j], 'sel') }), V(['best', best])] });
+    }
+  }
+  F({ cap: `最多有 ${best} 个点在同一条直线上`, blocks: [TX(String(best))], done: true, ans: best });
+});
+
+T('91', '一位和两位两种转移：dp[i] 由 dp[i-1] 与 dp[i-2] 决定', 's = "226"', 3, (F) => {
+  const s = '226';
+  const dp = new Array(s.length + 1).fill(0);
+  dp[0] = 1;
+  F({ cap: '`dp[i]` 表示前 i 个字符的解码方案数；空串算 1 种', blocks: [A(s.split('')), A(dp)] });
+  for (let i = 1; i <= s.length; i++) {
+    if (s[i - 1] !== '0') dp[i] += dp[i - 1];
+    if (i >= 2) {
+      const two = Number(s.slice(i - 2, i));
+      if (two >= 10 && two <= 26) dp[i] += dp[i - 2];
+    }
+    F({ cap: `算到第 ${i} 位 "${s.slice(0, i)}"：方案数 ${dp[i]}`, blocks: [A(s.split('')), A(dp, { hl: hl(i, 'cur') })] });
+  }
+  const ans = dp[s.length];
+  F({ cap: `"${s}" 共有 ${ans} 种解码方式`, blocks: [A(dp), TX(String(ans))], done: true, ans });
+});
+
+T('115', '按字符推进：匹配上就累加「用不用这个 s 字符」两条路径', 's = "babgbag", t = "bag"', 5, (F) => {
+  const s = 'babgbag', t = 'bag';
+  const dp = new Array(t.length + 1).fill(0);
+  dp[0] = 1;
+  F({ cap: '`dp[j]` 表示 t 的前 j 个字符在已扫描的 s 前缀里出现的方案数', blocks: [A(t.split('')), A(dp)] });
+  for (let i = 0; i < s.length; i++) {
+    for (let j = t.length; j >= 1; j--) {
+      if (s[i] === t[j - 1]) dp[j] += dp[j - 1];
+    }
+    F({ cap: `扫到 s[${i}]='${s[i]}'：倒序更新，避免同一字符被复用`, blocks: [A(s.split(''), { hl: hl(i, 'cur'), p: { i } }), A(dp)] });
+  }
+  const ans = dp[t.length];
+  F({ cap: `t="${t}" 作为子序列出现 ${ans} 次`, blocks: [A(dp), TX(String(ans))], done: true, ans });
+});
+
+T('332', 'Hierholzer：一路按字典序最小的边走到走不动，再回溯把机场压栈', 'tickets = [[JFK,SFO],[JFK,ATL],[SFO,ATL],[ATL,JFK],[ATL,SFO]]', ['JFK', 'ATL', 'JFK', 'SFO', 'ATL', 'SFO'], (F) => {
+  const tickets = [['JFK', 'SFO'], ['JFK', 'ATL'], ['SFO', 'ATL'], ['ATL', 'JFK'], ['ATL', 'SFO']];
+  const adj = new Map();
+  for (const [a, b] of tickets) { if (!adj.has(a)) adj.set(a, []); adj.get(a).push(b); }
+  for (const list of adj.values()) list.sort().reverse();
+  const route = [];
+  const dfs = (from, depth) => {
+    const next = adj.get(from);
+    while (next && next.length) {
+      const to = next.pop();
+      F({ cap: `从 ${from} 走最小字典序的边 → ${to}`, blocks: [A(tickets.map((x) => x.join('→')), { hl: hl(depth % 5, 'cur') }), A(route)] });
+      dfs(to, depth + 1);
+    }
+    route.push(from);
+    F({ cap: `${from} 已经没有可用的边 → 压入结果尾部`, blocks: [A(route)] });
+  };
+  dfs('JFK', 0);
+  const ans = route.reverse();
+  F({ cap: `行程重建完成：${ans.join(' → ')}`, blocks: [A(ans), TX(ans.join(' → '))], done: true, ans });
+});
+
+T('剑指 22', '快指针先走 k 步，再一起走，慢指针停在倒数第 k 个', 'head = [1,2,3,4,5], k = 2', 4, (F) => {
+  const a = [1, 2, 3, 4, 5], k = 2;
+  let fast = 0, slow = 0;
+  F({ cap: '快指针先走 k 步，快慢之间就固定隔开 k 个节点', blocks: [A(a), V(['fast', 0, 'slow', 0])] });
+  for (let i = 0; i < k; i++) {
+    fast++;
+    F({ cap: `快指针走到下标 ${fast}（值 ${a[fast]}）`, blocks: [A(a, { hl: hl([fast], 'cur', [slow], 'sel'), p: { fast, slow } })] });
+  }
+  while (fast < a.length - 1) {
+    fast++; slow++;
+    F({ cap: `快慢一起走：fast=${fast}，slow=${slow}`, blocks: [A(a, { hl: hl([fast], 'cur', [slow], 'sel'), p: { fast, slow } })] });
+  }
+  const ans = a[slow];
+  F({ cap: `快指针到最后，慢指针停在下标 ${slow}，即倒数第 ${k} 个 = ${ans}`, blocks: [A(a, { hl: hl([slow], 'ok'), p: { slow } }), TX(String(ans))], done: true, ans });
+});
+
+T('86', '两条哑链表：小于 x 的接一条，其余接另一条，最后拼起来', 'head = [1,4,3,2,5,2], x = 3', [1, 2, 2, 4, 3, 5], (F) => {
+  const a = [1, 4, 3, 2, 5, 2], x = 3;
+  const small = [], big = [];
+  F({ cap: '保持相对顺序是「稳定分区」的关键：各自按原顺序追加', blocks: [A(a), V(['<x', '[]'], ['≥x', '[]'])] });
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] < x) small.push(a[i]); else big.push(a[i]);
+    F({ cap: `a[${i}]=${a[i]} ${a[i] < x ? '< ' + x + ' → 进左表' : '≥ ' + x + ' → 进右表'}`, blocks: [A(a, { hl: hl(i, 'cur'), p: { i } }), V(['<x', fmt(small)], ['≥x', fmt(big)])] });
+  }
+  const ans = small.concat(big);
+  F({ cap: `拼起来：${fmt(ans)}`, blocks: [A(ans), TX(fmt(ans))], done: true, ans });
+});
+
+T('380', '数组存值 + 值→下标映射；删除时把末尾换到被删位置', 'insert(1), insert(2), remove(1), getRandom()', 2, (F) => {
+  const arr = [], idx = new Map();
+  const insert = (v) => { if (idx.has(v)) return false; idx.set(v, arr.length); arr.push(v); return true; };
+  const remove = (v) => {
+    if (!idx.has(v)) return false;
+    const i = idx.get(v), last = arr[arr.length - 1];
+    arr[i] = last; idx.set(last, i);
+    arr.pop(); idx.delete(v);
+    return true;
+  };
+  F({ cap: '`arr` 负责 O(1) 随机取，`idx` 负责 O(1) 定位；删除用「尾元素换位」保持数组连续', blocks: [A(arr), M([...idx])] });
+  insert(1);
+  F({ cap: 'insert(1) → 追加到尾部', blocks: [A(arr), M([...idx])] });
+  insert(2);
+  F({ cap: 'insert(2) → 追加到尾部', blocks: [A(arr), M([...idx])] });
+  const i = idx.get(1), last = arr[arr.length - 1];
+  arr[i] = last; idx.set(last, i); arr.pop(); idx.delete(1);
+  F({ cap: 'remove(1)：把末尾的 2 换到 1 的位置再删除尾部，避免整段搬移', blocks: [A(arr), M([...idx])] });
+  const ans = arr[0];
+  F({ cap: `只剩一个元素，getRandom() 一定返回 ${ans}`, blocks: [A(arr), TX(String(ans))], done: true, ans });
+});
+
+T('382', '数到第 i 个节点时以 1/i 的概率替换答案（演示用固定随机序列）', 'head = [1,2,3,4]', 1, (F) => {
+  const a = [1, 2, 3, 4];
+  let chosen = null, count = 0;
+  F({ cap: '蓄水池抽样：只需要一次遍历，每个节点被选中的概率都是 1/n', blocks: [A(a), V(['chosen', '—'], ['count', 0])] });
+  for (let i = 0; i < a.length; i++) {
+    count++;
+    const pick = i === 0;
+    if (pick) chosen = a[i];
+    F({ cap: `第 ${count} 个节点 ${a[i]}：本次随机${pick ? '命中 → 替换答案' : '未命中 → 保持'}`, blocks: [A(a, { hl: hl(i, pick ? 'ok' : 'cur'), p: { i } }), V(['chosen', chosen], ['count', count])] });
+  }
+  F({ cap: `本次抽样结果 ${chosen}（固定随机序列的演示，真实实现用 1/i 概率）`, blocks: [TX(String(chosen))], done: true, ans: chosen });
+});
+
+T('36', '一遍扫描 9 个格子：用计数数组查重复，而不是 27 份状态', 'row = [5,3,.,.,7,.,.,.,.]', true, (F) => {
+  const cells = ['5', '3', '.', '.', '7', '.', '.', '.', '.'];
+  const seen = new Array(9).fill(0);
+  F({ cap: '9 个格子共用一份 `seen[9]`：遇数字就查计数，遇 "." 跳过', blocks: [A(cells), A(seen)] });
+  let ok = true;
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (c === '.') { F({ cap: `第 ${i} 格是空格 → 跳过`, blocks: [A(cells, { hl: hl(i, 'dim'), p: { i } }), A(seen)] }); continue; }
+    const k = Number(c) - 1;
+    if (seen[k]) { ok = false; F({ cap: `数字 ${c} 重复出现 → 非法`, blocks: [A(cells, { hl: hl(i, 'bad'), p: { i } }), A(seen, { hl: hl(k, 'bad') })], done: true, ans: false }); return; }
+    seen[k] = 1;
+    F({ cap: `数字 ${c} 第一次出现，标记 seen[${k}]`, blocks: [A(cells, { hl: hl(i, 'ok'), p: { i } }), A(seen, { hl: hl(k, 'ok') })] });
+  }
+  F({ cap: ok ? '这一组（行/列/宫）没有重复' : '有重复', blocks: [TX(String(ok))], done: true, ans: ok });
+});
+
 return TRACES;
 })();
 
