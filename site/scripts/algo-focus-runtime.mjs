@@ -6,12 +6,12 @@
 // keeps its pinned hashes; only the final text is rewritten here.
 const RENDERERS = 'src/app/renderers.js';
 
-// Move the knowledge block above the problem navigation so the topic page reads
-// identify -> variants -> pitfalls -> knowledge -> navigation.
-const PROBLEMS_LINE =
+const PROBLEMS_SRC =
   "  ${sec('代表题',e.groups.map(g=>`<div class=\"rs-group\"><h4>${h(g.name)}</h4><p class=\"prose\">${h(g.note)}</p><div class=\"rs-jumps\">${g.items.map(([hr,t])=>`<a class=\"jump-btn\" href=\"${hr}\">${h(t)}</a>`).join('')}</div></div>`).join(''))}\n";
-const FOLD_SECTION_FROM = PROBLEMS_LINE + "  ${e.folds.length?sec('原专题笔记与精讲（折叠）',renderNoteTopicFolds(e)):''}\n";
-const FOLD_SECTION_TO = "  ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}\n" + PROBLEMS_LINE;
+const PROBLEMS_NEW = "  ${sec('代表题',e.groups.map(ptGroup).join(''))}\n";
+
+const FOLD_SECTION_FROM = PROBLEMS_SRC + "  ${e.folds.length?sec('原专题笔记与精讲（折叠）',renderNoteTopicFolds(e)):''}\n";
+const FOLD_SECTION_TO = "  ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}\n" + PROBLEMS_NEW;
 
 // The Java template block is gone: pattern code lives on every problem page, and
 // four full listings per topic made the page unreadable.
@@ -22,7 +22,7 @@ const TEMPLATE_TO = '';
 const IDENTIFY_FROM =
   "  ${sec('题型识别',`<div class=\"panel tone-accent\">${ul(e.recognize)}</div>${e.notApplicable.length?`<div class=\"panel tone-bad\"><h4><span class=\"ic\">✗</span>什么时候不适用</h4>${ul(e.notApplicable)}</div>`:''}`)}\n";
 const IDENTIFY_TO =
-  "  ${sec('题型识别',ptClues(e.recognize)+(e.notApplicable.length?`<div class=\"panel tone-bad pt-na\"><h4><span class=\"ic\">✗</span>什么时候不适用</h4>${ptList(e.notApplicable)}</div>`:''))}\n";
+  "  ${sec('题型识别',ptClues(e.recognize)+(e.notApplicable.length?`<div class=\"pt-na\"><h4 class=\"pt-na-h\"><span class=\"pt-na-ic\">✗</span>什么时候不适用</h4>${ptNaList(e.notApplicable)}</div>`:''))}\n";
 
 const VARIANTS_FROM = "  ${sec('常见变体',ul(e.variants))}\n";
 const VARIANTS_TO = "  ${sec('常见变体',ptVariants(e.variants))}\n";
@@ -57,24 +57,31 @@ function ptTable(head, rows){
     rows.map(cells => '<tr>' + cells.map((c, i) => '<td' + (i === 0 ? ' class="pt-c1"' : '') + '>' + mdLite(c) + '</td>').join('') + '</tr>').join('') +
     '</tbody></table></div>';
 }
-function ptList(list){
-  return '<ul class="md-list pt-list">' + list.map(t => '<li>' + mdLite(String(t)) + '</li>').join('') + '</ul>';
-}
 function ptClues(list){
   return ptTable(['看到什么', '第一反应'], list.map(x => typeof x === 'string' ? [x, '—'] : [x.see, x.act]));
 }
 function ptVariants(list){
   return ptTable(['原题', '变体', '只改这一处'], list.map(x => typeof x === 'string' ? ['—', x, ''] : [x.from, x.to, x.change]));
 }
+function ptNaList(list){
+  return '<ul class="pt-na-list">' + list.map(t =>
+    '<li><span class="pt-na-x">✗</span><span>' + mdLite(String(t)) + '</span></li>').join('') + '</ul>';
+}
 function ptPitfalls(list){
   return '<div class="pt-pits">' + list.map(t => {
-    const m = /^(.+?[。；])\\s*([\\s\\S]+)$/.exec(t);
-    const head = m ? m[1] : '';
-    const rest = m ? m[2] : t;
-    return '<div class="pt-pit"><span class="pt-pit-ic">!</span><div>' +
-      (head ? '<p class="pt-pit-head">' + mdLite(head) + '</p>' : '') +
-      '<p class="pt-pit-body">' + mdLite(rest) + '</p></div></div>';
+    let symptom = '', consequence = String(t);
+    if (t && typeof t === 'object') { symptom = t.symptom || ''; consequence = t.consequence || ''; }
+    else { const m = /^(.+?[。；])\\s*([\\s\\S]+)$/.exec(String(t)); if (m) { symptom = m[1]; consequence = m[2]; } }
+    return '<div class="pt-pit"><span class="pt-pit-ic">!</span><div class="pt-pit-txt">' +
+      (symptom ? '<p class="pt-pit-sym">' + mdLite(symptom) + '</p>' : '') +
+      (consequence ? '<p class="pt-pit-con">' + mdLite(consequence) + '</p>' : '') +
+      '</div></div>';
   }).join('') + '</div>';
+}
+function ptGroup(g){
+  return '<div class="rs-group pt-group"><h4>' + h(g.name) + '</h4>' +
+    (g.note ? '<p class="pt-group-note">' + mdLite(g.note) + '</p>' : '') +
+    '<div class="rs-jumps">' + g.items.map(([hr, t]) => '<a class="jump-btn" href="' + hr + '">' + h(t) + '</a>').join('') + '</div></div>';
 }
 `;
 
