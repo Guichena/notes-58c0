@@ -11083,267 +11083,6 @@
       }
     },
     {
-      "reviewId": "13-08",
-      "entryId": "ml-cross-entropy",
-      "path": [
-        "code"
-      ],
-      "before": "class Solution {\n    private static final double EPS = 1e-12;\n    public double binaryCrossEntropy(int label, double probabilityPositive) {\n        if (label != 0 && label != 1) {\n            throw new IllegalArgumentException(\"label 只能为 0 或 1\");\n        }\n        // 夹在开区间内，避免 log(0)。\n        double p = Math.max(EPS, Math.min(1.0 - EPS, probabilityPositive));\n        return -(label * Math.log(p) + (1 - label) * Math.log(1.0 - p));\n    }\n    // 未归一化 logits 上用 log-sum-exp，等价于 -log softmax。\n    public double multiClassCrossEntropy(double[] logits, int labelIndex) {\n        if (logits == null || logits.length == 0) {\n            throw new IllegalArgumentException(\"logits 不能为空\");\n        }\n        if (labelIndex < 0 || labelIndex >= logits.length) {\n            throw new IllegalArgumentException(\"labelIndex 越界\");\n        }\n        double maxLogit = -Double.MAX_VALUE;\n        for (double value : logits) {\n            if (!Double.isFinite(value)) {\n                throw new IllegalArgumentException(\"logit 必须是有限数值\");\n            }\n            maxLogit = Math.max(maxLogit, value);\n        }\n        // 减去 maxLogit 再 exp，避免指数溢出。\n        double sumExp = 0.0;\n        for (double value : logits) {\n            sumExp += Math.exp(value - maxLogit);\n        }\n        double logSumExp = maxLogit + Math.log(sumExp);\n        return logSumExp - logits[labelIndex];\n    }\n}",
-      "after": "class Solution {\n    private static final double EPS = 1e-12;\n    public double binaryCrossEntropy(int label, double probabilityPositive) {\n        if (label != 0 && label != 1) {\n            throw new IllegalArgumentException(\"label 只能为 0 或 1\");\n        }\n        if (!Double.isFinite(probabilityPositive) || probabilityPositive < 0 || probabilityPositive > 1) {\n            throw new IllegalArgumentException(\"probability must be finite in [0,1]\");\n        }\n        // 夹在开区间内，避免 log(0)；这是截断损失。\n        double p = Math.max(EPS, Math.min(1.0 - EPS, probabilityPositive));\n        return -(label * Math.log(p) + (1 - label) * Math.log(1.0 - p));\n    }\n    // 未归一化 logits 上用 log-sum-exp，等价于 -log softmax。\n    public double multiClassCrossEntropy(double[] logits, int labelIndex) {\n        if (logits == null || logits.length == 0) {\n            throw new IllegalArgumentException(\"logits 不能为空\");\n        }\n        if (labelIndex < 0 || labelIndex >= logits.length) {\n            throw new IllegalArgumentException(\"labelIndex 越界\");\n        }\n        double maxLogit = -Double.MAX_VALUE;\n        for (double value : logits) {\n            if (!Double.isFinite(value)) {\n                throw new IllegalArgumentException(\"logit 必须是有限数值\");\n            }\n            maxLogit = Math.max(maxLogit, value);\n        }\n        // 减去 maxLogit 再 exp，避免指数溢出。\n        double sumExp = 0.0;\n        for (double value : logits) {\n            sumExp += Math.exp(value - maxLogit);\n        }\n        return (maxLogit - logits[labelIndex]) + Math.log(sumExp);\n    }\n}",
-      "SHA": {
-        "before": "e072b98f83c294200757bc454c7722e8c909b3f922fc32b77ce9464b7f1019ec",
-        "after": "e5fc841ae9dfaebf35128445a0283393d37cc969ba4e728740f2834e00cafa7c"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Reordered stable logsumexp subtraction preserves small loss under huge shared logits; BCE validates finite probability before clipping.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "fe3ddec0caca0ca2f2f63c9180e8d601b3615ae20acdcfbf08acf0e205a43f88"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-cross-entropy",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "交叉熵损失（二分类与多分类）",
-        "number": "ML 3"
-      }
-    },
-    {
-      "reviewId": "13-09",
-      "entryId": "ml-cross-entropy",
-      "path": [
-        "idea"
-      ],
-      "before": "binaryCrossEntropy 用 EPS 把 probabilityPositive 夹进 [EPS, 1-EPS]，再计算 -(label·log p + (1-label)·log(1-p))。multiClassCrossEntropy 先扫出 maxLogit，再把 exp(value-maxLogit) 累加到 sumExp。logSumExp 等于 maxLogit + Math.log(sumExp)，返回值是 logSumExp - logits[labelIndex]，也就是正确类上的 -log softmax。",
-      "after": "binaryCrossEntropy 用 EPS 把 probabilityPositive 夹进 [EPS, 1-EPS]，再计算 -(label·log p + (1-label)·log(1-p))。multiClassCrossEntropy 先扫出 maxLogit，再把 exp(value-maxLogit) 累加到 sumExp。先算 maxLogit-logits[labelIndex]，再加 Math.log(sumExp)，避免共同大偏移吞掉小损失，也就是正确类上的 -log softmax。 BCE 的 EPS 截断改变了端点损失，是有限近似；多分类差值超出 double 可表示范围时可返回正无穷。",
-      "SHA": {
-        "before": "e75bddf3338fa731af7cc8c1ba1efab8a0a68aecbbf3522afe955db9a34a060f",
-        "after": "20efd6b858f75c5ff19bae19d75dfaf3feb2645035202f05dae29173eecccfd0"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Clipping changes endpoint loss; overflowing finite-logit differences may yield positive infinity.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "e75bddf3338fa731af7cc8c1ba1efab8a0a68aecbbf3522afe955db9a34a060f"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-cross-entropy",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "交叉熵损失（二分类与多分类）",
-        "number": "ML 3"
-      }
-    },
-    {
-      "reviewId": "13-10",
-      "entryId": "ml-cross-entropy",
-      "path": [
-        "simple",
-        "analysis"
-      ],
-      "before": "binaryCrossEntropy 用 EPS 把 probabilityPositive 夹进 [EPS, 1-EPS]，再计算 -(label·log p + (1-label)·log(1-p))。multiClassCrossEntropy 先扫出 maxLogit，再把 exp(value-maxLogit) 累加到 sumExp。logSumExp 等于 maxLogit + Math.log(sumExp)，返回值是 logSumExp - logits[labelIndex]，也就是正确类上的 -log softmax。",
-      "after": "binaryCrossEntropy 用 EPS 把 probabilityPositive 夹进 [EPS, 1-EPS]，再计算 -(label·log p + (1-label)·log(1-p))。multiClassCrossEntropy 先扫出 maxLogit，再把 exp(value-maxLogit) 累加到 sumExp。先算 maxLogit-logits[labelIndex]，再加 Math.log(sumExp)，避免共同大偏移吞掉小损失，也就是正确类上的 -log softmax。 BCE 的 EPS 截断改变了端点损失，是有限近似；多分类差值超出 double 可表示范围时可返回正无穷。",
-      "SHA": {
-        "before": "e75bddf3338fa731af7cc8c1ba1efab8a0a68aecbbf3522afe955db9a34a060f",
-        "after": "20efd6b858f75c5ff19bae19d75dfaf3feb2645035202f05dae29173eecccfd0"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Same numerical limitations.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "e75bddf3338fa731af7cc8c1ba1efab8a0a68aecbbf3522afe955db9a34a060f"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-cross-entropy",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "交叉熵损失（二分类与多分类）",
-        "number": "ML 3"
-      }
-    },
-    {
-      "reviewId": "13-11",
-      "entryId": "ml-kl-divergence",
-      "path": [
-        "code"
-      ],
-      "before": "class Solution {\n    // 自然对数，单位是 nat。\n    public double klDivergence(double[] p, double[] q) {\n        if (p.length == 0 || p.length != q.length) {\n            throw new IllegalArgumentException(\"P 和 Q 必须非空且维度一致\");\n        }\n        double sumP = 0.0;\n        double sumQ = 0.0;\n        for (int i = 0;\n        i < p.length;\n        i++) {\n            if (!Double.isFinite(p[i]) || !Double.isFinite(q[i]) || p[i] < 0.0 || q[i] < 0.0) {\n                throw new IllegalArgumentException(\"概率必须是有限的非负数\");\n            }\n            sumP += p[i];\n            sumQ += q[i];\n        }\n        // 容差内必须各自加总为 1，才是概率分布。\n        if (Math.abs(sumP - 1.0) > 1e-9 || Math.abs(sumQ - 1.0) > 1e-9) {\n            throw new IllegalArgumentException(\"P 和 Q 必须分别归一化为概率分布\");\n        }\n        double kl = 0.0;\n        for (int i = 0;\n        i < p.length;\n        i++) {\n            // 极限下 0·log(0/q) 记为 0。\n            if (p[i] == 0.0) continue;\n            // P 有质量而 Q 为 0，该项发散。\n            if (q[i] == 0.0) return Double.POSITIVE_INFINITY;\n            kl += p[i] * Math.log(p[i] / q[i]);\n        }\n        return kl;\n    }\n}",
-      "after": "class Solution {\n    // 自然对数，单位是 nat。\n    public double klDivergence(double[] p, double[] q) {\n        if (p.length == 0 || p.length != q.length) {\n            throw new IllegalArgumentException(\"P 和 Q 必须非空且维度一致\");\n        }\n        double sumP = 0.0;\n        double sumQ = 0.0;\n        for (int i = 0;\n        i < p.length;\n        i++) {\n            if (!Double.isFinite(p[i]) || !Double.isFinite(q[i]) || p[i] < 0.0 || q[i] < 0.0) {\n                throw new IllegalArgumentException(\"概率必须是有限的非负数\");\n            }\n            sumP += p[i];\n            sumQ += q[i];\n        }\n        // 容差内必须各自加总为 1，才是概率分布。\n        if (Math.abs(sumP - 1.0) > 1e-9 || Math.abs(sumQ - 1.0) > 1e-9) {\n            throw new IllegalArgumentException(\"P 和 Q 必须分别归一化为概率分布\");\n        }\n        double kl = 0.0;\n        for (int i = 0;\n        i < p.length;\n        i++) {\n            // 极限下 0·log(0/q) 记为 0。\n            if (p[i] == 0.0) continue;\n            // P 有质量而 Q 为 0，该项发散。\n            if (q[i] == 0.0) return Double.POSITIVE_INFINITY;\n            kl += p[i] * (Math.log(p[i]) - Math.log(q[i]));\n        }\n        return kl;\n    }\n}",
-      "SHA": {
-        "before": "2c4591b1697bd56ab7e18224a8ca557b4765104fe8ba8e82f141948470335c4d",
-        "after": "c7a06c9252eafdbdb63b4f5eb8d311b403a07c20fc24498665f9c9c38302d4ac"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Subtract logs avoids ratio overflow or underflow while preserving KL formula.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "5f03cd013598b58d0932bd8accdccac9745f8db022b6416c739c77329838ad78"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-kl-divergence",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "KL 散度（Kullback-Leibler Divergence）",
-        "number": "ML 4"
-      }
-    },
-    {
-      "reviewId": "13-12",
-      "entryId": "ml-kl-divergence",
-      "path": [
-        "idea"
-      ],
-      "before": "第一遍拒绝非有限值或负数，并累加 sumP、sumQ；与 1 的差超过 1e-9 就抛异常。第二遍若 p[i]==0.0 直接 continue；若此时 q[i]==0.0 则返回 Double.POSITIVE_INFINITY；其余项才累加 p[i]*Math.log(p[i]/q[i])。",
-      "after": "第一遍拒绝非有限值或负数，并累加 sumP、sumQ；与 1 的差超过 1e-9 就抛异常。第二遍若 p[i]==0.0 直接 continue；若此时 q[i]==0.0 则返回 Double.POSITIVE_INFINITY；其余项才累加 p[i]*(Math.log(p[i])-Math.log(q[i]))，避免先相除上溢/下溢。 容差接受的分布与浮点求和可能带来接近零的小负误差。",
-      "SHA": {
-        "before": "e6641109ded4fd281aa4ee8080c275b5a0659b0a3139ef5ed1b3794ee6bca265",
-        "after": "3985a3033f3d2d12fd03f30bdc02f91a1f0eef029295e045eab79ead2b8308fe"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Tiny signed error can remain from tolerance and summation.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "e6641109ded4fd281aa4ee8080c275b5a0659b0a3139ef5ed1b3794ee6bca265"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-kl-divergence",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "KL 散度（Kullback-Leibler Divergence）",
-        "number": "ML 4"
-      }
-    },
-    {
-      "reviewId": "13-13",
-      "entryId": "ml-kl-divergence",
-      "path": [
-        "simple",
-        "analysis"
-      ],
-      "before": "第一遍拒绝非有限值或负数，并累加 sumP、sumQ；与 1 的差超过 1e-9 就抛异常。第二遍若 p[i]==0.0 直接 continue；若此时 q[i]==0.0 则返回 Double.POSITIVE_INFINITY；其余项才累加 p[i]*Math.log(p[i]/q[i])。",
-      "after": "第一遍拒绝非有限值或负数，并累加 sumP、sumQ；与 1 的差超过 1e-9 就抛异常。第二遍若 p[i]==0.0 直接 continue；若此时 q[i]==0.0 则返回 Double.POSITIVE_INFINITY；其余项才累加 p[i]*(Math.log(p[i])-Math.log(q[i]))，避免先相除上溢/下溢。 容差接受的分布与浮点求和可能带来接近零的小负误差。",
-      "SHA": {
-        "before": "e6641109ded4fd281aa4ee8080c275b5a0659b0a3139ef5ed1b3794ee6bca265",
-        "after": "3985a3033f3d2d12fd03f30bdc02f91a1f0eef029295e045eab79ead2b8308fe"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Same KL caveat.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "e6641109ded4fd281aa4ee8080c275b5a0659b0a3139ef5ed1b3794ee6bca265"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-kl-divergence",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "KL 散度（Kullback-Leibler Divergence）",
-        "number": "ML 4"
-      }
-    },
-    {
-      "reviewId": "13-14",
-      "entryId": "ml-auc",
-      "path": [
-        "code"
-      ],
-      "before": "import java.util.*;\nclass Solution {\n    static class Sample {\n        double score;\n        int label;\n        Sample(double score, int label) {\n            this.score = score;\n            this.label = label;\n        }\n    }\n    public double auc(int[] labels, double[] scores) {\n        if (labels.length != scores.length || labels.length == 0) {\n            throw new IllegalArgumentException(\"输入长度不合法\");\n        }\n        Sample[] samples = new Sample[labels.length];\n        long positives = 0;\n        long negatives = 0;\n        for (int i = 0;\n        i < labels.length;\n        i++) {\n            if (!Double.isFinite(scores[i])) {\n                throw new IllegalArgumentException(\"score 必须是有限数值\");\n            }\n            if (labels[i] == 1) positives++;\n            else if (labels[i] == 0) negatives++;\n            else throw new IllegalArgumentException(\"label 只能是 0/1\");\n            samples[i] = new Sample(scores[i], labels[i]);\n        }\n        // 分母是正负样本配对数，缺一类则 AUC 无定义。\n        if (positives == 0 || negatives == 0) {\n            throw new IllegalArgumentException(\"AUC 需要同时存在正、负样本\");\n        }\n        // 升序后，当前组左边的负样本分数都严格更低。\n        Arrays.sort(samples, Comparator.comparingDouble(s -> s.score));\n        long negativesBefore = 0;\n        double favorablePairs = 0.0;\n        int i = 0;\n        while (i < samples.length) {\n            int j = i;\n            long groupPos = 0;\n            long groupNeg = 0;\n            // 同分必须成组，否则平局会被记成全对或全错。\n            while (j < samples.length\n            && Double.compare(samples[j].score, samples[i].score) == 0) {\n                if (samples[j].label == 1) groupPos++;\n                else groupNeg++;\n                j++;\n            }\n            // 严格更高记 1，与本组负样本同分记 0.5。\n            favorablePairs += groupPos * negativesBefore;\n            favorablePairs += 0.5 * groupPos * groupNeg;\n            // 本组负样本只在计分之后才变成“更低分”。\n            negativesBefore += groupNeg;\n            i = j;\n        }\n        return favorablePairs / (positives * (double) negatives);\n    }\n}",
-      "after": "import java.util.*;\nclass Solution {\n    static class Sample {\n        double score;\n        int label;\n        Sample(double score, int label) {\n            this.score = score;\n            this.label = label;\n        }\n    }\n    public double auc(int[] labels, double[] scores) {\n        if (labels.length != scores.length || labels.length == 0) {\n            throw new IllegalArgumentException(\"输入长度不合法\");\n        }\n        Sample[] samples = new Sample[labels.length];\n        long positives = 0;\n        long negatives = 0;\n        for (int i = 0;\n        i < labels.length;\n        i++) {\n            if (!Double.isFinite(scores[i])) {\n                throw new IllegalArgumentException(\"score 必须是有限数值\");\n            }\n            if (labels[i] == 1) positives++;\n            else if (labels[i] == 0) negatives++;\n            else throw new IllegalArgumentException(\"label 只能是 0/1\");\n            samples[i] = new Sample(scores[i], labels[i]);\n        }\n        // 分母是正负样本配对数，缺一类则 AUC 无定义。\n        if (positives == 0 || negatives == 0) {\n            throw new IllegalArgumentException(\"AUC 需要同时存在正、负样本\");\n        }\n        // 升序后，当前组左边的负样本分数都严格更低。\n        Arrays.sort(samples, Comparator.comparingDouble(s -> s.score));\n        long negativesBefore = 0;\n        double favorablePairs = 0.0;\n        int i = 0;\n        while (i < samples.length) {\n            int j = i;\n            long groupPos = 0;\n            long groupNeg = 0;\n            // 同分必须成组，否则平局会被记成全对或全错。\n            while (j < samples.length\n            && samples[j].score == samples[i].score) {\n                if (samples[j].label == 1) groupPos++;\n                else groupNeg++;\n                j++;\n            }\n            // 严格更高记 1，与本组负样本同分记 0.5。\n            favorablePairs += groupPos * negativesBefore;\n            favorablePairs += 0.5 * groupPos * groupNeg;\n            // 本组负样本只在计分之后才变成“更低分”。\n            negativesBefore += groupNeg;\n            i = j;\n        }\n        return favorablePairs / (positives * (double) negatives);\n    }\n}",
-      "SHA": {
-        "before": "7b9e81e5109e5a78c6a9fad0bc3d406c36607f849a706c674f8f1684e070c42e",
-        "after": "8d9b345c987818834ae7c79402e4d13c24c491d6ff02ec22d9d09333cb75eaa2"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Numeric equality groups signed zero as tied scores; sorted -0/+0 groups remain adjacent.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "2ff0413b18abbb641168a61b3bf743c0d36c4c2402b1d146c814d0406ddda0ce"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-auc",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "AUC：定义、计算与手写实现",
-        "number": "ML 2"
-      }
-    },
-    {
       "reviewId": "13-15",
       "entryId": "nonlc-1-13",
       "path": [
@@ -11375,7 +11114,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "多线程并发计算一组数字的平方，并由主线程打印结果",
         "number": "通14",
         "progressKey": "nonlc-1#13"
@@ -11413,7 +11152,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "多线程并发计算一组数字的平方，并由主线程打印结果",
         "number": "通14",
         "progressKey": "nonlc-1#13"
@@ -11452,7 +11191,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "多线程并发计算一组数字的平方，并由主线程打印结果",
         "number": "通14",
         "progressKey": "nonlc-1#13"
@@ -11490,7 +11229,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "双线程交替输出二维数组的奇 / 偶行",
         "number": "并发 1"
       }
@@ -11527,7 +11266,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "双线程交替输出二维数组的奇 / 偶行",
         "number": "并发 1"
       }
@@ -11565,7 +11304,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "双线程交替输出二维数组的奇 / 偶行",
         "number": "并发 1"
       }
@@ -11602,7 +11341,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "双线程交替输出二维数组的奇 / 偶行",
         "number": "并发 1"
       }
@@ -11640,126 +11379,9 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "双线程交替输出二维数组的奇 / 偶行",
         "number": "并发 1"
-      }
-    },
-    {
-      "reviewId": "13-23",
-      "entryId": "p-special",
-      "path": [
-        "templates",
-        1,
-        "java"
-      ],
-      "before": "// 代表题 ML 2。分数升序排列，秩从 1 开始，完全相同的分数取平均秩。\n// AUC = (正样本秩和 - nPos*(nPos+1)/2) / (nPos*nNeg)，即随机一正一负里正分更高的概率。\n// 换题若分数越小越好，把比较方向反过来，或先取负号再调用。\nstatic double auc(int[] y, double[] score) {\n    int n = y.length;\n    Integer[] idx = new Integer[n];\n    for (int i = 0;\n    i < n;\n    i++) idx[i] = i;\n    Arrays.sort(idx, (a, b) -> Double.compare(score[a], score[b]));\n    double[] rank = new double[n];\n    for (int i = 0;\n    i < n;\n    ) {\n        int j = i;\n        while (j + 1 < n && score[idx[j + 1]] == score[idx[i]]) j++;\n        double avg = ((i + 1) + (j + 1)) / 2.0;\n        for (int k = i;\n        k <= j;\n        k++) rank[idx[k]] = avg;\n        i = j + 1;\n    }\n    double sumPos = 0;\n    int nPos = 0, nNeg = 0;\n    for (int i = 0;\n    i < n;\n    i++) {\n        if (y[i] == 1) {\n            sumPos += rank[i];\n            nPos++;\n        } else nNeg++;\n    }\n    return (sumPos - nPos * (nPos + 1) / 2.0) / (nPos * nNeg);\n}",
-      "after": "// 代表题 ML 2。分数升序排列，秩从 1 开始，完全相同的分数取平均秩。\n// AUC = (正样本秩和 - nPos*(nPos+1)/2) / (nPos*nNeg)，即随机一正一负里正分更高的概率加同分概率的一半。\n// 换题若分数越小越好，把比较方向反过来，或先取负号再调用。\nstatic double auc(int[] y, double[] score) {\n    if (y == null || score == null || y.length == 0 || y.length != score.length) throw new IllegalArgumentException(\"length\");\n    int n = y.length;\n    for (int i = 0;\n    i < n;\n    i++) if ((y[i] != 0 && y[i] != 1) || !Double.isFinite(score[i])) throw new IllegalArgumentException(\"label/score\");\n    Integer[] idx = new Integer[n];\n    for (int i = 0;\n    i < n;\n    i++) idx[i] = i;\n    Arrays.sort(idx, (a, b) -> Double.compare(score[a], score[b]));\n    double[] rank = new double[n];\n    for (int i = 0;\n    i < n;\n    ) {\n        int j = i;\n        while (j + 1 < n && score[idx[j + 1]] == score[idx[i]]) j++;\n        double avg = ((double) i + j + 2) / 2.0;\n        for (int k = i;\n        k <= j;\n        k++) rank[idx[k]] = avg;\n        i = j + 1;\n    }\n    double sumPos = 0;\n    int nPos = 0, nNeg = 0;\n    for (int i = 0;\n    i < n;\n    i++) {\n        if (y[i] == 1) {\n            sumPos += rank[i];\n            nPos++;\n        } else nNeg++;\n    }\n    if (nPos == 0 || nNeg == 0) throw new IllegalArgumentException(\"both classes required\");\n    return (sumPos - (double) nPos * (nPos + 1L) / 2.0) / ((double) nPos * nNeg);\n}",
-      "SHA": {
-        "before": "52ca5fe1168c1bf2317ab92299ce22a3bce419617b8a3a53e0b55128d50266d1",
-        "after": "3529c36d1897c5dad62fc0d1bfad1b9d8f664549799322ef903353f3b6d7f787"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Rank sum/positive-negative product widened before arithmetic; signed zeros tied, invalid labels/nonfinite scores and single-class input rejected.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "0202eb2f5ab3d5d5599cd2ae942b00d64d082e9680849d8d4bddb48943bac031"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "p-special",
-        "kind": "ptopic",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "专项手撕（并发 / ML） · 专题",
-        "number": "专题"
-      }
-    },
-    {
-      "reviewId": "13-24",
-      "entryId": "p-special",
-      "path": [
-        "templates",
-        2,
-        "java"
-      ],
-      "before": "// ML 3：二分类输入是概率。p 夹在 (eps,1-eps) 里，避免 log(0)。\nstatic double binaryCrossEntropy(double y, double p) {\n    double eps = 1e-12;\n    double pc = Math.min(1 - eps, Math.max(eps, p));\n    return -(y * Math.log(pc) + (1 - y) * Math.log(1 - pc));\n}\n// ML 3：多分类输入是未归一化 logits，y 是类别下标。\n// log p_y = z_y - max - log Σ exp(z_j - max)，与先 softmax 再 -log 等价，但不会溢出。\nstatic double softmaxCrossEntropy(double[] logits, int y) {\n    double m = logits[0];\n    for (int i = 1;\n    i < logits.length;\n    i++) m = Math.max(m, logits[i]);\n    double sum = 0;\n    for (double z : logits) sum += Math.exp(z - m);\n    return -(logits[y] - m - Math.log(sum));\n}\n// ML 4：KL(p||q)=Σ p_i·ln(p_i/q_i)。p_i=0 的项按极限记 0，故直接跳过。\n// q_i=0 且 p_i>0 时为 +∞，这里不吞掉，会得到 Infinity。KL(q||p) 只需对调两个参数。\nstatic double kl(double[] p, double[] q) {\n    double s = 0;\n    for (int i = 0;\n    i < p.length;\n    i++) {\n        if (p[i] == 0) continue;\n        s += p[i] * Math.log(p[i] / q[i]);\n    }\n    return s;\n}",
-      "after": "// ML 3：二分类输入是概率。p 夹在 (eps,1-eps) 里，避免 log(0)。\nstatic double binaryCrossEntropy(double y, double p) {\n    double eps = 1e-12;\n    double pc = Math.min(1 - eps, Math.max(eps, p));\n    return -(y * Math.log(pc) + (1 - y) * Math.log(1 - pc));\n}\n// ML 3：多分类输入是未归一化 logits，y 是类别下标。\n// log p_y = z_y - max - log Σ exp(z_j - max)，与先 softmax 再 -log 等价，但不会溢出。\nstatic double softmaxCrossEntropy(double[] logits, int y) {\n    double m = logits[0];\n    for (int i = 1;\n    i < logits.length;\n    i++) m = Math.max(m, logits[i]);\n    double sum = 0;\n    for (double z : logits) sum += Math.exp(z - m);\n    return -(logits[y] - m - Math.log(sum));\n}\n// ML 4：KL(p||q)=Σ p_i·ln(p_i/q_i)。p_i=0 的项按极限记 0，故直接跳过。\n// q_i=0 且 p_i>0 时为 +∞，这里不吞掉，会得到 Infinity。KL(q||p) 只需对调两个参数。\nstatic double kl(double[] p, double[] q) {\n    double s = 0;\n    for (int i = 0;\n    i < p.length;\n    i++) {\n        if (p[i] == 0) continue;\n        s += p[i] * (Math.log(p[i]) - Math.log(q[i]));\n    }\n    return s;\n}",
-      "SHA": {
-        "before": "341faafaf594d82f5029475be8ad1c4c9cd36e982430e876afd87320e9b26c90",
-        "after": "025a098f382a7683830a514fe790fe1eab6f83399467f508c1074f96663b868b"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Same stable KL log difference.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "6a7c03319f5b91c5e86e166a85a5cf800c18def0446ef331d43534b3525f3bb8"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "p-special",
-        "kind": "ptopic",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "专项手撕（并发 / ML） · 专题",
-        "number": "专题"
-      }
-    },
-    {
-      "reviewId": "13-25",
-      "entryId": "p-special",
-      "path": [
-        "templates",
-        3,
-        "java"
-      ],
-      "before": "// 代表题「并发 2」：第 i 号线程先 acquire 自己的门，打印 i+1，再 release 下一扇门。\n// 许可会积攒，所以某一号还没 start 时前一号已经 release 也不会丢唤醒、也不会乱序。\n// 换题只改 println 的内容；n 改成线程个数。奇偶行交替不要用这条单链，改成 turn + wait。\nstatic void print1ToN(int n) {\n    Semaphore[] go = new Semaphore[n];\n    Thread[] ts = new Thread[n];\n    for (int i = 0;\n    i < n;\n    i++) go[i] = new Semaphore(0);\n    for (int i = 0;\n    i < n;\n    i++) {\n        final int idx = i;\n        ts[i] = new Thread(() -> {\n            try {\n                go[idx].acquire();\n                System.out.println(idx + 1);\n                if (idx + 1 < n) go[idx + 1].release();\n            }\n            catch (InterruptedException e) {\n                Thread.currentThread().interrupt();\n            }\n        }\n        );\n    }\n    for (Thread t : ts) t.start();\n    go[0].release();\n    for (Thread t : ts) {\n        try {\n            t.join();\n        }\n        catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n        }\n    }\n}",
-      "after": "// 代表题「并发 2」：第 i 号线程先 acquire 自己的门，打印 i+1，再 release 下一扇门。\n// 许可会积攒，所以某一号还没 start 时前一号已经 release 也不会丢唤醒、也不会乱序。\n// 换题只改 println 的内容；n 改成线程个数。奇偶行交替不要用这条单链，改成 turn + wait。\nstatic void print1ToN(int n) {\n    if (n < 0) throw new IllegalArgumentException(\"nonnegative n\");\n    if (n == 0) return;\n    // Teaching normal-completion path: workers must not be interrupted during this run.\n    Semaphore[] go = new Semaphore[n];\n    Thread[] ts = new Thread[n];\n    for (int i = 0;\n    i < n;\n    i++) go[i] = new Semaphore(0);\n    for (int i = 0;\n    i < n;\n    i++) {\n        final int idx = i;\n        ts[i] = new Thread(() -> {\n            try {\n                go[idx].acquire();\n                System.out.println(idx + 1);\n                if (idx + 1 < n) go[idx + 1].release();\n            }\n            catch (InterruptedException e) {\n                Thread.currentThread().interrupt();\n            }\n        }\n        );\n    }\n    for (Thread t : ts) t.start();\n    go[0].release();\n    for (Thread t : ts) {\n        try {\n            t.join();\n        }\n        catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n        }\n    }\n}",
-      "SHA": {
-        "before": "f746fd2918527a4a4f9a0ae4a387e7ab87780ba2cd5e08000cda262145cc7c9b",
-        "after": "e089f9df1a2ae5f76e877e3a884c60530204c222faf461721369f34d780b07c0"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Zero avoids invalid empty semaphore indexing; negative rejected. Worker normal completion required.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "3b1c7757e43e955942f5e082b9050a4d7f2749b64ee911ebf59eacfb510b6a0d"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "p-special",
-        "kind": "ptopic",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "专项手撕（并发 / ML） · 专题",
-        "number": "专题"
       }
     },
     {
@@ -11794,7 +11416,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "10 个线程按顺序打印 1 ~ 10",
         "number": "并发 2"
       }
@@ -11832,7 +11454,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "10 个线程按顺序打印 1 ~ 10",
         "number": "并发 2"
       }
@@ -11869,7 +11491,7 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "哲学家进餐",
         "number": 1226
       }
@@ -11907,84 +11529,9 @@
         "kind": "algo",
         "mod": "algo",
         "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
+        "cat": "并发手撕",
         "title": "哲学家进餐",
         "number": 1226
-      }
-    },
-    {
-      "reviewId": "13-34",
-      "entryId": "ml-mha",
-      "path": [
-        "description"
-      ],
-      "before": "说明 Multi-Head Attention 的计算过程：序列长度 L、模型维度 d_model、头数 h、每头维度 d_head=d_model/h 时，各张量如何变化，以及为什么注意力分数要除以 √dₖ、为什么要分成多个头。",
-      "after": "说明 Multi-Head Attention 的计算过程：序列长度 L、模型维度 d_model、头数 h、每头维度 d_head=d_model/h 时，各张量如何变化，以及为什么注意力分数要除以 √dₖ、为什么要分成多个头。 本代码只实现已投影分头后的注意力与拼接，不含输出投影 W_O、mask 或 dropout；假设各维非空且形状一致，数值有限且点积及累计不溢出。完整稠密投影还需 O(L·d_model²) 时间。",
-      "SHA": {
-        "before": "c1eac7a225e60ea6530b0c73a38da84bdaab79e5841aa969edafa1346aff0253",
-        "after": "8a6238e265f8b575f2ea46c0b0f96b09b8b715b3ecc8ad8c0452f110affdae61"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Implementation computes already projected heads only; dense projections add L*d_model^2 cost; shape/finite arithmetic contract explicit.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "c1eac7a225e60ea6530b0c73a38da84bdaab79e5841aa969edafa1346aff0253"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-mha",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "Multi-Head Attention（MHA）",
-        "number": "ML 1"
-      }
-    },
-    {
-      "reviewId": "13-35",
-      "entryId": "ml-mha",
-      "path": [
-        "simple",
-        "statement"
-      ],
-      "before": "说明 Multi-Head Attention 的计算过程：序列长度 L、模型维度 d_model、头数 h、每头维度 d_head=d_model/h 时，各张量如何变化，以及为什么注意力分数要除以 √dₖ、为什么要分成多个头。",
-      "after": "说明 Multi-Head Attention 的计算过程：序列长度 L、模型维度 d_model、头数 h、每头维度 d_head=d_model/h 时，各张量如何变化，以及为什么注意力分数要除以 √dₖ、为什么要分成多个头。 本代码只实现已投影分头后的注意力与拼接，不含输出投影 W_O、mask 或 dropout；假设各维非空且形状一致，数值有限且点积及累计不溢出。完整稠密投影还需 O(L·d_model²) 时间。",
-      "SHA": {
-        "before": "c1eac7a225e60ea6530b0c73a38da84bdaab79e5841aa969edafa1346aff0253",
-        "after": "8a6238e265f8b575f2ea46c0b0f96b09b8b715b3ecc8ad8c0452f110affdae61"
-      },
-      "status": "approved",
-      "evidence": {
-        "proposal": "reviews/final-document-review/algorithm-13/guarded-leaf-fixes.json",
-        "independent": [
-          "batch13-diffs.txt",
-          "algorithm-13/test.log",
-          "algorithm-13/source-provenance.json"
-        ]
-      },
-      "reasoning": "Same MHA scope.",
-      "guard": {
-        "matches": true,
-        "currentLeafSHA256": "c1eac7a225e60ea6530b0c73a38da84bdaab79e5841aa969edafa1346aff0253"
-      },
-      "limitations": "Bounded saved tests do not establish arbitrary concurrency schedules or exceptional callback behavior; leaf audit is not final-document certification.",
-      "entryIdentity": {
-        "id": "ml-mha",
-        "kind": "algo",
-        "mod": "algo",
-        "part": "设计 · 数学 · 专项",
-        "cat": "专项手撕（并发 / ML）",
-        "title": "Multi-Head Attention（MHA）",
-        "number": "ML 1"
       }
     },
     {

@@ -5,66 +5,34 @@
       "kind": "ptopic",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
-      "title": "专项手撕（并发 / ML） · 专题",
+      "cat": "并发手撕",
+      "title": "并发手撕 · 专题",
       "number": "专题",
-      "summary": "两类现场手写：ML 把公式写成可运行数值过程，Java 用同步原语保证顺序与可见性。",
+      "summary": "Java 面试常考的并发手写：按序打印、交替输出、哲学家、Future 汇总、单例。",
       "recognize": [
         {
-          "see": "给 L、d_model、头数 h 要求写注意力",
-          "act": "拆头 → QKᵀ/√d → softmax → 拼回 → 乘 Wo"
+          "see": "多个线程要按固定顺序输出",
+          "act": "共享 turn 变量 + 同一把锁，wait 放 while 里"
         },
         {
-          "see": "给 labels 和 scores 问整体排序能力",
-          "act": "AUC，用秩公式，并列取平均秩"
+          "see": "主线程要汇总并行结果",
+          "act": "线程池 submit，按原下标取 Future.get"
         },
         {
-          "see": "要 BCE / 多分类交叉熵 / KL",
-          "act": "先减 max 再 exp，再取 -log"
+          "see": "资源需要互斥且要避免死锁",
+          "act": "按编号顺序取锁，或一次只拿一把"
         },
         {
-          "see": "懒加载单例且不能每次都加锁",
+          "see": "懒加载单例且不能每次加锁",
           "act": "volatile + 双重检查"
-        },
-        {
-          "see": "线程启动顺序不定但要按序打印",
-          "act": "共享 turn + while 等待同一把锁"
-        },
-        {
-          "see": "哲学家就餐 / 主线程汇总并行结果",
-          "act": "按编号顺序取锁；Future.get 按序收"
         }
       ],
       "notApplicable": [
-        "只要求某一个阈值上的准确率、精确率或召回率时，不要用 AUC 的秩公式",
-        "子任务之间没有顺序约束、只要主线程按原下标收结果时，不要用顺序信号量链",
-        "初始化只发生在单线程，或容器已经保证唯一实例时，双重检查锁是多余的"
+        "只是要求线程安全读写单个变量：用 volatile 或原子类即可，不需要手写等待队列",
+        "任务之间没有顺序约束：直接丢线程池用 Future.get 收结果，不必上信号量",
+        "初始化只发生在单线程，或容器已保证唯一实例：双重检查锁是多余的"
       ],
       "templates": [
-        {
-          "name": "多头注意力（单位投影）",
-          "when": "要手写 MHA 的形状变换和缩放点积；权重矩阵未给出时先把 Wq/Wk/Wv/Wo 取单位阵，把 softmax 与拼头写对",
-          "java": "// 代表题 ML 1：X 为 L×d_model，h 能整除 d_model，d_head=d_model/h。\n// 此处 Wq=Wk=Wv=Wo=I，所以第 head 个头只读写列 [head*d_head, (head+1)*d_head)。\n// 换题若给出投影矩阵：取头之前 Q/K/V 先乘 W，拼头之后整个 out 再乘 Wo。\nstatic double[][] multiHeadAttention(double[][] x, int h) {\n    int L = x.length;\n    int d = x[0].length;\n    int dh = d / h;\n    double scale = Math.sqrt(dh);\n    double[][] out = new double[L][d];\n    for (int head = 0;\n    head < h;\n    head++) {\n        int off = head * dh;\n        double[][] a = new double[L][L];\n        for (int i = 0;\n        i < L;\n        i++) {\n            double max = -Double.MAX_VALUE;\n            for (int j = 0;\n            j < L;\n            j++) {\n                double dot = 0;\n                for (int k = 0;\n                k < dh;\n                k++) dot += x[i][off + k] * x[j][off + k];\n                a[i][j] = dot / scale;\n                // 缩放，避免 d_head 变大时 softmax 饱和\n                if (a[i][j] > max) max = a[i][j];\n            }\n            double sum = 0;\n            for (int j = 0;\n            j < L;\n            j++) {\n                a[i][j] = Math.exp(a[i][j] - max);\n                // 减 max 防 exp 溢出\n                sum += a[i][j];\n            }\n            for (int j = 0;\n            j < L;\n            j++) a[i][j] /= sum;\n        }\n        for (int i = 0;\n        i < L;\n        i++) {\n            for (int k = 0;\n            k < dh;\n            k++) {\n                double v = 0;\n                for (int j = 0;\n                j < L;\n                j++) v += a[i][j] * x[j][off + k];\n                out[i][off + k] = v;\n            }\n        }\n    }\n    return out;\n}",
-          "demo": "ML 1. Multi-Head Attention（单位投影，L=2,d_model=2,h=2）",
-          "demoMain": "double[][] y = multiHeadAttention(new double[][]{{1, 0}, {0, 1}}, 2);\nSystem.out.printf(\"%.4f %.4f\\n\", y[0][0], y[0][1]);\nSystem.out.printf(\"%.4f %.4f\\n\", y[1][0], y[1][1]);",
-          "expected": "0.7311 0.5000\n0.5000 0.7311"
-        },
-        {
-          "name": "AUC（升序平均秩）",
-          "when": "labels 为 0/1、分数越大越倾向正类，要的是 Mann–Whitney 意义的 AUC",
-          "java": "// 代表题 ML 2。分数升序排列，秩从 1 开始，完全相同的分数取平均秩。\n// AUC = (正样本秩和 - nPos*(nPos+1)/2) / (nPos*nNeg)，即随机一正一负里正分更高的概率。\n// 换题若分数越小越好，把比较方向反过来，或先取负号再调用。\nstatic double auc(int[] y, double[] score) {\n    int n = y.length;\n    Integer[] idx = new Integer[n];\n    for (int i = 0;\n    i < n;\n    i++) idx[i] = i;\n    Arrays.sort(idx, (a, b) -> Double.compare(score[a], score[b]));\n    double[] rank = new double[n];\n    for (int i = 0;\n    i < n;\n    ) {\n        int j = i;\n        while (j + 1 < n && score[idx[j + 1]] == score[idx[i]]) j++;\n        double avg = ((i + 1) + (j + 1)) / 2.0;\n        for (int k = i;\n        k <= j;\n        k++) rank[idx[k]] = avg;\n        i = j + 1;\n    }\n    double sumPos = 0;\n    int nPos = 0, nNeg = 0;\n    for (int i = 0;\n    i < n;\n    i++) {\n        if (y[i] == 1) {\n            sumPos += rank[i];\n            nPos++;\n        } else nNeg++;\n    }\n    return (sumPos - nPos * (nPos + 1) / 2.0) / (nPos * nNeg);\n}",
-          "demo": "ML 2. AUC：定义、计算与手写实现",
-          "demoMain": "System.out.println(auc(new int[]{0, 0, 1, 1}, new double[]{0.1, 0.4, 0.35, 0.8}));",
-          "expected": "0.75"
-        },
-        {
-          "name": "交叉熵与 KL",
-          "when": "二分类给的是概率、多分类给的是 logits，或要手写离散 KL(p||q)",
-          "java": "// ML 3：二分类输入是概率。p 夹在 (eps,1-eps) 里，避免 log(0)。\nstatic double binaryCrossEntropy(double y, double p) {\n    double eps = 1e-12;\n    double pc = Math.min(1 - eps, Math.max(eps, p));\n    return -(y * Math.log(pc) + (1 - y) * Math.log(1 - pc));\n}\n// ML 3：多分类输入是未归一化 logits，y 是类别下标。\n// log p_y = z_y - max - log Σ exp(z_j - max)，与先 softmax 再 -log 等价，但不会溢出。\nstatic double softmaxCrossEntropy(double[] logits, int y) {\n    double m = logits[0];\n    for (int i = 1;\n    i < logits.length;\n    i++) m = Math.max(m, logits[i]);\n    double sum = 0;\n    for (double z : logits) sum += Math.exp(z - m);\n    return -(logits[y] - m - Math.log(sum));\n}\n// ML 4：KL(p||q)=Σ p_i·ln(p_i/q_i)。p_i=0 的项按极限记 0，故直接跳过。\n// q_i=0 且 p_i>0 时为 +∞，这里不吞掉，会得到 Infinity。KL(q||p) 只需对调两个参数。\nstatic double kl(double[] p, double[] q) {\n    double s = 0;\n    for (int i = 0;\n    i < p.length;\n    i++) {\n        if (p[i] == 0) continue;\n        s += p[i] * Math.log(p[i] / q[i]);\n    }\n    return s;\n}",
-          "demo": "ML 3. 交叉熵（二分类概率 + 多分类 logits）与 ML 4. KL(p||q)",
-          "demoMain": "System.out.printf(\"%.6f\\n\", binaryCrossEntropy(1.0, 0.8));\nSystem.out.printf(\"%.6f\\n\", softmaxCrossEntropy(new double[]{1, 2, 3}, 2));\nSystem.out.printf(\"%.6f\\n\", kl(new double[]{0.5, 0.5}, new double[]{0.25, 0.75}));",
-          "expected": "0.223144\n0.407606\n0.143841"
-        },
         {
           "name": "信号量顺序链",
           "when": "固定 n 个线程，启动顺序随机，但控制台必须严格按 1..n 各一行",
@@ -76,97 +44,44 @@
       ],
       "variants": [
         {
-          "from": "单位投影 MHA",
-          "to": "带 padding/causal mask",
-          "change": "softmax 前把非法位置设成 -1e9"
+          "from": "1114 顺序打印",
+          "to": "1115 交替打印",
+          "change": "共享一个 turn，各自等到轮到自己再打印"
         },
         {
-          "from": "单位投影 MHA",
-          "to": "真实权重",
-          "change": "每个头先乘各自 Wq/Wk/Wv，拼完再乘 Wo"
-        },
-        {
-          "from": "AUC 无并列",
-          "to": "AUC 有并列分数",
-          "change": "用平均秩，不能任取一个名次"
-        },
-        {
-          "from": "交叉熵输入是 logits",
-          "to": "输入已是概率",
-          "change": "去掉减 max 和 exp，直接 -log(clip(p))"
+          "from": "1114 顺序打印",
+          "to": "1116 打印零与奇偶",
+          "change": "多一个 zero 信号量，把 0 和奇数偶数分成两段"
         },
         {
           "from": "顺序打印",
-          "to": "奇偶交替打印",
-          "change": "共享 turn + 同一把锁，wait 放 while 里"
-        },
-        {
-          "from": "顺序打印",
-          "to": "主线程汇总平方",
-          "change": "线程池 submit + 按 i 取 Future.get"
+          "to": "哲学家进餐",
+          "change": "先按编号取较小的叉子，破坏循环等待"
         }
       ],
       "pitfalls": [
         {
-          "symptom": "softmax 不减行最大值",
-          "consequence": "logits 稍大 exp 就变 Infinity，后面全是 NaN"
+          "symptom": "用 sleep 或 join 编排顺序",
+          "consequence": "机器快慢一变就错，且无法证明正确性"
         },
         {
-          "symptom": "忘了除 sqrt(d_head)",
-          "consequence": "softmax 趋于 one-hot，梯度消失"
+          "symptom": "wait 写成 if (cond) wait()",
+          "consequence": "虚假唤醒后直接往下执行"
         },
         {
-          "symptom": "AUC 方向反了或并列不取平均秩",
-          "consequence": "分数越高反而算得越低"
+          "symptom": "用 notify 而不是 notifyAll",
+          "consequence": "可能唤醒错的线程，正确的那条永远等不到"
         },
         {
-          "symptom": "KL 的 p_i=0 项没跳过",
-          "consequence": "0·log0 变成 NaN"
+          "symptom": "DCL 单例不加 volatile",
+          "consequence": "读线程可能看到半初始化对象"
         },
         {
-          "symptom": "条件等待写成 if (cond) wait()",
-          "consequence": "虚假唤醒后直接往下执行，要放 while 里"
-        },
-        {
-          "symptom": "DCL 的实例引用不加 volatile",
-          "consequence": "读线程看到未初始化完的对象"
+          "symptom": "哲学家都先拿左手叉",
+          "consequence": "环形等待，五个线程一起死锁"
         }
       ],
       "groups": [
-        {
-          "name": "注意力前向",
-          "note": "唯一要核对张量形状和缩放点积的题，投影可以后补，softmax 数值稳定不能后补",
-          "items": [
-            [
-              "#/e/ml-mha",
-              "ML 1. Multi-Head Attention（MHA）"
-            ]
-          ]
-        },
-        {
-          "name": "概率损失与分布差异",
-          "note": "都落在 log 概率上：交叉熵是 one-hot 对预测，KL 是任意 p 对 q，且 KL 不对称",
-          "items": [
-            [
-              "#/e/ml-cross-entropy",
-              "ML 3. 交叉熵损失（二分类与多分类）"
-            ],
-            [
-              "#/e/ml-kl-divergence",
-              "ML 4. KL 散度（Kullback-Leibler Divergence）"
-            ]
-          ]
-        },
-        {
-          "name": "排序类评估",
-          "note": "与阈值指标分开；用正样本秩和，并列分数取平均秩",
-          "items": [
-            [
-              "#/e/ml-auc",
-              "ML 2. AUC：定义、计算与手写实现"
-            ]
-          ]
-        },
         {
           "name": "全局顺序与交替",
           "note": "启动可以乱，打印必须按 1..n 或按行号；一条信号量链或一把锁上的 turn",
@@ -201,20 +116,20 @@
         }
       ],
       "topicKnowledge": {
-        "essence": "ML 考公式与维度是否对齐，并发考顺序、互斥与可见性。",
+        "essence": "并发的顺序与互斥靠共享状态加锁实现，不靠 sleep 去猜时序。",
         "points": [
-          "注意力：拆头 → QKᵀ/√d → softmax → 拼回 → 乘 Wo",
-          "softmax 先减行最大值，再 exp",
-          "AUC 用秩公式，并列分数要取平均秩",
-          "交叉熵输入是 logits 时先减 max 再 exp，已是概率就直接 -log",
-          "并发按序输出：共享 turn + 同一把锁，wait 放 while 里",
-          "单例用 volatile + 双重检查；哲学家按编号顺序取锁"
+          "线程顺序靠共享状态 + 锁，不靠 sleep 或 Thread.join 猜时序",
+          "wait 必须放在 while 里，防止虚假唤醒",
+          "notifyAll 优于 notify，避免唤醒错线程",
+          "主线程收结果用 Future.get，顺序由调用顺序决定",
+          "单例用 volatile 防止指令重排导致的半初始化对象",
+          "死锁四个条件里最容易破坏的是「循环等待」：按固定顺序取锁"
         ],
         "boundaries": [
-          "整行被 mask 掉时不能做除法",
-          "只有正样本或只有负样本，AUC 无定义",
-          "p_i = 0 的 KL 项必须跳过",
-          "虚假唤醒后必须重新检查条件"
+          "线程数是 1 或远大于任务数",
+          "任务抛异常时的结果与资源释放",
+          "中断唤醒（InterruptedException）要恢复中断位",
+          "单例被反射或序列化破坏"
         ]
       }
     },
@@ -234,7 +149,7 @@
       "group": "算法题单",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "说明 Multi-Head Attention 的计算过程：序列长度 L、模型维度 d_model、头数 h、每头维度 d_head=d_model/h 时，各张量如何变化，以及为什么注意力分数要除以 √dₖ、为什么要分成多个头。",
         "req": [
@@ -263,7 +178,7 @@
       "group": "算法题单",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "写出二分类 BCE 与多分类交叉熵，并说明它们和 sigmoid、softmax 的关系。实际计算时要避开 log(0)，并保持数值稳定。",
         "req": [
@@ -292,7 +207,7 @@
       "group": "算法题单",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "给定两个离散概率分布 P、Q，计算 KL 散度 D_KL(P||Q)=Σ p_i·ln(p_i/q_i)。它衡量用 Q 近似 P 时多出来的信息损失。",
         "req": [
@@ -321,7 +236,7 @@
       "group": "算法题单",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "给定二分类标签 labels∈{0,1} 与模型 scores，计算 ROC-AUC。AUC 不依赖具体阈值，衡量的是模型对正负样本的整体排序能力。",
         "req": [
@@ -351,7 +266,7 @@
       "topic": "多线程与并发",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "创建 10 个线程，即使启动和调度顺序不确定，最终也必须严格打印 1、2、3……10。各线程用 CountDownLatch 串成依赖链。",
         "req": [
@@ -382,7 +297,7 @@
       "topic": "多线程与并发",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "创建两个线程，分别负责二维数组的偶数下标行和奇数下标行，并按第 0、1、2、3……行的顺序交替输出。",
         "req": [
@@ -413,7 +328,7 @@
       "topic": "多线程与并发",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "5 个哲学家围桌而坐，每人左、右各共享一把叉子；只有同时拿到左右两把叉子才能吃饭。实现并发控制，保证不会死锁，并正确调用拿叉、吃饭、放叉回调。",
         "req": [
@@ -433,7 +348,7 @@
       "kind": "algo",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "title": "多线程并发计算一组数字的平方，并由主线程打印结果",
       "number": "通14",
       "description": "给定一组整数，用多线程并发计算每个数的平方。全部算完后由主线程按原来的下标顺序打印并返回结果。",
@@ -472,7 +387,7 @@
       "group": "算法题单",
       "mod": "algo",
       "part": "设计 · 数学 · 专项",
-      "cat": "专项手撕（并发 / ML）",
+      "cat": "并发手撕",
       "simple": {
         "statement": "手写线程安全的懒加载单例，采用双重检查锁定。instance 必须声明为 volatile。",
         "req": [
