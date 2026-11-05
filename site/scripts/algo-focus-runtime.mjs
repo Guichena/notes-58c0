@@ -11,7 +11,7 @@ const PROBLEMS_SRC =
 const PROBLEMS_NEW = "  ${sec('代表题',e.groups.map(ptGroup).join(''))}\n";
 
 const FOLD_SECTION_FROM = PROBLEMS_SRC + "  ${e.folds.length?sec('原专题笔记与精讲（折叠）',renderNoteTopicFolds(e)):''}\n";
-const FOLD_SECTION_TO = "  ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}\n" + PROBLEMS_NEW;
+const FOLD_SECTION_TO = "  ${e.topicKnowledge?sec('知识点精讲',ptKnowledge(e.topicKnowledge)):''}\n" + PROBLEMS_NEW;
 
 // The Java template block is gone: pattern code lives on every problem page, and
 // four full listings per topic made the page unreadable.
@@ -82,6 +82,14 @@ function ptGroup(g){
   return '<div class="rs-group pt-group"><h4>' + h(g.name) + '</h4>' +
     (g.note ? '<p class="pt-group-note">' + mdLite(g.note) + '</p>' : '') +
     '<div class="rs-jumps">' + g.items.map(([hr, t]) => '<a class="jump-btn" href="' + hr + '">' + h(t) + '</a>').join('') + '</div></div>';
+}
+function ptKnowledge(k){
+  const list = (a) => '<ul class="pt-k-list">' + a.map(t => '<li>' + mdLite(String(t)) + '</li>').join('') + '</ul>';
+  let out = '';
+  if (k && k.essence) out += '<p class="pt-k-ess">' + mdLite(k.essence) + '</p>';
+  if (k && Array.isArray(k.points) && k.points.length) out += '<h4 class="pt-k-h">要点</h4>' + list(k.points);
+  if (k && Array.isArray(k.boundaries) && k.boundaries.length) out += '<h4 class="pt-k-h pt-k-h-warn">边界</h4>' + list(k.boundaries);
+  return out;
 }
 `;
 
