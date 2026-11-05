@@ -462,7 +462,7 @@ function renderPTopic(e){const ul=(a)=>`<ul class="md-list">${a.map(x=>`<li>${h(
   ${sec('题型识别',ptClues(e.recognize)+(e.notApplicable.length?`<div class="pt-na"><h4 class="pt-na-h"><span class="pt-na-ic">✗</span>什么时候不适用</h4>${ptNaList(e.notApplicable)}</div>`:''))}
   ${sec('常见变体',ptVariants(e.variants))}
   ${sec('通用坑',ptPitfalls(e.pitfalls))}
-  ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}
+  ${e.topicKnowledge?sec('知识点精讲',ptKnowledge(e.topicKnowledge)):''}
   ${sec('代表题',e.groups.map(ptGroup).join(''))}
   ${pager(e)}`;}
 function renderAlgo(e) {
@@ -733,6 +733,14 @@ function ptGroup(g){
   return '<div class="rs-group pt-group"><h4>' + h(g.name) + '</h4>' +
     (g.note ? '<p class="pt-group-note">' + mdLite(g.note) + '</p>' : '') +
     '<div class="rs-jumps">' + g.items.map(([hr, t]) => '<a class="jump-btn" href="' + hr + '">' + h(t) + '</a>').join('') + '</div></div>';
+}
+function ptKnowledge(k){
+  const list = (a) => '<ul class="pt-k-list">' + a.map(t => '<li>' + mdLite(String(t)) + '</li>').join('') + '</ul>';
+  let out = '';
+  if (k && k.essence) out += '<p class="pt-k-ess">' + mdLite(k.essence) + '</p>';
+  if (k && Array.isArray(k.points) && k.points.length) out += '<h4 class="pt-k-h">要点</h4>' + list(k.points);
+  if (k && Array.isArray(k.boundaries) && k.boundaries.length) out += '<h4 class="pt-k-h pt-k-h-warn">边界</h4>' + list(k.boundaries);
+  return out;
 }
 
 ;
