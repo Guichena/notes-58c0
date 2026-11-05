@@ -10,12 +10,30 @@
       "number": "专题",
       "summary": "这个专题覆盖两类现场手写：ML 里把公式写成可运行的数值过程（注意力、AUC、交叉熵、KL），以及 Java 里用同步原语保证顺序、互斥、可见性和结果回收。题目通常不考复杂 API，而考维度与公式是否对齐、并发不变量是否成立。",
       "recognize": [
-        "给出序列长 L、d_model、头数 h，要求写出 QK^T、除以 sqrt(d_head)、softmax、按头拼回",
-        "labels 为 0/1、scores 为实数，问的是整体排序能力而不是某个阈值上的 Precision/Recall",
-        "同时要二分类 BCE 和多分类在真类上的 -log p_y，或两个离散分布的 Σ p·ln(p/q)",
-        "懒加载单例，且实例已经存在时 getInstance 不能每次加锁",
-        "多个线程的 start 顺序不定，但控制台必须按行号或 1..n 全局有序",
-        "5 个哲学家环状共享叉子，或主线程必须等一组并行平方算完再按原顺序打印"
+        {
+          "see": "给 L、d_model、头数 h 要求写注意力",
+          "act": "拆头 → QKᵀ/√d → softmax → 拼回 → 乘 Wo"
+        },
+        {
+          "see": "给 labels 和 scores 问整体排序能力",
+          "act": "AUC，用秩公式，并列取平均秩"
+        },
+        {
+          "see": "要 BCE / 多分类交叉熵 / KL",
+          "act": "先减 max 再 exp，再取 -log"
+        },
+        {
+          "see": "懒加载单例且不能每次都加锁",
+          "act": "volatile + 双重检查"
+        },
+        {
+          "see": "线程启动顺序不定但要按序打印",
+          "act": "共享 turn + while 等待同一把锁"
+        },
+        {
+          "see": "哲学家就餐 / 主线程汇总并行结果",
+          "act": "按编号顺序取锁；Future.get 按序收"
+        }
       ],
       "notApplicable": [
         "只要求某一个阈值上的准确率、精确率或召回率时，不要用 AUC 的秩公式",
@@ -57,13 +75,36 @@
         }
       ],
       "variants": [
-        "MHA 要做 padding/causal mask：softmax 前把非法位置设成一个极小值，减 max 时忽略它；全被 mask 的行不要做除法",
-        "投影不是单位阵：每个头在切分前用各自的 Wq/Wk/Wv 乘 X，h 个头拼接后再乘 Wo",
-        "AUC 出现并列分数：必须用平均秩，不能任取一个名次；若题目要的是 ROC 折线面积，改成按分数从高到低扫 TPR/FPR 做梯形积分",
-        "交叉熵的输入已经是概率：删掉减 max 和 exp，直接 -log(clip(p_y))；KL 要写 KL(q||p) 时对调参数，不要改公式内部的减号",
-        "奇偶行交替打印：共享 turn（从 0 开始）和同一把锁，线程 while (turn != row) wait，打印后 turn++ 再 notifyAll；wait 必须放在 while 里",
-        "一组数的平方由主线程按原下标打印：去掉顺序链，用固定线程池提交 Callable，主线程按 i 调 Future.get；哲学家把两把叉子按编号从小到大acquire，避免环上每人先拿右手",
-        "单例改懒加载：静态类里 volatile 引用 + synchronized 双重检查，构造私有化；已有实例时走锁外的第一次判断"
+        {
+          "from": "单位投影 MHA",
+          "to": "带 padding/causal mask",
+          "change": "softmax 前把非法位置设成 -1e9"
+        },
+        {
+          "from": "单位投影 MHA",
+          "to": "真实权重",
+          "change": "每个头先乘各自 Wq/Wk/Wv，拼完再乘 Wo"
+        },
+        {
+          "from": "AUC 无并列",
+          "to": "AUC 有并列分数",
+          "change": "用平均秩，不能任取一个名次"
+        },
+        {
+          "from": "交叉熵输入是 logits",
+          "to": "输入已是概率",
+          "change": "去掉减 max 和 exp，直接 -log(clip(p))"
+        },
+        {
+          "from": "顺序打印",
+          "to": "奇偶交替打印",
+          "change": "共享 turn + 同一把锁，wait 放 while 里"
+        },
+        {
+          "from": "顺序打印",
+          "to": "主线程汇总平方",
+          "change": "线程池 submit + 按 i 取 Future.get"
+        }
       ],
       "pitfalls": [
         "softmax 不减行最大值，logits 稍大 exp 就变成 Infinity，后面全变成 NaN",
