@@ -460,7 +460,6 @@ function renderPTopic(e){const ul=(a)=>`<ul class="md-list">${a.map(x=>`<li>${h(
   const n=e.groups.reduce((s,g)=>s+g.items.length,0);
   return `${pageHead(e,{num:'专题',title:learnerLabel('cat', e.cat),sub:h(e.summary),chips:`<span class="chip accent">专题知识库</span><span class="chip">代表题 <b>${n}</b></span>`})}
   ${sec('题型识别',ptClues(e.recognize)+(e.notApplicable.length?`<div class="panel tone-bad pt-na"><h4><span class="ic">✗</span>什么时候不适用</h4>${ptList(e.notApplicable)}</div>`:''))}
-  ${sec('通用模板（Java）',e.templates.map((x,i)=>`<div class="pt-tpl"><h4 class="md-h md-h4"><span class="pt-tpl-n">${i+1}</span>${h(x.name)}</h4><p class="prose">${mdLite(x.when)}</p>${codeCard(x.java,'Template.java')}${ptDemo(x)}</div>`).join(''))}
   ${sec('常见变体',ptVariants(e.variants))}
   ${sec('通用坑',ptPitfalls(e.pitfalls))}
   ${e.knowledgeHtml?sec('知识点精讲',e.knowledgeHtml):''}
@@ -703,22 +702,20 @@ function renderCapacityEstimationPitfalls(value) {
 }
 
 
+function ptTable(head, rows){
+  return '<div class="tbl-wrap pt-table"><table class="tbl"><thead><tr>' +
+    head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
+    rows.map(cells => '<tr>' + cells.map((c, i) => '<td' + (i === 0 ? ' class="pt-c1"' : '') + '>' + mdLite(c) + '</td>').join('') + '</tr>').join('') +
+    '</tbody></table></div>';
+}
 function ptList(list){
-  return '<ul class="md-list pt-list">' + list.map(t => '<li>' + mdLite(t) + '</li>').join('') + '</ul>';
+  return '<ul class="md-list pt-list">' + list.map(t => '<li>' + mdLite(String(t)) + '</li>').join('') + '</ul>';
 }
 function ptClues(list){
-  return '<div class="pt-clues">' + list.map((t, i) =>
-    '<div class="pt-clue"><span class="pt-clue-n">' + (i + 1) + '</span><p>' + mdLite(t) + '</p></div>'
-  ).join('') + '</div>';
+  return ptTable(['看到什么', '第一反应'], list.map(x => typeof x === 'string' ? [x, '—'] : [x.see, x.act]));
 }
 function ptVariants(list){
-  return '<div class="pt-vars">' + list.map(t => {
-    const m = /^(.+?)\s*[→➜]\s*(.+?)\s*[：:]\s*([\s\S]+)$/.exec(t);
-    if (!m) return '<div class="pt-var"><p>' + mdLite(t) + '</p></div>';
-    return '<div class="pt-var"><div class="pt-var-head"><span class="pt-pill">' + mdLite(m[1]) + '</span>' +
-      '<span class="pt-arrow">→</span><span class="pt-pill accent">' + mdLite(m[2]) + '</span></div>' +
-      '<p>' + mdLite(m[3]) + '</p></div>';
-  }).join('') + '</div>';
+  return ptTable(['原题', '变体', '只改这一处'], list.map(x => typeof x === 'string' ? ['—', x, ''] : [x.from, x.to, x.change]));
 }
 function ptPitfalls(list){
   return '<div class="pt-pits">' + list.map(t => {
@@ -729,11 +726,6 @@ function ptPitfalls(list){
       (head ? '<p class="pt-pit-head">' + mdLite(head) + '</p>' : '') +
       '<p class="pt-pit-body">' + mdLite(rest) + '</p></div></div>';
   }).join('') + '</div>';
-}
-function ptDemo(x){
-  const out = String(x.expected == null ? '' : x.expected).trim().split('\n').map(s => s.trim()).filter(Boolean).join(' · ');
-  return '<p class="pt-demo"><span class="pt-demo-k">实测通过</span><b>' + h(x.demo) + '</b>' +
-    (out ? ' <span class="pt-demo-arrow">→</span> <code class="tok-inline">' + h(out) + '</code>' : '') + '</p>';
 }
 
 ;
