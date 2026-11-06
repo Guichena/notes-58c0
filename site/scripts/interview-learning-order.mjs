@@ -73,4 +73,4 @@ export function projectLearningOrderRuntime(file, source, registry, {baselineTes
 }
 
 export const STRUCTURE_SHA256 = 'd8fccb68de605177154a6ea3a050e23de12c6d4293b1563e723f937154c69fc9';
-export const REGISTRY_SHA256 = 'bbb57f84778fd40ea4c670696d411b689568d7bea452b3458d857ccf8c76bf37';
+export const REGISTRY_SHA256 = '6d6d3f286b370511869bec5ba8796f8fae43aaffbaa1d44529d7b5351e6d1f2f';

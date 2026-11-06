@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-export const LEARNER_READING_REGISTRY_SHA256='82bae4edd8ba1ccbdf3d76d39e4bfc263adf1c050f2853de0cd60138d7f8138b';
+export const LEARNER_READING_REGISTRY_SHA256='b3aaacf4ba686e2a517a60e03ba1cfa7b6d2e868b6fa58a995b15263c0f654e8';
 const sha=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail=message=>{throw new Error('Learner reading cleanup: '+message);};
 const get=(value,keys)=>keys.reduce((v,k)=>v?.[k],value);
@@ -22,7 +22,7 @@ export function replayReadingEdits(value,field,{reverse=false}={}) {
 export function projectLearnerReadingCleanup(entries,registry,{baselineTest=false}={}) {
  if(baselineTest)return entries;
  if(!registry||sha(registry)!==LEARNER_READING_REGISTRY_SHA256)fail('registry integrity mismatch');
- if(registry.schemaVersion!==1||registry.fields.length!==467||registry.aliases.length!==66)fail('finite scope mismatch');
+ if(registry.schemaVersion!==1||registry.fields.length!==466||registry.aliases.length!==66)fail('finite scope mismatch');
  const ids=new Map();for(const e of entries){if(ids.has(e.id))fail('duplicate entry');ids.set(e.id,e);}
  for(const [id,identity] of Object.entries(registry.identities)){const e=ids.get(id);if(!e||Object.entries(identity).some(([k,v])=>e[k]!==v))fail('target identity mismatch');}
  for(const q of registry.questions)if(ids.get(q.entryId)?.items?.[q.index]?.q!==q.q)fail('target question mismatch');
