@@ -755,9 +755,17 @@ function ptDemo(demo){
     var marks = fr.marks || {};
     var row = cells.map(function (c, idx) {
       var mark = marks[idx] != null ? marks[idx] : marks[String(idx)];
-      var cell = '<div class="pt-cell' + (mark ? ' pt-cell-on' : '') + '"><b>' + h(String(c)) + '</b><i>' +
+      var band = fr.band;
+      var inBand = Array.isArray(band) && idx >= band[0] && idx <= band[1];
+      var cell = '<div class="pt-cell' + (mark ? ' pt-cell-on' : '') + (inBand ? ' pt-cell-band' : '') + '"><b>' + h(String(c)) + '</b><i>' +
         (mark ? h(String(mark)) : '') + '</i></div>';
-      if (idx < cells.length - 1) cell += '<span class="pt-arrow">' + h(links[idx] != null ? String(links[idx]) : '→') + '</span>';
+      if (idx < cells.length - 1) {
+        var link = links[idx];
+        if (link == null) link = '→';
+        cell += (link === '·' || link === '')
+          ? '<span class="pt-gap"></span>'
+          : '<span class="pt-arrow">' + h(String(link)) + '</span>';
+      }
       return cell;
     }).join('');
     return '<div class="pt-demo-frame' + (i === 0 ? ' on' : '') + '"><div class="pt-cells">' + row + '</div>' +
@@ -820,9 +828,9 @@ function ptFamilies(k){
     return '<div class="pt-fam">' +
       '<h4 class="pt-fam-h"><span class="pt-fam-n">' + (i + 1) + '</span>' + h(f.name || '') + '</h4>' +
       (f.signal ? '<p class="pt-fam-sig"><b>什么时候用</b>' + mdLite(f.signal) + '</p>' : '') +
-      (steps.length ? '<ol class="pt-fam-steps">' + steps.map(function (s) { return '<li>' + mdLite(s) + '</li>'; }).join('') + '</ol>' : '') +
       ptDemo(f.demo) +
-      (f.code ? '<p class="pt-demo-title">这一类题共用的骨架</p>' + codeCard(f.code, 'Pattern.java') : '') +
+      (f.code ? '<p class="pt-demo-title">这一类题共用的骨架</p>' + codeCard(f.code, '骨架.java') : '') +
+      (steps.length ? '<ol class="pt-fam-steps">' + steps.map(function (s) { return '<li>' + mdLite(s) + '</li>'; }).join('') + '</ol>' : '') +
       (f.key ? '<p class="pt-fam-key"><b>为什么成立</b>' + mdLite(f.key) + '</p>' : '') +
       (traps.length ? '<div class="pt-fam-trap"><b>这个题型的坑</b><ul>' + traps.map(function (t) { return '<li>' + mdLite(String(t)) + '</li>'; }).join('') + '</ul></div>' : '') +
       (vars.length ? '<div class="pt-fam-var"><b>只改变体</b><ul>' + vars.map(function (v) {
