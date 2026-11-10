@@ -459,10 +459,8 @@ function renderSimpleAlgo(e){const v=e.simple, url=e.url||(e.slug?`https://leetc
 function renderPTopic(e){const ul=(a)=>`<ul class="md-list">${a.map(x=>`<li>${h(x)}</li>`).join('')}</ul>`;
   const n=e.groups.reduce((s,g)=>s+g.items.length,0);
   return `${pageHead(e,{num:'专题',title:learnerLabel('cat', e.cat),sub:h(e.summary),chips:`<span class="chip accent">专题知识库</span><span class="chip">代表题 <b>${n}</b></span>`})}
-  ${sec('题型识别',ptClues(e.recognize)+(e.notApplicable.length?`<div class="pt-na"><h4 class="pt-na-h"><span class="pt-na-ic">✗</span>什么时候不适用</h4>${ptNaList(e.notApplicable)}</div>`:''))}
-  ${sec('常见变体',ptVariants(e.variants))}
-  ${sec('通用坑',ptPitfalls(e.pitfalls))}
-  ${e.topicKnowledge?sec('知识点精讲',ptKnowledge(e.topicKnowledge)):''}
+  ${e.topicFamilies?sec('题型与套路',ptFamilies(e.topicFamilies)):''}
+  ${((e.topicFamilies&&e.topicFamilies.boundaries&&e.topicFamilies.boundaries.length)||(e.pitfalls&&e.pitfalls.length))?sec('边界与常见坑',ptEdge(e)):''}
   ${sec('代表题',e.groups.map(ptGroup).join(''))}
   ${pager(e)}`;}
 function renderAlgo(e) {
@@ -702,21 +700,10 @@ function renderCapacityEstimationPitfalls(value) {
 }
 
 
-function ptTable(head, rows){
-  return '<div class="tbl-wrap pt-table"><table class="tbl"><thead><tr>' +
-    head.map(h => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' +
-    rows.map(cells => '<tr>' + cells.map((c, i) => '<td' + (i === 0 ? ' class="pt-c1"' : '') + '>' + mdLite(c) + '</td>').join('') + '</tr>').join('') +
-    '</tbody></table></div>';
-}
-function ptClues(list){
-  return ptTable(['看到什么', '第一反应'], list.map(x => typeof x === 'string' ? [x, '—'] : [x.see, x.act]));
-}
-function ptVariants(list){
-  return ptTable(['原题', '变体', '只改这一处'], list.map(x => typeof x === 'string' ? ['—', x, ''] : [x.from, x.to, x.change]));
-}
-function ptNaList(list){
-  return '<ul class="pt-na-list">' + list.map(t =>
-    '<li><span class="pt-na-x">✗</span><span>' + mdLite(String(t)) + '</span></li>').join('') + '</ul>';
+function ptGroup(g){
+  return '<div class="rs-group pt-group"><h4>' + h(g.name) + '</h4>' +
+    (g.note ? '<p class="pt-group-note">' + mdLite(g.note) + '</p>' : '') +
+    '<div class="rs-jumps">' + g.items.map(([hr, t]) => '<a class="jump-btn" href="' + hr + '">' + h(t) + '</a>').join('') + '</div></div>';
 }
 function ptPitfalls(list){
   return '<div class="pt-pits">' + list.map(t => {
@@ -729,17 +716,74 @@ function ptPitfalls(list){
       '</div></div>';
   }).join('') + '</div>';
 }
-function ptGroup(g){
-  return '<div class="rs-group pt-group"><h4>' + h(g.name) + '</h4>' +
-    (g.note ? '<p class="pt-group-note">' + mdLite(g.note) + '</p>' : '') +
-    '<div class="rs-jumps">' + g.items.map(([hr, t]) => '<a class="jump-btn" href="' + hr + '">' + h(t) + '</a>').join('') + '</div></div>';
+function ptTable(head, rows){
+  return '<div class="tbl-wrap pt-table"><table class="tbl"><thead><tr>' +
+    head.map(function (c) { return '<th>' + h(c) + '</th>'; }).join('') +
+    '</tr></thead><tbody>' +
+    rows.map(function (cells) {
+      return '<tr>' + cells.map(function (c, i) {
+        return '<td' + (i === 0 ? ' class="pt-c1"' : '') + '>' + mdLite(String(c || '')) + '</td>';
+      }).join('') + '</tr>';
+    }).join('') + '</tbody></table></div>';
 }
-function ptKnowledge(k){
-  const list = (a) => '<ul class="pt-k-list">' + a.map(t => '<li>' + mdLite(String(t)) + '</li>').join('') + '</ul>';
-  let out = '';
+function ptFamChip(label){
+  var s = String(label);
+  var hit = null;
+  if (typeof ENTRIES !== 'undefined') {
+    var m = s.match(/^\s*(\d{1,4})\b/);
+    if (m) {
+      hit = ENTRIES.find(function (x) { return x.kind === 'algo' && String(x.number) === m[1]; });
+    }
+    if (!hit) {
+      var core = s.replace(/^\s*\d{1,4}\s*[.．、]?\s*/, '').replace(/\s/g, '');
+      if (core.length >= 4) {
+        var key = core.slice(0, Math.min(8, core.length));
+        hit = ENTRIES.find(function (x) {
+          return x.kind === 'algo' && String(x.title || '').replace(/\s/g, '').indexOf(key) >= 0;
+        });
+      }
+    }
+  }
+  if (hit) return '<a class="jump-btn" href="#/e/' + encodeURIComponent(hit.id) + '">' + h(s) + '</a>';
+  return '<span class="pt-fam-tag">' + h(s) + '</span>';
+}
+function ptFamilies(k){
+  var fams = (k && k.families) || [];
+  var out = '';
   if (k && k.essence) out += '<p class="pt-k-ess">' + mdLite(k.essence) + '</p>';
-  if (k && Array.isArray(k.points) && k.points.length) out += '<h4 class="pt-k-h">要点</h4>' + list(k.points);
-  if (k && Array.isArray(k.boundaries) && k.boundaries.length) out += '<h4 class="pt-k-h pt-k-h-warn">边界</h4>' + list(k.boundaries);
+  if (fams.length) {
+    out += '<p class="pt-fam-lead">这个专题就这些题型。先对上信号，再看下面同名卡片里的步骤。</p>';
+    out += ptTable(['题型', '看到什么就用它'], fams.map(function (f) { return [f.name || '', f.signal || '']; }));
+  }
+  out += '<div class="pt-fams">' + fams.map(function (f, i) {
+    var steps = Array.isArray(f.steps) ? f.steps : [];
+    var traps = Array.isArray(f.traps) ? f.traps : [];
+    var vars = Array.isArray(f.variants) ? f.variants : [];
+    var probs = Array.isArray(f.problems) ? f.problems : [];
+    return '<div class="pt-fam">' +
+      '<h4 class="pt-fam-h"><span class="pt-fam-n">' + (i + 1) + '</span>' + h(f.name || '') + '</h4>' +
+      (f.signal ? '<p class="pt-fam-sig"><b>什么时候用</b>' + mdLite(f.signal) + '</p>' : '') +
+      (steps.length ? '<ol class="pt-fam-steps">' + steps.map(function (s) { return '<li>' + mdLite(s) + '</li>'; }).join('') + '</ol>' : '') +
+      (f.key ? '<p class="pt-fam-key"><b>为什么成立</b>' + mdLite(f.key) + '</p>' : '') +
+      (traps.length ? '<div class="pt-fam-trap"><b>这个题型的坑</b><ul>' + traps.map(function (t) { return '<li>' + mdLite(String(t)) + '</li>'; }).join('') + '</ul></div>' : '') +
+      (vars.length ? '<div class="pt-fam-var"><b>只改变体</b><ul>' + vars.map(function (v) {
+        return '<li><span class="pt-var-to">' + h((v && v.to) || '') + '</span>' + mdLite((v && v.change) || '') + '</li>';
+      }).join('') + '</ul></div>' : '') +
+      (probs.length ? '<div class="rs-jumps pt-fam-prob">' + probs.map(ptFamChip).join('') + '</div>' : '') +
+      '</div>';
+  }).join('') + '</div>';
+  return out;
+}
+function ptEdge(e){
+  var k = (e && e.topicFamilies) || {};
+  var out = '';
+  var bounds = Array.isArray(k.boundaries) ? k.boundaries : [];
+  if (bounds.length) {
+    out += '<ul class="pt-k-list">' + bounds.map(function (t) { return '<li>' + mdLite(String(t)) + '</li>'; }).join('') + '</ul>';
+  }
+  if (e && Array.isArray(e.pitfalls) && e.pitfalls.length) {
+    out += '<h4 class="pt-k-h">这些坑不限某一种题型</h4>' + ptPitfalls(e.pitfalls);
+  }
   return out;
 }
 
