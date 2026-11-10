@@ -14,7 +14,7 @@ import {projectCapacityPitfallsRuntime} from './capacity-pitfalls-runtime.mjs';
 import {addReadingPresentationLifecycle} from './reading-presentation-runtime.mjs';
 import {projectExactIntroRuntime} from './exact-intro-runtime.mjs';
 import {projectNoteDisplay,projectNoteDisplayRuntime} from './note-display-cleanup.mjs';
-import {attachCodeTopSprint, projectAlgoFocusRuntime} from './algo-focus-runtime.mjs';
+import {attachCodeTopSprint, attachMySeen, projectAlgoFocusRuntime} from './algo-focus-runtime.mjs';
 import {projectAlgoProblemPages} from './algo-problem-pages.mjs';
 import {projectAlgorithmCorrections} from './algorithm-corrections.mjs';
 import {projectReviewedContent} from './reviewed-content-projection.mjs';
@@ -146,7 +146,10 @@ if (!baselineTest) validatePriorityView(entries,priorityView);
 // re-projected onto the algorithm problem template here, after every registry
 // guard has validated the QA source shape it was reviewed against.
 const focusedEntries=projectAlgoProblemPages(entries,{baselineTest});
-if (!baselineTest) attachCodeTopSprint(focusedEntries);
+if (!baselineTest) {
+  attachCodeTopSprint(focusedEntries);
+  attachMySeen(focusedEntries);
+}
 // The CLI validator uses the same complete, guarded content pipeline without
 // touching dist. Asset bundling/publication is intentionally not requested.
 if(process.argv.includes('--validate-only')) {

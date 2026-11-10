@@ -35,6 +35,14 @@ export function attachCodeTopSprint(entries) {
   return entries;
 }
 
+export function attachMySeen(entries) {
+  const page = entries.find((entry) => entry.id === 'my-seen');
+  if (!page) return entries;
+  page.lead = '只存在这台浏览器里。现在是 0。在题目页点「见过 +1」，或者在下面搜题号加入。这里按你的次数从高到低排。';
+  page.html = '<div class="my-add"><input id="my-seen-q" placeholder="题号或标题，比如 206 或 反转链表"><button type="button" class="btn" data-act="seen-find">加入并 +1</button></div><div id="my-seen-picks"></div><div id="my-seen"></div>';
+  return entries;
+}
+
 const PROBLEMS_SRC =
   "  ${sec('代表题',e.groups.map(g=>`<div class=\"rs-group\"><h4>${h(g.name)}</h4><p class=\"prose\">${h(g.note)}</p><div class=\"rs-jumps\">${g.items.map(([hr,t])=>`<a class=\"jump-btn\" href=\"${hr}\">${h(t)}</a>`).join('')}</div></div>`).join(''))}\n";
 const PROBLEMS_NEW = "  ${sec('代表题',e.groups.map(ptGroup).join(''))}\n";
@@ -232,6 +240,143 @@ function ptEdge(e){
   }
   return out;
 }
+function seenMap() {
+  var value = store.get('iv8-seen', {});
+  return value && typeof value === 'object' ? value : {};
+}
+function seenCount(id) {
+  var row = seenMap()[id];
+  return row && row.n ? row.n : 0;
+}
+function bumpSeen(id) {
+  var all = seenMap();
+  var row = all[id] || { n: 0, t: 0 };
+  row.n += 1;
+  row.t = Date.now();
+  all[id] = row;
+  store.set('iv8-seen', all);
+  return row.n;
+}
+function dropSeen(id) {
+  var all = seenMap();
+  delete all[id];
+  store.set('iv8-seen', all);
+}
+function seenPlain(value) {
+  return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
+}
+function seenAlgos(query) {
+  var q = String(query || '').trim().toLowerCase();
+  if (!q || typeof ENTRIES === 'undefined') return [];
+  var list = ENTRIES.filter(function (e) { return e.kind === 'algo'; });
+  var exact = list.filter(function (e) { return String(e.number || '').toLowerCase() === q; });
+  if (exact.length) return exact;
+  return list.filter(function (e) {
+    var title = String(e.title || '').toLowerCase();
+    var num = String(e.number || '').toLowerCase();
+    return title.indexOf(q) >= 0 || num.indexOf(q) >= 0;
+  }).slice(0, 8);
+}
+function seenCodeHtml(code) {
+  return '<div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">Solution.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">' +
+    String(code).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre></div></div>';
+}
+var mySeenToken = 0;
+async function paintMySeen() {
+  var box = document.getElementById('my-seen');
+  if (!box) return;
+  var token = ++mySeenToken;
+  var all = seenMap();
+  var ids = Object.keys(all).filter(function (id) { return all[id] && all[id].n > 0; });
+  ids.sort(function (a, b) { return (all[b].n - all[a].n) || ((all[b].t || 0) - (all[a].t || 0)); });
+  if (!ids.length) {
+    box.innerHTML = '<p class="pt-fam-lead">目前 0 题。见到一道题就加一次。</p>';
+    return;
+  }
+  box.innerHTML = '<p class="pt-fam-lead">你记过 ' + ids.length + ' 题，次数高的在前面。</p>';
+  var repo = window.__NOTES_RUNTIME__ && window.__NOTES_RUNTIME__.repository;
+  for (var i = 0; i < ids.length; i++) {
+    if (token !== mySeenToken) return;
+    var id = ids[i];
+    var entry = null;
+    try { entry = repo ? await repo.loadEntry(id) : null; } catch (err) { entry = null; }
+    if (token !== mySeenToken) return;
+    var simple = (entry && entry.simple) || {};
+    var ask = seenPlain(simple.statement || (entry && entry.description) || '');
+    var how = seenPlain((entry && entry.idea) || simple.analysis || '');
+    if (ask.length > 180) ask = ask.slice(0, 180) + '…';
+    if (how.length > 220) how = how.slice(0, 220) + '…';
+    var title = entry ? ((entry.number != null && String(entry.number) !== '' ? entry.number + '. ' : '') + entry.title) : id;
+    var article = document.createElement('article');
+    article.className = 'ct-row';
+    article.innerHTML = '<div class="ct-top"><span class="my-count">' + all[id].n + '</span><a href="#/e/' + encodeURIComponent(id) + '">' + h(title) + '</a>' +
+      '<button type="button" class="btn" data-act="seen-add" data-id="' + h(id) + '">+1</button>' +
+      '<button type="button" class="btn ghost" data-act="seen-remove" data-id="' + h(id) + '">移除</button></div>' +
+      (ask ? '<p class="ct-ask"><b>题意</b>' + h(ask) + '</p>' : '') +
+      (how ? '<p class="ct-how"><b>解法</b>' + h(how) + '</p>' : '') +
+      (entry && entry.code ? seenCodeHtml(entry.code) : '');
+    box.appendChild(article);
+  }
+  if (typeof hydrateCode === 'function') hydrateCode(box);
+}
+function refreshSeenButton(id) {
+  var n = seenCount(id);
+  document.querySelectorAll('[data-act="seen-add"][data-id="' + id + '"]').forEach(function (btn) {
+    if (btn.textContent.indexOf('+1') === 0 && btn.textContent.indexOf('见过') !== 0) return;
+    btn.textContent = n ? '见过 +1 · ' + n : '见过 +1';
+  });
+}
+var pageHeadOriginal = pageHead;
+pageHead = function (e, o) {
+  var html = pageHeadOriginal(e, o || {});
+  if (!e || e.kind !== 'algo') return html;
+  var n = seenCount(e.id);
+  var btn = '<button type="button" class="btn" data-act="seen-add" data-id="' + h(e.id) + '">见过 +1' + (n ? ' · ' + n : '') + '</button>';
+  return html.replace('<button type="button" class="btn ghost" data-act="copy-link"', btn + '<button type="button" class="btn ghost" data-act="copy-link"');
+};
+var renderDocOriginal = renderDoc;
+renderDoc = function (e) {
+  var html = renderDocOriginal(e);
+  if (e && e.id === 'my-seen') setTimeout(paintMySeen, 0);
+  return html;
+};
+document.addEventListener('click', function (ev) {
+  var btn = ev.target.closest('[data-act="seen-add"],[data-act="seen-remove"],[data-act="seen-find"]');
+  if (!btn) return;
+  var act = btn.getAttribute('data-act');
+  if (act === 'seen-find') {
+    var input = document.getElementById('my-seen-q');
+    var hits = seenAlgos(input && input.value);
+    var picks = document.getElementById('my-seen-picks');
+    if (!hits.length) { if (picks) picks.innerHTML = ''; toast('没有这道题'); return; }
+    if (hits.length === 1) {
+      var only = bumpSeen(hits[0].id);
+      if (picks) picks.innerHTML = '';
+      toast('记上了，你见过 ' + only + ' 次');
+      paintMySeen();
+      return;
+    }
+    if (picks) {
+      picks.className = 'my-picks';
+      picks.innerHTML = hits.map(function (e) {
+        return '<button type="button" class="btn" data-act="seen-add" data-id="' + h(e.id) + '">' + h((e.number ? e.number + '. ' : '') + e.title) + '</button>';
+      }).join('');
+    }
+    return;
+  }
+  var id = btn.getAttribute('data-id');
+  if (!id) return;
+  if (act === 'seen-remove') {
+    dropSeen(id);
+    toast('已从我的见过里去掉');
+    paintMySeen();
+    return;
+  }
+  var count = bumpSeen(id);
+  toast('记上了，你见过 ' + count + ' 次');
+  refreshSeenButton(id);
+  if (document.getElementById('my-seen')) paintMySeen();
+});
 `;
 
 export function projectAlgoFocusRuntime(file, text, {baselineTest = false} = {}) {
