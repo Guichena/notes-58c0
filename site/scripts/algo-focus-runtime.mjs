@@ -3,7 +3,37 @@
 //
 // This runs last in the source-text chain, so every earlier reviewed projection
 // keeps its pinned hashes; only the final text is rewritten here.
+import {readFileSync} from 'node:fs';
+
 const RENDERERS = 'src/app/renderers.js';
+const CODETOP = JSON.parse(readFileSync(new URL('./codetop-sprint.json', import.meta.url), 'utf8'));
+
+function escSprint(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export function attachCodeTopSprint(entries) {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const page = byId.get('codetop-sprint');
+  if (!page) return entries;
+  const missing = [];
+  const rows = CODETOP.map((row, index) => {
+    const hit = byId.get(row.id);
+    if (!hit || !hit.code) missing.push(row.id);
+    const title = hit
+      ? `${hit.number != null && String(hit.number) !== '' ? hit.number + '. ' : ''}${hit.title}`
+      : row.id;
+    const href = hit ? `#/e/${encodeURIComponent(hit.id)}` : '';
+    const code = hit && hit.code
+      ? `<div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">Solution.java</span></div><div class="code-scroll"><pre class="md-pre" data-lang="java">${escSprint(hit.code)}</pre></div></div>`
+      : '<p class="ct-miss">这题还没有可展示的代码。</p>';
+    return `<article class="ct-row"><div class="ct-top"><span class="ct-n">${index + 1}</span>${href ? `<a href="${href}">${escSprint(title)}</a>` : escSprint(title)}<span class="ct-freq">频度 ${row.freq}</span></div><p class="ct-ask"><b>题意</b>${escSprint(row.ask)}</p><p class="ct-how"><b>解法</b>${escSprint(row.how)}</p>${code}</article>`;
+  }).join('');
+  if (missing.length) throw new Error('CodeTop sprint missing code: ' + missing.join(', '));
+  page.lead = '按 CodeTop 频度从高到低。每题是题意、解法和代码，代码与题目页是同一份。标题点进去看完整解析。只收贴出来的那几页，中间没截到的频度不在这里。';
+  page.html = `<p class="pt-fam-lead">共 ${CODETOP.length} 题，从高频往下扫。</p><div class="ct-list">${rows}</div>`;
+  return entries;
+}
 
 const PROBLEMS_SRC =
   "  ${sec('代表题',e.groups.map(g=>`<div class=\"rs-group\"><h4>${h(g.name)}</h4><p class=\"prose\">${h(g.note)}</p><div class=\"rs-jumps\">${g.items.map(([hr,t])=>`<a class=\"jump-btn\" href=\"${hr}\">${h(t)}</a>`).join('')}</div></div>`).join(''))}\n";
