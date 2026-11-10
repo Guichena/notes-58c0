@@ -96,12 +96,69 @@ function ptFamChip(label){
   if (hit) return '<a class="jump-btn" href="#/e/' + encodeURIComponent(hit.id) + '">' + h(s) + '</a>';
   return '<span class="pt-fam-tag">' + h(s) + '</span>';
 }
+function ptDemo(demo){
+  if (!demo || !Array.isArray(demo.frames) || !demo.frames.length) return '';
+  var frames = demo.frames.map(function (fr, i) {
+    var cells = Array.isArray(fr.cells) ? fr.cells : [];
+    var links = Array.isArray(fr.links) ? fr.links : [];
+    var marks = fr.marks || {};
+    var row = cells.map(function (c, idx) {
+      var mark = marks[idx] != null ? marks[idx] : marks[String(idx)];
+      var cell = '<div class="pt-cell' + (mark ? ' pt-cell-on' : '') + '"><b>' + h(String(c)) + '</b><i>' +
+        (mark ? h(String(mark)) : '') + '</i></div>';
+      if (idx < cells.length - 1) cell += '<span class="pt-arrow">' + h(links[idx] != null ? String(links[idx]) : '→') + '</span>';
+      return cell;
+    }).join('');
+    return '<div class="pt-demo-frame' + (i === 0 ? ' on' : '') + '"><div class="pt-cells">' + row + '</div>' +
+      (fr.note ? '<p class="pt-demo-note">' + mdLite(fr.note) + '</p>' : '') + '</div>';
+  }).join('');
+  return '<div class="pt-demo" data-i="0">' +
+    '<p class="pt-demo-title">' + h(demo.title || '这一类题共用的动作') + '</p>' +
+    '<div class="pt-demo-frames">' + frames + '</div>' +
+    '<div class="pt-demo-bar">' +
+      '<button type="button" data-act="pt-step" data-dir="-1">上一步</button>' +
+      '<span class="pt-demo-idx">1 / ' + demo.frames.length + '</span>' +
+      '<button type="button" data-act="pt-step" data-dir="1">下一步</button>' +
+      '<button type="button" data-act="pt-play">播放</button>' +
+    '</div></div>';
+}
+function ptShowFrame(box, index){
+  var frames = box.querySelectorAll('.pt-demo-frame');
+  if (!frames.length) return;
+  var i = Math.max(0, Math.min(frames.length - 1, index));
+  frames.forEach(function (frame, k) { frame.classList.toggle('on', k === i); });
+  var label = box.querySelector('.pt-demo-idx');
+  if (label) label.textContent = (i + 1) + ' / ' + frames.length;
+  box.dataset.i = String(i);
+}
+document.addEventListener('click', function (ev) {
+  var btn = ev.target.closest('[data-act="pt-step"],[data-act="pt-play"]');
+  if (!btn) return;
+  var box = btn.closest('.pt-demo');
+  if (!box) return;
+  var frames = box.querySelectorAll('.pt-demo-frame');
+  var i = Number(box.dataset.i || 0);
+  if (btn.getAttribute('data-act') === 'pt-step') {
+    if (box._timer) { clearInterval(box._timer); box._timer = null; }
+    var play = box.querySelector('[data-act="pt-play"]');
+    if (play) play.textContent = '播放';
+    ptShowFrame(box, i + Number(btn.getAttribute('data-dir') || 1));
+    return;
+  }
+  if (box._timer) { clearInterval(box._timer); box._timer = null; btn.textContent = '播放'; return; }
+  btn.textContent = '暂停';
+  box._timer = setInterval(function () {
+    var cur = Number(box.dataset.i || 0);
+    if (cur >= frames.length - 1) { clearInterval(box._timer); box._timer = null; btn.textContent = '播放'; return; }
+    ptShowFrame(box, cur + 1);
+  }, 900);
+});
 function ptFamilies(k){
   var fams = (k && k.families) || [];
   var out = '';
   if (k && k.essence) out += '<p class="pt-k-ess">' + mdLite(k.essence) + '</p>';
   if (fams.length) {
-    out += '<p class="pt-fam-lead">这个专题就这些题型。先对上信号，再看下面同名卡片里的步骤。</p>';
+    out += '<p class="pt-fam-lead">先对上题型。骨架是这一类题都要写的那几行；演示只放这一类共用的动作，不是某一道题的完整过程。</p>';
     out += ptTable(['题型', '看到什么就用它'], fams.map(function (f) { return [f.name || '', f.signal || '']; }));
   }
   out += '<div class="pt-fams">' + fams.map(function (f, i) {
@@ -113,6 +170,8 @@ function ptFamilies(k){
       '<h4 class="pt-fam-h"><span class="pt-fam-n">' + (i + 1) + '</span>' + h(f.name || '') + '</h4>' +
       (f.signal ? '<p class="pt-fam-sig"><b>什么时候用</b>' + mdLite(f.signal) + '</p>' : '') +
       (steps.length ? '<ol class="pt-fam-steps">' + steps.map(function (s) { return '<li>' + mdLite(s) + '</li>'; }).join('') + '</ol>' : '') +
+      ptDemo(f.demo) +
+      (f.code ? '<p class="pt-demo-title">这一类题共用的骨架</p>' + codeCard(f.code, 'Pattern.java') : '') +
       (f.key ? '<p class="pt-fam-key"><b>为什么成立</b>' + mdLite(f.key) + '</p>' : '') +
       (traps.length ? '<div class="pt-fam-trap"><b>这个题型的坑</b><ul>' + traps.map(function (t) { return '<li>' + mdLite(String(t)) + '</li>'; }).join('') + '</ul></div>' : '') +
       (vars.length ? '<div class="pt-fam-var"><b>只改变体</b><ul>' + vars.map(function (v) {
