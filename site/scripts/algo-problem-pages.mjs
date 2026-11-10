@@ -27,7 +27,11 @@ const NUMBER_AND_SLUG = {
   'own-algo-gap-unsorted-segment': ['581', 'shortest-unsorted-continuous-subarray'],
   'own-algo-gap-validate-stack': ['946', 'validate-stack-sequences'],
   'own-algo-gap-zero-flip-window': ['1004', 'max-consecutive-ones-iii'],
-  'lc-754': ['754', 'reach-a-number']
+  'lc-754': ['754', 'reach-a-number'],
+  'lc-695': ['695', 'max-area-of-island'],
+  'lc-122': ['122', 'best-time-to-buy-and-sell-stock-ii'],
+  'lc-179': ['179', 'largest-number'],
+  'lc-14': ['14', 'longest-common-prefix']
 };
 
 function decode(s) {
