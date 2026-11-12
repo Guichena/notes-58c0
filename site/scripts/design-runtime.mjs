@@ -6,7 +6,9 @@ const RENDERERS = 'src/app/renderers.js';
 const NEW_SCENARIO = `function renderScenario(e) {
   const cf = (SCENARIO_COUNTERFACTUALS[e.id] || []);
   const dims = DIMS.filter(([k]) => e[k] && e[k].length).map(([k, name, ic, ord], i, arr) => \`<div class="dim\${(arr.length % 2 === 1 && i === arr.length - 1) ? ' span2' : ''}" id="dim-\${k}" style="\${modColor(e.mod)}"><h3><i>\${ic}</i>\${h(name)}</h3>\${bullets(e[k], ord)}</div>\`).join('');
-  const tocItems = (e.knowledgeToc || []).filter((t) => t.level === 2);
+  const tocAll = e.knowledgeToc || [];
+  const tocTop = tocAll.length ? Math.min.apply(null, tocAll.map((t) => t.level)) : 2;
+  const tocItems = tocAll.filter((t) => t.level === tocTop);
   const toc = tocItems.length
     ? \`<div class="sd-toc"><span class="sd-toc-lb">讲义目录</span>\${tocItems.map((t) => \`<button type="button" class="jump-btn" data-act="sd-jump" data-target="\${h(t.id)}">\${h(t.text)}</button>\`).join('')}</div>\`
     : '';

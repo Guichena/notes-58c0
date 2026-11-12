@@ -40,6 +40,17 @@ export function mdToSiteHtml(markdown, { idPrefix = 'sd', dropFirstHeading = tru
   const lines = String(markdown).replace(/\r\n?/g, '\n').split('\n');
   const out = [];
   const toc = [];
+  // Headings are mapped relative to the shallowest level left in the document,
+  // so a file that starts at "#" and one that starts at "##" both nest correctly.
+  const levels = [];
+  let skippedTitle = false;
+  for (const line of lines) {
+    const m = /^(#{1,4})\s+/.exec(line);
+    if (!m) continue;
+    if (m[1].length === 1 && !skippedTitle && dropFirstHeading) { skippedTitle = true; continue; }
+    levels.push(m[1].length);
+  }
+  const base = levels.length ? Math.min(...levels) : 2;
   let i = 0;
   let headingIndex = 0;
   let droppedTitle = !dropFirstHeading;
@@ -63,6 +74,17 @@ export function mdToSiteHtml(markdown, { idPrefix = 'sd', dropFirstHeading = tru
       continue;
     }
     if (/^\s*$/.test(line)) { flushParagraph(); i += 1; continue; }
+    if (/^(?:---+|___+|\*\*\*+)\s*$/.test(line)) { flushParagraph(); i += 1; continue; }
+    if (/^>\s?/.test(line)) {
+      flushParagraph();
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { buf.push(lines[i].replace(/^>\s?/, '')); i += 1; }
+      const inner = buf.length > 1 && buf.every((l) => l.trim().length <= 30)
+        ? buf.map((l) => inline(l.trim())).join('<br>')
+        : inline(buf.join(' ').trim());
+      if (inner) out.push('<blockquote class="md-quote"><p class="md-p">' + inner + '</p></blockquote>');
+      continue;
+    }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line);
     if (heading) {
       flushParagraph();
@@ -71,13 +93,9 @@ export function mdToSiteHtml(markdown, { idPrefix = 'sd', dropFirstHeading = tru
       if (level === 1 && !droppedTitle) { droppedTitle = true; i += 1; continue; }
       headingIndex += 1;
       const id = idPrefix + '-' + headingIndex;
-      if (level <= 2) {
-        out.push('<h2 class="md-h md-h2" id="' + id + '">' + inline(text) + '</h2>');
-        toc.push({ id, text, level: 2 });
-      } else {
-        out.push('<h3 class="md-h md-h3" id="' + id + '">' + inline(text) + '</h3>');
-        toc.push({ id, text, level: 3 });
-      }
+      const depth = Math.min(4, Math.max(2, level - base + 2));
+      out.push('<h' + depth + ' class="md-h md-h' + depth + '" id="' + id + '">' + inline(text) + '</h' + depth + '>');
+      toc.push({ id, text, level: depth });
       i += 1;
       continue;
     }
