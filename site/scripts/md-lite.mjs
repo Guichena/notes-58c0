@@ -10,11 +10,16 @@ const esc = (s) => String(s)
 function inline(text) {
   return esc(text)
     .replace(/`([^`]+)`/g, '<code class="tok-inline">$1</code>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
 }
 
 function codeBlock(lang, lines) {
   const label = lang || 'text';
+  if (/^mermaid$/i.test(label)) {
+    // A div, not a pre: the site turns every bare <pre> into a code card.
+    return '<div class="sd-mmd"><div class="mermaid">' + esc(lines.join('\n')) + '</div></div>';
+  }
   return '<div class="code-card md-code-card"><div class="code-toolbar"><span class="file-label">' +
     esc(label) + '</span></div><div class="code-scroll"><pre class="md-pre" data-lang="' +
     esc(label) + '">' + esc(lines.join('\n')) + '</pre></div></div>';

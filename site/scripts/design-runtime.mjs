@@ -38,6 +38,60 @@ document.addEventListener('click', function (ev) {
 });
 `;
 
+// Mermaid is 3.5 MB, so it is fetched only when a rendered page actually
+// contains a diagram, and cached by the browser afterwards.
+const MERMAID_LOADER = `
+(function () {
+  var loading = null;
+  function themeName() {
+    var t = document.documentElement.dataset.theme;
+    if (!t) t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+    return t === 'dark' ? 'dark' : 'default';
+  }
+  function source() {
+    var tag = document.querySelector('script[src*="assets/app.js"]');
+    if (tag && tag.src) return new URL('vendor/mermaid.min.js', tag.src).href;
+    return 'assets/vendor/mermaid.min.js';
+  }
+  function load() {
+    if (loading) return loading;
+    loading = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = source();
+      s.async = true;
+      s.onload = function () {
+        try {
+          window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: themeName() });
+          resolve(window.mermaid);
+        } catch (err) { reject(err); }
+      };
+      s.onerror = function () { loading = null; reject(new Error('mermaid unavailable')); };
+      document.head.appendChild(s);
+    });
+    return loading;
+  }
+  function paint() {
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('.mermaid:not([data-drawn])'));
+    if (!nodes.length) return;
+    nodes.forEach(function (n) { n.setAttribute('data-drawn', '1'); });
+    load().then(function (mermaid) {
+      return mermaid.run({ nodes: nodes });
+    }).catch(function (err) {
+      nodes.forEach(function (n) { n.removeAttribute('data-drawn'); n.classList.add('mmd-failed'); });
+      console.error('mermaid render failed', err);
+    });
+  }
+  var timer = null;
+  function schedule() { clearTimeout(timer); timer = setTimeout(paint, 120); }
+  if (document.readyState !== 'loading') schedule();
+  else document.addEventListener('DOMContentLoaded', schedule);
+  window.addEventListener('load', schedule);
+  document.addEventListener('click', schedule, true);
+  var page = document.getElementById('page');
+  if (page && window.MutationObserver) new MutationObserver(schedule).observe(page, { childList: true, subtree: true });
+})();
+`;
+
 export function projectDesignRuntime(file, text, {baselineTest = false} = {}) {
   if (baselineTest || file !== RENDERERS) return text;
   const start = text.indexOf('function renderScenario(e) {');
@@ -45,5 +99,5 @@ export function projectDesignRuntime(file, text, {baselineTest = false} = {}) {
   const end = text.indexOf('function renderHandwrite(e) {', start);
   if (end < 0) throw new Error('Design runtime: renderHandwrite boundary not found');
   const result = text.slice(0, start) + NEW_SCENARIO + '\n' + text.slice(end);
-  return result + JUMP_HANDLER;
+  return result + JUMP_HANDLER + MERMAID_LOADER;
 }
