@@ -153,17 +153,22 @@ if (!baselineTest) {
   attachMySeen(focusedEntries);
   await mergeDesignLectures(focusedEntries, src('content/design-lectures'));
 }
+// The 八股 and AI modules are retired: their pages are dropped here, after every
+// reviewed guard has validated the corpus they were written against, so their
+// routes 404 instead of rendering and nothing keeps publishing them.
+const RETIRED_MODULES = new Set(['bagu', 'ai']);
+const liveEntries = focusedEntries.filter((e) => !RETIRED_MODULES.has(e.mod));
 // The CLI validator uses the same complete, guarded content pipeline without
 // touching dist. Asset bundling/publication is intentionally not requested.
 if(process.argv.includes('--validate-only')) {
  if(baselineTest)throw new Error('validate-only requires the complete current pipeline');
- console.log(JSON.stringify({mode:'validate-only',entries:focusedEntries.length,reviewUnits:focusedEntries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),qaQuestions:focusedEntries.filter(e=>e.kind==='qa').reduce((n,e)=>n+e.items.length,0),authoringFiles:authoringDocuments.length,deferredQuestionFiles:authoringDocuments.filter(doc=>!mergedQuestionAuthoring.documents.includes(doc)).map(doc=>doc.file)}));
+ console.log(JSON.stringify({mode:'validate-only',entries:liveEntries.length,reviewUnits:liveEntries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),qaQuestions:liveEntries.filter(e=>e.kind==='qa').reduce((n,e)=>n+e.items.length,0),authoringFiles:authoringDocuments.length,deferredQuestionFiles:authoringDocuments.filter(doc=>!mergedQuestionAuthoring.documents.includes(doc)).map(doc=>doc.file)}));
  process.exit(0);
 }
 // Preserve existing chunk URLs; new categories receive deterministic group IDs.
 const groupPaths = new Map(originalEntries.map(e=>[JSON.stringify([e.mod,e.part,e.cat]), entriesById.get(e.id).chunk]));
 const compiledChunks = new Map();
-for(const entry of focusedEntries) {
+for(const entry of liveEntries) {
  const group=JSON.stringify([entry.mod,entry.part,entry.cat]);
  const chunk=groupPaths.get(group)||'data/chapters/'+entry.mod+'-'+sha(group).slice(0,12)+'.json';
  groupPaths.set(group,chunk);
@@ -172,7 +177,7 @@ for(const entry of focusedEntries) {
  compiledChunks.get(chunk).entries.push(entry);
 }
 const fields = ['id','kind','mod','part','cat','title','number','progressKey'];
-const catalog = {...meta, ...(baselineTest ? {} : {archivedRoutes:reading.archivedRoutes}), entries: focusedEntries.map(e => {
+const catalog = {...meta, ...(baselineTest ? {} : {archivedRoutes:reading.archivedRoutes}), entries: liveEntries.map(e => {
   const record = Object.fromEntries(fields.filter(k=>Object.hasOwn(e,k)).map(k=>[k,e[k]]));
   if(e.kind==='qa'&&e.items) record.items=e.items.map(it=>({mk:it.mk,...(it.id?{id:it.id}:{})}));
   record._chunk=entriesById.get(e.id).chunk;
@@ -197,12 +202,12 @@ if(!baselineTest) {
  await write('data/archives/source-entries.json',json(reading.sourceArchive));
  await write('reading-report.json',json(reading.report));
 }
-await write('data/search.json',json(buildSearchRecords(focusedEntries,meta.TOPICS)));
+await write('data/search.json',json(buildSearchRecords(liveEntries,meta.TOPICS)));
 for(const [file,chunk] of compiledChunks) await write(file,json(chunk));
 const files=[];
 async function walk(dir) { for(const name of (await readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name,'en'))){ const p=path.join(dir,name.name); if(name.isDirectory()) await walk(p); else {const b=await readFile(p); files.push({path:path.relative(out,p).split(path.sep).join('/'),bytes:b.length,sha256:sha(b)});}} }
 await walk(out);
-const report={sourceCommit:'a1b8e212f32e23c7a29c1a695bb1255d93ee18a4',entries:focusedEntries.length,reviewUnits:focusedEntries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),chapters:compiledChunks.size,files};
+const report={sourceCommit:'a1b8e212f32e23c7a29c1a695bb1255d93ee18a4',entries:liveEntries.length,reviewUnits:liveEntries.reduce((n,e)=>n+(e.kind==='qa'?e.items.length:1),0),chapters:compiledChunks.size,files};
 await write('build-manifest.json',json(report));
-console.log(`Built ${focusedEntries.length} entries, ${report.reviewUnits} review units, ${compiledChunks.size} lazy chapters.`);
+console.log(`Built ${liveEntries.length} entries, ${report.reviewUnits} review units, ${compiledChunks.size} lazy chapters.`);
 for(const name of ['index.html','data/catalog.json','data/search.json','assets/app.js','assets/visuals.js']) console.log(name,files.find(f=>f.path===name).bytes+' bytes');

@@ -60,8 +60,20 @@ function snapshot(f) { return {curQ: f.context.state.curQ, classes: f.cards.map(
 // with a small DOM adapter. They do not duplicate the focus algorithm in tests.
 test('every current priority entry resolves stable and old numeric bookmarks to the same canonical key', () => {
   let stable = 0, idless = 0, reorderedStable = 0;
+  // Reviewed priority rows first, then every other published QA entry: the
+  // retired 八股 / AI rows no longer have an entry, and the remaining corpus
+  // still has to resolve stable and legacy numeric bookmarks the same way.
+  const targets = [];
   for (const rule of registry.records) {
-    const entry = byId.get(rule.entryId), before = JSON.stringify(entry.items), f = fixture(entry);
+    const entry = byId.get(rule.entryId);
+    if (entry) targets.push(entry);
+  }
+  for (const entry of byId.values()) if (entry.kind === 'qa' && (entry.items || []).length) targets.push(entry);
+  const seen = new Set();
+  for (const entry of targets) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    const before = JSON.stringify(entry.items), f = fixture(entry);
     const rows = priorityQuestionView(entry, registry);
     assert.deepEqual(f.cards.map(card => card.dataset.key), rows.map(row => row.key));
     for (let index = 0; index < entry.items.length; index++) {
@@ -77,7 +89,7 @@ test('every current priority entry resolves stable and old numeric bookmarks to 
 });
 
 test('stable-id and idless cards keep canonical focus with reversed DOM, while J/K still follows display order', () => {
-  for (const id of ['own-mysql-ch22', 'bg-kafka-3']) {
+  for (const id of ['own-distributed-ch02']) {
     const entry = {...byId.get(id), id: id + '-reversed-test'}, f = fixture(entry, {reverse: true});
     assert.equal(f.cards[0].dataset.key, entry.id + '#' + (entry.items.at(-1).id || entry.items.length - 1));
     for (let index = 0; index < entry.items.length; index++) {
@@ -91,23 +103,23 @@ test('stable-id and idless cards keep canonical focus with reversed DOM, while J
 });
 
 test('invalid, fractional, signed, nondecimal and out-of-range numeric anchors never select a display position', () => {
-  const f = fixture(byId.get('own-mysql-ch22'), {reverse: true});
-  f.focus('q-own-mysql-s2288'); const before = snapshot(f);
+  const f = fixture(byId.get('own-distributed-ch02'), {reverse: true});
+  f.focus('q-own-distributed-load-balancing'); const before = snapshot(f);
   for (const anchor of ['', ' ', '-1', '+1', '0.0', '1.5', '1e0', '0x0', 'NaN', 'Infinity', '999', '9007199254740993']) {
     f.focus(anchor); unchanged(f, before);
   }
 });
 
 test('missing canonical card and missing current entry do not fall back to another visible card', () => {
-  const f = fixture(byId.get('own-mysql-ch22'), {reverse: true});
-  f.nodes.delete('q-q-own-mysql-s2288');
+  const f = fixture(byId.get('own-distributed-ch02'), {reverse: true});
+  f.nodes.delete('q-q-own-distributed-load-balancing');
   let before = snapshot(f); f.focus('0'); unchanged(f, before);
   f.context.state.route = {view: 'entry', id: 'not-a-loaded-entry'};
   before = snapshot(f); f.focus('1'); unchanged(f, before);
 });
 
 test('exact question id wins over both a numeric interpretation and a raw HTML section id', () => {
-  const entry = {id: 'focus-numeric-id', kind: 'qa', mod: 'bagu', items: [
+  const entry = {id: 'focus-numeric-id', kind: 'qa', mod: 'design', items: [
     {id: '1', q: 'Exact numeric id', a: ''}, {id: 'stable-second', q: 'Canonical index one', a: ''},
   ]};
   const section = element('1'); const f = fixture(entry, {reverse: true, sections: [section]});
@@ -124,8 +136,8 @@ test('real section HTML ids scroll without changing question focus or treating a
   assert.equal(f.context.state.curQ, -1); assert.deepEqual([...section.classes], []);
   f.focus('missing-section'); assert.equal(section.scrolls.length, 1);
   const qaSection = element('s-es-mapping');
-  const qa = fixture(byId.get('own-mysql-ch22'), {sections: [qaSection]});
-  qa.focus('q-own-mysql-s2288'); const before = snapshot(qa);
+  const qa = fixture(byId.get('own-distributed-ch02'), {sections: [qaSection]});
+  qa.focus('q-own-distributed-load-balancing'); const before = snapshot(qa);
   qa.focus('s-es-mapping'); unchanged(qa, before); assert.equal(qaSection.scrolls.length, 1);
 });
 
@@ -139,9 +151,9 @@ async function renderRoute(f, hash, source) {
   assert.deepEqual(loads, [c.entry.id]); assert.equal(c.state.route.q, hash.split('/').at(-1));
 }
 test('actual routing establishes current entry before old numeric focus and composes with existing ES section routing', async () => {
-  const qa = byId.get('own-mysql-ch22'), f = fixture(qa);
+  const qa = byId.get('own-distributed-ch02'), f = fixture(qa);
   await renderRoute(f, '#/e/' + qa.id + '/0', routing);
-  assert.equal(current(f)?.dataset.key, qa.id + '#q-own-mysql-s2288');
+  assert.equal(current(f)?.dataset.key, qa.id + '#q-own-distributed-load-balancing');
   for (const source of [routing, projectPracticeBoundaryRuntime('src/app/routing.js', routing)]) {
     const entry = byId.get('own-practice-es-write-visibility'), section = element('s-es-mapping');
     const doc = fixture(entry, {sections: [section]});

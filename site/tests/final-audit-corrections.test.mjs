@@ -28,13 +28,16 @@ test('source drift, corrupted hashes and protected identity paths fail closed',(
 test('all final-audit fields match the built corpus and reverse/reapply without stable identity changes',async()=>{
  const catalog=JSON.parse(await readFile(new URL('../dist/data/catalog.json',import.meta.url),'utf8'));
  const entries=[];for(const chunk of new Set(catalog.entries.map(e=>e._chunk)))entries.push(...JSON.parse(await readFile(new URL('../dist/'+chunk,import.meta.url),'utf8')).entries);
- const original=project(entries,allRegistry,{reverse:true});
- assert.deepEqual(project(original,allRegistry),entries);
+ // Only records whose entry is still published: the 八股 and AI modules are retired.
+ const published=new Set(entries.map(e=>e.id));
+ const scoped={...allRegistry,records:allRegistry.records.filter(r=>published.has(r.entryId))};
+ const original=project(entries,scoped,{reverse:true});
+ assert.deepEqual(project(original,scoped),entries);
  assert.deepEqual(original.map(e=>[e.id,(e.items||[]).map(q=>q.id)]),entries.map(e=>[e.id,(e.items||[]).map(q=>q.id)]));
  // A field can be revised again; reverse/reapply above validates every intermediate transition.
- const finalByPath=new Map(allRegistry.records.map(r=>[JSON.stringify([r.entryId,r.path]),r]));
- for(const r of finalByPath.values()){let x=entries.find(e=>e.id===r.entryId);for(const k of r.path)x=x[k];assert.equal(x,r.after);}
- assert.ok(finalByPath.size<=allRegistry.records.length);
+ const finalByPath=new Map(scoped.records.map(r=>[JSON.stringify([r.entryId,r.path]),r]));
+ for(const r of finalByPath.values()){let x=entries.find(e=>e.id===r.entryId);if(!x)continue;for(const k of r.path)x=x[k];assert.equal(x,r.after);}
+ assert.ok(finalByPath.size<=scoped.records.length);
 });
 
 test('displayed corrected cleanup sources equal downloadable sources and retain explicit failure boundaries',async()=>{
@@ -94,7 +97,7 @@ test('current catalog remains compatible with display-only learning order after 
  const warnings=[],view=buildLearningOrder(catalog.entries,projectFinalAuditOrderRegistry(order),s=>warnings.push(s));
  assert.equal(view.order.length,catalog.entries.length);
  assert.equal(new Set(view.order.map(e=>e.id)).size,catalog.entries.length);
- assert.equal(view.order.find(e=>e.id==='own-theory-embodied').cat,'专项资料归档');
+ assert.ok(!catalog.entries.some(e=>e.mod==='bagu'||e.mod==='ai'),'the retired 八股 and AI modules are not published');
 });
 test('visual-prototyping record is archived intact with stable numeric entry point',async()=>{
  const r=allRegistry.records.find(r=>r.entryId==='plan-日常与ai使用-2'&&r.path[1]===6&&r.path[2]==='a');assert.ok(r);

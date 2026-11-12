@@ -79,31 +79,42 @@ test('an older asynchronous verification cannot overwrite the newer receipt for 
 });
 
 test('all reviewed live pairs are checked against final data; all absent or mismatched pairs stay visible',async()=>{
-  assert.equal(registry.records.length,23);
-  for(const key of ['ai-模型与评测-3#1'])assert.ok(!registry.records.some(record=>record.key===key),'withdrawn equivalence stays visible: '+key);
-  const v=createComparisonVerifier({records:registry.records,cards,digest,entryForId:id=>byId.get(id)});
+  // Only pairs whose entry is still published: the 八股 and AI modules are retired.
+  const live=registry.records.filter(record=>byId.has(record.entryId));
+  assert.equal(live.length,7);
+  const v=createComparisonVerifier({records:live,cards,digest,entryForId:id=>byId.get(id)});
   await Promise.all(entries.filter(entry=>entry.kind==='qa').map(entry=>v.verifyEntry(entry)));
-  const approved=new Map(registry.records.map(record=>[record.key,record]));let matches=0,visible=0;
+  const approved=new Map(live.map(record=>[record.key,record]));let matches=0,visible=0;
+  const liveKeys=Object.keys(cards).filter(key=>byId.has(key.split('#')[0]));
   for(const [key,card] of Object.entries(cards)) {
+    if(!byId.has(key.split('#')[0]))continue;
     const [id,index]=key.split('#'),entry=byId.get(id),item=entry?.items?.[Number(index)];
     const r=approved.get(key),table=item&&r?[...item.a.matchAll(/<table\b[^>]*>[\s\S]*?<\/table>/gi)][r.tableIndex]?.[0]:undefined;
     const expected=Boolean(card.dup&&r&&item&&(item.id??null)===r.questionId&&item.q===r.questionText&&table&&sha(JSON.stringify(card))===r.expectedCardSha256&&sha(item.a)===r.expectedAnswerSha256&&sha(item.lead||'')===r.expectedLeadSha256&&sha(table)===r.expectedTableHtmlSha256);
     assert.equal(v.isDuplicate(key,item),expected,key);if(expected)matches++;else visible++;
   }
-  assert.equal(matches,23);assert.equal(visible,99);
-  assert.equal(v.isDuplicate('bg-mysql-1#3',byId.get('bg-mysql-1').items[3]),false,'an unrelated table is not equivalent');
+  assert.equal(matches,live.length);assert.equal(matches+visible,liveKeys.length);
+  assert.equal(v.isDuplicate('own-distributed-ch02#0',byId.get('own-distributed-ch02').items[0]),false,'an unrelated table is not equivalent');
 });
 
 test('actual compiled renderer preserves cards across q/lead/full and print while only verified equivalents get the dup class',async()=>{
   const app=await read('dist/assets/app.js'),css=await read('dist/assets/styles/main.css');
-  const v=createComparisonVerifier({records:registry.records,cards,digest,entryForId:id=>byId.get(id)});
+  const live=registry.records.filter(record=>byId.has(record.entryId));
+  const v=createComparisonVerifier({records:live,cards,digest,entryForId:id=>byId.get(id)});
   await Promise.all(entries.filter(entry=>entry.kind==='qa').map(entry=>v.verifyEntry(entry)));
   const cmp=app.slice(app.indexOf('function cmpCard('),app.indexOf('function keyCard('));
   const qa=app.slice(app.indexOf('function splitLead('),app.indexOf('function qaToolbar('));
   const exactLead=app.match(/^function exactLeadAnswerRest\(lead, answer\) \{[\s\S]*?^\}/m)?.[0];
   assert.ok(exactLead,'actual compiled exactLeadAnswerRest helper is present');
   const context={HLC:cards,comparisonVerifier:v,h:String,statusOf:()=>0,priorityChip:()=>'',removeExactIntroRepeat:(_lead,rest)=>rest,state:{qaMode:'lead'}};
-  const key='ai-agent-2#6',item={...byId.get('ai-agent-2').items[6],key,no:7};
+  // Use a published pair that actually carries a comparison card.
+  const sampleKey=Object.keys(cards).find(k=>{
+    const [sid,sidx]=k.split('#');
+    const se=byId.get(sid);
+    return se && !v.isDuplicate(k,se.items[Number(sidx)]);
+  });
+  const [sampleId,sampleIndex]=sampleKey.split('#');
+  const key=sampleKey,item={...byId.get(sampleId).items[Number(sampleIndex)],key,no:Number(sampleIndex)+1};
   for(const mode of ['q','lead','full']) {
     const html=runInNewContext(cmp+exactLead+qa+';qaListHtml([item],{mode})',{...context,item,mode});
     assert.ok(html.includes('data-mode="'+mode+'"'));assert.ok(html.includes('<div class="cmp">'));
@@ -112,7 +123,7 @@ test('actual compiled renderer preserves cards across q/lead/full and print whil
   }
   assert.match(css,/\.qa-list\[data-mode="full"\] div\.cmp\.dup\{display:none\}/);
   assert.match(css,/@media print[\s\S]*\.qa-list div\.cmp\.dup\{display:none!important\}/);
-  const r=registry.records.find(record=>v.isDuplicate(record.key,byId.get(record.entryId).items[record.questionIndex]));
+  const r=live.find(record=>v.isDuplicate(record.key,byId.get(record.entryId).items[record.questionIndex]));
   const html=runInNewContext(cmp+';cmpCard(key,item)',{...context,key:r.key,item:byId.get(r.entryId).items[r.questionIndex]});
   assert.ok(html.includes('<div class="cmp dup">'));assert.ok(html.includes('正文里有完整对比表'));
 });
