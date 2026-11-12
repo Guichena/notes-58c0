@@ -17,6 +17,8 @@ import {projectNoteDisplay,projectNoteDisplayRuntime} from './note-display-clean
 import {attachCodeTopSprint, attachMySeen, projectAlgoFocusRuntime} from './algo-focus-runtime.mjs';
 import {projectDesignRuntime} from './design-runtime.mjs';
 import {mergeDesignLectures} from './design-lectures.mjs';
+import {mergeKnowledgeLibrary} from './knowledge-library.mjs';
+import {projectKnowledgeRuntime} from './knowledge-runtime.mjs';
 import {projectAlgoProblemPages} from './algo-problem-pages.mjs';
 import {projectAlgorithmCorrections} from './algorithm-corrections.mjs';
 import {projectReviewedContent} from './reviewed-content-projection.mjs';
@@ -67,7 +69,7 @@ const bundle = async (dir, files) => {
   const questionBankBlocks = priorityBlocks.map((text,i)=>projectQuestionBankRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}));
   const practiceBlocks = questionBankBlocks.map((text,i)=>projectPracticeBoundaryRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}));
   const comparisonBlocks = practiceBlocks.map((text,i)=>projectComparisonVisibilityRuntime('src/'+dir+'/'+files[i]+'.js',text,comparisonEquivalence,{baselineTest}));
-  const focusBlocks = comparisonBlocks.map((text,i)=>projectDesignRuntime('src/'+dir+'/'+files[i]+'.js',projectAlgoFocusRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}),{baselineTest}));
+  const focusBlocks = comparisonBlocks.map((text,i)=>projectKnowledgeRuntime('src/'+dir+'/'+files[i]+'.js',projectDesignRuntime('src/'+dir+'/'+files[i]+'.js',projectAlgoFocusRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}),{baselineTest}),{baselineTest}));
   const blocks = addReadingPresentationLifecycle(dir, files, focusBlocks, {baselineTest});
   // Original app and visual engine share classic global bindings. Keep this
   // compatibility boundary explicit; modern loading/caching lives in ES modules.
@@ -152,6 +154,8 @@ if (!baselineTest) {
   attachCodeTopSprint(focusedEntries);
   attachMySeen(focusedEntries);
   await mergeDesignLectures(focusedEntries, src('content/design-lectures'));
+  const knowledge = await mergeKnowledgeLibrary(focusedEntries, src('content/knowledge-library'));
+  console.log('Knowledge library: ' + JSON.stringify(knowledge.report));
 }
 // The 八股 and AI modules are retired: their pages are dropped here, after every
 // reviewed guard has validated the corpus they were written against, so their
