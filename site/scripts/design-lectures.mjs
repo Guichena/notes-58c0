@@ -68,9 +68,7 @@ export const LECTURES = [
   {file: '24_慢接口诊断与线程连接预算.md', id: 'sd-slow-api', mode: 'doc', cat: '分布式与治理',
     title: '慢接口诊断与线程连接预算：索引、分页、并行与 JVM'},
   {file: '25_高可用与容灾恢复.md', id: 'sd-ha-dr', mode: 'doc', cat: '分布式与治理',
-    title: '高可用与容灾恢复：主从、多活写权、跨存储恢复与演练'},
-  {file: '参考文献.md', id: 'sd-references', mode: 'doc', cat: '索引与练习',
-    title: '参考文献与资料出处'}
+    title: '高可用与容灾恢复：主从、多活写权、跨存储恢复与演练'}
 ];
 
 const DOC_PART = '设计思想与架构';
