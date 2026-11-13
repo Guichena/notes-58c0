@@ -34,7 +34,14 @@ const SPECIAL = {
   '链表倒数第 K 个节点': 'own-algo-gap-kth-list-node',
   '线程安全的 LRU': 'nonlc-4-1',
   '单例模式': 'singleton-dcl',
-  '用队列实现栈、用栈实现队列': '225'
+  '用队列实现栈、用栈实现队列': '225',
+  '长度最小的子数组': 'lc-face-extra-20'
+};
+const CODE_TWIN = {
+  'LRU 缓存': 'handwrite-47',
+  '线程安全的 LRU': 'handwrite-47',
+  '数组中第 K 个最大元素': 'handwrite-46',
+  '单例模式': 'handwrite-50'
 };
 
 export function parseHandwriteRanking(markdown) {
@@ -95,6 +102,9 @@ function resolveTarget(row, byId, byNumber) {
   throw new Error('Handwrite board: no problem page for ' + row.title);
 }
 
+function gapAnchor(row) {
+  return row.title === '无重叠区间' ? 'algo-gap-435' : 'algo-gap-ip-port';
+}
 export function handwriteBoardHtml(rows, entries) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const byNumber = new Map();
@@ -106,35 +116,30 @@ export function handwriteBoardHtml(rows, entries) {
     byNumber.get(number).push(entry.id);
   }
   const resolved = rows.map((row) => ({...row, target: resolveTarget(row, byId, byNumber)}));
-  const href = (row) => row.target.gap
-    ? '#' + (row.title === '无重叠区间' ? 'algo-gap-435' : 'algo-gap-ip-port')
-    : '#/e/' + encodeURIComponent(row.target.id);
-  const intro = `<div class="kb-map-intro"><a href="#algo-board-top">原题总榜 65</a><a href="#algo-board-types">按题型汇总</a>${TYPE_ORDER.map((type) => `<a href="#algo-type-${TYPE_SLUG[type]}">${esc(type.split(' / ')[0])}</a>`).join('')}</div>`;
-  const top = `<h2 class="md-h md-h2" id="algo-board-top">原题总榜</h2><p class="md-p">同一篇面经里重复出现只算一次。带题号的按 LC 归并。点题目进入这道题的题解；没有独立题页的两道，解法写在本页。</p><div class="tbl-wrap kb-top-table"><table class="tbl"><thead><tr><th>#</th><th>题目</th><th>LC</th><th>题型</th><th>次数</th></tr></thead><tbody>${resolved.map((row) => `<tr><td class="kb-rank">${row.rank}</td><td><a href="${href(row)}">${esc(row.title)}</a></td><td>${esc(row.lc)}</td><td><span class="kb-direction">${esc(row.type)}</span></td><td class="kb-frequency"><b>${row.frequency}</b></td></tr>`).join('')}</tbody></table></div>`;
-  const groups = TYPE_ORDER.map((type) => {
-    const items = resolved.filter((row) => row.type === type);
-    const times = items.reduce((sum, row) => sum + row.frequency, 0);
-    const hottest = [...items].sort((a, b) => b.frequency - a.frequency || a.rank - b.rank).slice(0, 3)
-      .map((row) => `${row.title}（${row.frequency}）`).join('、');
-    return {type, items, times, hottest};
+  const maxFreq = resolved[0]?.frequency || 1;
+  const filters = `<div class="ab-filters"><button type="button" class="on" data-ab-type="all">全部 65</button>${TYPE_ORDER.map((type) => {
+    const n = resolved.filter((row) => row.type === type).length;
+    return `<button type="button" data-ab-type="${esc(type)}">${esc(type.split(' / ')[0])} <b>${n}</b></button>`;
+  }).join('')}</div>`;
+  const list = `<ol class="ab-list">${resolved.map((row) => {
+    const href = row.target.gap ? '#' + gapAnchor(row) : '#/e/' + encodeURIComponent(row.target.id);
+    const twin = CODE_TWIN[row.title];
+    const twinLink = twin && byId.has(twin) ? `<a class="ab-twin" href="#/e/${twin}">工程手撕</a>` : '';
+    const pairId = row.title.includes('用栈实现队列') ? (byNumber.get('232') || [])[0] : '';
+    const pair = pairId ? `<a class="ab-twin" href="#/e/${encodeURIComponent(pairId)}">LC232</a>` : '';
+    const lc = row.lc === '—' ? '无题号' : 'LC ' + row.lc;
+    return `<li class="ab-row${row.rank <= 3 ? ' ab-top' : ''}" data-type="${esc(row.type)}" style="--w:${Math.max(8, Math.round(row.frequency / maxFreq * 100))}%"><a class="ab-hit" href="${href}"><span class="ab-rank">${String(row.rank).padStart(2, '0')}</span><span class="ab-main"><span class="ab-title">${esc(row.title)}</span><span class="ab-sub"><span class="ab-chip">${esc(row.type.split(' / ')[0])}</span><span>${esc(lc)}</span>${row.target.gap ? '<span>解法在本页</span>' : ''}</span></span><span class="ab-freq"><b>${row.frequency}</b><i class="ab-bar"></i></span></a>${twinLink}${pair}</li>`;
+  }).join('')}</ol>`;
+  const lectures = resolved.filter((row) => row.target.gap).map((row) => `<div class="ab-gap" data-type="${esc(row.type)}">${gapHtml(row)}</div>`).join('');
+  return `<div class="ab-page"><p class="ab-lead">按面经出现次数从高到低。点一行进入题解，上一题 / 下一题也按这个顺序。工程向的 LRU、Top-K、单例另外链到代码手撕。</p>${filters}${list}<div class="ab-gaps">${lectures}</div></div>`;
+}
+export function boardRankIds(markdown) {
+  return parseHandwriteRanking(markdown).flatMap((row) => {
+    if (row.title === '无重叠区间' || row.title === 'IP + 端口转成 uint64') return [];
+    if (Object.hasOwn(SPECIAL, row.title)) return [SPECIAL[row.title]];
+    if (/^\d+$/.test(row.lc)) return [row.lc];
+    return [];
   });
-  const summary = `<h2 class="md-h md-h2" id="algo-board-types">按题型汇总</h2><div class="tbl-wrap kb-top-table"><table class="tbl"><thead><tr><th>#</th><th>题型</th><th>题数</th><th>最常考</th><th>次数</th></tr></thead><tbody>${groups.map((group, index) => {
-    const topic = TYPE_TOPIC[group.type];
-    const topicLink = byId.has(topic) ? `<a href="#/e/${topic}">${esc(group.type)}</a>` : esc(group.type);
-    return `<tr><td class="kb-rank">${index + 1}</td><td>${topicLink}</td><td>${group.items.length}</td><td>${esc(group.hottest)}</td><td class="kb-frequency"><b>${group.times}</b></td></tr>`;
-  }).join('')}</tbody></table></div>`;
-  const detail = groups.map((group) => {
-    const topic = TYPE_TOPIC[group.type];
-    const more = byId.has(topic) ? `<a href="#/e/${topic}">打开${esc(byId.get(topic).title)} →</a>` : '';
-    const cards = group.items.map((row) => {
-      const pairId = (byNumber.get('232') || [])[0];
-      const pair = row.title.includes('用栈实现队列') && pairId ? ` · <a href="#/e/${encodeURIComponent(pairId)}">另一半 LC232</a>` : '';
-      return `<article class="kb-point" id="algo-board-${row.rank}"><div class="kb-point-main"><span class="kb-point-no">${row.rank}</span><div><a class="kb-point-title" href="${href(row)}">${esc(row.title)}</a><p>${row.lc === '—' ? '无 LC 题号' : 'LC ' + esc(row.lc)}${row.target.gap ? ' · 解法在本页' : ''}${pair}</p></div></div><div class="kb-point-meta"><span class="kb-frequency"><b>${row.frequency}</b> 次</span><span>${row.target.gap ? '本页题解 →' : '题解 →'}</span></div></article>`;
-    }).join('');
-    const lectures = group.items.filter((row) => row.target.gap).map(gapHtml).join('');
-    return `<section class="kb-map-section"><h3 class="md-h md-h3" id="algo-type-${TYPE_SLUG[group.type]}">${esc(group.type)}（${group.items.length} 道）</h3><p class="md-p">${more}</p><div class="kb-points">${cards}</div>${lectures}</section>`;
-  }).join('');
-  return intro + top + summary + `<h2 class="md-h md-h2" id="algo-board-all">按题型展开</h2>` + detail;
 }
 
 export function attachHandwriteBoard(entries, markdown = readFileSync(new URL('../content/algo-board/handwrite-ranking.md', import.meta.url), 'utf8')) {
@@ -150,8 +155,81 @@ export function attachHandwriteBoard(entries, markdown = readFileSync(new URL('.
     title: '手撕算法原题榜',
     number: '原题',
     source: '手撕算法原题榜',
-    lead: '按面经里这道题被问到的次数排序，收录出现不少于 5 次的 65 道。点题目进入对应题解。这是原题榜，不是考点地图里的 20 个手撕题型。',
+    lead: '65 道按面经出现次数从高到低排好。点进去就是题解，上一题和下一题也沿着这个顺序走。',
     html
   });
   return rows;
+}
+
+const PAGER_FROM = `function pager(e) {
+  const list = TREE[e.mod].all;
+  const i = list.indexOf(e);`;
+const SIDE_FROM = `  list.innerHTML = html || '<div class="side-empty">没有匹配的条目</div>';`;
+const ALGO_START_FROM = `start: ['p-hash', '1']`;
+const CODE_START_FROM = `start: ['handwrite-45', 'database-71']`;
+
+export function projectHandwriteBoardRuntime(file, text, {baselineTest = false} = {}) {
+  if (baselineTest) return text;
+  const markdown = readFileSync(new URL('../content/algo-board/handwrite-ranking.md', import.meta.url), 'utf8');
+  const algoRank = boardRankIds(markdown);
+  const codeRank = [
+    {id: 'handwrite-47', n: 1},
+    {id: 'handwrite-46', n: 11},
+    {id: 'handwrite-50', n: 59}
+  ];
+  if (file === 'src/app/fragments.js') {
+    if (!text.includes(PAGER_FROM)) throw new Error('Handwrite board: pager boundary missing');
+    const decl = `const ALGO_RANK = ${JSON.stringify(algoRank)};
+const CODE_RANK = ${JSON.stringify(codeRank.map((row) => row.id))};
+const CODE_RANK_NO = ${JSON.stringify(codeRank.map((row) => row.n))};
+function handwriteChain(ids, head) {
+  return (head ? [byId.get(head)] : []).concat(ids.map((id) => byId.get(id))).filter(Boolean);
+}
+`;
+    return text.replace(PAGER_FROM, decl + `function pager(e) {
+  let list = TREE[e.mod].all;
+  let i = list.indexOf(e);
+  if (e.id === 'algo-handwrite-board') {
+    list = handwriteChain(ALGO_RANK, 'algo-handwrite-board');
+    i = 0;
+  } else if (ALGO_RANK.indexOf(e.id) >= 0) {
+    list = handwriteChain(ALGO_RANK, 'algo-handwrite-board');
+    i = list.findIndex((item) => item.id === e.id);
+  } else if (CODE_RANK.indexOf(e.id) >= 0) {
+    list = handwriteChain(CODE_RANK);
+    i = list.findIndex((item) => item.id === e.id);
+  }`);
+  }
+  if (file === 'src/app/navigation.js') {
+    if (!text.includes(SIDE_FROM)) throw new Error('Handwrite board: sidebar boundary missing');
+    const injected = `  if ((state.mod === 'algo' || state.mod === 'code') && typeof ALGO_RANK !== 'undefined' && sf === '') {
+    const source = state.mod === 'algo' ? ALGO_RANK : CODE_RANK;
+    const links = source.map((id, index) => {
+      const entry = byId.get(id);
+      if (!entry) return '';
+      if (q && !(entry.title + ' ' + (entry.number || '')).toLowerCase().includes(q)) return '';
+      const n = state.mod === 'algo' ? index + 1 : CODE_RANK_NO[index];
+      return \`<a class="side-item ab-side\${cur === entry ? ' active' : ''}" href="\${href(entry)}"><span class="ab-side-n">\${n}</span><span class="t">\${h(entry.title)}</span><span class="n">\${h(entry.number || '')}</span></a>\`;
+    }).join('');
+    if (links) html = \`<div class="side-part">按考频</div><div class="ab-side-list">\${links}</div>\` + html;
+  }
+  ` + SIDE_FROM;
+    const listener = `
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-ab-type]');
+  if (!btn) return;
+  const page = btn.closest('.ab-page');
+  if (!page) return;
+  const type = btn.getAttribute('data-ab-type');
+  page.querySelectorAll('.ab-filters button').forEach((item) => item.classList.toggle('on', item === btn));
+  page.querySelectorAll('.ab-row, .ab-gap').forEach((item) => { item.hidden = type !== 'all' && item.getAttribute('data-type') !== type; });
+});
+`;
+    return text.replace(SIDE_FROM, injected) + listener;
+  }
+  if (file === 'src/app/catalog.js') {
+    if (!text.includes(ALGO_START_FROM) || !text.includes(CODE_START_FROM)) throw new Error('Handwrite board: module start boundary missing');
+    return text.replace(ALGO_START_FROM, `start: ['algo-handwrite-board']`).replace(CODE_START_FROM, `start: ['handwrite-47', 'handwrite-46', 'handwrite-50']`);
+  }
+  return text;
 }
