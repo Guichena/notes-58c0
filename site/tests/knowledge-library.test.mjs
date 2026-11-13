@@ -28,7 +28,9 @@ test('knowledge chapters carry the full interview answer, not just a jump link',
   for (const point of result.exam.points.filter((p) => p.target.kind === 'enriched')) {
     const target = byId.get(point.target.entry);
     const at = target.html.indexOf('id="' + point.target.anchor + '"');
-    const end = target.html.indexOf('</details>', at);
+    const endDetails = target.html.indexOf('</details>', at);
+    const endSection = target.html.indexOf('</section>', at);
+    const end = [endDetails, endSection].filter((index) => index > at).sort((a,b) => a - b)[0];
     assert.ok(at >= 0 && end > at, point.title + ': missing supplement');
     const card = target.html.slice(at, end);
     const escapedSummary = point.summary.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

@@ -325,14 +325,56 @@ function resolveTarget(p, models) {
   const model = models.get(docId);
   const candidates = model.toc.filter((item) => !AUX_HEADING.test(item.text));
   let best = null, score = 0;
+  const tokens = [...String(p.title).matchAll(/[A-Za-z][A-Za-z0-9+#.-]{2,}|[\u4e00-\u9fa5]{3,8}/g)].map((m) => m[0])
+    .filter((token) => !/^(什么|怎么|如何|原理|机制|实现|设计|区别|问题|考点|场景|高频|基础|核心)$/.test(token));
   for (const candidate of candidates) {
-    const value = similarity(p.title, candidate.text);
+    let value = similarity(p.title, candidate.text);
+    if (tokens.some((token) => candidate.text.toLowerCase().includes(token.toLowerCase()))) value += 0.3;
     if (value > score) { score = value; best = candidate; }
   }
   if (best && score >= 0.55) return {entry:docId, anchor:best.id, kind:'library', score, heading:best.text};
   return {entry:docId, anchor:'', kind:'extra', score, heading:'本篇未单列的考点'};
 }
 
+const FAMILIES = [
+  [/包装类|equals|hashCode|集合框架|接口与抽象|面向对象|重载|重写|编译解释/, 'java', '语言契约', 'equals 和 hashCode 必须成对。重载看编译期参数，重写看运行期类型；接口给能力，抽象类给一部分实现。'],
+  [/双指针|滑动窗口/, 'win', '指针与窗口', '同向、对撞和滑动窗口都是一次扫描。先写清每个指针代表什么，再写移动条件和不变量；还要区分变长窗口、定长窗口，以及子串和子序列。'],
+  [/链表/, 'list', '链表', '改 next 之前先保存后继。dummy 用来消掉头结点特判；快慢指针用来找中点、判环和倒数第 N 个。'],
+  [/动态规划|DP |背包|打家劫舍|编辑距离|LIS|LCS/, 'dp', '动态规划', '先定义状态和最后一步转移，再定初始化和遍历方向。空间能滚动再滚动，不要一上来就压维。'],
+  [/二叉树|树形|LCA|树的递归|子结构|直径/, 'tree', '树', '先说清递归函数返回什么。路径类题在后序汇总全局答案，函数本身通常只返回单边信息。'],
+  [/图搜索|岛屿|BFS|拓扑|并查集/, 'graph', '图与搜索', '网格当成隐式图。BFS 入队时就标记，否则会重复入队；要最短步数用 BFS，不要求最短才考虑 DFS 或并查集。'],
+  [/排序|Top-?K|快速选择|二分|哈希|前缀和|位运算|回溯|区间|矩阵|数组|字符串|大数|概率|摩尔|红黑树|AVL|栈与|括号|表达式/, 'algo', '其余算法与结构', '先说出暴力复杂度，再指出有序性、单调性或可判定性把复杂度降下来。边界和返回值语义要比模板更容易错。'],
+  [/装饰器|深拷贝|浅拷贝|list\/tuple|容器对比/, 'py', 'Python 对象与容器', '先分清对象身份和值。浅拷贝只复制外层容器，嵌套对象仍然共享；装饰器本质是返回新函数，注意被替换的元数据。'],
+  [/幂等|超卖|重复提交|重复消费|Exactly-Once|防重/, 'idem', '幂等与防重', '先把请求幂等、业务唯一和内容去重分开。最终裁决放在唯一约束或状态机上，缓存只负责并发抑制和结果缓存。'],
+  [/连接治理|长短连接|半\/全连接|心跳|WebSocket|SSE|epoll|粘包|NAT|HTTP\/1|队头阻塞|状态码|send 语义|自定义协议/, 'net', '连接与协议', '连接数受文件描述符、backlog 和四元组共同限制。长连接靠应用层心跳，TCP Keepalive 保不住业务是否还活着。'],
+  [/JWT|Cookie|Session|Token|越权|RBAC|ABAC|Web 安全/, 'sec', '登录态与权限', '认证解决你是谁，授权解决你能做什么。令牌无状态不等于不能失效，高风险动作必须在服务端再校验一次。'],
+  [/MVCC|分库分表|索引|SQL |分页|行锁|表锁|主键|调优|数据类型|容量|PostgreSQL|MongoDB|倒排|存储选型/, 'db', '索引、事务与容量', '先看执行计划和索引能不能定位，再谈锁、日志和拆分。分库分表是最后手段，拆之前要能说清分片键、跨片查询和扩容。'],
+  [/Lua|过期删除|哈希槽|淘汰|Pipeline|Cache Aside|布隆|Bitmap|HyperLogLog|Stream|缓存|LRU|页缓存|零拷贝/, 'cache', '缓存与失效', '穿透是数据不存在，击穿是热点刚好失效，雪崩是大面积同时失效。展示数据可以逻辑过期，库存和余额要互斥重建。'],
+  [/阻塞队列|锁的分类|ctl |并发容器|死锁|读写锁|线程数|CompletableFuture|无锁|自旋|伪共享|交替打印|等待多线程|上下文切换|生产者-消费者|并发手撕/, 'juc', '并发协作', '先定共享状态，以及谁在等谁。条件等待要放在 while 里，多角色等待用 notifyAll，锁放在 finally 里释放。'],
+  [/Conditional|全局异常|MyBatis|#\{\}|\$\{}|SQL 注入/, 'spring', 'Spring 与 ORM', '条件装配看 classpath 和配置，不满足就不注册 Bean。${} 会拼进 SQL，#{} 才是预编译参数。'],
+  [/垃圾回收|G1 |OOM|StackOverflow|排查工具|CPU 100%/, 'jvm', 'GC 与排查', '先分清对象是分配太快，还是回收之后仍然活着。CPU 高先看线程栈，内存涨先看支配树和大对象。'],
+  [/IPC|系统调用|零拷贝|malloc|僵尸|孤儿|守护进程|ps\/top|lsof|awk|Shell/, 'os', '操作系统与 Linux', '进程隔离地址空间，线程共享堆和文件描述符。线上先定位进程、端口和线程，再区分用户态、内核态和 IO 等待。'],
+  [/积压处理|消费扩容/, 'mq', '消息积压', '先看是生产太快、消费太慢，还是单分区把并行度卡住。扩容不能超过分区数，重复投递靠业务幂等吸收。'],
+  [/RPC|Protobuf|Dubbo|OpenFeign|Nacos|压测|恶意流量|Docker|K8s|Kubernetes|灰度|多租户|状态机|短链|表结构|QPS|瓶颈|重试|定时任务|Git |ZooKeeper|Raft|一致性哈希|搜索与推荐|红包|购物车|开放平台|推送|降级|玩法/, 'dist', '分布式与场景', '先给量级、一致性和失败代价，再选组件。正常路径、失败兜底和扩容方式要一起讲，不能只画一张成功时的架构图。'],
+  [/意图识别|自进化|多智能体|故障定位|结构化输出|实时风控|幻觉治理|越权防护|提示注入/, 'agentx', '路由、安全与治理', '意图决定走哪条路径，权限决定这个路径能不能执行。模型可以提出动作，删除、付款和外发必须由代码校验。'],
+  [/上下文传递|任务分解|协作拓扑|通信机制|结果仲裁|Planner/, 'multi', '多 Agent 协作', '拆开是为了隔离上下文和并行，不是为了多几个角色。每个子任务要有完成条件；结果冲突时先查外部证据，而不是再问一次同一个模型。'],
+  [/多轮对话历史|最近窗口/, 'mem', '会话历史', '整段历史直接塞进窗口会越来越贵，也会冲掉约束。进窗口的应是任务状态、摘要和最近几轮，长输出放到会话外。'],
+  [/流式输出|流式调用|断点续跑|传统后端差异|Java 对接|推理框架|工程化落地|从 0 到 1/, 'rt', '运行时与交付', '长任务的状态不能只放在进程内存里。流式事件要带序号才能断线续传；上线前先补幂等、观测和回滚。'],
+  [/文档解析|Rerank|父子块|Embedding 模型选型|混合检索与召回|错召回|漏召回/, 'ragx', '检索工程', '解析和切分决定能不能召回到，重排决定哪几段进上下文。错召回和漏召回要分开查，不能只把 top-k 调大。'],
+  [/强制结构化|JSON Schema|长度外推|微调 vs RAG|微调vsRAG/, 'promptx', '提示与路线选择', '下游程序要消费的内容必须有 schema。会变化的事实用检索，稳定的窄任务才考虑微调。'],
+  [/训练范式|Tokenizer|BPE|显存|SFT |LoRA|端侧|Q-Former|多模态|投影层/, 'llm', '训练、微调与多模态', '先分清参数、梯度和 KV Cache 各占哪一块显存。微调改变行为，检索补充事实，二者不要互相替代。'],
+  [/测试用例|任务成功率|消融|无 GT|A-B|A\/B/, 'eval', '评测方法', '先准备能判定对错的题目，再看分数。自动裁判要和人工抽检对过，不能单独当作发布依据。'],
+  [/AI 辅助开发|工具选型|日常 AI Coding|Claude Code \/ Codex|工作流与最难/, 'aicoding', 'AI Coding', '生成结果要能对上需求、跑过测试，并且可以回滚。工具之间的差别主要在上下文、权限和编辑方式。']
+];
+function familyOf(p) {
+  const text = p.topic + ' ' + p.title;
+  for (const [needle, slug, title, intro] of FAMILIES) if (needle.test(text)) return {slug, title, intro};
+  return {slug:'other', title:'其他考点', intro:'下面按该考点自己的本质、必答要点、高频追问和易错点展开，不并进相邻章节。'};
+}
+function lectureSection(p) {
+  const body = mdToSiteHtml(p.body,{idPrefix:'sup-' + p.anchor,dropFirstHeading:false,knowledge:true}).html;
+  return `<section class="kb-lecture" id="sup-${p.anchor}"><h3 class="md-h md-h3">${p.no}. ${esc(p.title)}</h3><p class="exam-point-summary">${esc(p.summary)}</p>${algoLink(p.title)}${body}</section>`;
+}
 function supplementHtml(p) {
   const labels = ['本质','必答','高频追问','易错点'].filter((label) => p.body.includes(label));
   const body = mdToSiteHtml(p.body,{idPrefix:'sup-' + p.anchor,dropFirstHeading:false,knowledge:true}).html;
@@ -365,15 +407,24 @@ function enrichKnowledgeModels(exam, models) {
       if (!insertions.has(key)) insertions.set(key,{model,anchor:p.target.anchor,blocks:[]});
       insertions.get(key).blocks.push(block);
     } else {
-      if (!extras.has(docId)) extras.set(docId,{model,blocks:[]});
-      extras.get(docId).blocks.push(block);
+      if (!extras.has(docId)) extras.set(docId,{model,points:[]});
+      extras.get(docId).points.push(p);
     }
     p.target = {entry:docId, anchor:supplementId, kind:'enriched', score:p.target.score, heading:p.target.heading};
     enriched += 1;
   }
   for (const {model,anchor,blocks} of insertions.values()) model.html = insertAfterHeading(model.html, anchor, blocks);
-  for (const {model,blocks} of extras.values()) {
-    model.html += `<h2 class="md-h md-h2" id="kb-gap-${model.id}">本篇未单列的考点</h2><p class="md-p">这些考点在本篇没有对应小节。下面保留考点清单里的本质、必答要点、高频追问和易错点，不再挂到「来源档案」或相邻章节。</p>` + blocks.join('');
+  for (const {model,points} of extras.values()) {
+    const groups = new Map();
+    for (const point of points) {
+      const family = familyOf(point);
+      if (!groups.has(family.slug)) groups.set(family.slug, {family, points:[]});
+      groups.get(family.slug).points.push(point);
+      point.target.heading = family.title;
+    }
+    for (const {family, points: grouped} of groups.values()) {
+      model.html += `<h2 class="md-h md-h2" id="kb-gap-${model.id}-${family.slug}">${esc(family.title)}</h2><p class="md-p">${esc(family.intro)}</p>` + grouped.map(lectureSection).join('');
+    }
   }
   return enriched;
 }
