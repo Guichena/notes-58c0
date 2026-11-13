@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {access, readFile} from 'node:fs/promises';
-import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {mergeKnowledgeLibrary} from '../scripts/knowledge-library.mjs';
@@ -12,7 +11,7 @@ const result = await mergeKnowledgeLibrary(entries, path.join(root, 'content', '
 const byId = new Map(entries.map((entry) => [entry.id, entry]));
 
 test('knowledge library imports all exam points and documents', () => {
-  assert.equal(entries.length, 28);
+  assert.equal(entries.length, 29);
   assert.equal(result.report.documents, 25);
   assert.equal(result.report.backendPoints, 270);
   assert.equal(result.report.agentPoints, 105);
@@ -85,25 +84,21 @@ test('each source document keeps all headings, diagrams and code fences', () => 
   }
 });
 
-test('technical supplements are unique per exam point', async () => {
-  const backend = JSON.parse(await readFile(path.join(root, 'content', 'knowledge-supplements', 'backend.json'), 'utf8'));
-  const agent = JSON.parse(await readFile(path.join(root, 'content', 'knowledge-supplements', 'agent.json'), 'utf8'));
-  const rows = [...backend, ...agent];
-  assert.equal(rows.length, 375);
-  assert.equal(backend.length, 270);
-  assert.equal(agent.length, 105);
-  const ids = new Set(rows.map(r => r.id));
-  assert.equal(ids.size, 375);
-  const hashes = new Set(rows.map(r => createHash('sha256').update(r.mechanism + r.example + r.verification).digest('hex')));
-  assert.equal(hashes.size, 375, 'all supplements must be unique');
-  for (const row of rows) {
-    assert.ok(row.mechanism.length >= 80, row.id + ': mechanism too short');
-    assert.ok(row.example.length >= 60, row.id + ': example too short');
-    assert.ok(row.verification.length >= 50, row.id + ': verification too short');
-    assert.ok(/机制|执行链|状态|约束|边界|失败|并发|超时|重复|恢复|触发|资源/.test(row.mechanism), row.id + ': mechanism lacks depth');
-    assert.ok(/场景|例子|请求|调试|观察|落地|排障|验证/.test(row.example), row.id + ': example lacks depth');
-    assert.ok(/验证|指标|约束|边界|异常|评估|验收|量化|恢复/.test(row.verification), row.id + ': verification lacks depth');
+test('supplement cards follow headings and top points avoid auxiliary sections', () => {
+  for (const model of result.models.values()) {
+    assert.equal((model.html.match(/<h[2-6][^>]*>\s*<details class="kb-supplement"/g) || []).length, 0, model.id + ': card inside heading');
+    assert.equal((model.html.match(/来源档案（原始文件/g) || []).length, 0, model.id + ': source archive published');
+    assert.equal((model.html.match(/不是孤立概念/g) || []).length, 0, model.id + ': template supplement');
   }
+  for (const row of [...result.exam.tops.backend, ...result.exam.tops.agent]) {
+    if (row.title.includes('多态与虚函数表')) {
+      assert.equal(row.point.target.entry, 'exam-backend-detail');
+      continue;
+    }
+    assert.equal(row.point.target.kind, 'enriched', row.title);
+    assert.ok(!/来源档案|参考资料|速记|图解补充|讲解视频|面试问题|常见误区/.test(row.point.target.heading || ''), row.title + ' -> ' + row.point.target.heading);
+  }
+  assert.ok(byId.get('exam-study-guide').html.includes('看起来会、一问就崩'));
 });
 
 test('the exam source remains checked in for deterministic rebuilds', async () => {
