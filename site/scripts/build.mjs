@@ -15,6 +15,7 @@ import {addReadingPresentationLifecycle} from './reading-presentation-runtime.mj
 import {projectExactIntroRuntime} from './exact-intro-runtime.mjs';
 import {projectNoteDisplay,projectNoteDisplayRuntime} from './note-display-cleanup.mjs';
 import {attachCodeTopSprint, attachMySeen, projectAlgoFocusRuntime} from './algo-focus-runtime.mjs';
+import {attachHandwriteBoard} from './algo-handwrite-board.mjs';
 import {projectDesignRuntime} from './design-runtime.mjs';
 import {mergeDesignLectures} from './design-lectures.mjs';
 import {mergeKnowledgeLibrary} from './knowledge-library.mjs';
@@ -153,6 +154,7 @@ const focusedEntries=projectAlgoProblemPages(entries,{baselineTest});
 if (!baselineTest) {
   attachCodeTopSprint(focusedEntries);
   attachMySeen(focusedEntries);
+  attachHandwriteBoard(focusedEntries);
   await mergeDesignLectures(focusedEntries, src('content/design-lectures'));
   const knowledge = await mergeKnowledgeLibrary(focusedEntries, src('content/knowledge-library'));
   console.log('Knowledge library: ' + JSON.stringify(knowledge.report));
