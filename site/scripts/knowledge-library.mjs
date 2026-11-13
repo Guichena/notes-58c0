@@ -154,27 +154,32 @@ function docForPoint(p) {
     if (/多\s*Agent|Multi.?Agent|协作拓扑/i.test(t)) return 'kb-multiagent';
     if (/MCP|Function Call|工具调用|Tool|Skill/i.test(t)) return 'kb-tools';
     if (/记忆|会话|多轮对话/.test(t) && !/上下文注入/.test(t)) return 'kb-memory';
-    if (/Prompt|提示词|上下文|四类消息/i.test(t)) return 'kb-prompt';
-    if (/RAG|检索|向量|Embedding|召回|重排|文档切分/i.test(t)) return 'kb-rag';
+    if (p.topic === 'LLM 基础' && /上下文窗口|长度外推/.test(p.title)) return 'kb-llm';
+    if (/Prompt|提示词|四类消息/i.test(t) || (/上下文/.test(t) && !/上下文窗口|长度外推/.test(t))) return 'kb-prompt';
+    if (/RAG|检索|向量|Embedding|召回|重排|文档切分|父子块/i.test(t)) return 'kb-rag';
     if (/评测|评估|可观测|Trace|回放/i.test(t)) return 'kb-eval';
-    if (/安全|越权|权限|注入|审批|治理/i.test(t)) return 'kb-security';
     if (/AI 编程|Coding|Claude Code|Codex|生成代码/i.test(t)) return 'kb-aicoding';
     if (/Runtime|Harness|Orchestrator|工程化|长任务|成本|流式|SSE|沙箱|执行引擎/i.test(t)) return 'kb-runtime';
-    if (/Transformer|LLM|微调|训练|推理部署|幻觉|多模态|模型|Token 成本/i.test(t)) return 'kb-llm';
+    if (/Transformer|LLM|微调|训练|推理部署|多模态|模型|Token 成本/i.test(t)) return 'kb-llm';
+    if (/越权|权限|注入|审批/.test(t) || /安全对齐|安全治理/.test(t)) return 'kb-security';
     return 'kb-agent';
   }
+  // Topic wins over a single shared word. 缓存/算法/索引 must not pull a point
+  // into Redis, the algorithm notes, or the MySQL index family.
+  if (/手写 SQL/.test(p.title)) return 'kb-mysql';
+  if (/^(?:算法|数据结构|手撕代码题)/.test(p.topic) || /海量数据/.test(p.topic)) return 'kb-algorithm';
   if (/MySQL|数据库（通用/.test(t)) return 'kb-mysql';
-  if (/Redis|缓存/.test(t)) return 'kb-redis';
+  if (/^Java 基础|^Java 集合/.test(p.topic) || /包装类/.test(p.title)) return 'kb-javase';
+  if (/^Redis|^缓存/.test(p.topic) || /缓存击穿|缓存雪崩|缓存穿透|Cache Aside|缓存一致性|缓存与 DB|多级缓存/.test(t)) return 'kb-redis';
   if (/消息队列|Kafka|RabbitMQ|RocketMQ|Netty/i.test(t)) return 'kb-mq';
-  if (/JVM/.test(t)) return 'kb-jvm';
-  if (/Spring|MyBatis|ORM/i.test(t)) return 'kb-spring';
-  if (/并发编程|多线程|JUC/.test(t)) return 'kb-juc';
-  if (/Java/.test(t)) return 'kb-javase';
-  if (/计算机网络|安全/.test(t)) return 'kb-network';
-  if (/操作系统|Linux/.test(t)) return 'kb-os';
-  if (/设计模式/.test(t)) return 'kb-patterns';
-  if (/Python|C\+\+/.test(t)) return 'kb-python';
-  if (/算法|数据结构|手撕代码题/.test(t)) return 'kb-algorithm';
+  if (/^JVM/.test(p.topic) || /^JVM/.test(t)) return 'kb-jvm';
+  if (/Spring|MyBatis|ORM/i.test(p.topic)) return 'kb-spring';
+  if (/并发编程|多线程|JUC/.test(p.topic)) return 'kb-juc';
+  if (/^Java/.test(p.topic)) return 'kb-javase';
+  if (/计算机网络|^安全/.test(p.topic)) return 'kb-network';
+  if (/操作系统|^Linux/.test(p.topic)) return 'kb-os';
+  if (/设计模式/.test(p.topic)) return 'kb-patterns';
+  if (/Python|^C\+\+/.test(p.topic)) return 'kb-python';
   return 'kb-distributed';
 }
 
@@ -218,8 +223,8 @@ const TOP_EXACT = [
   ['链表指针重排','kb-algorithm','反转链表怎么理解'],
   ['索引结构与 B+ 树','kb-mysql','索引的数据结构选择'],
   ['分布式锁：SET NX PX','kb-redis','setnx'],
-  ['滑动窗口（变长','kb-algorithm','滑动窗口最大值'],
-  ['滑动窗口（无重复','kb-algorithm','滑动窗口最大值'],
+  ['滑动窗口（变长','kb-algorithm','*'],
+  ['滑动窗口（无重复','kb-algorithm','*'],
   ['大 Key、热 Key','kb-redis','BigKey 和 HotKey 问题'],
   ['InnoDB 引擎与 ACID','kb-mysql','01 事务与MVCC'],
   ['事务隔离级别与 RC/RR','kb-mysql','事务隔离的实现机制'],
@@ -235,6 +240,8 @@ const TOP_EXACT = [
   ['进程/线程/协程的区别','kb-os','01 进程线程协程'],
   ['缓存击穿与雪崩','kb-redis','缓存击穿'],
   ['LRU/LFU 缓存设计（TTL','kb-algorithm','*'],
+  ['LRU / LFU 缓存设计','kb-algorithm','*'],
+  ['LRU 缓存（HashMap','kb-algorithm','*'],
   ['GC Roots、可达性分析','kb-jvm','03 垃圾回收'],
   ['消息可靠性三段式','kb-mq','消息的可靠性'],
   ['AOP 原理与 JDK/CGLIB','kb-spring','什么是AOP'],
@@ -243,10 +250,10 @@ const TOP_EXACT = [
   ['树形 DP 与树的深度','kb-algorithm','*'],
   ['图与网格搜索','kb-algorithm','*'],
   ['字符串解析与大数运算','kb-algorithm','*'],
-  ['手写 SQL（深分页','kb-algorithm','*'],
+  ['手写 SQL（深分页','kb-mysql','*'],
   ['二叉树遍历与递归','kb-algorithm','二叉树遍历怎么理解'],
   ['DP 一维与计数','kb-algorithm','*'],
-  ['双指针·贪心·单调栈','kb-algorithm','单调栈怎么理解'],
+  ['双指针·贪心·单调栈','kb-algorithm','*'],
   ['ZSet、跳表与排行榜','kb-redis','ZSet的底层实现'],
   ['限流算法与工程实现','kb-distributed','什么是限流和隔离'],
   ['RAG 基本原理与端到端链路','kb-rag','1. RAG基础'],
@@ -337,37 +344,111 @@ function resolveTarget(p, models) {
 }
 
 const FAMILIES = [
+  [/LRU|LFU/, 'design', '缓存设计题', 'LRU 用哈希表定位节点，双向链表维持访问顺序：命中后摘下再接到头部，淘汰尾部。LFU 再按频次分桶。TTL 和线程安全是外壳，先讲清结构不变量。'],
+  [/布隆过滤器原理/, 'bloom', '布隆过滤器', '多个哈希把存在性压成位图。返回不存在一定正确，返回存在可能误判。位数和哈希个数由元素量与可接受误判率决定，标准布隆不能删除。'],
+  [/滑动窗口（/, 'slide', '滑动窗口', '窗口维护一段连续区间的不变量。变长窗口由条件决定何时收缩，定长窗口只平移；无重复子串、最小覆盖和窗口最大值的出窗规则不同。'],
+  [/双指针·贪心·单调栈/, 'mono', '双指针、贪心与单调栈', '对撞指针从两端收缩，贪心要说明这次选择为什么不会后悔，单调栈保存还没算出答案的下标。三数之和、接雨水和最大矩形不是同一类不变量。'],
+  [/双指针/, 'ptr', '双指针', '同向指针一读一写，对撞指针从两端往中间收。先写清每个指针代表什么，再写移动条件和循环不变量。'],
+  [/字符串解析与大数|字符串与数字模拟/, 'bignum', '字符串与大数', '从左到右扫描时保存已经确认的状态，非法字符和溢出要有明确出口。大数按位模拟进位，不要先转成语言里的有限整数。'],
+  [/工程实现类/, 'impl', '工程实现', '先把需求拆成能定位的数据结构和边界，再写能跑完的实现。递归要有深度上限，重复请求要有幂等键，类型冲突不能静默丢掉。'],
+  [/大文件求交集|分片查找/, 'massive', '海量数据', '先按内存切分，再在片内计算，最后归并。同一键必须进同一片；Top-K 用每片一个小顶堆再归并，不要把全量装进一台机器。'],
+  [/使用场景与选型/, 'choose', '选型与场景', '先问数据能不能丢、访问是否够热、结构是否匹配。热数据放缓存，权威数据留在数据库；复杂查询或严格不丢的消息不要用 Redis 硬扛。'],
+  [/高并发瓶颈、容量与线上排查/, 'cap', '容量与排查', '先估算热数据内存、QPS 和带宽，再区分慢命令、大 Key 和单线程阻塞。本地缓存挡热点，Redis 挡共享流量，容量按副本和余量一起算。'],
+  [/接口超时|响应慢的分层|P99 突增/, 'trace', '线上排障', '先把拐点和发布、配置、流量对齐，再用 trace 把 P99 拆到 span。和 GC 时间窗重叠就是自己停顿，不重叠再看下游；不要只看平均值。'],
+  [/上下文窗口|长度外推/, 'ctxwin', '上下文窗口', '窗口要同时留下系统提示、历史、检索结果和输出预留。长度外推改变的是位置编码能看多远，不会让模型多记住一件事实。'],
+  [/Kafka 高吞吐|顺序写|页缓存|消息模型/, 'mqcore', '消息吞吐', '吞吐来自顺序写、页缓存和批量压缩，不是把消息当成缓存。零拷贝只减少拷贝次数；可靠性仍要看生产、存储和消费三段。'],
   [/包装类|equals|hashCode|集合框架|接口与抽象|面向对象|重载|重写|编译解释/, 'java', '语言契约', 'equals 和 hashCode 必须成对。重载看编译期参数，重写看运行期类型；接口给能力，抽象类给一部分实现。'],
-  [/双指针|滑动窗口/, 'win', '指针与窗口', '同向、对撞和滑动窗口都是一次扫描。先写清每个指针代表什么，再写移动条件和不变量；还要区分变长窗口、定长窗口，以及子串和子序列。'],
   [/链表/, 'list', '链表', '改 next 之前先保存后继。dummy 用来消掉头结点特判；快慢指针用来找中点、判环和倒数第 N 个。'],
-  [/动态规划|DP |背包|打家劫舍|编辑距离|LIS|LCS/, 'dp', '动态规划', '先定义状态和最后一步转移，再定初始化和遍历方向。空间能滚动再滚动，不要一上来就压维。'],
+  [/动态规划|DP |背包|打家劫舍|编辑距离|LIS|LCS|系列题进阶/, 'dp', '动态规划', '先定义状态和最后一步转移，再定初始化和遍历方向。环形、限次和可重复通常是在线性 DP 上破环或加一维，不要另起一套状态。'],
   [/二叉树|树形|LCA|树的递归|子结构|直径/, 'tree', '树', '先说清递归函数返回什么。路径类题在后序汇总全局答案，函数本身通常只返回单边信息。'],
-  [/图搜索|岛屿|BFS|拓扑|并查集/, 'graph', '图与搜索', '网格当成隐式图。BFS 入队时就标记，否则会重复入队；要最短步数用 BFS，不要求最短才考虑 DFS 或并查集。'],
+  [/图搜索|岛屿|BFS|拓扑排序|并查集/, 'graph', '图与搜索', '网格当成隐式图。BFS 入队时就标记，否则会重复入队；要最短步数用 BFS，不要求最短才考虑 DFS 或并查集。'],
   [/排序|Top-?K|快速选择|二分|哈希|前缀和|位运算|回溯|区间|矩阵|数组|字符串|大数|概率|摩尔|红黑树|AVL|栈与|括号|表达式/, 'algo', '其余算法与结构', '先说出暴力复杂度，再指出有序性、单调性或可判定性把复杂度降下来。边界和返回值语义要比模板更容易错。'],
   [/装饰器|深拷贝|浅拷贝|list\/tuple|容器对比/, 'py', 'Python 对象与容器', '先分清对象身份和值。浅拷贝只复制外层容器，嵌套对象仍然共享；装饰器本质是返回新函数，注意被替换的元数据。'],
   [/幂等|超卖|重复提交|重复消费|Exactly-Once|防重/, 'idem', '幂等与防重', '先把请求幂等、业务唯一和内容去重分开。最终裁决放在唯一约束或状态机上，缓存只负责并发抑制和结果缓存。'],
   [/连接治理|长短连接|半\/全连接|心跳|WebSocket|SSE|epoll|粘包|NAT|HTTP\/1|队头阻塞|状态码|send 语义|自定义协议/, 'net', '连接与协议', '连接数受文件描述符、backlog 和四元组共同限制。长连接靠应用层心跳，TCP Keepalive 保不住业务是否还活着。'],
   [/JWT|Cookie|Session|Token|越权|RBAC|ABAC|Web 安全/, 'sec', '登录态与权限', '认证解决你是谁，授权解决你能做什么。令牌无状态不等于不能失效，高风险动作必须在服务端再校验一次。'],
   [/MVCC|分库分表|索引|SQL |分页|行锁|表锁|主键|调优|数据类型|容量|PostgreSQL|MongoDB|倒排|存储选型/, 'db', '索引、事务与容量', '先看执行计划和索引能不能定位，再谈锁、日志和拆分。分库分表是最后手段，拆之前要能说清分片键、跨片查询和扩容。'],
-  [/Lua|过期删除|哈希槽|淘汰|Pipeline|Cache Aside|布隆|Bitmap|HyperLogLog|Stream|缓存|LRU|页缓存|零拷贝/, 'cache', '缓存与失效', '穿透是数据不存在，击穿是热点刚好失效，雪崩是大面积同时失效。展示数据可以逻辑过期，库存和余额要互斥重建。'],
+  [/Lua|过期删除|哈希槽|淘汰|Pipeline|Cache Aside|布隆|Bitmap|HyperLogLog|Stream|缓存/, 'cache', '缓存与失效', '穿透是数据不存在，击穿是热点刚好失效，雪崩是大面积同时失效。展示数据可以逻辑过期，库存和余额要互斥重建。'],
   [/阻塞队列|锁的分类|ctl |并发容器|死锁|读写锁|线程数|CompletableFuture|无锁|自旋|伪共享|交替打印|等待多线程|上下文切换|生产者-消费者|并发手撕/, 'juc', '并发协作', '先定共享状态，以及谁在等谁。条件等待要放在 while 里，多角色等待用 notifyAll，锁放在 finally 里释放。'],
   [/Conditional|全局异常|MyBatis|#\{\}|\$\{}|SQL 注入/, 'spring', 'Spring 与 ORM', '条件装配看 classpath 和配置，不满足就不注册 Bean。${} 会拼进 SQL，#{} 才是预编译参数。'],
-  [/垃圾回收|G1 |OOM|StackOverflow|排查工具|CPU 100%/, 'jvm', 'GC 与排查', '先分清对象是分配太快，还是回收之后仍然活着。CPU 高先看线程栈，内存涨先看支配树和大对象。'],
-  [/IPC|系统调用|零拷贝|malloc|僵尸|孤儿|守护进程|ps\/top|lsof|awk|Shell/, 'os', '操作系统与 Linux', '进程隔离地址空间，线程共享堆和文件描述符。线上先定位进程、端口和线程，再区分用户态、内核态和 IO 等待。'],
+  [/垃圾回收|分代|回收器|G1 |OOM|StackOverflow|排查工具|CPU 100%/, 'jvm', 'GC 与排查', '先分清对象是分配太快，还是回收之后仍然活着。CPU 高先看线程栈，内存涨先看支配树和大对象。'],
+  [/IPC|系统调用|零拷贝|malloc|页缓存|缓存局部性|物理内存|僵尸|孤儿|守护进程|ps\/top|lsof|awk|Shell/, 'os', '操作系统与 Linux', '进程隔离地址空间，线程共享堆和文件描述符。malloc 失败和页缓存是操作系统的内存账，不是某个 JVM 区域 OOM。线上先定位进程、端口和线程。'],
   [/积压处理|消费扩容/, 'mq', '消息积压', '先看是生产太快、消费太慢，还是单分区把并行度卡住。扩容不能超过分区数，重复投递靠业务幂等吸收。'],
   [/RPC|Protobuf|Dubbo|OpenFeign|Nacos|压测|恶意流量|Docker|K8s|Kubernetes|灰度|多租户|状态机|短链|表结构|QPS|瓶颈|重试|定时任务|Git |ZooKeeper|Raft|一致性哈希|搜索与推荐|红包|购物车|开放平台|推送|降级|玩法/, 'dist', '分布式与场景', '先给量级、一致性和失败代价，再选组件。正常路径、失败兜底和扩容方式要一起讲，不能只画一张成功时的架构图。'],
   [/意图识别|自进化|多智能体|故障定位|结构化输出|实时风控|幻觉治理|越权防护|提示注入/, 'agentx', '路由、安全与治理', '意图决定走哪条路径，权限决定这个路径能不能执行。模型可以提出动作，删除、付款和外发必须由代码校验。'],
   [/上下文传递|任务分解|协作拓扑|通信机制|结果仲裁|Planner/, 'multi', '多 Agent 协作', '拆开是为了隔离上下文和并行，不是为了多几个角色。每个子任务要有完成条件；结果冲突时先查外部证据，而不是再问一次同一个模型。'],
   [/多轮对话历史|最近窗口/, 'mem', '会话历史', '整段历史直接塞进窗口会越来越贵，也会冲掉约束。进窗口的应是任务状态、摘要和最近几轮，长输出放到会话外。'],
   [/流式输出|流式调用|断点续跑|传统后端差异|Java 对接|推理框架|工程化落地|从 0 到 1/, 'rt', '运行时与交付', '长任务的状态不能只放在进程内存里。流式事件要带序号才能断线续传；上线前先补幂等、观测和回滚。'],
-  [/文档解析|Rerank|父子块|Embedding 模型选型|混合检索与召回|错召回|漏召回/, 'ragx', '检索工程', '解析和切分决定能不能召回到，重排决定哪几段进上下文。错召回和漏召回要分开查，不能只把 top-k 调大。'],
+  [/文档解析|Rerank|父子块|语义切分|Embedding 模型选型|混合检索与召回|错召回|漏召回/, 'ragx', '检索工程', '解析和切分决定能不能召回到，重排决定哪几段进上下文。父子块解决的是小块召回、大块阅读，不是数据库索引。错召回和漏召回要分开查。'],
   [/强制结构化|JSON Schema|长度外推|微调 vs RAG|微调vsRAG/, 'promptx', '提示与路线选择', '下游程序要消费的内容必须有 schema。会变化的事实用检索，稳定的窄任务才考虑微调。'],
   [/训练范式|Tokenizer|BPE|显存|SFT |LoRA|端侧|Q-Former|多模态|投影层/, 'llm', '训练、微调与多模态', '先分清参数、梯度和 KV Cache 各占哪一块显存。微调改变行为，检索补充事实，二者不要互相替代。'],
   [/测试用例|任务成功率|消融|无 GT|A-B|A\/B/, 'eval', '评测方法', '先准备能判定对错的题目，再看分数。自动裁判要和人工抽检对过，不能单独当作发布依据。'],
   [/AI 辅助开发|工具选型|日常 AI Coding|Claude Code \/ Codex|工作流与最难/, 'aicoding', 'AI Coding', '生成结果要能对上需求、跑过测试，并且可以回滚。工具之间的差别主要在上下文、权限和编辑方式。']
 ];
+function fam(slug) {
+  const hit = FAMILIES.find((row) => row[1] === slug);
+  if (!hit) throw new Error('Knowledge map: unknown family ' + slug);
+  return {slug: hit[1], title: hit[2], intro: hit[3]};
+}
+function algoFamily(text) {
+  if (/LRU|LFU/.test(text)) return fam('design');
+  if (/布隆过滤器原理/.test(text)) return fam('bloom');
+  if (/滑动窗口/.test(text)) return fam('slide');
+  if (/双指针·贪心|单调栈/.test(text)) return fam('mono');
+  if (/双指针/.test(text)) return fam('ptr');
+  if (/字符串解析与大数|字符串与数字模拟/.test(text)) return fam('bignum');
+  if (/系列题进阶|动态规划|DP |背包|打家劫舍|编辑距离|LIS|LCS/.test(text)) return fam('dp');
+  if (/二叉树|树形|LCA|树的递归|子结构|直径/.test(text)) return fam('tree');
+  if (/图搜索|图与网格|岛屿|BFS|并查集/.test(text)) return fam('graph');
+  if (/链表/.test(text)) return fam('list');
+  if (/并发手撕|生产者-消费者|交替打印/.test(text)) return fam('juc');
+  if (/工程实现类/.test(text)) return fam('impl');
+  if (/大文件求交集|分片查找|海量统计/.test(text)) return fam('massive');
+  return fam('algo');
+}
+function redisFamily(text) {
+  if (/使用场景与选型/.test(text)) return fam('choose');
+  if (/高并发瓶颈|容量与线上排查/.test(text)) return fam('cap');
+  return fam('cache');
+}
+function mqFamily(text) {
+  if (/积压|消费扩容/.test(text)) return fam('mq');
+  if (/幂等|Exactly|重复消费/.test(text)) return fam('idem');
+  return fam('mqcore');
+}
 function familyOf(p) {
   const text = p.topic + ' ' + p.title;
+  const topic = p.topic;
+  // Family is chosen inside the point's own topic. A shared word such as 缓存,
+  // 索引, 链表, 容量 or OOM must not borrow another module's chapter.
+  if (/手写 SQL/.test(text)) return fam('db');
+  if (/^(?:算法|数据结构|手撕代码题)/.test(topic) || /海量数据/.test(topic)) return algoFamily(text);
+  if (/^Java 基础|^Java 集合/.test(topic)) return fam('java');
+  if (topic === 'JVM') return fam('jvm');
+  if (/^Redis|^缓存/.test(topic)) return redisFamily(text);
+  if (topic === '操作系统' || topic === 'Linux') return fam('os');
+  if (topic === 'Spring' || topic === 'MyBatis / ORM') return fam('spring');
+  if (topic === 'RAG') return fam('ragx');
+  if (/^消息队列/.test(topic)) return mqFamily(text);
+  if (topic === '多 Agent 协作') return fam('multi');
+  if (/^流式输出/.test(topic)) return fam('rt');
+  if (topic === 'Prompt 工程') return fam('promptx');
+  if (/上下文窗口|长度外推/.test(text)) return fam('ctxwin');
+  if (p.track === 'agent' && /场景题/.test(topic)) {
+    if (/检索|召回|切分|父子块/.test(text)) return fam('ragx');
+    if (/工程化落地|从 0 到 1/.test(text)) return fam('rt');
+    return fam('agentx');
+  }
+  if (p.track !== 'agent' && /场景题/.test(topic)) {
+    if (/积压|消费扩容/.test(text)) return fam('mq');
+    if (/幂等|超卖|重复提交|重复下单|防重|防重复/.test(text)) return fam('idem');
+    if (/超时|响应慢|P99|bad case|排查/.test(text)) return fam('trace');
+    return fam('dist');
+  }
+  if (p.track !== 'agent' && /^(?:分布式系统|微服务|高并发|云原生|测试)/.test(topic)) {
+    if (/幂等|超卖|重复|Exactly|防重/.test(text)) return fam('idem');
+    return fam('dist');
+  }
   for (const [needle, slug, title, intro] of FAMILIES) if (needle.test(text)) return {slug, title, intro};
   return {slug:'other', title:'其他考点', intro:'下面按该考点自己的本质、必答要点、高频追问和易错点展开，不并进相邻章节。'};
 }
