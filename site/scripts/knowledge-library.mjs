@@ -540,6 +540,38 @@ function detailHtml(exam, track) {
     return `<h3 class="md-h md-h3">${esc(g.title)}</h3>${introHtml}${g.points.map((p) => `<h4 class="md-h md-h4 exam-point-heading" id="${p.anchor}">${p.no}. ${esc(p.title)}${p.stars ? ` <span class="kb-stars">${esc(p.stars)}</span>` : ''}</h4><p class="exam-point-summary">${esc(p.summary)}</p>${mdToSiteHtml(p.body,{idPrefix:p.anchor,dropFirstHeading:false,knowledge:true}).html}`).join('')}`;
   }).join('')}`).join('');
 }
+function routeHtml(exam) {
+  const find = (needle) => {
+    const hits = exam.points.filter((point) => point.title.includes(needle));
+    if (hits.length !== 1) throw new Error('Interview route: ' + needle + ' -> ' + hits.map((point) => point.title).join(' | '));
+    return hits[0];
+  };
+  const step = (title, links, note) => `<li><h3 class="md-h md-h3">${esc(title)}</h3>${links.length ? `<p class="kb-route-links">${links.map((needle) => `<a href="${pointHref(find(needle))}">${esc(find(needle).title)}</a>`).join('')}</p>` : ''}${note ? `<p class="md-p">${note}</p>` : ''}</li>`;
+  const block = (id, title, intro, steps) => `<section class="kb-route" id="${id}"><h2 class="md-h md-h2">${esc(title)}</h2><p class="md-p">${intro}</p><ol class="kb-route-list">${steps}</ol></section>`;
+  const mysql = block('route-mysql', 'MySQL：先索引，再事务', '图上的赢面是从索引和慢 SQL 开口，再收束到隔离级别、MVCC 和主从。讲义按事务、日志、索引、锁、主从排，答题时按下面这条走。', [
+    step('索引和慢 SQL', ['联合索引与最左前缀', '索引结构与 B+ 树', '慢 SQL 排查'], '先讲联合索引能不能从最左列连续用，再讲三层 B+ 树大约 2000 万行从哪来，最后用 EXPLAIN 的 type、key_len、Extra 落地。'),
+    step('列顺序、下推和覆盖', ['按条件设计索引', '回表与覆盖索引'], '等值列放前面，范围列放后面。索引下推是先在索引里滤掉再回表；覆盖索引是不用回表。'),
+    step('分表还是分库', ['单表容量与性能量级', '分库分表与分片键'], '行数和行宽决定树高，点查变慢先归档、加索引，再分表。写入 QPS、连接和磁盘把一台机器打满，才拆到多台物理库。多建几个逻辑库仍在同一实例上，不加写入能力。'),
+    step('隔离级别、日志和 MVCC', ['事务隔离级别与 RC/RR', 'InnoDB 引擎与 ACID', '三大日志', 'MVCC：undo'], '读未提交只用来说明脏读，不要拿去扣库存。RC 和 RR 的差别是 ReadView 建一次还是每条语句重建。崩溃恢复看 redo 和两阶段提交，不另记一套 bit ring。'),
+    step('锁和主从', ['锁机制：行锁', '死锁：成因、定位与避免', '主从复制、延迟与读写分离'], '间隙锁和临键锁跟着 RR 一起讲。主库挂了的切换就在主从这条的追问里，MHA 或 MGR，不要再开一章。')
+  ].join(''));
+  const redis = block('route-redis', 'Redis：先结构，再排查，最后一致性', '图上从数据结构走到排查、高可用、单线程，一致性和持久化放后面。讲义把持久化放在高可用里，BigKey 放得靠后，答题按这条收。', [
+    step('五种结构和编码', ['数据结构与底层编码', 'String 与 SDS', 'ZSet、跳表与排行榜'], 'List、Hash、ZSet 的小对象走 listpack，大了才换链表、哈希表或跳表。排行榜用 ZSet，不要用 List 硬做。'),
+    step('同分再按时间排', [], 'ZSet 的 score 是 double，只有 53 位能精确表示整数，不能把 32 位分数和 32 位时间戳原样拼进去。同分用放大：<code class="tok-inline">points * 10^10 + (10^10 - ts)</code>，时间戳不超过 10 位，再用 ZREVRANGE 取高分。跨度更大就不要挤进一个 double。'),
+    step('布隆、位图、基数和地理位置', ['布隆过滤器与 HyperLogLog', 'Bitmap 位图', '使用场景与选型'], 'GEO 是 ZSet 加 geohash，写在使用场景里。布隆只保证「一定不存在」，误判率由位数和哈希个数决定。'),
+    step('大 Key、热点和同槽', ['大 Key、热 Key', '本地缓存与多级缓存', 'Cluster 哈希槽、迁移与 Gossip'], '大 Key 拆开。热点先用本地缓存挡，再按业务拆 Key。多个 Key 掉进同一个槽，是 CRC16 的结果，用 <code class="tok-inline">{tag}</code> 把该在一起的放一起，把不该挤在一起的 tag 错开。'),
+    step('哨兵、集群和单线程', ['哨兵与高可用部署', '单线程模型与 Redis 为什么快'], '从库可以读，但要接受复制延迟。命令仍在主线程执行；6.0 的多线程只分担网络读写。没有「20 万 QPS 就不能开」这条铁律，看的是慢命令会不会堵住主线程。'),
+    step('一致性和持久化', ['缓存与数据库一致性', 'Cache Aside 时序与延迟双删', 'RDB/AOF 持久化'], '延迟双删和 Canal 处理删缓存失败、读请求回填旧值。版本号处理并发写：旧版本不能覆盖新版本。分布式锁只挡住同时写，挡不住「库写成功、缓存删失败」。AOF 是把写命令重放，RDB 是某一时刻的快照。')
+  ].join(''));
+  const kafka = block('route-kafka', 'Kafka：先接到做过的事，再讲不丢和积压', '图上先问项目，再丢消息、积压、高吞吐，高可用收在 ISR。原理章按概念往下排，场景在后面的架构题里。答题从可靠性三段进入，再跳到对应场景。', [
+    step('可靠性、顺序和事务', ['消息可靠性三段式', '顺序消息与分区内有序', '分区、Key 设计与 Rebalance', '事务消息与本地消息表', '延迟消息实现'], '分区和 Redis 槽是同一类映射：先哈希，再落到固定分片。热点是同一个 key 打进一个分区，加分区却不改 key 没有用。'),
+    step('把题引到真实场景', ['秒杀系统全链路', '消息与 IM', '三大日志'], '秒杀不要停在「用了 Kafka」，要讲预热、扣减和削峰。IM 的顺序是同会话一个分区。Canal 订阅 binlog，既出现在 MySQL 日志里，也用来异步删缓存。'),
+    step('积压、幂等和副本', ['积压处理与扩容上限', '重复消费归因与业务幂等', '布隆过滤器原理与误判率', 'ISR、副本与 Controller 选举'], '布隆放在消费入口只能挡「一定没见过」。返回「可能见过」仍要查业务唯一键，误判会把新消息丢掉。消费线程若停在 Full GC，超过 max.poll.interval.ms 会被踢出组并触发 Rebalance。协议不绑定 Java，可靠性参数仍是 acks、重试和手动提交。'),
+    step('高吞吐', ['Kafka 高吞吐原理', '海量统计 Top-K'], '顺序写、页缓存和零拷贝是这条的主体。日志量大以后的窗口聚合才引到 Flink，不要把 Flink 当成 Kafka 原理的一部分。KRaft 是去掉 ZooKeeper 之后的元数据选主，写在 ISR 这条里。')
+  ].join(''));
+  return `<div class="kb-map-intro"><a href="#route-mysql">MySQL</a><a href="#route-redis">Redis</a><a href="#route-kafka">Kafka</a><a href="#/e/interview-map">考点地图</a></div>
+    <p class="md-p">三张路线图决定答题时先说哪一叉。下面每个节点都进已经写好的考点；只有图上有、原来没写成一句的判断，补在节点下面。不含「含金量」和临场话术。</p>${mysql}${redis}${kafka}`;
+}
 function studyGuideHtml(markdown) {
   const start = markdown.indexOf('## 十六、备考建议与速查');
   if (start < 0) throw new Error('Knowledge map: study guide section missing');
@@ -564,7 +596,10 @@ export async function mergeKnowledgeLibrary(entries, dir) {
   const added = [];
   const push = (entry) => { entries.push(entry); added.push(entry.id); };
   push({id:'interview-map',kind:'doc',mod:'knowledge',part:'考点总览',cat:'后端 + Agent',title:'后端 + Agent 面试考点地图',number:'总览',source:SOURCE,
-    lead:`按面试出现次数排序：后端 ${exam.points.filter((p)=>p.track==='backend').length} 个、Agent ${exam.points.filter((p)=>p.track==='agent').length} 个考点。点击题目跳到对应知识小节。知识主干 25 篇，不含面经专题和归档；模型版本与价格以资料生成日 2026-11-12 为准。`,html:mapHtml(exam)});
+    lead:`按面试出现次数排序：后端 ${exam.points.filter((p)=>p.track==='backend').length} 个、Agent ${exam.points.filter((p)=>p.track==='agent').length} 个考点。点击题目跳到对应知识小节。MySQL、Redis、Kafka 的答题分叉在面试路线。`,html:mapHtml(exam)});
+  push({id:'kb-interview-routes',kind:'doc',mod:'knowledge',part:'考点总览',cat:'后端 + Agent',title:'MySQL / Redis / Kafka 面试路线',number:'路线',source:SOURCE,
+    lead:'按面试时的分叉顺序走：MySQL 先索引，Redis 先数据结构，Kafka 先接到做过的事。每个节点进入已有考点。',
+    html:routeHtml(exam)});
   push({id:'exam-study-guide',kind:'doc',mod:'knowledge',part:'考点总览',cat:'备考建议',title:'备考建议与速查',number:'建议',source:SOURCE,
     lead:'按优先级分配时间，而不是把 375 个考点平均过一遍。含三条复习路线、40 条速查和复盘模板。',
     html:studyGuideHtml(examSource)});
@@ -580,7 +615,7 @@ export async function mergeKnowledgeLibrary(entries, dir) {
     const chapters = model.toc.filter((x) => x.level === top).length;
     push({id:doc.id,kind:'doc',mod:'knowledge',part:doc.part,cat:doc.cat,title:doc.title,number:'知识',source:SOURCE,
       lead:`${chapters} 个知识章节。可从考点地图带锚点进入，也可按本篇目录顺序学习。`,
-      html:`<div class="kb-doc-tools"><a class="btn" href="#/e/interview-map">← 返回考点地图</a><span>${chapters} 章 · 完整讲义</span></div>${tocHtml(model.toc)}${model.html}`});
+      html:`<div class="kb-doc-tools"><a class="btn" href="#/e/interview-map">← 返回考点地图</a>${doc.id === 'kb-mysql' || doc.id === 'kb-redis' || doc.id === 'kb-mq' ? `<a class="btn" href="#/e/kb-interview-routes/${doc.id === 'kb-mq' ? 'route-kafka' : 'route-' + doc.id.slice(3)}">面试路线 →</a>` : ''}<span>${chapters} 章 · 完整讲义</span></div>${tocHtml(model.toc)}${model.html}`});
   }
   const libraryLinks = exam.points.filter((p) => p.target.kind === 'enriched').length;
   const report = {documents:KNOWLEDGE_DOCS.length,backendPoints:exam.points.filter((p)=>p.track==='backend').length,

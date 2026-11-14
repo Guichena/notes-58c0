@@ -11,7 +11,7 @@ const result = await mergeKnowledgeLibrary(entries, path.join(root, 'content', '
 const byId = new Map(entries.map((entry) => [entry.id, entry]));
 
 test('knowledge library imports all exam points and documents', () => {
-  assert.equal(entries.length, 29);
+  assert.equal(entries.length, 30);
   assert.equal(result.report.documents, 25);
   assert.equal(result.report.backendPoints, 270);
   assert.equal(result.report.agentPoints, 105);
@@ -19,6 +19,13 @@ test('knowledge library imports all exam points and documents', () => {
   assert.equal(result.report.topAgent, 40);
   assert.deepEqual(result.report.unmatchedTop, []);
   assert.equal((byId.get('interview-map').html.match(/class="kb-point"/g) || []).length, 375);
+  const route = byId.get('kb-interview-routes').html;
+  for (const id of ['route-mysql', 'route-redis', 'route-kafka']) assert.ok(route.includes('id="' + id + '"'), id);
+  assert.ok(route.includes('points * 10^10'));
+  assert.ok(route.includes('不要拿去扣库存'));
+  assert.ok(!route.includes('想屁吃') && !route.includes('拍马屁'));
+  assert.ok(byId.get('kb-mysql').html.includes('#/e/kb-interview-routes/route-mysql'));
+  assert.ok(byId.get('kb-mq').html.includes('#/e/kb-interview-routes/route-kafka'));
 });
 
 test('knowledge chapters carry the full interview answer, not just a jump link', () => {
