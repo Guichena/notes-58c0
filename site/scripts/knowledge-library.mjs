@@ -516,6 +516,11 @@ function tocHtml(toc) {
   return items.length ? `<nav class="kb-page-toc" aria-label="本篇目录"><span>本篇目录</span><div>${items.map((x) => `<a href="#${esc(x.id)}">${esc(x.text)}</a>`).join('')}</div></nav>` : '';
 }
 function pointHref(p) { return `#/e/${encodeURIComponent(p.target.entry)}/${encodeURIComponent(p.target.anchor)}`; }
+function isHandwriteAlgorithm(point) {
+  if (!point) return false;
+  if (/^(?:算法|数据结构)/.test(point.topic)) return true;
+  return point.topic === '手撕代码题' && !point.title.includes('手写 SQL');
+}
 function topTable(rows, track) {
   return `<div class="tbl-wrap kb-top-table"><table class="tbl"><thead><tr><th>#</th><th>考点</th><th>方向</th><th>一句话结论</th><th>次数</th></tr></thead><tbody>${rows.map((r) => {
     const p = r.point;
@@ -525,15 +530,21 @@ function topTable(rows, track) {
 function mapHtml(exam) {
   const backend = exam.points.filter((p) => p.track === 'backend');
   const agent = exam.points.filter((p) => p.track === 'agent');
-  const allGroups = (track) => exam.sections.filter((s) => s.track === track).map((s) => `<section class="kb-map-section"><h3 class="md-h md-h3">${esc(cleanTitle(s.title))}</h3>${s.groups.map((g) => `<details class="kb-group"><summary><span>${esc(g.title)}</span><b>${g.points.length} 个考点</b></summary><div class="kb-points">${g.points.map((p) => `<article class="kb-point" id="${p.anchor}"><div class="kb-point-main"><span class="kb-point-no">${p.no}</span><div><a class="kb-point-title" href="${pointHref(p)}">${esc(p.title)}</a><p>${esc(p.summary)}</p></div></div><div class="kb-point-meta">${p.stars ? `<span class="kb-stars">${esc(p.stars)}</span>` : ''}${p.frequency ? `<span class="kb-frequency"><b>${p.frequency}</b> 次</span>` : ''}<span>${p.target.kind === 'enriched' ? '知识库 · 已补强 →' : '考点详解 →'}</span></div></article>`).join('')}</div></details>`).join('')}</section>`).join('');
-  return `<div class="kb-map-intro"><a href="#kb-backend-top">后端 Top 40</a><a href="#kb-agent-top">Agent Top 40</a><a href="#kb-backend-all">后端全部 ${backend.length}</a><a href="#kb-agent-all">Agent 全部 ${agent.length}</a></div>
-    <h2 class="md-h md-h2" id="kb-backend-top">传统后端 · 高频考点 Top 40</h2><p class="md-p">只统计后端方向面试；次数与 Agent 方向互不混算。点击考点进入对应知识小节。</p>${topTable(exam.tops.backend,'backend')}
+  const backendTop = exam.tops.backend.filter((row) => !isHandwriteAlgorithm(row.point));
+  const allGroups = (track) => exam.sections.filter((s) => s.track === track).map((s) => {
+    const groups = s.groups.map((g) => ({...g, points: track === 'backend' ? g.points.filter((p) => !isHandwriteAlgorithm(p)) : g.points})).filter((g) => g.points.length);
+    if (!groups.length) return '';
+    return `<section class="kb-map-section"><h3 class="md-h md-h3">${esc(cleanTitle(s.title))}</h3>${groups.map((g) => `<details class="kb-group"><summary><span>${esc(g.title)}</span><b>${g.points.length} 个考点</b></summary><div class="kb-points">${g.points.map((p) => `<article class="kb-point" id="${p.anchor}"><div class="kb-point-main"><span class="kb-point-no">${p.no}</span><div><a class="kb-point-title" href="${pointHref(p)}">${esc(p.title)}</a><p>${esc(p.summary)}</p></div></div><div class="kb-point-meta">${p.stars ? `<span class="kb-stars">${esc(p.stars)}</span>` : ''}${p.frequency ? `<span class="kb-frequency"><b>${p.frequency}</b> 次</span>` : ''}<span>${p.target.kind === 'enriched' ? '知识库 · 已补强 →' : '考点详解 →'}</span></div></article>`).join('')}</div></details>`).join('')}</section>`;
+  }).join('');
+  const backendShown = backend.filter((p) => !isHandwriteAlgorithm(p)).length;
+  return `<div class="kb-map-intro"><a href="#kb-backend-top">后端高频 ${backendTop.length}</a><a href="#kb-agent-top">Agent Top 40</a><a href="#kb-backend-all">后端全部 ${backendShown}</a><a href="#kb-agent-all">Agent 全部 ${agent.length}</a><a href="#/e/algo-handwrite-board">算法原题榜</a></div>
+    <h2 class="md-h md-h2" id="kb-backend-top">传统后端 · 高频考点</h2><p class="md-p">只统计后端方向面试，并且不含算法、数据结构手撕。那部分在 <a href="#/e/algo-handwrite-board">手撕算法原题榜</a>。手写 SQL 仍算后端。次数与 Agent 方向互不混算。</p>${topTable(backendTop,'backend')}
     <h2 class="md-h md-h2" id="kb-agent-top">AI Agent · 高频考点 Top 40</h2><p class="md-p">按 Agent 方向面试出现次数排序；点击考点进入对应知识小节。</p>${topTable(exam.tops.agent,'agent')}
-    <h2 class="md-h md-h2" id="kb-backend-all">传统后端 · 全部 ${backend.length} 个考点</h2>${allGroups('backend')}
+    <h2 class="md-h md-h2" id="kb-backend-all">传统后端 · 全部 ${backendShown} 个考点</h2><p class="md-p">算法、数据结构与手撕代码题不在这里。手写 SQL 留在后端。</p>${allGroups('backend')}
     <h2 class="md-h md-h2" id="kb-agent-all">AI Agent · 全部 ${agent.length} 个考点</h2>${allGroups('agent')}`;
 }
 function detailHtml(exam, track) {
-  const sections = exam.sections.filter((s) => s.track === track);
+  const sections = exam.sections.filter((s) => s.track === track).map((s) => ({...s, groups: s.groups.map((g) => ({...g, points: track === 'backend' ? g.points.filter((p) => !isHandwriteAlgorithm(p)) : g.points})).filter((g) => g.points.length)})).filter((s) => s.groups.length);
   return sections.map((s) => `<h2 class="md-h md-h2">${esc(cleanTitle(s.title))}</h2>${s.groups.map((g) => {
     const intro = g.intro.join('\n').trim();
     const introHtml = intro ? mdToSiteHtml(intro,{idPrefix:'exam-intro',dropFirstHeading:false,knowledge:true}).html : '';
@@ -596,7 +607,7 @@ export async function mergeKnowledgeLibrary(entries, dir) {
   const added = [];
   const push = (entry) => { entries.push(entry); added.push(entry.id); };
   push({id:'interview-map',kind:'doc',mod:'knowledge',part:'考点总览',cat:'后端 + Agent',title:'后端 + Agent 面试考点地图',number:'总览',source:SOURCE,
-    lead:`按面试出现次数排序：后端 ${exam.points.filter((p)=>p.track==='backend').length} 个、Agent ${exam.points.filter((p)=>p.track==='agent').length} 个考点。点击题目跳到对应知识小节。MySQL、Redis、Kafka 的答题分叉在面试路线。`,html:mapHtml(exam)});
+    lead:`后端高频不含算法和数据结构手撕，那些在手撕算法原题榜。Agent ${exam.points.filter((p)=>p.track==='agent').length} 个考点仍按出现次数排。MySQL、Redis、Kafka 的答题分叉在面试路线。`,html:mapHtml(exam)});
   push({id:'kb-interview-routes',kind:'doc',mod:'knowledge',part:'考点总览',cat:'后端 + Agent',title:'MySQL / Redis / Kafka 面试路线',number:'路线',source:SOURCE,
     lead:'按面试时的分叉顺序走：MySQL 先索引，Redis 先数据结构，Kafka 先接到做过的事。每个节点进入已有考点。',
     html:routeHtml(exam)});
@@ -604,10 +615,12 @@ export async function mergeKnowledgeLibrary(entries, dir) {
     lead:'按优先级分配时间，而不是把 375 个考点平均过一遍。含三条复习路线、40 条速查和复盘模板。',
     html:studyGuideHtml(examSource)});
   for (const track of ['backend','agent']) {
-    const ps = exam.points.filter((p) => p.track === track);
+    const ps = exam.points.filter((p) => p.track === track && (track !== 'backend' || !isHandwriteAlgorithm(p)));
     push({id:'exam-' + track + '-detail',kind:'doc',mod:'knowledge',part:'考点总览',cat:track === 'backend' ? '后端考点详解' : 'Agent 考点详解',
       title:(track === 'backend' ? '传统后端' : 'AI Agent') + ` · ${ps.length} 个考点详解`,number:'详解',source:SOURCE,
-      lead:'考点清单原文按原顺序排在这里。地图优先跳到知识库里的对应小节；只有资料库没有模块的 C++ 和行为面，锚点落在本页。',html:detailHtml(exam,track)});
+      lead:track === 'backend'
+        ? '后端考点按原顺序排在这里，不含算法、数据结构与手撕代码题。手写 SQL 仍在。算法题去手撕算法原题榜。'
+        : '考点清单原文按原顺序排在这里。地图优先跳到知识库里的对应小节。',html:detailHtml(exam,track)});
   }
   for (const doc of KNOWLEDGE_DOCS) {
     const model = models.get(doc.id);

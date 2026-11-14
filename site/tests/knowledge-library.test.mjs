@@ -18,7 +18,14 @@ test('knowledge library imports all exam points and documents', () => {
   assert.equal(result.report.topBackend, 40);
   assert.equal(result.report.topAgent, 40);
   assert.deepEqual(result.report.unmatchedTop, []);
-  assert.equal((byId.get('interview-map').html.match(/class="kb-point"/g) || []).length, 375);
+  const map = byId.get('interview-map').html;
+  const backendTop = map.slice(map.indexOf('id="kb-backend-top"'), map.indexOf('id="kb-agent-top"'));
+  assert.equal((backendTop.match(/双指针同向|链表指针重排|LRU\/LFU 缓存设计|树形 DP|排序算法与复杂度|图与网格搜索/g) || []).length, 0);
+  assert.ok(backendTop.includes('手写 SQL'));
+  assert.ok(backendTop.includes('联合索引与最左前缀'));
+  assert.ok(map.includes('#/e/algo-handwrite-board'));
+  assert.ok((map.match(/class="kb-point"/g) || []).length < 375);
+  assert.ok((map.match(/class="kb-point"/g) || []).length > 300);
   const route = byId.get('kb-interview-routes').html;
   for (const id of ['route-mysql', 'route-redis', 'route-kafka']) assert.ok(route.includes('id="' + id + '"'), id);
   assert.ok(route.includes('points * 10^10'));
