@@ -30,7 +30,8 @@ test('knowledge library imports all exam points and documents', () => {
   for (const id of ['route-mysql', 'route-redis', 'route-kafka']) assert.ok(route.includes('id="' + id + '"'), id);
   assert.ok(route.includes('points * 10^10'));
   assert.ok(route.includes('不要拿去扣库存'));
-  assert.ok(!route.includes('想屁吃') && !route.includes('拍马屁'));
+  assert.ok(route.includes('旧版本挂在主键那棵树上') || route.includes('回到主键索引上找能看见的版本'));
+  assert.ok(!route.includes('想屁吃') && !route.includes('拍马屁') && !route.includes('面试官你好'));
   assert.ok(byId.get('kb-mysql').html.includes('#/e/kb-interview-routes/route-mysql'));
   assert.ok(byId.get('kb-mq').html.includes('#/e/kb-interview-routes/route-kafka'));
 });
