@@ -58,22 +58,22 @@
 
 ### MySQL ｜ 索引、事务与慢 SQL 的参数级追问
 
-> 从一条慢 SQL 的排查开始，让你讲执行计划、索引结构与联合索引的最左前缀，判据是能否解释回表与索引下推的代价。再深挖隔离级别下 RC 与 RR 的差异，追到 MVCC 的版本链与 ReadView。
+> 回答 MySQL 问题，我通常按「读写路径与磁盘 IO 代价」展开：读路径看 B+ 树扇出、最左前缀定位与回表随机 IO，用执行计划定量验证；并发与写路径看锁粒度、MVCC 快照读，以及 redo/binlog 两阶段提交如何兜住崩溃恢复。
 
 **1. 联合索引与最左前缀（含索引失效、索引下推）**（★★★）
 　*我会先说：这是一棵树，不是三棵；只能从最左列连续用，范围一出现后面就只能过滤*
 - 本质：联合索引 `(a,b,c)` 是**一棵**按 a、再按 b、再按 c 排好的 B+ 树。面试里我先用这个例子：`a=1 and b=2 and c=3` 三列都能用来定位；`a=1 and c=3` 中间断了，只能用 a；`a=1 and b>2 and c=3` 用 a 和 b 定位，c 只能在索引里过滤，不能再缩小范围；没有 a 的查询整棵树用不上。where 里列的书写顺序优化器会重排，order by 的顺序不会。下面把失效条件和怎么用 key_len 证明写全。
 - 必答要点：
-  1. 逐条判定：`(a,b,c)` 下 `a=1 and b=2 and c=3` 三列全用；`a=1 and c=3` 只用 a（c 跳过了 b，无法定位）；`a=1 and b>2 and c=3` 用 a、b 定位，c 只能 ICP 过滤；`b=2 and c=3` 完全不走（没有最左列）。判断口诀：**等值连续的列才算"用上"，第一个范围列之后只能"过滤"。**
+  1. 逐条判定：`(a,b,c)` 下 `a=1 and b=2 and c=3` 三列全用；`a=1 and c=3` 只用 a（c 跳过了 b，无法定位）；`a=1 and b>2 and c=3` 用 a、b 定位，c 只能 ICP 过滤；`b=2 and c=3` 完全不走（没有最左列）。核心判据：**等值连续匹配的列才能用于 B+ 树区间定位，遇到第一个范围列之后，后续列最多只做索引内过滤。**
   2. 书写顺序不影响：`where b=2 and a=1` 与 `a=1 and b=2` 等价，优化器会重排（但 `ORDER BY`/`GROUP BY` 的顺序不能乱，它要匹配索引的有序性才能免排序）。
   3. 索引下推 ICP（5.6+）：把 `WHERE` 中能用索引列判断的条件下推到引擎层，先过滤再回表。例 `idx(name,age)` 上 `where name like '张%' and age=20`：无 ICP 要按 name 回表几百次再筛 age，有 ICP 先在索引里筛掉 age≠20 的行，回表次数可降一个量级；`Extra` 显示 `Using index condition`。
-  4. 索引失效清单（背全）：①列上做函数/运算 `where date(create_time)='2024-01-01'`、`where id+1=10`；②隐式类型转换（`varchar` 列传数字 `where phone=13800000000`，等价于 `CAST(phone AS int)`）；③`like '%张'` 左模糊；④`or` 连接的列有一侧无索引；⑤`!=`/`not in`/`is not null` 大范围（不是绝对失效，是代价高易全扫）；⑥联合索引不满足最左；⑦字符集/排序规则不一致导致 JOIN 列无法用索引。
+  4. 常见索引失效场景：①列上做函数/运算 `where date(create_time)='2024-01-01'`、`where id+1=10`；②隐式类型转换（`varchar` 列传数字 `where phone=13800000000`，等价于 `CAST(phone AS int)`）；③`like '%张'` 左模糊；④`or` 连接的列有一侧无索引；⑤`!=`/`not in`/`is not null` 大范围（不是绝对失效，是代价高易全扫）；⑥联合索引不满足最左；⑦字符集/排序规则不一致导致 JOIN 列无法用索引。
 - 高频追问：`(a,b,c)` 查 `a=1,c=3` 能用几列 → 一列（a），`key_len` 只等于 a 的长度，这是"用上了但收益低"的典型，靠 `key_len` 就能证明。追问"区分度低的字段该不该建索引" → 单独建不值得（status 只有 3 值），但可以放在联合索引的**后面**当过滤列，或做成 `status + create_time` 让高区分度列领头。
 - 易错点：说"联合索引会建三棵树"（实际一棵）；把 `b=2 and a=1` 说成不走索引；把 ICP 说成"无需回表"（ICP 只是减少回表次数，除非列全覆盖）。
 
 **2. 慢 SQL 排查与优化（EXPLAIN / 走了索引仍慢）**（★★★）
 　*慢查询日志找出 SQL、EXPLAIN 证明怎么走的、再按"回表/区分度/选错索引/锁等待"对症，加索引只是第 4 步*
-- 本质：面试官要的不是"加索引"三个字，而是一套**能复现的定位链**：先证明哪条 SQL 慢（日志），再证明它怎么执行（执行计划），最后才解释为什么慢（回表、区分度、选错索引、锁、数据量）。缺任何一环，答案都是背的。
+- 本质：排查慢 SQL 我不会上来就说加索引，而是走完一条**可验证的定位闭环**：先从慢日志按总耗时抓出真正拖垮数据库的目标语句，再用 `EXPLAIN` 核对实际走没走索引、用了几列，最后从回表随机 IO、区分度、统计信息失真和行锁等待里定位根因，加索引只是其中一种手段。
 - 必答要点：
   1. 定位：`slow_query_log=ON`、`long_query_time=1`（默认 10s 太长，线上抓不到问题）、`log_queries_not_using_indexes`；用 `pt-query-digest` 按总耗时排序而不是按单次耗时（一条 200ms×10 万次比一条 3s×10 次更致命）；实时看 `SHOW PROCESSLIST` / `information_schema.innodb_trx`。
   2. 执行计划四看：`type`（ALL<index<range<ref<eq_ref<const，至少要 range）、`key`+`key_len`（key_len 能反推联合索引用了几列：int 4B、bigint 8B、varchar(n) utf8mb4 = 4n+2、可空再加 1B）、`rows`×`filtered`（估算扫多少行、过滤后剩多少）、`Extra`（`Using filesort`/`Using temporary` 是排序与临时表的红灯，`Using index` 是覆盖索引，`Using index condition` 是索引下推）。
@@ -95,7 +95,7 @@
 
 **4. InnoDB 引擎与 ACID 实现**（★★★）
 　*原子性靠 undo、持久性靠 redo、隔离性靠锁+MVCC、一致性靠前三条+约束，四者不是并列关系*
-- 本质：ACID 不是四个并列机制，而是"undo 兜原子、redo 兜持久、锁+MVCC 兜隔离、约束+前三者兜一致"。面试先说这句骨架，再逐个补机制。
+- 本质：从存储引擎视角看，ACID 不是四个平级模块，而是**用原子性、隔离性、持久性三个底层机制共同保住业务数据一致性**：undo log 负责回滚兜原子性，redo log 加两阶段提交兜崩溃后的持久性，锁与 MVCC 分工协作兜读写隔离。
 - 必答要点：
   1. 原子性 = undo log：每行修改前记反向操作（INSERT 记 DELETE、UPDATE 记旧值），回滚时逆序执行；undo 同时是 MVCC 版本链的载体。
   2. 持久性 = redo log（WAL）：改页时先写 redo（顺序写、小 IO）再改 Buffer Pool 里的脏页，事务提交时 `innodb_flush_log_at_trx_commit=1` 保证 redo 落盘；崩溃后用 redo 重放，避免"改了内存没刷盘"丢数据。
@@ -306,7 +306,7 @@
 
 ### Redis ｜ 缓存与分布式锁的落地追问
 
-> 从缓存击穿与雪崩的应对切入，追问加锁重建还是逻辑过期；再深挖数据结构与底层编码，看能否说清 ZSet 跳表为何适合范围查询。判据是分布式锁能否讲全 SET NX PX 与 Lua 解锁的原子性。
+> 谈 Redis 设计，我的主线是「单线程内存模型下的吞吐与边界」：底层编码如何在小对象省内存与大数据保复杂度之间切换，高并发下如何拆解大 Key、热 Key 与击穿雪崩，以及把它当分布式锁或状态组件时异步复制带来的边界。
 
 **1. 分布式锁：SET NX PX 与 Lua 解锁**（★★★）
 　*一条命令占住，值里写上只有自己认得出的编号，解锁时先比对再删*
@@ -317,8 +317,8 @@
   3. TTL 与业务时长矛盾：业务可能超时 → 要么预估上限给足 TTL，要么后台线程续期（看门狗），要么把"锁"降级为"幂等 + 状态机"。
   4. 已知短板：主从异步复制，主节点写入锁后未同步就宕机、从库升主 → 两个客户端同时持锁；单点/网络分区下的"锁失效但业务仍在跑"只能靠 `fencing token`（单调递增版本号，写存储时校验）真正防住。
   5. 实现层面：`RedisTemplate.opsForValue().setIfAbsent(key, val, 30, SECONDS)` + AOP 自定义注解 `@DistributedLock(key="#orderId")` 是最常见的落地方式；锁粒度按业务键（订单/商品/用户）划分，全局锁冲突就改分片锁（`lock:{biz}:{hash%N}`）。
-- 高频追问：业务执行超过锁过期时间怎么办 → 答：三选一——① 看门狗自动续期（Redisson，默认 30s/每 10s 续）；② 业务侧把长任务拆小、每段重新抢锁；③ 不靠锁保正确性，改用状态机 CAS（`update ... where status='INIT'`）+ 幂等，锁只做"减少并发"的优化。
-- 高频追问：集群主从切换时锁为什么会丢 → 答：复制是异步的，锁写入主节点后还没同步到从节点主就挂了，哨兵/Cluster 提升从节点后锁"凭空消失"；解法是 Redlock（多主多数派）或换 ZooKeeper/etcd（Raft 强一致），但工程上更常见的是接受"锁可能失效"，用幂等与 fencing 兜底。
+- 高频追问：业务执行超过锁过期时间怎么办 → 三选一——① 看门狗自动续期（Redisson，默认 30s/每 10s 续）；② 业务侧把长任务拆小、每段重新抢锁；③ 不靠锁保正确性，改用状态机 CAS（`update ... where status='INIT'`）+ 幂等，锁只做"减少并发"的优化。
+- 高频追问：集群主从切换时锁为什么会丢 → 复制是异步的，锁写入主节点后还没同步到从节点主就挂了，哨兵/Cluster 提升从节点后锁"凭空消失"；解法是 Redlock（多主多数派）或换 ZooKeeper/etcd（Raft 强一致），但工程上更常见的是接受"锁可能失效"，用幂等与 fencing 兜底。
 - 易错点：`SETNX` + `EXPIRE` 分两步；解锁不校验 value；把锁当"强一致"保证；忘记给锁 key 加业务前缀导致冲突。
 
 **2. 大 Key、热 Key 与 Key 设计**（★★★）
@@ -330,8 +330,8 @@
   3. 热 Key 判据：单 key QPS 远超单分片承载（单实例 10w 级 QPS，单 key 上限更低），危害是分片负载倾斜 + 缓存击穿叠加。
   4. 治理：本地缓存（Caffeine，热点在 JVM 内挡 80%+）、key 加随机后缀拆成 N 份副本（`hot:sku:1#0..9`，读时随机、写时全写或用 binlog 同步）、读写分离多从库分摊、限流 + 熔断兜底。注意 **Redis 不会把一个 key 自动拆到多个 slot**，必须应用层拆。
   5. Key 设计规范：`业务:对象:ID[:字段]`（如 `order:detail:8891`），控制在 100 字节内、避免大字段名重复、避免用 `keys *` 匹配的前缀热点；设 TTL 时加随机抖动防同时过期。
-- 高频追问：10 万 QPS 打到同一个热 key 怎么办 → 答：先本地缓存挡（热点 key 秒级过期 + 主动刷新），再 key 拆分（N 个副本随机读，写扩散），再读写分离加从库；仍不够就在业务侧聚合（请求合并/singleflight）并限流。
-- 高频追问：大量 key 同时过期怎么解决 → 答：TTL 加随机抖动（如 30min ± 5min）、逻辑过期 + 异步刷新、热点数据永不过期由后台更新；同时用互斥重建避免击穿。
+- 高频追问：10 万 QPS 打到同一个热 key 怎么办 → 先本地缓存挡（热点 key 秒级过期 + 主动刷新），再 key 拆分（N 个副本随机读，写扩散），再读写分离加从库；仍不够就在业务侧聚合（请求合并/singleflight）并限流。
+- 高频追问：大量 key 同时过期怎么解决 → TTL 加随机抖动（如 30min ± 5min）、逻辑过期 + 异步刷新、热点数据永不过期由后台更新；同时用互斥重建避免击穿。
 - 易错点：以为集群能自动把热 key 打散；用 `KEYS *` 扫线上；大 key 用 `DEL` 而不是 `UNLINK`；给全量 key 设同一过期时间。
 
 **3. 数据结构与底层编码**（★★★）
@@ -344,8 +344,8 @@
   4. Set：`intset`（全整数且 ≤512 个）→ `listpack`（7.2 起小集合）→ `hashtable`；适合去重（一人一单 `SADD`）、共同好友 `SINTER`。
   5. ZSet：小数据 `listpack`（≤128 个、成员 ≤64 字节）→ `skiplist + dict`；Stream：`rax`（基数树）+ `listpack`；特殊类型 Bitmap（String 的位操作）、HyperLogLog（12KB）、GEO（ZSet + geohash 52 位）。
   6. 编码可用 `OBJECT ENCODING key` 验证；内存估算用 `MEMORY USAGE key`；`redis-rdb-tools`/`rdb` 分析快照。
-- 高频追问：ZSet 为什么同时要跳表和哈希表 → 答：dict 提供"成员 → 分值"的 O(1) 查询（`ZSCORE`），skiplist 提供有序遍历与排名（`ZRANGE`/`ZRANK` 靠 span 字段 O(logN)）；两者共享同一份成员与分值指针，内存代价可接受。
-- 高频追问：listpack 相比 ziplist 改了什么 → 答：ziplist 每个 entry 记录前一个 entry 的长度（`prevlen`），一旦某 entry 变长导致 `prevlen` 从 1 字节变 5 字节，会连锁触发后续所有 entry 重写（最坏 O(n²)）；listpack 把长度信息放在 entry 尾部（`backlen`），只影响自己，彻底消除连锁更新。
+- 高频追问：ZSet 为什么同时要跳表和哈希表 → dict 提供"成员 → 分值"的 O(1) 查询（`ZSCORE`），skiplist 提供有序遍历与排名（`ZRANGE`/`ZRANK` 靠 span 字段 O(logN)）；两者共享同一份成员与分值指针，内存代价可接受。
+- 高频追问：listpack 相比 ziplist 改了什么 → ziplist 每个 entry 记录前一个 entry 的长度（`prevlen`），一旦某 entry 变长导致 `prevlen` 从 1 字节变 5 字节，会连锁触发后续所有 entry 重写（最坏 O(n²)）；listpack 把长度信息放在 entry 尾部（`backlen`），只影响自己，彻底消除连锁更新。
 - 易错点：以为 Hash 的 field 能单独过期；把 `listpack` 说成 6.0 就有（是 7.0 才用于 list/hash/zset）；认为大 key 一定用 hashtable 更好（要看访问模式与内存）。
 
 **4. 缓存击穿与雪崩**（★★★）
@@ -356,8 +356,8 @@
   2. 雪崩：大量 key 同一时刻过期（缓存预热 + 统一 TTL）→ TTL 加随机抖动；Redis 整体不可用 → 主从 + 哨兵/Cluster 高可用、多级缓存（本地 Caffeine 挡一层）、熔断降级（Hystrix/Sentinel）、限流（只放行部分流量）、DB 侧连接池与慢查询保护。
   3. 与穿透的区别（面试必问）：穿透是"数据根本不存在"，每次都绕过缓存打 DB；击穿是"数据存在但缓存失效"；雪崩是"大面积失效/整体宕机"。
   4. 保底：任何方案都要有"回源兜底值"（默认值/降级文案），避免 DB 挂了页面白屏。
-- 高频追问：爆款商品 10 万 QPS 打穿 Redis 到 MySQL 是什么问题，怎么解 → 答：击穿（热 key 失效）+ 容量不足；解法是本地缓存 + 逻辑过期异步刷新 + 互斥重建 + 库存类请求在 Redis 用 Lua 原子扣减（不落 DB 热路径）+ DB 只做异步落库与对账。
-- 高频追问：逻辑过期和互斥锁怎么选 → 答：要求强一致（库存、余额）用互斥重建，宁可让少量请求等；只读展示类（商品详情、榜单）用逻辑过期换吞吐，接受秒级脏读。
+- 高频追问：爆款商品 10 万 QPS 打穿 Redis 到 MySQL 是什么问题，怎么解 → 击穿（热 key 失效）+ 容量不足；解法是本地缓存 + 逻辑过期异步刷新 + 互斥重建 + 库存类请求在 Redis 用 Lua 原子扣减（不落 DB 热路径）+ DB 只做异步落库与对账。
+- 高频追问：逻辑过期和互斥锁怎么选 → 要求强一致（库存、余额）用互斥重建，宁可让少量请求等；只读展示类（商品详情、榜单）用逻辑过期换吞吐，接受秒级脏读。
 - 易错点：把击穿说成穿透；互斥锁没设超时导致死等；重建线程异常后没释放锁；TTL 全量设成同一值。
 
 **5. ZSet、跳表与排行榜**（★★★）
@@ -369,8 +369,8 @@
   3. 为什么不用 B+ 树/红黑树：跳表实现简单（无旋转/分裂）、范围查询只需沿底层链表走、并发/无锁实现容易；B+ 树为磁盘页设计（Redis 纯内存不需要减少磁盘 IO），红黑树范围查询与排名实现更繁琐。
   4. 排行榜用法：`ZADD rank 100 uid`、`ZINCRBY`、`ZREVRANGE rank 0 9 WITHSCORES`、`ZREVRANK` 取排名（O(logN)）；分数相同时按成员字典序排，要"时间早的在前"就把时间戳编进 score（如 `score = 分数 + (1 - 时间/1e13)`）或用 `ZADD` 后二次排序。
   5. 内存量级：100 万成员的 ZSet 约 100~150MB（跳表节点 + dict 各一份，平均每元素 100~150B），面试常考"能不能扛 1000 万"→ 要分片或换 `listpack` 小集合/外部排序。
-- 高频追问：跳表什么时候会退化成 O(n) → 答：p→0 时几乎不分层，退化为单链表；p→1 时层数接近 n，空间爆炸但查找仍快；实际 p=0.25 是概率结构，退化概率极低但不为零，因此复杂度是"期望 O(logN)"。
-- 高频追问：ZSet 如何做限流/延时 → 答：滑动窗口限流用 `ZADD key now uuid` + `ZREMRANGEBYSCORE key 0 now-window` + `ZCARD`；延时队列用 `score=执行时间戳`，定时 `ZRANGEBYSCORE key 0 now LIMIT 0 10` 取到期任务。
+- 高频追问：跳表什么时候会退化成 O(n) → p→0 时几乎不分层，退化为单链表；p→1 时层数接近 n，空间爆炸但查找仍快；实际 p=0.25 是概率结构，退化概率极低但不为零，因此复杂度是"期望 O(logN)"。
+- 高频追问：ZSet 如何做限流/延时 → 滑动窗口限流用 `ZADD key now uuid` + `ZREMRANGEBYSCORE key 0 now-window` + `ZCARD`；延时队列用 `score=执行时间戳`，定时 `ZRANGEBYSCORE key 0 now LIMIT 0 10` 取到期任务。
 - 易错点：说跳表"最坏 O(logN)"（是期望）；以为 ZSet 只存跳表（还有 dict）；用 `ZRANGE` 全量取排行榜（大 key 阻塞）。
 
 **6. Lua 脚本原子性**（★★）
@@ -382,8 +382,8 @@
   3. 限制：脚本必须**快**（超过 `lua-time-limit` 默认 5s 只会打日志并允许 `SCRIPT KILL`，写过的脚本不可 kill）；脚本里的 key 必须在同一节点（Cluster 下所有 key 要同 slot，用 `{hashtag}` 强制同槽，否则报 CROSSSLOT）。
   4. 版本与运维：`EVAL`/`EVALSHA`（脚本缓存，省带宽）、`SCRIPT LOAD`；7.0 起可用 `FUNCTION`（Redis Functions，持久化到 AOF/RDB，不用每次加载）。
   5. Lua 改成功但 MQ 未发出的问题：脚本只保证 Redis 内原子，跨系统要靠"本地消息表/事务消息/最终对账"，或先写 MQ 再改 Redis（顺序反过来更安全）。
-- 高频追问：为什么不用 `MULTI/EXEC` 事务 → 答：Redis 事务只是把命令排队后顺序执行，**不能读中间结果做判断**（没有 if），也无法在事务内基于查询结果决定后续命令，所以"判断+扣减"必须用 Lua；另外事务不支持回滚（运行期错误只跳过该命令）。
-- 高频追问：Lua 脚本下还会有并发问题吗 → 答：Redis 内部没有（脚本原子），但跨 key/跨节点、脚本与 DB 之间仍有竞态；且脚本超时会阻塞整个实例，反而放大故障。
+- 高频追问：为什么不用 `MULTI/EXEC` 事务 → Redis 事务只是把命令排队后顺序执行，**不能读中间结果做判断**（没有 if），也无法在事务内基于查询结果决定后续命令，所以"判断+扣减"必须用 Lua；另外事务不支持回滚（运行期错误只跳过该命令）。
+- 高频追问：Lua 脚本下还会有并发问题吗 → Redis 内部没有（脚本原子），但跨 key/跨节点、脚本与 DB 之间仍有竞态；且脚本超时会阻塞整个实例，反而放大故障。
 - 易错点：以为 Lua 出错会回滚；在 Cluster 里跨 slot 传多个 key；脚本里 `KEYS` 写死 key（应用 `KEYS/ARGV` 传参，否则无法在集群/代理下路由）；把大循环放进脚本。
 
 **7. RDB/AOF 持久化**（★★）
@@ -395,8 +395,8 @@
   3. Redis 7.0 多部分 AOF：`base.rdb`（基础快照）+ `incr.aof`（增量）+ `manifest`（清单），避免旧版"重写时双写缓冲膨胀 + 单文件过大"问题；4.0+ 支持混合持久化 `aof-use-rdb-preamble yes`（AOF 前半段是 RDB 格式，兼顾恢复速度与完整性）。
   4. 选型：能容忍分钟级丢失（纯缓存）→ 只 RDB 或不持久化；要求秒级 → AOF everysec + RDB 定期快照（混合持久化）；恢复速度 RDB 更快（直接加载内存，AOF 要重放命令）。
   5. 生产注意：`fork` 失败（`Can't fork`）多因内存 overcommit 与 `vm.overcommit_memory=0`；AOF 重写期间磁盘 IO 与 CPU 压力要错峰；持久化文件不要放网络盘。
-- 高频追问：AOF 什么场景会丢数据 → 答：`everysec` 下最多丢 1 秒（fsync 由后台线程做，若上次 fsync 未完成会延迟）；`no` 丢更多；AOF 重写期间缓冲区若进程崩溃也可能丢；此外主从异步复制导致"主节点宕机未同步的数据"丢失，与持久化无关。
-- 高频追问：Redis 也能持久化，能否只用 Redis 当数据库 → 答：不建议。内存成本高、无强事务与复杂查询、主从切换会丢数据、单实例容量与吞吐有上限；Redis 应做缓存/加速层，DB 做权威存储。
+- 高频追问：AOF 什么场景会丢数据 → `everysec` 下最多丢 1 秒（fsync 由后台线程做，若上次 fsync 未完成会延迟）；`no` 丢更多；AOF 重写期间缓冲区若进程崩溃也可能丢；此外主从异步复制导致"主节点宕机未同步的数据"丢失，与持久化无关。
+- 高频追问：Redis 也能持久化，能否只用 Redis 当数据库 → 不建议。内存成本高、无强事务与复杂查询、主从切换会丢数据、单实例容量与吞吐有上限；Redis 应做缓存/加速层，DB 做权威存储。
 - 易错点：说 AOF "一定不丢"；把 `save` 阻塞与 `BGSAVE` 混为一谈；认为 RDB 是增量备份；忽略 fork 的 COW 内存膨胀（写入多时可能内存翻倍）。
 
 **8. 过期删除策略**（★★）
@@ -408,8 +408,8 @@
   3. 主从：从库**不主动**删过期 key（避免与主库不一致），只等主库删除后传播 `DEL`；所以从库可能读到逻辑上已过期的数据（Redis 3.2+ 读时会返回 nil 但仍占内存）。
   4. 相关坑：过期键在 RDB/AOF 中的处理（RDB 加载时主库丢弃过期键、从库保留；AOF 重写会剔除已过期键）；大量 key 同时过期会造成"定期删除忙 + 请求变慢"，必须加随机 TTL。
   5. 想"到期立即删除"：Redis 无此能力，可用 `keyspace notification`（`notify-keyspace-events Ex`）订阅过期事件做业务回调，但事件不保证实时/不丢，且开通知有性能成本。
-- 高频追问：过期键过期后会立即释放内存吗 → 答：不会，要等惰性访问或定期删除命中；内存是否"看起来没降"还受分配器碎片影响（`mem_fragmentation_ratio` > 1.5 要关注，可开 `activedefrag`）。
-- 高频追问：Hash 的 field 能单独设过期时间吗 → 答：6.0~7.2 不行（只能整 key TTL），要拆成独立 key 或用 `ZSET` 存到期时间自己扫；Redis 7.4 起支持 `HEXPIRE/HPEXPIRE` 给 field 设 TTL。
+- 高频追问：过期键过期后会立即释放内存吗 → 不会，要等惰性访问或定期删除命中；内存是否"看起来没降"还受分配器碎片影响（`mem_fragmentation_ratio` > 1.5 要关注，可开 `activedefrag`）。
+- 高频追问：Hash 的 field 能单独设过期时间吗 → 6.0~7.2 不行（只能整 key TTL），要拆成独立 key 或用 `ZSET` 存到期时间自己扫；Redis 7.4 起支持 `HEXPIRE/HPEXPIRE` 给 field 设 TTL。
 - 易错点：以为 TTL 到期内存立即回收；说定期删除是"遍历所有 key"；忽略从库读到过期数据的可能。
 
 **9. 单线程模型与 Redis 为什么快**（★★）
@@ -420,8 +420,8 @@
   2. 单线程的边界：单条命令耗时就等于全实例卡顿——大 key 删除/`KEYS *`/`FLUSHALL`/复杂 `ZUNIONSTORE`/Lua 死循环都是"慢查询即全局故障"；所以有 `SLOWLOG`（默认 >10ms 记录）与 `latency monitor`。
   3. Redis 6.0 的 IO 多线程：`io-threads` 默认 1（即关闭），建议 4~8 且 ≤ CPU 核数；**只把 socket 读写与协议解析/回包下放给 IO 线程，命令执行仍是单线程**（否则要加锁，破坏所有原子性假设）；需配合 `io-threads-do-reads yes`。
   4. 单实例 QPS 量级：简单 get/set 约 8~12 万 QPS（pipeline 可到几十万），瓶颈常在网络与 CPU 单核；再往上靠分片（Cluster）而不是加线程。
-- 高频追问：改成多线程执行命令会有哪些开销 → 答：要引入锁/分段数据结构、破坏 `MULTI`/Lua 的原子语义、增加上下文切换与缓存失效、复杂度爆炸；收益却不如直接分片（每分片仍是单线程但可水平扩展）。
-- 高频追问：自写 HashMap 为什么比不过 Redis → 答：差在网络模型（Redis 用 epoll + 事件循环 + 零拷贝式缓冲）、内存布局（SDS/紧凑编码/对象复用）、渐进式 rehash 与过期清理、单线程无锁，而 Java 侧还要算序列化与 GC。
+- 高频追问：改成多线程执行命令会有哪些开销 → 要引入锁/分段数据结构、破坏 `MULTI`/Lua 的原子语义、增加上下文切换与缓存失效、复杂度爆炸；收益却不如直接分片（每分片仍是单线程但可水平扩展）。
+- 高频追问：自写 HashMap 为什么比不过 Redis → 差在网络模型（Redis 用 epoll + 事件循环 + 零拷贝式缓冲）、内存布局（SDS/紧凑编码/对象复用）、渐进式 rehash 与过期清理、单线程无锁，而 Java 侧还要算序列化与 GC。
 - 易错点：说 Redis 6.0 后"命令执行多线程"；把多路复用说成多线程；认为单线程无法高并发（并发靠 IO 复用，不靠线程数）。
 
 **10. 主从复制**（★★）
@@ -433,8 +433,8 @@
   3. 增量：`replid + offset` 定位；主从断连重连时若 offset 仍在 backlog 内则部分重同步（`+CONTINUE`），否则退回全量。
   4. 延迟与一致性：复制是异步的，从库读到旧值（`INFO replication` 的 `master_repl_offset` 与从库 offset 差值即延迟）；`WAIT 1 100` 可让主库等待至少 N 个从库确认（100ms），但会牺牲可用性，不是强一致。
   5. 切换风险：主库宕机时未同步的写丢失；若用 Redis 存库存/锁，会引发超卖或双持锁 → 关键数据必须 DB 权威 + 幂等 + 对账。
-- 高频追问：主从切换时已写入旧主但未复制的数据怎么办 → 答：技术上报废（异步复制无法追回），只能业务兜底：写入侧落 DB/消息做权威记录、切换后对账补偿、把"扣减"设计成幂等可重放。
-- 高频追问：主从延迟导致读到旧数据怎么解 → 答：关键读走主库（读写分离按业务分层）、用 `WAIT`/`wait_for_replication` 提升一致性（代价是延迟）、会话粘性（同一用户短时间读主）、或让缓存失效消息带版本号。
+- 高频追问：主从切换时已写入旧主但未复制的数据怎么办 → 技术上报废（异步复制无法追回），只能业务兜底：写入侧落 DB/消息做权威记录、切换后对账补偿、把"扣减"设计成幂等可重放。
+- 高频追问：主从延迟导致读到旧数据怎么解 → 关键读走主库（读写分离按业务分层）、用 `WAIT`/`wait_for_replication` 提升一致性（代价是延迟）、会话粘性（同一用户短时间读主）、或让缓存失效消息带版本号。
 - 易错点：认为主从是同步复制；忽略 `repl_backlog` 太小导致频繁全量同步；在从库上写数据（只读）；忘记从库不删过期 key。
 
 **11. 哨兵与高可用部署**（★★）
@@ -446,7 +446,7 @@
   3. 选主规则：排除下线/断连/优先级为 0 的从库 → 按 `replica-priority` 小优先 → 复制 offset 最大（数据最新）→ `runid` 最小；然后 `SLAVEOF NO ONE` 提升，其他从库改指向新主，旧主恢复后降级为从库。
   4. 部署要求：至少 3 个哨兵（奇数）且分散在不同机器/可用区；`quorum` 常设 2；客户端需支持哨兵协议（Jedis/Lettuce 的 `SentinelPool`）或走 VIP/代理。
   5. 短板：切换期间（秒级~十几秒）写入不可用；异步复制导致丢数据；客户端要刷新拓扑；规模大时哨兵管理成本高 → 上 Cluster。
-- 高频追问：哨兵与 Cluster 的架构差异与选型 → 答：哨兵是"单分片多副本 + 外部监控"，数据量受单机内存限制（≤ 几十 GB）；Cluster 是"多分片 + 内置故障转移 + Gossip"，可水平扩容，但受限多 key 操作与事务；数据量小求简单用哨兵，数据量大或写 QPS 高用 Cluster。
+- 高频追问：哨兵与 Cluster 的架构差异与选型 → 哨兵是"单分片多副本 + 外部监控"，数据量受单机内存限制（≤ 几十 GB）；Cluster 是"多分片 + 内置故障转移 + Gossip"，可水平扩容，但受限多 key 操作与事务；数据量小求简单用哨兵，数据量大或写 QPS 高用 Cluster。
 - 易错点：认为哨兵能提升容量（它只管高可用，不分片）；`quorum` 与"多数派"混淆（客观下线靠 quorum，选 Leader 靠多数派投票）；只部署 2 个哨兵（无法过半）。
 
 **12. Cluster 哈希槽、迁移与 Gossip**（★★）
@@ -459,8 +459,8 @@
   4. 迁移流程：`CLUSTER SETSLOT <slot> IMPORTING/MIGRATING` → 逐 key `MIGRATE` → `CLUSTER SETSLOT <slot> NODE <target>`；期间客户端靠 `ASK` 保证可用。
   5. 故障转移：节点间 Gossip 传播拓扑与槽位，`cluster-node-timeout`（默认 15000ms）判下线；主节点被半数以上主节点标记 FAIL → 其从库发起选举（Raft 式，需多数主节点投票）晋升。
   6. 限制：多 key 命令与事务/Lua 要求同槽（用 `{tag}` 强制，如 `{user:1}:cart`），否则 CROSSSLOT；不支持跨槽 `MGET`；`SELECT` 只有 db0。
-- 高频追问：Gossip 协议怎么生效、复杂度如何 → 答：每个节点每秒随机选 5 个节点发 PING（含自身与部分已知节点的槽位/状态），收到 PONG 后更新；信息以"反熵"方式指数级扩散，O(log N) 轮收敛，单节点每秒消息量恒定（不随集群规模线性增长）。
-- 高频追问：扩容迁移槽位期间客户端如何保证可用 → 答：迁移中以槽为单位逐个 key 搬，客户端遇 `ASK` 临时转发到目标节点、遇 `MOVED` 更新本地映射；迁移完成前该槽的 key 可能分布在两个节点，所以必须支持 ASK 语义，否则会读不到。
+- 高频追问：Gossip 协议怎么生效、复杂度如何 → 每个节点每秒随机选 5 个节点发 PING（含自身与部分已知节点的槽位/状态），收到 PONG 后更新；信息以"反熵"方式指数级扩散，O(log N) 轮收敛，单节点每秒消息量恒定（不随集群规模线性增长）。
+- 高频追问：扩容迁移槽位期间客户端如何保证可用 → 迁移中以槽为单位逐个 key 搬，客户端遇 `ASK` 临时转发到目标节点、遇 `MOVED` 更新本地映射；迁移完成前该槽的 key 可能分布在两个节点，所以必须支持 ASK 语义，否则会读不到。
 - 易错点：说 Cluster 用一致性哈希；忘记 `ASK` 与 `MOVED` 的区别；跨槽用 Lua；以为从库能分担写。
 
 **13. 缓存穿透与布隆兜底**（★★）
@@ -471,8 +471,8 @@
   2. 方案二：布隆过滤器前置拦截，把所有可能存在的 ID 预加载（或随写入增量 `BF.ADD`），不存在直接返回；误判率可控、**不误漏**。
   3. 方案三：参数校验与限流（ID 格式/范围/签名校验、按 IP+接口限流）、热点黑名单。
   4. 组合拳（工程标配）：布隆挡 99% 非法 ID → 空值缓存挡残余 → 接口限流兜底；三者叠加后 DB 压力与"正常未命中"持平。
-- 高频追问：布隆过滤器误判怎么降低、数组长度怎么定 → 答：`m = -n·ln p/(ln2)²`、`k = (m/n)·ln2`；1 亿元素、误判率 1% → m ≈ 9.6 亿 bit ≈ 120MB、k ≈ 7；误判率降到 0.1% 则 m 翻到约 180MB。
-- 高频追问：布隆过滤器能删除元素吗 → 答：标准布隆不能（清位会影响其他元素）；用 Counting Bloom（计数位图）、Cuckoo Filter（支持删除、空间更省）或定期重建。
+- 高频追问：布隆过滤器误判怎么降低、数组长度怎么定 → `m = -n·ln p/(ln2)²`、`k = (m/n)·ln2`；1 亿元素、误判率 1% → m ≈ 9.6 亿 bit ≈ 120MB、k ≈ 7；误判率降到 0.1% 则 m 翻到约 180MB。
+- 高频追问：布隆过滤器能删除元素吗 → 标准布隆不能（清位会影响其他元素）；用 Counting Bloom（计数位图）、Cuckoo Filter（支持删除、空间更省）或定期重建。
 - 易错点：空值缓存不设 TTL 或 TTL 过长；布隆与真实数据不同步（新增数据没加进去导致误杀）；把穿透与击穿混答。
 
 **14. 内存淘汰策略**（★）
@@ -484,8 +484,8 @@
   3. LFU（4.0+）：8 bit 计数器（对数增长，上限 255）+ 8 bit 衰减（`lfu-decay-time` 分钟级衰减），解决"偶发批量扫一次就长期占坑"的 LRU 缺陷；适合热点稳定场景。
   4. 选型：纯缓存 → `allkeys-lru`（或 `allkeys-lfu`）；有 TTL 且不想丢无 TTL 数据 → `volatile-lru`；绝不能丢数据（当存储用）→ `noeviction` + 监控告警 + 扩容。
   5. 容量与碎片：`used_memory` 逼近 `maxmemory` 会频繁淘汰（抖动），一般留 20~30% 余量；`mem_fragmentation_ratio > 1.5` 开 `activedefrag`；内存满时 `noeviction` 下写命令返回 `OOM command not allowed when used memory > 'maxmemory'`。
-- 高频追问：1G 内存已存 999M 还能继续存吗 → 答：看策略——`noeviction` 直接报 OOM；LRU/LFU 会先淘汰再写（能存但可能刚写的马上被淘汰）；同时要考虑 `maxmemory` 是否含复制缓冲区与 AOF 缓冲。
-- 高频追问：除 LRU 外还了解哪些替换算法 → 答：FIFO、LFU、ARC（自适应 LRU/LFU）、W-TinyLFU（Caffeine 用，抗扫描且命中率高）、CLOCK（近似 LRU，Redis 的采样 LRU 本质是它变体）。
+- 高频追问：1G 内存已存 999M 还能继续存吗 → 看策略——`noeviction` 直接报 OOM；LRU/LFU 会先淘汰再写（能存但可能刚写的马上被淘汰）；同时要考虑 `maxmemory` 是否含复制缓冲区与 AOF 缓冲。
+- 高频追问：除 LRU 外还了解哪些替换算法 → FIFO、LFU、ARC（自适应 LRU/LFU）、W-TinyLFU（Caffeine 用，抗扫描且命中率高）、CLOCK（近似 LRU，Redis 的采样 LRU 本质是它变体）。
 - 易错点：以为 Redis 的 LRU 是精确 LRU；`volatile-*` 在没有 TTL 的 key 上等同于不淘汰（然后 OOM）；把淘汰与过期删除混为一谈（淘汰是内存压力触发，过期是时间触发）。
 
 **15. Pipeline 与批处理**（★）
@@ -497,7 +497,7 @@
   3. 使用约束：一次批量不宜过大（建议每批 100~1000 条），否则客户端内存与输出缓冲区膨胀（`client-output-buffer-limit`），甚至阻塞服务端；错误处理是"逐条看返回"，某条失败不影响其他条，重试要保证幂等。
   4. 与事务、Lua 的区别：pipeline 省 RTT 无原子性；`MULTI/EXEC` 有原子执行但无法读中间值、无回滚；Lua 原子且可带逻辑判断，但会阻塞实例。
   5. 客户端实践：Jedis `Pipeline`、Lettuce 的 `Batch`（注意 flush 时机）、Spring 的 `executePipelined`；批量导入/预热、批量删除、批量查详情是典型用法。
-- 高频追问：pipeline 不保证原子性怎么处理 → 答：需要原子就把逻辑收进一条 Lua（同槽）；只需要"不被打断的批量写"用 `MULTI/EXEC`；业务上也可接受"部分成功 + 幂等重放"。
+- 高频追问：pipeline 不保证原子性怎么处理 → 需要原子就把逻辑收进一条 Lua（同槽）；只需要"不被打断的批量写"用 `MULTI/EXEC`；业务上也可接受"部分成功 + 幂等重放"。
 - 易错点：认为 pipeline 是事务；一次塞 10 万条导致客户端 OOM/服务端输出缓冲超限；在 pipeline 里依赖上一条命令的结果（做不到，除 Lua）。
 
 **16. 缓存与数据库一致性**（★）
@@ -509,8 +509,8 @@
   3. 手段：先更新库再删缓存 + 删除失败重试（MQ 补偿）+ 延迟双删（500ms~1s 后再删一次，覆盖"读回填旧值"窗口）+ 缓存 TTL 兜底 + binlog 订阅（canal）异步删。
   4. 强一致诉求：不要靠缓存，直接读主库/加锁串行化；或把"缓存"降级为"只读副本"（写后读主）。
   5. 为什么删缓存而不是更新缓存：并发更新会乱序（A 更新 DB 后 B 更新 DB，B 先写缓存 A 后写 → 缓存是 A 的旧值）；且更新缓存有大量"写了但没人读"的无效计算（懒加载更划算）。
-- 高频追问：先删缓存再更新库行不行 → 答：不行，删完到更新库之间若有读请求，会把旧值回填进缓存，之后长期不一致；所以顺序是"先更新库，再删缓存"（概率上出问题的窗口更小）。
-- 高频追问：延迟双删为什么是 500ms~1s → 答：要覆盖"读请求在删除后回填旧值"的最大耗时（一次 DB 查询 + 网络 + 序列化，通常几十~几百 ms）；这个值是经验值，需按 RT 分布（如 p99）设定，不能保证绝对正确，只是降低概率。
+- 高频追问：先删缓存再更新库行不行 → 不行，删完到更新库之间若有读请求，会把旧值回填进缓存，之后长期不一致；所以顺序是"先更新库，再删缓存"（概率上出问题的窗口更小）。
+- 高频追问：延迟双删为什么是 500ms~1s → 要覆盖"读请求在删除后回填旧值"的最大耗时（一次 DB 查询 + 网络 + 序列化，通常几十~几百 ms）；这个值是经验值，需按 RT 分布（如 p99）设定，不能保证绝对正确，只是降低概率。
 - 易错点：以为"先更新库再删缓存"就万无一失；只延迟双删不做重试；给缓存设永不过期；忽略主从延迟导致的回填脏数据。
 
 **17. String 与 SDS**（★）
@@ -521,7 +521,7 @@
   2. 相比 C 字符串的好处：① O(1) 取长度（不用 `strlen`）；② 二进制安全（不依赖 `\0` 结尾，可存图片/序列化数据）；③ 预分配减少内存重分配：`len < 1MB` 时按 2 倍扩容，`≥ 1MB` 时每次多分配 1MB；④ 惰性释放（缩短时不立即回收，保留 alloc 供复用）；⑤ 兼容 C 字符串函数（末尾仍补 `\0`）。
   3. 三种编码：`int`（可解析为 long 且 ≤ 20 位）、`embstr`（≤ 44 字节，Redis 3.2+ 起 object 与 SDS 一次分配、只读，修改即转 raw）、`raw`（> 44 字节）。
   4. 用途：对象缓存（JSON/protobuf）、计数器（`INCR`，上限 `Long.MAX_VALUE`）、分布式锁、`SETEX` 验证码、位图与 HyperLogLog 的底层。
-- 高频追问：为什么 embstr 的阈值是 44 字节 → 答：jemalloc 按 64 字节分配，`redisObject` 16B + SDS 头 3B + `\0` 1B = 20B，剩 44B 放内容正好一个分配单元，超过就要二次分配、失去"一次分配"的优势。
+- 高频追问：为什么 embstr 的阈值是 44 字节 → jemalloc 按 64 字节分配，`redisObject` 16B + SDS 头 3B + `\0` 1B = 20B，剩 44B 放内容正好一个分配单元，超过就要二次分配、失去"一次分配"的优势。
 - 易错点：说 SDS 是"链表"（那是 quicklist）；认为 String 只能存文本；把 `embstr` 与 `raw` 的区别说成"是否压缩"。
 
 **18. Cache Aside 时序与延迟双删**（★）
@@ -532,7 +532,7 @@
   2. 写流程（标准）：更新 DB → 删除缓存（不是更新缓存）；删除失败 → 重试（3 次 + 退避）或发 MQ 异步删；再叠"延迟双删"：更新 DB 前删一次、更新后再延迟删一次。
   3. 更稳的做法：订阅 binlog（canal/DTS）异步删缓存，把"删"从业务代码解耦，避免业务异常导致漏删；或用"消息驱动 + 重试队列"保证至少删一次。
   4. 强一致替代：对账任务定期比对（全量/增量）、版本号校验（缓存 value 带 `version`，读时比对 DB 版本）、或读走主库。
-- 高频追问：先更新数据库再删除缓存，还会不一致吗，哪些场景 → 答：会。① 删除失败；② 读请求在"删缓存"前拿到旧值、在删除后回填（延迟双删覆盖）；③ 主从延迟导致回填旧值；④ 缓存已删但 DB 事务尚未提交（读请求读到旧值回填）。概率低但存在，只能靠 TTL + 对账兜底。
+- 高频追问：先更新数据库再删除缓存，还会不一致吗，哪些场景 → 会。① 删除失败；② 读请求在"删缓存"前拿到旧值、在删除后回填（延迟双删覆盖）；③ 主从延迟导致回填旧值；④ 缓存已删但 DB 事务尚未提交（读请求读到旧值回填）。概率低但存在，只能靠 TTL + 对账兜底。
 - 易错点：先删缓存再更新库；用"更新缓存"替代"删缓存"；延迟双删的延迟时间拍脑袋（应按 p99 RT）；删除失败静默忽略。
 
 **19. 布隆过滤器与 HyperLogLog**（★）
@@ -544,7 +544,7 @@
   3. Redis 实现：`RedisBloom` 模块的 `BF.ADD/BF.EXISTS/BF.RESERVE`，或客户端用 `SETBIT` 自建（k 个哈希函数 + 分桶）；Cuckoo Filter 支持删除、空间更省。
   4. HLL：`PFADD/PFCOUNT/PFMERGE`；固定 12KB（16384 桶 × 6 bit），用调和平均 + 偏差修正估算基数，标准误差 0.81%；适合 UV/去重计数，不适合小基数（< 几百时误差大，可用稀疏编码）与"取具体成员"。
   5. 对比：精确去重用 `SET`（内存 O(n)）；只需基数用 HLL（12KB 恒定）；需判存在用布隆（120MB/1 亿）；需要删除/精确集合用 `Roaring Bitmap`。
-- 高频追问：HyperLogLog 为什么 12KB 就能做 UV → 答：它只存"每个桶观测到的最大前导零个数"（6 bit），16384 个桶的寄存器就够估 10^9 级基数，靠的是概率统计而非存储成员。
+- 高频追问：HyperLogLog 为什么 12KB 就能做 UV → 它只存"每个桶观测到的最大前导零个数"（6 bit），16384 个桶的寄存器就够估 10^9 级基数，靠的是概率统计而非存储成员。
 - 易错点：以为布隆能删除；HLL 之间用 `PFCOUNT` 多次导致误差累积（应 `PFMERGE` 后算）；布隆过滤器与 DB 不同步导致误杀正常请求。
 
 **20. 使用场景与选型**（★）
@@ -555,8 +555,8 @@
   2. 多级缓存：本地（Caffeine，百 ns 级、容量小、多机不一致）→ Redis（ms 级、共享、容量大）→ DB；本地缓存挡热点，Redis 挡量，DB 兜底；一致性靠"更新 DB 后删本地 + 广播失效（pub/sub 或 MQ）"。
   3. 成本判断：内存单价约为磁盘的 10~100 倍，所以只放热数据（20% 数据承担 80% 访问）；机器数量与容量要算"数据量 × 副本数 × 余量 1.3"。
   4. 不该用的场景：需要复杂查询/事务/强一致（用 MySQL）、超大数据量冷数据（用磁盘 KV/对象存储）、严格不丢的消息（用 Kafka/RocketMQ）、多维检索（用 ES/向量库）。
-- 高频追问：为什么短期记忆/会话用 Redis，长期记忆用 MongoDB/MySQL → 答：短期数据热、结构简单、要 TTL 自动过期与高并发读写，正好是 Redis 强项；长期数据量大、要持久、要按条件检索与聚合，Redis 内存成本与查询能力都不匹配。
-- 高频追问：Redis 与 MySQL 的分层怎么划 → 答：MySQL 存全量与权威数据，Redis 存"最近/最热"的子集并设 TTL；读走缓存回源写缓存，写走 DB 后删缓存；用 binlog 订阅（canal）做异步失效兜底。
+- 高频追问：为什么短期记忆/会话用 Redis，长期记忆用 MongoDB/MySQL → 短期数据热、结构简单、要 TTL 自动过期与高并发读写，正好是 Redis 强项；长期数据量大、要持久、要按条件检索与聚合，Redis 内存成本与查询能力都不匹配。
+- 高频追问：Redis 与 MySQL 的分层怎么划 → MySQL 存全量与权威数据，Redis 存"最近/最热"的子集并设 TTL；读走缓存回源写缓存，写走 DB 后删缓存；用 binlog 订阅（canal）做异步失效兜底。
 - 易错点：把 Redis 当唯一存储；给全量数据都加缓存（内存成本爆炸且命中率低）；本地缓存不做失效广播导致长时间脏读。
 
 **21. Bitmap 位图**（★）
@@ -567,7 +567,7 @@
   2. 内存量级：1 亿用户 1 个状态 ≈ 12.5MB（1e8/8）；日活统计用"日期做 key、UID 做 offset"，一年 365 个 key 各 12.5MB —— 因此通常只保留近期或按需归档。
   3. 稀疏大 ID 的坑（高频追问）：offset 是绝对位置，若 UID 是雪花算法生成的 19 位大数（如 1.8e18），`SETBIT` 会按 offset 分配内存 → 直接 OOM；解决：UID 映射为自增序号（`INCR` 发号）、按 hash 分桶（`uid % 1024` 决定 key + 商做 offset）、或换 `Roaring Bitmap`（压缩稀疏位图，按 65536 分块 + 容器编码）。
   4. 落库与一致性：位图数据量大且写频繁，通常"Redis 记增量 + 定时/阈值触发落 DB（按批 upsert）+ 重启后重建"；计数类要防重（幂等 key）。
-- 高频追问：bitmap 相比数据库有什么优势 → 答：位运算与 `BITCOUNT` 在服务端完成，O(n/64) 级聚合、无需拉全量数据到应用；存储密度高（1 bit vs 1 行）；但只适合"布尔/计数"语义，无法做多维查询。
+- 高频追问：bitmap 相比数据库有什么优势 → 位运算与 `BITCOUNT` 在服务端完成，O(n/64) 级聚合、无需拉全量数据到应用；存储密度高（1 bit vs 1 行）；但只适合"布尔/计数"语义，无法做多维查询。
 - 易错点：直接用大 ID 做 offset；把 Bitmap 当独立类型（它是 String 编码）；`BITCOUNT` 全 key 扫描大位图阻塞；忘记 `BITOP` 结果 key 也需要管理 TTL。
 
 **22. Redisson 看门狗与 Redlock**（★）
@@ -579,7 +579,7 @@
   3. Redlock：向 N（通常 5）个**独立** Redis 主节点依次加锁，需在"总耗时 < 锁有效期"内获得 `N/2+1` 个成功才算成功，失败则向所有节点回滚解锁；有效期要扣除加锁耗时与时钟漂移。
   4. Redlock 的争议（Martin Kleppmann vs antirez）：GC 停顿/网络延迟会让客户端在锁已过期后继续写；无法防"持锁进程暂停"，只有 **fencing token**（单调递增，被保护资源校验）能真正解决；因此强一致场景应选 etcd/ZooKeeper（Raft/ZXid 顺序）。
   5. 无限续期导致死锁怎么办：客户端崩溃后定时任务停止、锁自然过期，不会永久死锁；真正的风险是"业务卡死但进程活着"持续续期 → 加业务超时与 `tryLock(waitTime, leaseTime)` 双约束。
-- 高频追问：Redisson 锁相比原生 SET NX EX 的优势 → 答：可重入、自动续期、等待唤醒（pub/sub 通知而非轮询）、公平锁/读写锁/联锁（MultiLock）、以及"锁释放后通知等待者"减少无效自旋。
+- 高频追问：Redisson 锁相比原生 SET NX EX 的优势 → 可重入、自动续期、等待唤醒（pub/sub 通知而非轮询）、公平锁/读写锁/联锁（MultiLock）、以及"锁释放后通知等待者"减少无效自旋。
 - 易错点：以为 `lock(10, SECONDS)` 也有看门狗；看门狗线程数与锁数量不设上限（大量锁 → 大量定时任务）；把 Redlock 当绝对安全。
 
 **23. Stream/Pub-Sub 与 MQ 对比**（★）
@@ -591,8 +591,8 @@
   3. Stream（5.0+）：`XADD` 追加、`XREADGROUP GROUP g c COUNT 10 BLOCK 2000 STREAMS s >` 消费、`XACK` 确认、`XPENDING` 查未确认、`XAUTOCLAIM`（6.2+）转移超时未确认消息给其他消费者；支持消费组、消息 ID 单调、可回放。
   4. 与专业 MQ 的差距：无分区（单 key 单节点，吞吐受单分片限制）、堆积占内存（Kafka 落盘）、无事务消息/顺序保证/多副本强一致、运维与监控生态弱；所以"能用但重活别用"。
   5. 选型：轻量异步（发短信、清缓存、站内通知、延迟任务）用 Redis Stream/ZSet；核心交易、需削峰与可靠重放用 Kafka/RocketMQ；要求"延迟消息"优先 RocketMQ/专业 MQ。
-- 高频追问：为什么用 RabbitMQ 替代 Redis Stream / 什么时候用 Redis 而不是 MQ → 答：需要"不丢 + 重试 + 死信 + 顺序 + 削峰堆积到磁盘 + 多消费组独立进度"时用专业 MQ；只是"解耦 + 异步 + 量小"时 Redis 更轻（无需多一套中间件）。
-- 高频追问：Stream 消费者处理到一半宕机怎么办 → 答：消息留在 PEL（pending entries list），其他消费者用 `XPENDING`/`XAUTOCLAIM` 认领超时消息重投；业务必须幂等（消息 ID 去重），并设最大投递次数进死信。
+- 高频追问：为什么用 RabbitMQ 替代 Redis Stream / 什么时候用 Redis 而不是 MQ → 需要"不丢 + 重试 + 死信 + 顺序 + 削峰堆积到磁盘 + 多消费组独立进度"时用专业 MQ；只是"解耦 + 异步 + 量小"时 Redis 更轻（无需多一套中间件）。
+- 高频追问：Stream 消费者处理到一半宕机怎么办 → 消息留在 PEL（pending entries list），其他消费者用 `XPENDING`/`XAUTOCLAIM` 认领超时消息重投；业务必须幂等（消息 ID 去重），并设最大投递次数进死信。
 - 易错点：用 Pub/Sub 当可靠队列；忘记 `XACK` 导致 PEL 无限增长；以为 Stream 能像 Kafka 一样落盘堆积。
 
 **24. 高并发瓶颈、容量与线上排查**（★）
@@ -604,12 +604,12 @@
   3. 机器选型：一台 64 核 vs 两台 32 核 —— 优先多台小规格（Redis 单线程吃单核，多核收益主要来自 IO 线程与 fork 子进程；分片才能用到多核，且故障域更小）；同机多实例要绑核避免争抢。
   4. CPU 100% 但接口无报错的常见原因：大 key 慢命令（`SLOWLOG`/`latency monitor` 定位）、`KEYS *`/`HGETALL` 全量、Lua 长脚本、过期键集中清理、AOF rewrite/fork、连接数暴涨（`maxclients`）、输出缓冲区打满。
   5. 排查套路：`INFO`（`used_memory`、`connected_clients`、`instantaneous_ops_per_sec`、`evicted_keys`、`rejected_connections`）→ `SLOWLOG GET` → `redis-cli --bigkeys/--hotkeys` → `CLIENT LIST` 找异常客户端 → 网络与 DNS 抖动 → 监控看 p99 与命令分布。
-- 高频追问：Redis 挂了 MySQL 被打爆怎么办 → 答：三层防护——接入层限流（令牌桶按 IP/接口）、熔断降级（Sentinel/Hystrix 返回兜底数据、关闭非核心功能）、DB 侧保护（连接池上限、慢查询熔断、只读副本承接）；同时保证缓存集群高可用（哨兵/Cluster + 多可用区），避免单点全挂。
+- 高频追问：Redis 挂了 MySQL 被打爆怎么办 → 三层防护——接入层限流（令牌桶按 IP/接口）、熔断降级（Sentinel/Hystrix 返回兜底数据、关闭非核心功能）、DB 侧保护（连接池上限、慢查询熔断、只读副本承接）；同时保证缓存集群高可用（哨兵/Cluster + 多可用区），避免单点全挂。
 - 易错点：只加从库解决写瓶颈；扩容时忽略槽迁移成本；不做慢查询监控；把 `maxclients` 打满当成"网络问题"。
 
 ### 缓存 ｜ 多级缓存一致性与双写顺序
 
-> 先问本地缓存与多级缓存的层次划分，再深挖缓存与 DB 的双写顺序，追问为何先更新库再删缓存。判据是延迟双删的时间窗与删除失败补偿能否讲清，多机一致性与逻辑过期会被追到方案。
+> 缓存架构的核心矛盾是「用可控的一致性窗口换数量级的读吞吐」：进程内缓存抗极热流量、分布式缓存抗共享读量、数据库守最终真相；写路径围绕先更库再删缓存、失败重试与 binlog 异步兜底来收窄脏读时间窗。
 
 **1. 本地缓存与多级缓存（Caffeine 选型、容量估算）**（★★★）
 　*本地缓存把 1ms 压到 1µs，代价是多机各存一份，容量必须按堆的 1/4 算*
@@ -637,7 +637,7 @@
 
 ### 数据库（通用 / 选型） ｜ 存储选型与引擎原理的对比题
 
-> 常从 MySQL 与 PostgreSQL 的对比切入，看能否从 MVCC 实现讲到死元组与表膨胀；再深挖 ES 的倒排索引，追问它能否替代 MySQL。判据是能否用行式列式、LSM 树的读写放大支撑选型结论。
+> 存储选型我不背组件优缺点清单，而是按「数据结构决定的读写放大与一致性边界」切分：B+ 树适合点查与强事务，倒排索引解决多维检索但牺牲实时写入与事务，文档库换取灵活 schema，线上往往是主库守真相、异构索引做查询加速。
 
 **1. MySQL 与 PostgreSQL 对比**（★★★）
 　*要极限 OLTP 吞吐与成熟生态选 MySQL，要复杂 SQL/JSONB/GIS 与严格约束选 PG*
@@ -681,7 +681,7 @@
 
 ### 并发编程 ｜ 线程池与锁的参数级深挖
 
-> 先问线程创建与通信，很快转到线程池核心参数与执行流程，追问线程数怎么算、队列满了走什么拒绝策略。判据是参数能否落到业务量级，再深挖 synchronized 锁升级与 CAS 的 ABA 问题。
+> 并发编程在系统设计里对应两件事：「用有界池化做资源隔离与背压」和「按竞争烈度选择同步原语」。线程池通过核心线程、有界队列与拒绝策略保护下游；同步机制则在无锁 CAS、用户态自旋与内核态挂起之间权衡延迟与吞吐。
 
 **1. 线程池核心参数与执行流程**（★★★）
 　*先说清楚：核心线程满了才排队，队列满了才扩到最大线程，再满才拒绝*
@@ -692,8 +692,8 @@
   3. 队列选型决定行为：`SynchronousQueue`（无容量，直接扩容到 max，CachedThreadPool 用它）、`ArrayBlockingQueue(n)`（有界，推荐）、`LinkedBlockingQueue`（默认 `Integer.MAX_VALUE`，等于永不扩容也永不拒绝，是 OOM 元凶）、`DelayQueue/PriorityBlockingQueue`（定时与优先级）。
   4. 线程数经验值：CPU 密集 `N+1`（+1 用于偶发缺页/抢占空档）；IO 密集 `N×(1+WT/ST)`，等待占比 90% 时 16 核约 160，工程上常取 `2N~4N` 并用压测收敛。
   5. 必须显式建池：`Executors.newFixedThreadPool` 无界队列 + `newCachedThreadPool` max=Integer.MAX_VALUE 都会 OOM，阿里规约禁止；Spring 里用 `ThreadPoolTaskExecutor` 显式设 core/max/queue/线程名/拒绝策略，便于 jstack 定位。
-- 高频追问：core=4、队列=8，一次提交 10 个任务会怎样 → 答：前 4 个建核心线程，第 5~10 个入队（队列未满），第 11 个才开始扩容到 max，第 12 个之后才拒绝；追问"core=4 提交 8 个"→ 4 个跑、4 个排队，不会扩容。
-- 高频追问：核心线程数为 0 会怎样 → 答：任务先入队，但入队后的复核会发现 worker 数为 0 并补建一个非核心线程，所以不会"没人干活"，只是吞吐降一档（`SynchronousQueue` 下 core=0 反而是主流用法）。
+- 高频追问：core=4、队列=8，一次提交 10 个任务会怎样 → 前 4 个建核心线程，第 5~10 个入队（队列未满），第 11 个才开始扩容到 max，第 12 个之后才拒绝；追问"core=4 提交 8 个"→ 4 个跑、4 个排队，不会扩容。
+- 高频追问：核心线程数为 0 会怎样 → 任务先入队，但入队后的复核会发现 worker 数为 0 并补建一个非核心线程，所以不会"没人干活"，只是吞吐降一档（`SynchronousQueue` 下 core=0 反而是主流用法）。
 - 易错点：把"先扩容再入队"说反；忽略 `allowCoreThreadTimeOut`；忘记线程工厂命名导致线上无法定位；认为 max 一定用得上（有界队列满之前不会扩）。
 
 **2. synchronized 与锁升级**（★★★）
@@ -704,8 +704,8 @@
   2. 四个状态：无锁 `001`、偏向锁 `101`、轻量级锁 `00`、重量级锁 `10`（另有 GC 标记 `11`）。偏向锁把线程 ID 写进 Mark Word（一次 CAS），同线程再来零成本；出现竞争升级轻量级——线程栈上建 Lock Record，CAS 把 Mark Word 指向它；再竞争则膨胀为 ObjectMonitor（`_owner`、`_recursions`、`_EntryList`、`_WaitSet`），走内核 futex 挂起。
   3. 只能升级不能降级（HotSpot 实现），偏向锁 JDK 15 起默认关闭（JEP 374）、JDK 17 标记废弃，因为撤销需要 STW 到安全点、收益被现代 CAS 抵消。
   4. 加锁位置：实例方法锁 `this`、静态方法锁 `Class` 对象、同步块编译成 `monitorexit` 成对的 `monitorenter`；可重入由 `_recursions` 计数实现，异常路径也会自动释放。
-- 高频追问：synchronized 与 ReentrantLock 区别 → 答：实现层面一个是 JVM 监视器一个是 AQS；能力上 ReentrantLock 支持公平、可中断 `lockInterruptibly`、超时 `tryLock(3,SECONDS)`、多 Condition 精确唤醒；synchronized 更简单且 JDK 6 后有偏向/轻量优化，二者吞吐已接近，无特殊需求优先 synchronized。
-- 高频追问：锁标记位置 / i++ 为何不安全 → 答：锁信息在对象头 Mark Word；`i++` 是"读-加-写"三步，加锁把三步变成临界区，或用 `AtomicInteger.incrementAndGet()` 的 CAS 把三步压成一次原子读改写。
+- 高频追问：synchronized 与 ReentrantLock 区别 → 实现层面一个是 JVM 监视器一个是 AQS；能力上 ReentrantLock 支持公平、可中断 `lockInterruptibly`、超时 `tryLock(3,SECONDS)`、多 Condition 精确唤醒；synchronized 更简单且 JDK 6 后有偏向/轻量优化，二者吞吐已接近，无特殊需求优先 synchronized。
+- 高频追问：锁标记位置 / i++ 为何不安全 → 锁信息在对象头 Mark Word；`i++` 是"读-加-写"三步，加锁把三步变成临界区，或用 `AtomicInteger.incrementAndGet()` 的 CAS 把三步压成一次原子读改写。
 - 易错点：说"重量级锁一定比轻量级慢"（无竞争时偏向/轻量更快，高竞争时重量级反而避免 CPU 空转）；把 `monitorenter` 说成加在方法上；忘记 synchronized 保证的是"原子性+可见性+有序性"三者。
 
 **3. 多线程基础与线程创建/通信**（★★★）
@@ -716,8 +716,8 @@
   2. `start()` 才创建新线程并回调 `run()`；直接 `run()` 是普通方法调用，仍在当前线程。`start` 只能调用一次，第二次抛 `IllegalThreadStateException`。
   3. 线程间通信：共享内存（`volatile`/锁/原子类）、`wait/notifyAll`（必须持有 monitor，必须 `while` 循环防虚假唤醒）、`join`、`CountDownLatch/CyclicBarrier/Semaphore`、`BlockingQueue`、`CompletableFuture`、`ThreadLocal`（其实是"不通信"，各存一份）。
   4. 单核也能出并发 bug：CPU 按时间片切换 + 编译器/CPU 重排，`i++` 的两线程各跑 100 次结果区间是 `[2,200]`（两个线程各 1 次丢更新即可得 2）。
-- 高频追问：两个线程各执行 `count++` 一万次，结果一定是 20000 吗 → 答：不一定，`count++` 非原子，可能丢更新，最终值 `≤20000` 且通常接近 20000；解决用 `AtomicInteger`、`LongAdder`（高并发更优）或加锁。
-- 高频追问：ThreadLocal 能不能解决线程安全 → 答：能把"共享变量"变成"每线程副本"，从根上消除竞争，但注意线程池复用会串数据、必须 `remove()`。
+- 高频追问：两个线程各执行 `count++` 一万次，结果一定是 20000 吗 → 不一定，`count++` 非原子，可能丢更新，最终值 `≤20000` 且通常接近 20000；解决用 `AtomicInteger`、`LongAdder`（高并发更优）或加锁。
+- 高频追问：ThreadLocal 能不能解决线程安全 → 能把"共享变量"变成"每线程副本"，从根上消除竞争，但注意线程池复用会串数据、必须 `remove()`。
 - 易错点：把"多线程一定比单线程快"当结论（上下文切换、锁竞争、伪共享都会反向）；把 `sleep` 当成释放锁（不释放）；混用 `notify` 导致漏唤醒而不写 `while` 判断。
 
 **4. CAS 原理与 ABA**（★★★）
@@ -728,8 +728,8 @@
   2. 三大缺陷：① 自旋开销（高竞争下 CPU 空转）；② 只能保证**一个**变量原子（多变量要封装成对象或用 `AtomicReference`）；③ ABA。
   3. ABA 解决：`AtomicStampedReference` 加版本号（每次改 stamp+1）、`AtomicMarkableReference` 加布尔标记；数据库里等价于 `update ... set stock=stock-1, version=version+1 where id=? and version=?`。
   4. 原子类家族：`AtomicInteger/Long`（CAS 自旋）、`LongAdder`（base + Cell[] 分段累加，`sum()` 时汇总，高并发下吞吐远高于 `AtomicLong`）、`AtomicIntegerFieldUpdater`（省对象）、`AtomicReference`。
-- 高频追问：CAS 与 synchronized 适用场景 → 答：冲突少、临界区极短（计数器、状态位、无锁栈）用 CAS；临界区长、含 IO 或必须多变量一致用锁；`ReentrantLock` 内部也是先 CAS 抢 state 再排队，本质是二者结合。
-- 高频追问：CAS 失败率高怎么办 → 答：热点计数改 `LongAdder` 分段、业务层限流削峰、改为队列串行化（单 worker 消费）、或改锁避免活锁式重试。
+- 高频追问：CAS 与 synchronized 适用场景 → 冲突少、临界区极短（计数器、状态位、无锁栈）用 CAS；临界区长、含 IO 或必须多变量一致用锁；`ReentrantLock` 内部也是先 CAS 抢 state 再排队，本质是二者结合。
+- 高频追问：CAS 失败率高怎么办 → 热点计数改 `LongAdder` 分段、业务层限流削峰、改为队列串行化（单 worker 消费）、或改锁避免活锁式重试。
 - 易错点：认为 CAS 一定比锁快（高竞争下重试放大流量）；忘记 CAS 必须配 `volatile` 读（否则读到陈旧值）；把 ABA 说成"值变了又变回来所以没问题"（业务语义已错）。
 
 **5. 乐观锁与悲观锁**（★★★）
@@ -740,8 +740,8 @@
   2. 乐观锁实现：版本号 `update t set cnt=cnt-1, version=version+1 where id=? and version=?`，影响行数 0 即失败重试；或用 CAS/`AtomicStampedReference`；重试要有上限 + 退避，否则打爆 DB。
   3. 选型判据：冲突率高（秒杀同 SKU、热点账户）用悲观锁或串行化（Redis 原子命令/Lua、单线程消费）；冲突率低（后台改单、配置更新）用乐观锁，读多写少零阻塞。
   4. 库存扣减的正确写法：`update stock=stock-1 where sku=? and stock>=1`，用 DB 行锁 + 条件更新一步完成"判断+扣减"，比"先 select 再 update"安全；Redis 侧用 Lua 保证判断与扣减原子。
-- 高频追问：两个请求同时查到库存 1 然后各自扣减，为什么超卖 → 答：查与扣之间有窗口（TOCTOU），两个事务都基于同一快照判断；解法是把判断下沉进更新语句（条件更新/CAS）或加锁/串行化。
-- 高频追问：多人同时改同一行不同字段，如何保证只有一个成功 → 答：如果业务允许都成功，用字段级更新（`update ... set a=?`）天然不冲突；要"整行互斥"就加版本号让后到者失败，或用 `select for update`。
+- 高频追问：两个请求同时查到库存 1 然后各自扣减，为什么超卖 → 查与扣之间有窗口（TOCTOU），两个事务都基于同一快照判断；解法是把判断下沉进更新语句（条件更新/CAS）或加锁/串行化。
+- 高频追问：多人同时改同一行不同字段，如何保证只有一个成功 → 如果业务允许都成功，用字段级更新（`update ... set a=?`）天然不冲突；要"整行互斥"就加版本号让后到者失败，或用 `select for update`。
 - 易错点：乐观锁不设重试上限；在无索引条件上 `for update` 导致全表锁；把 Redis 分布式锁当悲观锁兜底却忘了锁过期。
 
 **6. ThreadLocal 原理与内存泄漏**（★★）
@@ -752,8 +752,8 @@
   2. 泄漏链：key 被 GC 后 Entry 仍在数组里，value 被 `Thread → ThreadLocalMap → Entry → value` 强引用，线程池线程长期存活 → 泄漏；`get/set/remove` 会顺带清理 key==null 的槽，但不确定能覆盖，所以**必须 `finally { tl.remove(); }`**。
   3. key 用弱引用的原因：让 ThreadLocal 对象本身可被回收，避免"ThreadLocal 无用但 value 永远留着"；真正该强引用的是 value，所以只能靠 remove 兜底。
   4. 场景：用户上下文/租户 ID/链路 traceId、`SimpleDateFormat` 线程封闭、`Connection` 管理；线程池 + 父子传递失效时用 `TransmittableThreadLocal`（阿里 TTL，包装任务做快照-回放）或 `TaskDecorator` 手动透传。
-- 高频追问：ThreadLocal 线程安全吗 → 答：变量本身"每线程独立"所以不共享、不会被并发改；但同一线程内多次任务复用会拿到上次残留值，所以"不共享≠不复用"，线程池里必须清理。
-- 高频追问：子线程能拿到主线程的 ThreadLocal 吗 → 答：默认不能；`InheritableThreadLocal` 在 `Thread` 构造时复制，但线程池的线程是复用的、创建时机不对，所以生产上失效，要用 TTL 或显式传参。
+- 高频追问：ThreadLocal 线程安全吗 → 变量本身"每线程独立"所以不共享、不会被并发改；但同一线程内多次任务复用会拿到上次残留值，所以"不共享≠不复用"，线程池里必须清理。
+- 高频追问：子线程能拿到主线程的 ThreadLocal 吗 → 默认不能；`InheritableThreadLocal` 在 `Thread` 构造时复制，但线程池的线程是复用的、创建时机不对，所以生产上失效，要用 TTL 或显式传参。
 - 易错点：把 Entry 说成"key 强引用 value 弱引用"；以为 `ThreadLocal` 用 `HashMap`；忘记 Web 容器线程池场景下的串数据事故。
 
 **7. 线程安全三大特性与实现手段**（★★）
@@ -764,8 +764,8 @@
   2. 可见性：`volatile`（写后立刻刷主存 + 读前失效本地副本，靠 `StoreStore/LoadLoad` 等内存屏障）、锁的释放-获取（happens-before）、`final` 字段的安全发布。
   3. 有序性：happens-before 八条（程序次序、monitor、volatile、线程 start/join、传递性、中断、终结器、`Thread.start` 前的动作），volatile 禁止指令重排解决 DCL 半初始化对象问题。
   4. 不可变与线程封闭：`final` + 不可变对象（`String`）、`ThreadLocal`、栈封闭、`ConcurrentHashMap`/`CopyOnWriteArrayList` 等并发容器替代"手工加锁的 HashMap"。
-- 高频追问：单例 DCL 为什么要加 volatile → 答：`instance = new X()` 分"分配内存→初始化→赋值引用"三步，2/3 可重排，另一线程可能拿到未初始化对象；volatile 禁止该重排并保证可见性。
-- 高频追问：线程安全的 LRU 怎么做 → 答：`LinkedHashMap(accessOrder=true)` 外层加 `synchronized`（简单但全局串行）；高并发用分段（按 key hash 到 N 个 LRU 各自加锁）+ 近似 LRU 或 Caffeine 的 W-TinyLFU（读多时避免每次读都改链表导致锁竞争）。
+- 高频追问：单例 DCL 为什么要加 volatile → `instance = new X()` 分"分配内存→初始化→赋值引用"三步，2/3 可重排，另一线程可能拿到未初始化对象；volatile 禁止该重排并保证可见性。
+- 高频追问：线程安全的 LRU 怎么做 → `LinkedHashMap(accessOrder=true)` 外层加 `synchronized`（简单但全局串行）；高并发用分段（按 key hash 到 N 个 LRU 各自加锁）+ 近似 LRU 或 Caffeine 的 W-TinyLFU（读多时避免每次读都改链表导致锁竞争）。
 - 易错点：以为 `HashMap` 只会在扩容时出问题（并发 put 会丢数据、JDK 8 仍可能成环/覆盖）；用 `Collections.synchronizedMap` 却对复合操作不加锁（迭代仍需外部同步）。
 
 **8. 阻塞队列与生产者-消费者**（★★）
@@ -776,8 +776,8 @@
   2. `LinkedBlockingQueue`：`putLock`/`takeLock` 两把锁 + `AtomicInteger count`，生产与消费可并行；默认容量 `Integer.MAX_VALUE`（等同无界，必须显式传容量）。
   3. `SynchronousQueue`：容量 0，`put` 必须等到 `take`，用于"直接移交"，`newCachedThreadPool` 靠它把任务直接交给空闲线程。
   4. 手写生产者-消费者：`while (queue.size() == cap) wait();` → `enqueue` → `notifyAll()`，取值侧对称；判断必须 `while` 不能 `if`（虚假唤醒），`notify` 可能唤醒同类线程导致漏唤醒，优先 `notifyAll` 或直接用 `Condition.signal` 精准唤醒。
-- 高频追问：无界 MPMC 队列为什么会耗尽内存 → 答：生产快于消费时任务无限堆积，既吃堆内存又推迟了"拒绝"这个背压信号；必须设有界 + 拒绝策略 + 监控队列深度。
-- 高频追问：多生产者多消费者为何用分片锁而不是无锁队列 → 答：无锁队列在 MPMC 下 ABA/内存回收（安全释放）复杂度高、竞争激烈时 CAS 失败率飙升；分片（按 key 取模到 N 个队列各配一把锁）实现简单、竞争降到 1/N。
+- 高频追问：无界 MPMC 队列为什么会耗尽内存 → 生产快于消费时任务无限堆积，既吃堆内存又推迟了"拒绝"这个背压信号；必须设有界 + 拒绝策略 + 监控队列深度。
+- 高频追问：多生产者多消费者为何用分片锁而不是无锁队列 → 无锁队列在 MPMC 下 ABA/内存回收（安全释放）复杂度高、竞争激烈时 CAS 失败率飙升；分片（按 key 取模到 N 个队列各配一把锁）实现简单、竞争降到 1/N。
 - 易错点：用 `if` 判空导致虚假唤醒后越界；`wait` 未包在 `synchronized` 里抛 `IllegalMonitorStateException`；用无界队列 + `LinkedBlockingQueue()` 无参构造。
 
 **9. 锁的分类与选型**（★★）
@@ -789,8 +789,8 @@
   3. 维度三：可重入。同一线程再次获取不阻塞，靠 `state+1` 与 owner 判定；不可重入锁在递归/回调里直接自锁死。
   4. 维度四：粒度。粗锁简单但串行化，细锁（分段、按 key 分桶、`ConcurrentHashMap` 的桶级 CAS + synchronized 头节点）提升并行度但增加复杂度与死锁风险。
   5. 何时不用锁：不可变对象、线程封闭（ThreadLocal/栈封闭）、无状态服务、消息队列串行化、CAS 原子类、DB 唯一索引兜底幂等。
-- 高频追问：`sleep` 与 `wait` 区别 → 答：`sleep` 属 `Thread`、不释放锁、到时自动醒、不要求持锁；`wait` 属 `Object`、必须在 `synchronized` 内、释放 monitor 进 `WaitSet`、需 `notify` 唤醒，且应配 `while` 条件。
-- 高频追问：如何降低锁开销 → 答：缩小临界区（只包必要语句）、减少持锁时间（锁外做 IO/序列化）、锁分段、读多写少换读写锁/COW、能用 CAS 就不用锁、避免锁内调用外部服务。
+- 高频追问：`sleep` 与 `wait` 区别 → `sleep` 属 `Thread`、不释放锁、到时自动醒、不要求持锁；`wait` 属 `Object`、必须在 `synchronized` 内、释放 monitor 进 `WaitSet`、需 `notify` 唤醒，且应配 `while` 条件。
+- 高频追问：如何降低锁开销 → 缩小临界区（只包必要语句）、减少持锁时间（锁外做 IO/序列化）、锁分段、读多写少换读写锁/COW、能用 CAS 就不用锁、避免锁内调用外部服务。
 - 易错点：认为公平锁更好（吞吐与延迟通常更差）；在锁内做 RPC 导致长持锁；用 `String`/包装类做锁对象（常量池共享、`Integer` 缓存导致锁错对象）。
 
 **10. JMM、volatile 与原子性**（★★）
@@ -801,8 +801,8 @@
   2. 不保证原子性：`volatile int i; i++` 仍是三步，多线程必丢更新；要么 `synchronized`，要么 `AtomicInteger`（CAS 本身依赖 volatile 读的可见性 + 原子指令）。
   3. 有序性：volatile 写之前的操作不能排到写之后、读之后的操作不能排到读之前，二者配对形成 happens-before，因此 DCL 单例、状态标志位（`volatile boolean stop`）才正确。
   4. 原子性的底层来源：单条 CPU 指令（`xchg`/`cmpxchg`）+ 缓存锁/总线锁；跨进程/跨机器就要靠 DB 行锁、分布式锁、唯一索引或消息幂等。
-- 高频追问：volatile 能保证什么、不能保证什么 → 答：保证可见性与有序性、保证 long/double 读写的原子性；不保证复合操作原子性、不保证互斥、不保证 `i++` 安全。
-- 高频追问：happens-before 是什么 → 答：跨线程的可见性契约，A happens-before B 意味着 A 的结果对 B 可见且 A 不排到 B 之后；实际记忆点：程序次序、监视器解锁→加锁、volatile 写→读、`start`/`join`、传递性。
+- 高频追问：volatile 能保证什么、不能保证什么 → 保证可见性与有序性、保证 long/double 读写的原子性；不保证复合操作原子性、不保证互斥、不保证 `i++` 安全。
+- 高频追问：happens-before 是什么 → 跨线程的可见性契约，A happens-before B 意味着 A 的结果对 B 可见且 A 不排到 B 之后；实际记忆点：程序次序、监视器解锁→加锁、volatile 写→读、`start`/`join`、传递性。
 - 易错点：说 volatile 替代锁；忽略 `volatile` 只对"写后读"建边，两个线程都只写不读仍无意义；把 JMM 与 JVM 内存结构（堆/栈）混为一谈。
 
 **11. 任务提交、执行分支与 ctl 字段**（★★）
@@ -813,8 +813,8 @@
   2. 状态语义：SHUTDOWN 不再收新任务但做完队列里的；STOP 中断所有 worker 且清空队列；因此 `shutdown()` 优雅、`shutdownNow()` 强停。
   3. `execute` 中的二次校验：入队成功后若池已不是 RUNNING 则 `remove` + 拒绝；若 worker 数为 0 则补建空 worker，防止"任务在队列里但没人执行"。
   4. `addWorker` 先在 CAS 循环里改 `workerCount`，再 `new Worker` 并把线程加入 `workers`（`HashSet`，`mainLock` 保护），Worker 本身是 AQS 子类、以不可重入独占锁标记"是否空闲"。
-- 高频追问：Future.get 超时后子任务还会继续跑吗 → 答：会继续跑，`get(timeout)` 只让调用方超时返回，必须 `future.cancel(true)`（依赖线程响应中断）才能尝试停止；线程池里的任务若忽略中断标志，cancel 也无效。
-- 高频追问：Future 里的任务抛异常会怎样 → 答：异常被吞进 `FutureTask.outcome`，工作线程不打印（除 `submit` 外），只有调用 `get()` 才抛 `ExecutionException`；`execute` 提交的 `Runnable` 则直接由 `UncaughtExceptionHandler` 处理。
+- 高频追问：Future.get 超时后子任务还会继续跑吗 → 会继续跑，`get(timeout)` 只让调用方超时返回，必须 `future.cancel(true)`（依赖线程响应中断）才能尝试停止；线程池里的任务若忽略中断标志，cancel 也无效。
+- 高频追问：Future 里的任务抛异常会怎样 → 异常被吞进 `FutureTask.outcome`，工作线程不打印（除 `submit` 外），只有调用 `get()` 才抛 `ExecutionException`；`execute` 提交的 `Runnable` 则直接由 `UncaughtExceptionHandler` 处理。
 - 易错点：以为 `maximumPoolSize` 一定生效（队列满之前不扩容）；`submit` 吞异常导致线上静默失败；忘记 `shutdown` 后线程不退出（非核心线程 `keepAlive` 才回收）。
 
 **12. AQS 原理与 JUC 体系**（★★）
@@ -825,8 +825,8 @@
   2. 独占流程：`acquire` → `tryAcquire`（CAS state 0→1）→ 失败 `addWaiter` 入队 → `acquireQueued` 中 `shouldParkAfterFailedAcquire` 把前驱置 SIGNAL 后 `LockSupport.park()`；释放时 `unparkSuccessor` 唤醒队首。
   3. 共享 vs 独占：`CountDownLatch`/`Semaphore`/`ReentrantReadWriteLock` 走 `acquireShared`，`PROPAGATE` 保证唤醒向后传播；`ReentrantReadWriteLock` 用 state 高 16 位记读锁、低 16 位记写锁（各上限 65535）。
   4. 为什么能复用：把"排队、阻塞、唤醒、超时、中断"都封装在骨架里，子类只需定义 `tryAcquire/tryRelease` 语义，所以 AQS 一个类撑起 `ReentrantLock`、`Semaphore`、`CountDownLatch`、`CyclicBarrier`（内部用 ReentrantLock）、`ThreadPoolExecutor.Worker`。
-- 高频追问：线程入队后为什么不直接让自己 park，而要先把前驱置 SIGNAL → 答：避免"检查到该阻塞"与"真正 park"之间被前驱释放并唤醒的丢失唤醒（lost wakeup）；先声明"我要睡，记得叫我"再睡。
-- 高频追问：公平锁为什么吞吐低于非公平 → 答：公平锁每次都要 `hasQueuedPredecessors()` 判断队里有没有人 + 严格唤醒队首，线程被唤醒到真正运行的窗口里 CPU 可能已切换，而非公平锁允许刚到的线程直接 CAS 抢到（减少唤醒次数、提高缓存局部性）。
+- 高频追问：线程入队后为什么不直接让自己 park，而要先把前驱置 SIGNAL → 避免"检查到该阻塞"与"真正 park"之间被前驱释放并唤醒的丢失唤醒（lost wakeup）；先声明"我要睡，记得叫我"再睡。
+- 高频追问：公平锁为什么吞吐低于非公平 → 公平锁每次都要 `hasQueuedPredecessors()` 判断队里有没有人 + 严格唤醒队首，线程被唤醒到真正运行的窗口里 CPU 可能已切换，而非公平锁允许刚到的线程直接 CAS 抢到（减少唤醒次数、提高缓存局部性）。
 - 易错点：把 state 说成"每个节点一份"（它是全局共享的，节点只存线程与状态）；以为 AQS 队列是自旋队列（实际 park/unpark）；忘记 `Condition` 有独立的条件队列（`firstWaiter/lastWaiter`），`await` 会释放锁并转移节点。
 
 **13. 同一数据并发修改与并发容器**（★★）
@@ -837,8 +837,8 @@
   2. 单机方案：`synchronized`/`ReentrantLock`（保证临界区）、`AtomicInteger`（`compareAndSet` 循环）、`ConcurrentHashMap.computeIfAbsent/compute/merge`（桶级原子）、`LongAdder`（分段计数）。
   3. 跨进程方案：DB `update ... where stock>=1` 条件更新 + 唯一索引（防重）、`select for update`、分布式锁（Redis/ZK）、消息队列单分区串行消费。
   4. `HashMap` 并发写会丢数据/结构损坏（JDK 8 起不再成环但会覆盖与 size 错乱），`map` 并发读写甚至会因扩容迁移读到 null；必须换 `ConcurrentHashMap`（JDK 8：CAS 插入空桶 + synchronized 锁头节点 + `baseCount/CounterCell` 计数）。
-- 高频追问：不用行锁还有哪些方案 → 答：乐观锁版本号、条件更新（`where stock>=1`）、唯一索引 + `insert ignore`、Redis 原子命令/Lua、单线程队列串行化、状态机 + CAS（`update ... where status='待支付'`）。
-- 高频追问：多 Agent 并发改同一文件怎么防冲突 → 答：租约/分布式锁按文件路径加锁 + 版本号（CAS 写，冲突则重读重算）+ 分段写（不同文件不同 Agent）+ 变更集合并（Lead 统一 review diff），与"同一行数据并发修改"是同一套思路。
+- 高频追问：不用行锁还有哪些方案 → 乐观锁版本号、条件更新（`where stock>=1`）、唯一索引 + `insert ignore`、Redis 原子命令/Lua、单线程队列串行化、状态机 + CAS（`update ... where status='待支付'`）。
+- 高频追问：多 Agent 并发改同一文件怎么防冲突 → 租约/分布式锁按文件路径加锁 + 版本号（CAS 写，冲突则重读重算）+ 分段写（不同文件不同 Agent）+ 变更集合并（Lead 统一 review diff），与"同一行数据并发修改"是同一套思路。
 - 易错点：以为 `ConcurrentHashMap` 复合操作也原子（`get` 后 `put` 仍需 `compute`）；乐观锁只 compare 不重试；忘记 DB 事务隔离级别对"读到的旧值"的影响。
 
 **14. 死锁：条件、排查与避免**（★）
@@ -847,9 +847,9 @@
 - 必答要点：
   1. 四条件：互斥、持有并等待、不可剥夺、循环等待。
   2. 排查：`jstack -l <pid>` 搜 `Found one Java-level deadlock` 看 `BLOCKED` 与 `waiting to lock`，或用 `jconsole`/`ThreadMXBean.findDeadlockedThreads()`；DB 侧看 `information_schema.innodb_trx` 与 `SHOW ENGINE INNODB STATUS` 的 `LATEST DETECTED DEADLOCK`。
-  3. 表现判据：死锁线程处于 park/BLOCKED，**CPU 不高**；CPU 飙升更可能是死循环/频繁 GC/自旋活锁。这点面试官最爱追问。
+  3. 线上现象区分：死锁线程处于 park/BLOCKED 挂起态，**CPU 占用并不高**；如果伴随 CPU 飙升，优先排查死循环、频繁 Full GC 或 CAS 自旋活锁。
   4. 避免：固定加锁顺序（按 id 排序后加锁，转账场景）、`tryLock(timeout)` 失败即回退释放、减小锁粒度与持锁时间、用无锁/单线程队列替代、给锁设超时并告警。
-- 高频追问：分布式锁超时释放为什么不能彻底解决死锁 → 答：TTL 只是让锁最终可被他人获取（避免永久死锁），但会引入"业务没跑完锁就没了"的并发写；要靠看门狗续期 + 唯一 value 校验 + 幂等 + fencing token。
+- 高频追问：分布式锁超时释放为什么不能彻底解决死锁 → TTL 只是让锁最终可被他人获取（避免永久死锁），但会引入"业务没跑完锁就没了"的并发写；要靠看门狗续期 + 唯一 value 校验 + 幂等 + fencing token。
 - 易错点：只说"互相等待"不说四条件；认为 `synchronized` 死锁能自动解开；把"死锁"与"线程池耗尽（互相等待任务完成）"混讲——后者是资源耗尽型饥饿，`jstack` 看不到 deadlock 字样。
 
 **15. ReentrantLock 公平/非公平与可重入**（★）
@@ -860,8 +860,8 @@
   2. 可重入：`tryAcquire` 里若 `current == getExclusiveOwnerThread()` 则 `setState(state+1)`；解锁 `tryRelease` 把 state 减到 0 才真正释放并唤醒后继。
   3. 能力扩展：`lockInterruptibly()`（可中断等待）、`tryLock()`/`tryLock(3, SECONDS)`（避免死锁）、`newCondition()` 支持多条件精确唤醒（生产者/消费者各一个 Condition，比 `notifyAll` 少唤醒）。
   4. 代价：`lock()` 必须 `try/finally unlock()`，否则永久占锁；`Condition.await()` 会释放锁并被 `signal` 转入同步队列，必须配 `while` 判断。
-- 高频追问：默认是公平锁吗，怎么实现公平 → 答：默认非公平（`new ReentrantLock(false)`），公平实现就是在 CAS 前判断 `hasQueuedPredecessors()`，队列有前驱就老实排队。
-- 高频追问：Lock 不 unlock 会怎样 → 答：state 永远不归 0，其他线程永远 park（看不到异常、CPU 也不高），只能靠 `tryLock` 超时或重启；这也是必须 `finally` 的原因。
+- 高频追问：默认是公平锁吗，怎么实现公平 → 默认非公平（`new ReentrantLock(false)`），公平实现就是在 CAS 前判断 `hasQueuedPredecessors()`，队列有前驱就老实排队。
+- 高频追问：Lock 不 unlock 会怎样 → state 永远不归 0，其他线程永远 park（看不到异常、CPU 也不高），只能靠 `tryLock` 超时或重启；这也是必须 `finally` 的原因。
 - 易错点：把 `Condition.await` 与 `Object.wait` 混淆（前者在 Lock 内、可多队列）；认为非公平会饿死（AQS 队列仍保证最终被唤醒）；忘记可重入是"同一线程"，不同线程永远互斥。
 
 **16. 读写锁与写时复制**（★）
@@ -872,8 +872,8 @@
   2. 饥饿风险：非公平模式下持续到来的读请求会不断抢到锁，写线程长期排队（写饥饿）；公平模式可避免但吞吐下降；`StampedLock` 用乐观读 `tryOptimisticRead()` + `validate(stamp)`，读不加锁只校验版本，适合极读多写少，但不支持重入、不支持中断、不可条件等待。
   3. `CopyOnWriteArrayList`：写时加锁复制整个数组再 `setArray`（`volatile` 引用），读无锁；代价是写放大（O(n) 内存与拷贝）、只保证最终一致（迭代器是快照）。
   4. 判据：读远多于写且能容忍短暂不一致（配置、白名单、监听器列表）用 COW；读写都有一定比例用读写锁；纯写或临界区短用小粒度互斥 + 分段。
-- 高频追问：读写锁一定比互斥锁快吗 → 答：不一定。读写锁自身维护两套计数与队列开销更大，写多或临界区极短时反而更慢；读占比不高时 `synchronized` 更划算。
-- 高频追问：读多写少的配置模块（万级 QPS 读、10 分钟一改）怎么设计 → 答：本地 `volatile` 不可变对象整体替换（读零锁，写构造新对象后原子替换）+ 定期刷新；多机再叠 Redis + 广播失效，读写锁只作为兜底方案。
+- 高频追问：读写锁一定比互斥锁快吗 → 不一定。读写锁自身维护两套计数与队列开销更大，写多或临界区极短时反而更慢；读占比不高时 `synchronized` 更划算。
+- 高频追问：读多写少的配置模块（万级 QPS 读、10 分钟一改）怎么设计 → 本地 `volatile` 不可变对象整体替换（读零锁，写构造新对象后原子替换）+ 定期刷新；多机再叠 Redis + 广播失效，读写锁只作为兜底方案。
 - 易错点：认为读锁可升级为写锁；COW 用在写多的集合导致 GC 抖动；`StampedLock` 忘记 `validate` 就直接用乐观读数据。
 
 **17. 线程数设置与 worker 拆分**（★）
@@ -884,8 +884,8 @@
   2. IO 密集：`N × (1 + WT/ST)`，WT 为等待时间、ST 为计算时间；等待占 90% 时 16 核 ≈ 160，工程常用 `2N~4N` 起步压测收敛，不要盲信公式（下游连接池/QPS 上限才是真瓶颈）。
   3. 线程过多的代价：上下文切换（1~10μs）× 切换频次、每线程栈 512KB~1MB、GC 扫描根变多、锁竞争加剧、`CachedThreadPool` 无上限直接打爆下游。
   4. IO 线程与 worker 线程拆分（Netty 模型）：boss 接连接、worker 处理读写、业务线程池跑阻塞逻辑，避免慢业务拖住 IO 事件循环；代价是跨线程投递的队列与上下文传递（`ThreadLocal` 失效）。
-- 高频追问：IO 密集型为什么不设 10 倍线程数 → 答：线程数超过下游能承受的并发只会把压力转成超时与排队，同时切换成本上升；正确做法是限流 + 连接池 + 异步化（虚拟线程/响应式）而不是无限加线程。
-- 高频追问：某 worker 卡住/线程耗尽怎么办 → 答：`jstack` 定位卡点（锁/IO/死循环）、给外部调用加超时（`orTimeout`/`tryLock(timeout)`）、线程池隔舱（不同业务不同池）、有界队列 + 拒绝策略快速失败 + 监控活跃线程数与队列深度。
+- 高频追问：IO 密集型为什么不设 10 倍线程数 → 线程数超过下游能承受的并发只会把压力转成超时与排队，同时切换成本上升；正确做法是限流 + 连接池 + 异步化（虚拟线程/响应式）而不是无限加线程。
+- 高频追问：某 worker 卡住/线程耗尽怎么办 → `jstack` 定位卡点（锁/IO/死循环）、给外部调用加超时（`orTimeout`/`tryLock(timeout)`）、线程池隔舱（不同业务不同池）、有界队列 + 拒绝策略快速失败 + 监控活跃线程数与队列深度。
 - 易错点：把公式当唯一真理；核心线程数用默认值；同一线程池混跑 IO 与 CPU 任务导致互相挤占。
 
 **18. Future/CompletableFuture 编排**（★）
@@ -896,8 +896,8 @@
   2. 常用编排：`thenApply`（同步转换）、`thenCompose`（串行依赖，扁平化）、`thenCombine`（并行两路合并）、`allOf/anyOf`（聚合）、`exceptionally/handle/whenComplete`（异常兜底）。
   3. 线程池陷阱：不传 executor 时用 `ForkJoinPool.commonPool()`（并行度 = CPU-1），IO 任务会把公共池打满并影响 `parallelStream`；IO 密集必须传自定义池；`thenApply` 在**上一个任务的线程**里执行，`thenApplyAsync` 才切池。
   4. 超时与取消：`orTimeout(2, SECONDS)`（JDK 9+）或 `completeOnTimeout`；超时 `cancel(true)` 只发中断信号，不等价于"操作没发生"，下游要有幂等/补偿。
-- 高频追问：CompletableFuture 在生产的坑 → 答：公共池被打满、异常被静默吞掉（未 `join`/未 `handle`）、`thenApply` 与 `thenApplyAsync` 线程归属搞错、超时后侧效应仍在跑、死锁（在池内等另一个同池任务）。
-- 高频追问：singleflight（同一 key 并发只打一次下游）怎么实现 → 答：`ConcurrentHashMap<String, CompletableFuture>`，`putIfAbsent` 成功者执行并 `complete`，失败者 `get` 复用同一 future；结束在 `whenComplete` 里移除，注意异常传播与 panic 兜底。
+- 高频追问：CompletableFuture 在生产的坑 → 公共池被打满、异常被静默吞掉（未 `join`/未 `handle`）、`thenApply` 与 `thenApplyAsync` 线程归属搞错、超时后侧效应仍在跑、死锁（在池内等另一个同池任务）。
+- 高频追问：singleflight（同一 key 并发只打一次下游）怎么实现 → `ConcurrentHashMap<String, CompletableFuture>`，`putIfAbsent` 成功者执行并 `complete`，失败者 `get` 复用同一 future；结束在 `whenComplete` 里移除，注意异常传播与 panic 兜底。
 - 易错点：`allOf(...).join()` 后不用 `get()` 取结果（`allOf` 返回 `Void`）；回调里做阻塞 IO；忘记异常处理导致"任务失败但监控全绿"。
 
 **19. 无锁编程、自旋与伪共享**（★）
@@ -909,8 +909,8 @@
   3. 伪共享：多个线程改同一 64B 缓存行内的不同变量，导致缓存行在核间反复失效；`LongAdder` 的 `Cell` 用 `@sun.misc.Contended` 补 padding 隔离，`Disruptor` 用 `padding` 字段填充。
   4. 内存序（C++）：`memory_order_relaxed` 只保原子、`acquire/release` 建立同步（写 release 前的可见、读 acquire 后的可见）、`seq_cst` 全局全序最贵；Java 的 `varHandle`/`Unsafe` 提供 `acquire/release` 语义，`volatile` 相当于 `seq_cst` 级别。
   5. `lock_free`（至少一个线程能推进）vs `wait_free`（每步都有线程能推进，更强更难）。
-- 高频追问：`StampedLock` 的乐观读为什么不等价于无锁读 → 答：它仍会在 `validate` 失败后转成加读锁重读，且 stamp 校验与数据读取之间存在窗口（读的时候可能正在写），只能保证"校验通过的数据一致"，不保证读到最新。
-- 高频追问：`AtomicLong`、`LongAdder`、Redis INCR 的性能差异 → 答：单机低竞争 `AtomicLong` 足够（一次 CAS）；高竞争 `LongAdder` 分段累加吞吐高一个量级但 `sum()` 非强一致；跨实例必须 Redis `INCR`（网络 RT 约 0.2~1ms，QPS 万级/单 key），更高要走分片 key 再汇总。
+- 高频追问：`StampedLock` 的乐观读为什么不等价于无锁读 → 它仍会在 `validate` 失败后转成加读锁重读，且 stamp 校验与数据读取之间存在窗口（读的时候可能正在写），只能保证"校验通过的数据一致"，不保证读到最新。
+- 高频追问：`AtomicLong`、`LongAdder`、Redis INCR 的性能差异 → 单机低竞争 `AtomicLong` 足够（一次 CAS）；高竞争 `LongAdder` 分段累加吞吐高一个量级但 `sum()` 非强一致；跨实例必须 Redis `INCR`（网络 RT 约 0.2~1ms，QPS 万级/单 key），更高要走分片 key 再汇总。
 - 易错点：在无竞争的低频场景用 `LongAdder`（内存与 `sum` 成本更高）；自旋不限次数；以为 `relaxed` 能替代锁保护复合操作。
 
 **20. 进程/线程/协程与上下文切换**（★）
@@ -921,8 +921,8 @@
   2. 虚拟线程（JDK 21，JEP 444）是 M:N：`Continuation` + `ForkJoinPool` 调度，栈按需增长存在堆里，阻塞时自动 unmount 让出载体线程；`synchronized` 块内阻塞会 pin 住载体线程（JDK 24 的 JEP 491 才解决），native/JNI 也会 pin。
   3. 概念辨析：协程是「可挂起、由用户态调度」的执行单元这一抽象，Java 的落地形态就是虚拟线程（JDK 21 前只能靠第三方字节码增强库模拟）；与之并列的是「反应式异步」（`CompletableFuture`/Reactor），它同样不占线程，但把业务拆成回调/流水线，调试、事务与异常传播都更难——所以「用同步写法拿到异步吞吐」的虚拟线程成为当前主流选择。
   4. 切换成本来源：保存/恢复寄存器与 PC/SP、切换内核栈、**缓存与 TLB 失效**（新线程的工作集不在 L1/L2）、调度器开销，典型 1~10μs；减少手段：减少线程数、用无锁/批量、绑核、协程化、避免锁竞争导致的 park/unpark。
-- 高频追问：协程执行 IO 会有什么问题 → 答：虚拟线程只对 JVM「认识」的挂起点生效（socket NIO、`Queue.take`、`Thread.sleep`、`LockSupport.park`），这些会让它 unmount，等待期间不占载体线程；但 **`synchronized` 块内阻塞与 JNI/native 调用会 pin 住载体线程**（JDK 24 的 JEP 491 才消除 synchronized 导致的 pinning），pinning 一多就把 `ForkJoinPool` 打满，退化成平台线程。规避：用 `ReentrantLock` 替代 `synchronized`、native 调用丢到平台线程池、别在虚拟线程里做长 CPU 计算。
-- 高频追问：Java 线程状态与 OS 状态如何映射 → 答：Java `RUNNABLE` 合并了 OS 的 running + ready，甚至包含正在做阻塞 IO 的线程；`BLOCKED` 只对应等 monitor 锁；`WAITING/TIMED_WAITING` 对应 park/sleep。
+- 高频追问：协程执行 IO 会有什么问题 → 虚拟线程只对 JVM「认识」的挂起点生效（socket NIO、`Queue.take`、`Thread.sleep`、`LockSupport.park`），这些会让它 unmount，等待期间不占载体线程；但 **`synchronized` 块内阻塞与 JNI/native 调用会 pin 住载体线程**（JDK 24 的 JEP 491 才消除 synchronized 导致的 pinning），pinning 一多就把 `ForkJoinPool` 打满，退化成平台线程。规避：用 `ReentrantLock` 替代 `synchronized`、native 调用丢到平台线程池、别在虚拟线程里做长 CPU 计算。
+- 高频追问：Java 线程状态与 OS 状态如何映射 → Java `RUNNABLE` 合并了 OS 的 running + ready，甚至包含正在做阻塞 IO 的线程；`BLOCKED` 只对应等 monitor 锁；`WAITING/TIMED_WAITING` 对应 park/sleep。
 - 易错点：说虚拟线程能提升 CPU 密集型性能（它只提升 IO 密集的吞吐与并发数）；把协程等同于线程；忽略线程栈内存（1 万线程 ≈ 10GB 虚拟内存）。
 
 **21. 线程协作、交替打印与中断**（★）
@@ -933,7 +933,7 @@
   2. 顺序控制更简单的写法：单线程池串行、`CompletableFuture` 链式 `thenRun`、`BlockingQueue` 逐个传递、`CountDownLatch` 分段放行；要求"任意线程退出其余不永久阻塞"就得用 `try/finally` 里 `notifyAll`，或干脆用队列 + 超时 `poll`。
   3. 中断：`interrupt()` 只是置标志位并让 `park/sleep/wait/join` 抛 `InterruptedException`；`isInterrupted()` 查标志（不清）、`Thread.interrupted()` 查并清。捕获异常后要么继续向上抛、要么 `Thread.currentThread().interrupt()` 恢复标志，不能吞。
   4. 不能中断的场景：线程在死循环里不检查标志、在阻塞 IO（socket 读）里（要 `close()` 唤醒）、`synchronized` 等锁不可中断（这就是用 `lockInterruptibly` 的理由）。
-- 高频追问：如何中断一个正在运行的线程，一定能中断吗 → 答：不能"一定"，Java 没有抢占式强杀（`Thread.stop` 已废弃，会留下不一致状态）；只能协作——检查标志位、响应 `InterruptedException`、关闭资源。
+- 高频追问：如何中断一个正在运行的线程，一定能中断吗 → 不能"一定"，Java 没有抢占式强杀（`Thread.stop` 已废弃，会留下不一致状态）；只能协作——检查标志位、响应 `InterruptedException`、关闭资源。
 - 易错点：在 `catch (InterruptedException)` 里什么都不做；用 `stop()`；交替打印用 `if` 而非 `while`；多线程打印无 `notifyAll` 导致死等。
 
 **22. 等待多线程完成的 N 种方式**（★）
@@ -945,7 +945,7 @@
   3. `CompletableFuture.allOf(fs).join()`：非阻塞编排 + 异常聚合（`allOf` 里任一异常由 `join` 抛 `CompletionException`，要 `handle` 逐个兜底）；`anyOf` 取最快。
   4. `ExecutorService.invokeAll(tasks)` 返回 `List<Future>` 并阻塞到全部完成，适合批处理；`invokeAny` 取第一个成功结果。
   5. 有依赖/分阶段用 `Phaser`；生产上更推荐"结果写进 `ConcurrentHashMap`/阻塞队列 + 计数汇总"避免主线程长时间阻塞。
-- 高频追问：100 个任务限并发 3 调用外部接口 → 答：`Semaphore(3)` 包在任务外层（`acquire/release` 在 `finally`），或用固定 3 线程的线程池 + `CompletableFuture` 提交，结果按输入顺序收集；超时用 `orTimeout`/`get(timeout)` + `cancel(true)`。
+- 高频追问：100 个任务限并发 3 调用外部接口 → `Semaphore(3)` 包在任务外层（`acquire/release` 在 `finally`），或用固定 3 线程的线程池 + `CompletableFuture` 提交，结果按输入顺序收集；超时用 `orTimeout`/`get(timeout)` + `cancel(true)`。
 - 易错点：`CountDownLatch` 用在循环里（不能重置，应换 `CyclicBarrier`/`Phaser`）；`allOf` 之后直接 `join()` 而不处理单个 future 的异常；在 Tomcat 工作线程里 `join` 造成请求线程饥饿。
 
 **23. 超卖、幂等与重试防护**（★）
@@ -961,7 +961,7 @@
 
 ### Java 集合 ｜ HashMap 结构与扩容的参数级追问
 
-> 从 HashMap 的数组加链表加红黑树讲起，让你复述 put 流程，再深挖扩容时的高低位拆分与 0.75 负载因子的来源。判据是能否解释容量为何必须是 2 的幂，再追到 ConcurrentHashMap 的锁桶方案。
+> 集合选型本质是内存布局、均摊复杂度与并发粒度的取舍：HashMap 用 2 的幂桶数组加红黑树退化兜底把查找压到 O(1)，并发场景下 ConcurrentHashMap 把锁粒度细化到桶头节点并用分段计数避免全局竞争。
 
 **1. HashMap 底层结构：数组+链表+红黑树与 put/get 流程**（★★★）
 　*我先说它是桶数组：定位靠哈希，同一个桶里再用 equals 确认是不是这个键*
@@ -999,10 +999,10 @@
 　*单列 Collection（List/Set/Queue）+ 双列 Map，按"是否有序、是否去重、是否线程安全"三问选型*
 - 本质：整个集合框架分两支——单列 `Collection`（List 有序可重复、Set 无序不重复、Queue 队列）与双列 `Map`（键值对）。每个实现类的差异都可以归结为"底层数据结构 + 是否有序 + 是否允许重复/ null + 是否线程安全"四个维度。
 - 必答要点：
-  1. 结构树（要能画出来）：`Iterable → Collection → List/Set/Queue`；`List` 下有 `ArrayList（数组）/ LinkedList（双向链表）/ Vector（数组+同步）/ CopyOnWriteArrayList（写时复制）`；`Set` 下有 `HashSet（HashMap）/ LinkedHashSet（LinkedHashMap）/ TreeSet（TreeMap）`；`Queue` 下有 `ArrayDeque/LinkedList/PriorityQueue/BlockingQueue 系列`；`Map` 下有 `HashMap/LinkedHashMap/TreeMap/Hashtable/ConcurrentHashMap/ConcurrentSkipListMap`。
+  1. 集合体系脉络：`Iterable → Collection → List/Set/Queue`；`List` 下有 `ArrayList（数组）/ LinkedList（双向链表）/ Vector（数组+同步）/ CopyOnWriteArrayList（写时复制）`；`Set` 下有 `HashSet（HashMap）/ LinkedHashSet（LinkedHashMap）/ TreeSet（TreeMap）`；`Queue` 下有 `ArrayDeque/LinkedList/PriorityQueue/BlockingQueue 系列`；`Map` 下有 `HashMap/LinkedHashMap/TreeMap/Hashtable/ConcurrentHashMap/ConcurrentSkipListMap`。
   2. 四个维度对照：有序性（ArrayList/LinkedList/LinkedHashMap/LinkedHashSet/TreeMap 有序；HashMap/HashSet 无序）；重复性（List 允许、Set 不允许、Map 的 key 不允许）；null（HashMap 允许 1 个 null key、Hashtable/CHM 不允许）；线程安全（只有 Vector/Hashtable/COW/CHM/ConcurrentSkipListMap 与同步包装器安全）。
   3. 底层数据结构一览：数组（ArrayList/Vector/ArrayDeque 环形数组/PriorityQueue 二叉堆）、链表（LinkedList）、哈希表（HashMap/HashSet/LinkedHashMap）、红黑树（TreeMap/TreeSet）、跳表（ConcurrentSkipListMap）、写时复制数组（COW）。
-  4. 选型口诀：要下标访问 → ArrayList；要频繁头尾增删/当队列栈 → ArrayDeque；要 key-value → HashMap；要按 key 排序 → TreeMap；要插入序 → LinkedHashMap；要高并发 → ConcurrentHashMap；读多写极少且要 List → CopyOnWriteArrayList。
+  4. 工程选型原则：要下标随机访问 → ArrayList；要频繁头尾增删/当队列栈 → ArrayDeque；要 key-value → HashMap；要按 key 排序 → TreeMap；要插入序 → LinkedHashMap；要高并发 → ConcurrentHashMap；读多写极少且要 List → CopyOnWriteArrayList。
 - 高频追问：List、Set、Map 的区别和常见实现类 → 按上面结构树答，每个分支给 2~3 个实现类 + 底层结构。追问"数组与链表的优缺点" → 数组：随机访问 O(1)、内存连续缓存友好、定长/扩容要拷贝；链表：增删 O(1)（已定位）、动态扩展、但随机访问 O(n)、每节点额外指针开销、缓存不友好。追问"单列与双列集合的特点" → 单列 Collection 存单个元素、靠 equals 判重；双列 Map 存键值对、靠 key 的 hash + equals 定位。
 - 易错点：把 `Map` 说成 `Collection` 的子接口（不是，二者平行）；说 `HashSet` 是"红黑树"（是 HashMap）；漏掉 `Queue` 分支；把 `LinkedHashMap` 的有序说成"按 key 排序"（是插入序/访问序，排序要用 TreeMap）。
 - （同组细分）遍历集合时删除元素：迭代器与 fail-fast：for-each 底层是迭代器，`modCount != expectedModCount` 就抛 CME；只有 `iterator.remove()` 是安全的
@@ -1010,13 +1010,13 @@
 
 ### Spring ｜ 自动装配与 AOP 的机制追问
 
-> 从 Spring 与 Spring Boot 的定位差异切进，让你讲启动类三大注解与自动装配原理，判据是能否说清条件装配的加载顺序。之后深挖 AOP 的 JDK 与 CGLIB 代理选择，并追到自定义注解做限流的落地。
+> Spring 体系在工程架构里承担「装配解耦与横切治理」：容器生命周期与条件装配把基础设施按环境按需组装，动态代理把事务、限流、审计从业务主干剥离；一旦跨出代理边界或线程边界，增强与事务就会失效。
 
 **1. Spring Boot 自动装配原理**（★★★）
 　*@EnableAutoConfiguration 把 classpath 上的自动配置类按 @Conditional 筛出来注册成 Bean*
 - 本质：把"手写 @Bean 装配"换成"框架按 classpath 猜测并批量注册"，靠条件注解保证猜错时不生效。
 - 必答要点：①`@SpringBootApplication` = `@SpringBootConfiguration` + `@EnableAutoConfiguration` + `@ComponentScan`，`@EnableAutoConfiguration` 经 `@Import(AutoConfigurationImportSelector)` 触发装配；②装配源文件随版本变：2.7 前读 `META-INF/spring.factories` 的 `EnableAutoConfiguration` 键，2.7+ 改用 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`，3.0 彻底移除前者；③候选类 100+（2.x 约 130 个），真正生效仅 20~30 个——先按 `@ConditionalOnClass`/`@ConditionalOnMissingBean`/`@ConditionalOnProperty` 过滤，再按 `@AutoConfigureOrder`、`@AutoConfigureAfter/Before` 排序，由 `ConfigurationClassPostProcessor` 解析成 BeanDefinition。
-- 高频追问：自动装配和 SPI 什么关系 → 怎么答：本质是 Spring 版 SPI，`imports`/`spring.factories` 是扩展点声明文件；starter 只做依赖聚合，逻辑在 `xxx-autoconfigure` 里，`@ConditionalOnMissingBean` 保证用户自定义 Bean 优先，这就是"零代码改默认行为"的机制。
+- 高频追问：自动装配和 SPI 什么关系 → 本质是 Spring 版 SPI，`imports`/`spring.factories` 是扩展点声明文件；starter 只做依赖聚合，逻辑在 `xxx-autoconfigure` 里，`@ConditionalOnMissingBean` 保证用户自定义 Bean 优先，这就是"零代码改默认行为"的机制。
 - 易错点：把自动装配答成"注解扫描"——扫描（`@ComponentScan` 扫当前包及子包）与自动装配（读 classpath 元数据文件）是两条独立路径。
 - （同组细分）Spring Boot 启动流程与启动类三大注解：SpringApplication.run 十一步 refresh，启动类必须放根包才能扫到全部组件
 - （同组细分）Spring 与 Spring Boot 的定位差异：Spring 是 IoC+AOP 内核，Boot 是它的约定优于配置的脚手架
@@ -1025,7 +1025,7 @@
 　*运行期用 BeanPostProcessor 在初始化后织入，有接口走 JDK 代理，否则 CGLIB 子类*
 - 本质：把日志、事务、限流等横切逻辑从业务抽出，在方法调用前后插入通知，靠动态代理在**运行期**织入。
 - 必答要点：①织入时机：`AbstractAutoProxyCreator`（一个 BeanPostProcessor）在 `postProcessAfterInitialization` 判断切点命中后返回代理并替换容器中的 Bean，所以注入方拿到的是代理；②JDK 代理基于接口（`Proxy.newProxyInstance` → `$Proxy0` + `InvocationHandler#invoke`），目标类无接口即失败；CGLIB 生成子类，`final` 类不能代理、`final/private/static` 方法不被增强；Boot 2.x 起 `spring.aop.proxy-target-class` 默认 `true`，即便有接口也用 CGLIB；③多个 `MethodInterceptor` 由 `ReflectiveMethodInvocation` 串成责任链，`@Around` 包住 `@Before/@After/@AfterReturning/@AfterThrowing`。
-- 高频追问：AOP 何时失效 → 怎么答：自调用（`this.b()` 不过代理）、private/final/static 方法、对象非 Spring 管理（自己 new）、切点未匹配、缺 `@EnableAspectJAutoProxy`；解法是自注入、`AopContext.currentProxy()`（需 `exposeProxy=true`）或拆到另一个 Bean。
+- 高频追问：AOP 何时失效 → 自调用（`this.b()` 不过代理）、private/final/static 方法、对象非 Spring 管理（自己 new）、切点未匹配、缺 `@EnableAspectJAutoProxy`；解法是自注入、`AopContext.currentProxy()`（需 `exposeProxy=true`）或拆到另一个 Bean。
 - 易错点：以为"加了注解就有代理"——代理与否取决于切点表达式，不是注解本身；接口 + CGLIB 混用时强转 `$Proxy` 会 `ClassCastException`。
 - （同组细分）AOP 工程落地：自定义注解+限流/MDC 日志：切注解而非切包，横切逻辑才能按需挂载并可开关
 
@@ -1033,14 +1033,14 @@
 　*实例化→填充→Aware→前置 BPP→init→后置 BPP（代理在此）→销毁*
 - 本质：容器对每个单例执行固定流水线，扩展点就是流水线上的回调；AOP、注解注入、事务都挂在这些回调上。
 - 必答要点：①主流程：实例化（构造器）→ `populateBean` 属性填充 → `BeanNameAware`/`BeanFactoryAware`/`ApplicationContextAware` → `postProcessBeforeInitialization`（`@PostConstruct` 在此执行）→ `InitializingBean#afterPropertiesSet` → `init-method` → `postProcessAfterInitialization`（**AOP 代理在此生成**）→ 使用 → `@PreDestroy` → `DisposableBean` → `destroy-method`；②作用域差异：单例在 `finishBeanFactoryInitialization` 一次建好；`prototype` 每次 `getBean` 新建且销毁方法不回调；③容器级扩展点顺序：`BeanDefinitionRegistryPostProcessor`（可新增定义）→ `BeanFactoryPostProcessor`（改配方）→ `BeanPostProcessor`（改成品）→ 普通 Bean 初始化 → `SmartInitializingSingleton`。
-- 高频追问：Bean 有状态吗、线程安全吗 → 怎么答：单例只保证"唯一实例"不保证线程安全；无状态（无可变成员）天然安全，有状态要改 `prototype`、`ThreadLocal` 或加锁。
+- 高频追问：Bean 有状态吗、线程安全吗 → 单例只保证"唯一实例"不保证线程安全；无状态（无可变成员）天然安全，有状态要改 `prototype`、`ThreadLocal` 或加锁。
 - 易错点：说"BeanPostProcessor 在 Bean 实例化前执行"——它作用在每个 Bean 的初始化前后，自身实例化极早但不等于所有 Bean 之前。
 
 **4. @Transactional 失效场景与回滚规则**（★★）
 　*事务靠代理生效，自调用/非 public/异常被吞/默认只回滚 RuntimeException 四类踩坑*
 - 本质：注解只是元数据，开/提交/回滚由代理拦截 + `PlatformTransactionManager` 执行，代理没被穿过就一定失效。
 - 必答要点：①默认回滚规则：仅 `RuntimeException`/`Error` 回滚，受检异常（`IOException`、直接抛的 `SQLException`）默认**不回滚**，必须 `@Transactional(rollbackFor = Exception.class)`；②代理边界失效：同类自调用 `this.b()`、非 public、`private/final/static`、类本身不受 Spring 管理（自己 new）、注解写接口而实际走 CGLIB；③语义与环境失效：异常被 `try-catch` 吞掉且未 `setRollbackOnly()`、事务方法内新起线程（连接绑在 ThreadLocal）、MyISAM 不支持事务、`propagation = NOT_SUPPORTED`。
-- 高频追问：抛了异常却没回滚怎么排查 → 怎么答：先看异常是否受检、是否被 catch、调用栈里有没有 `TransactionInterceptor`（判断是否走代理）、表引擎是否 InnoDB、是否跨线程或 `@Async` 切走了执行线程。
+- 高频追问：抛了异常却没回滚怎么排查 → 先看异常是否受检、是否被 catch、调用栈里有没有 `TransactionInterceptor`（判断是否走代理）、表引擎是否 InnoDB、是否跨线程或 `@Async` 切走了执行线程。
 - 易错点：把"A 服务调 B 服务的事务方法"也当失效——跨 Bean 调用走代理是生效的，只有 `this` 自调用失效。
 - （同组细分）@Transactional 加在 private/static/接口上的差异：代理只能拦截可重写方法，private/static/final 直接失效，接口注解在 CGLIB 下丢失
 - （同组细分）构造器注入为何解决不了循环依赖：三级缓存出现在"实例化之后"，构造器注入卡在实例化之前
@@ -1049,7 +1049,7 @@
 　*@Conditional 系列决定"装配不装配"，配置按命令行>环境变量>profile>yml 覆盖*
 - 本质：注解分三类——声明 Bean（`@Component` 家族）、注入与配置（`@Autowired`/`@Value`/`@ConfigurationProperties`）、Web 映射（`@RestController`/`@RequestMapping` 家族）；`@Conditional` 决定"装不装"。
 - 必答要点：①`@Configuration(proxyBeanMethods=true)` 默认 CGLIB 增强，保证 `@Bean` 方法互调返回同一实例；`proxyBeanMethods=false` 是 lite 模式，启动更快但互调会 new 新对象；②`@Conditional` 家族：`@ConditionalOnClass`、`@ConditionalOnMissingBean`、`@ConditionalOnProperty`、`@ConditionalOnWebApplication`，判定在 `ConditionEvaluator` 解析配置类时完成；③配置优先级（高→低）：命令行 > `SPRING_APPLICATION_JSON` > Servlet 参数 > JNDI > 系统属性 > 环境变量 > `application-{profile}.yml` > `application.yml` > `@PropertySource` > 默认值，同名 key 高优先级覆盖。
-- 高频追问：`@Configuration` 与 `@Component` 区别 → 怎么答：`@Component` 是 lite 模式不增强，`@Bean` 互调每次新建；`@Configuration` 被 `ConfigurationClassPostProcessor` 用 CGLIB 增强，`@Bean` 方法变成从容器取，保证单例语义。
+- 高频追问：`@Configuration` 与 `@Component` 区别 → `@Component` 是 lite 模式不增强，`@Bean` 互调每次新建；`@Configuration` 被 `ConfigurationClassPostProcessor` 用 CGLIB 增强，`@Bean` 方法变成从容器取，保证单例语义。
 - 易错点：profile 文件写了却忘 `spring.profiles.active=dev`；容器 `-e` 环境变量优先级高于 yml，覆盖了配置却查不出来。
 - （同组细分）自实现"仅最外层提交"的嵌套事务注解：用 ThreadLocal 计数，只有计数归零的那次才真正 commit
 - （同组细分）BeanPostProcessor 的位置与作用：九处扩展点里最常用的两个钩子，AOP/注解注入都靠它
@@ -1058,27 +1058,27 @@
 　*构造器注入最稳，@Autowired 按类型、@Resource 按名称*
 - 本质：注入方式决定依赖何时解析、能否 `final`、错误何时暴露；两个注解差别在"按类型还是按名称、谁提供"。
 - 必答要点：①三种方式：构造器（推荐，可 `final`、启动即暴露循环依赖、易单测，Spring 4.3 起单构造器免写 `@Autowired`）、setter（可选依赖）、字段（反射注入，最省事但难测、隐藏依赖）；②`@Autowired`：Spring 提供，默认 `byType`，多个候选时按字段名兜底并可用 `@Qualifier`/`@Primary` 指定，`required=false` 允许为空；③`@Resource`：JSR-250，由 `CommonAnnotationBeanPostProcessor` 处理，默认 `byName`（name 取字段名），找不到再回退 `byType`，不支持 `required`。
-- 高频追问：Controller 注入的 Service 是单例还是多例 → 怎么答：默认单例，所以 Service 必须无状态；把用户信息存成员变量会在并发下串数据，要改局部变量、`ThreadLocal`（记得清理）或 `prototype`。
+- 高频追问：Controller 注入的 Service 是单例还是多例 → 默认单例，所以 Service 必须无状态；把用户信息存成员变量会在并发下串数据，要改局部变量、`ThreadLocal`（记得清理）或 `prototype`。
 - 易错点：`@Autowired` 注入 `List`/`Map` 时按类型收集所有实现（Map 的 key 是 Bean 名），不是单个 Bean；`new` 出来的对象不受管——没走 BPP 流水线，依赖不注入、AOP 不生效。
 
 **7. Spring 本质、IoC 与 DI 概念**（★）
 　*IoC 是把创建权交给容器，DI 是容器把依赖塞进来的手段*
 - 本质：IoC 是"对象创建与依赖装配的控制权反转给容器"的原则，DI 是落地手段；Spring = IoC 容器 + AOP + 资源/事务抽象。
 - 必答要点：①无 IoC 时 `new Service(new Dao(new DataSource(...)))` 层层硬编码，换实现改代码、生命周期不可管；②有 IoC：`BeanDefinition`（类名、作用域、依赖、初始化方法）是"配方"，`BeanFactory` 是按配方生产的工厂，`ApplicationContext` 额外给事件、国际化、资源加载、自动注册 BPP；③收益：解耦可替换、可 mock 单测、统一生命周期与扩展点、可被 AOP 切入、配置外置。
-- 高频追问：IoC 和 DI 是一回事吗 → 怎么答：IoC 是设计原则（控制权反转），DI 是实现方式（构造器/setter/接口注入），Spring 还用依赖查找（`getBean`）体现 IoC；容器底层就是 `beanDefinitionMap` + 三级缓存单例池 + 后处理器列表。
+- 高频追问：IoC 和 DI 是一回事吗 → IoC 是设计原则（控制权反转），DI 是实现方式（构造器/setter/接口注入），Spring 还用依赖查找（`getBean`）体现 IoC；容器底层就是 `beanDefinitionMap` + 三级缓存单例池 + 后处理器列表。
 - 易错点：把 IoC 说成 Spring 独有——它早于 Spring，EJB 容器、ASP.NET Core DI 同源。
 
 **8. MVC 请求链路与统一返回/全局异常**（★）
 　*doDispatch：映射→适配→拦截器→参数解析→Controller→HttpMessageConverter*
 - 本质：`DispatcherServlet` 作为前端控制器，把"找谁处理、怎么入参、怎么出参、出错怎么办"拆成可替换组件。
 - 必答要点：①`doDispatch`：`HandlerMapping#getHandler`（匹配 URL+Method）→ `HandlerAdapter` → `Interceptor#preHandle` → `HandlerMethodArgumentResolver` 解析 `@RequestBody`（Jackson）+`@PathVariable`/`@RequestParam` → 反射调用 Controller → 返回值经 `HttpMessageConverter` 写 JSON → `postHandle` → `afterCompletion`；②异常链路：`HandlerExceptionResolver`（`ExceptionHandlerExceptionResolver` 优先走 `@ControllerAdvice`，兜底 `DefaultHandlerExceptionResolver`/`BasicErrorController`）；③统一返回：`Result<T>` 由 `ResponseBodyAdvice#beforeBodyWrite` 包装，业务层只返回 DTO。
-- 高频追问：请求到 Controller 之前经过哪些组件 → 怎么答：Filter 链 → `DispatcherServlet` → `HandlerMapping` 得到 `HandlerExecutionChain`（含拦截器）→ `preHandle` → `HandlerAdapter` 参数解析 → 方法调用；补一句 Filter 在 Servlet 容器层、拦截器在 MVC 层。
+- 高频追问：请求到 Controller 之前经过哪些组件 → Filter 链 → `DispatcherServlet` → `HandlerMapping` 得到 `HandlerExecutionChain`（含拦截器）→ `preHandle` → `HandlerAdapter` 参数解析 → 方法调用；补一句 Filter 在 Servlet 容器层、拦截器在 MVC 层。
 - 易错点：`@RequestBody` 只能读一次流，在拦截器/切面里读了 body 会让 Controller 拿到空对象（需 `ContentCachingRequestWrapper`）；把 `@ResponseBody` 与视图解析混着讲。
 - （同组细分）全局异常处理、统一返回与跨域：@RestControllerAdvice 一处兜住业务异常，跨域用 @CrossOrigin 或 CorsFilter
 
 ### JVM ｜ 内存分区、GC 与线上排查链路
 
-> 先让你画内存区域划分并说清职责，再深挖 GC Roots 与可达性分析、分代算法与收集器选型。判据是能否把 G1 的 Region、RSet 与 Mixed GC 讲成因果链，最后落到 Full GC 频繁的排查。
+> JVM 调优与排障我围绕「分配速率、晋升路径与停顿预算（STW）」展开：先分清各内存区的生命周期，理解分代与 G1 Region 如何平衡吞吐和尾延迟，遇到频繁 Full GC 或 OOM 时先区分是分配过快还是引用链泄漏。
 
 **1. GC Roots、可达性分析与 Full GC 频繁排查**（★★★）
 　*存活判定靠 GC Roots 可达性而非引用计数，频繁 Full GC 要先分清"回收不掉"还是"分配太快"*
@@ -1159,7 +1159,7 @@
 
 ### Java 基础 ｜ 语言契约与底层机制的连续追问
 
-> 从 String 不可变与常量池切入，看你能否讲到 StringBuilder 的扩容代价；再深挖 equals 与 hashCode 的契约。判据是能否举出可验证的例子，反射会追到性能开销与禁用场景。
+> Java 基础特性背后都是运行期安全与性能开销的折中：String 不可变支撑了哈希缓存与多线程共享，equals/hashCode 契约决定了哈希容器的正确性，反射与动态代理换来框架灵活性的同时也引入了调用开销与优化边界。
 
 **1. String 不可变、常量池与 StringBuilder/StringBuffer**（★★★）
 　*不可变换来常量池复用、hash 缓存与线程安全，拼接则靠 StringBuilder（2n+2 扩容）*
@@ -1278,7 +1278,7 @@
 
 ### 算法 ｜ 手写算法的思路与复杂度表达
 
-> 从双指针与滑动窗口这类有套路的题切入，看你能否先讲思路再落代码；再深挖最大子数组和的 Kadane 状态定义。判据是复杂度分析与边界用例是否自觉给出，字符串与数字模拟、排序稳定性是变体。
+> 算法题我先给暴力基准复杂度，再指出利用了哪条单调性、有序性或状态重叠把复杂度降下来，写之前先把空输入、单元素、越界与溢出边界定死。
 
 **1. 双指针同向：数组合并与原地操作**（★★★）
 　*从后往前回填 + 快慢游标，把 O(m+n) 空间压成 O(1)*
@@ -1413,7 +1413,7 @@
 - 本质：把网格或图当成无权图，连通块用 flood fill（DFS/BFS），最短路用 BFS 的层序单调性。
 - 必答要点：1）LC200：遍历每格，遇 '1' 计数 +1 并 flood fill 把连通的 '1' 全置 '0'，每格只访问常数次，O(mn)/O(mn)；2）BFS 最短路：队列存 (r,c,dist)，第一次到达即最短，要求边权相同；3）判环：有向图用三色标记或拓扑排序出队数 < n，无向图用并查集或 DFS 排除父节点。
 - 高频追问：大矩阵（如 1000×1000 全 1）DFS 会栈溢出吗？→ 会，最坏递归深度 mn，改 BFS 队列或显式栈。为什么 BFS 求最短路要求边权相同？→ 只有每层代价一致才能保证首次到达即最优，带权要用 Dijkstra（堆）。
-- 易错点：4 邻域/8 邻域未与面试官确认；访问标记在出队时才打导致重复入队爆内存；改写了原矩阵但之后还要用。
+- 易错点：动笔前未先对齐 4 邻域还是 8 邻域连通规则；BFS 访问标记在出队时才打导致重复入队撑爆内存；原地改写输入矩阵却破坏了后续逻辑。
 
 **20. 哈希表与两数之和族（版本号/机器人）**（★）
 　*边遍历边查再存，把找配对从 O(n²) 降到 O(n)*
@@ -1438,14 +1438,14 @@
 
 ### 数据结构 ｜ LRU、布隆过滤器的设计取舍
 
-> 从 LRU 缓存设计开场，看你能不能用哈希加双向链表讲清淘汰为何是 O(1)；再深挖布隆过滤器的误判率估算与不可删除的取舍。判据是哈希冲突解决与扩容能否解释，Cuckoo Filter 是常见追问。
+> 工程数据结构的核心是「组合基础结构满足读写复杂度与内存上限」：LRU 用哈希表定位置、双向链表定淘汰序；布隆过滤器用位图与多哈希放弃精确存储，换取极小内存下的确定性判空。
 
 **1. LRU 缓存（HashMap + 双向链表）**（★★★）
 　*哈希定位 + 双链表排序，把 get/put 压到 O(1)，是手撕题里的第一高频*
 - 本质：HashMap 负责 O(1) 定位节点，双向链表负责 O(1) 维护"最近使用"顺序，两个结构通过节点引用互相指认，把朴素实现的 O(n) 降到 O(1)。
 - 必答要点：① get：命中后把节点 unlink 再插到头部，O(1)；② put：key 存在则更新值并移到头部，不存在则新建头插，size>capacity 时删尾节点并同步从 map 移除；③ 用 head/tail 两个哨兵节点消除判空分支，Node 里必须存 key，否则淘汰时无法反查 map 的键。
 - 高频追问：能不能用数组实现 → 能，但"移到头部/删尾部"要搬移 O(n)，除非用环形数组 + 双游标把搬移变成指针移动，仍属练手方案。冷数据扫描挤走热数据怎么办 → 换成 LRU-K / 2Q / TinyLFU 给新数据做准入判断，或按业务加权重。要求泛型 + 过期时间怎么做 → 节点带 expireAt，另建一条按过期时间有序的链（或最小堆），get 时惰性删除 + 后台定时清理。
-- 易错点：只从链表删节点不从 map 删，造成内存泄漏与"假命中"；用单向链表导致删尾要 O(n) 遍历；面试官问"put 时节点已存在"却忘了更新值只做了移头。
+- 易错点：淘汰时只摘除链表节点却漏删哈希表键，造成内存泄漏与脏命中；误用单向链表导致删尾退化成 O(n)；`put` 命中已有 key 时只挪到表头却忘了覆盖新值。
 
 **2. 数组 vs 链表**（★★★）
 　*连续内存换随机访问 O(1)，指针链接换已知节点增删 O(1)，选型看访问/增删比*
@@ -1499,7 +1499,7 @@
 
 ### 计算机网络 ｜ TCP 连接治理与协议设计
 
-> 从三次握手与四次挥手开场，让你讲状态机与 TIME_WAIT 的处置；再深挖连接治理：长短连接怎么选、半连接与全连接队列打满怎么查、心跳怎么设。判据是确认重传与滑动窗口能否讲成因果。
+> 网络层在分布式系统里直接决定连接容量与尾延迟：握手挥手与状态机对应连接生命周期，半/全连接队列、文件描述符与心跳保活决定网关承载上限，滑动窗口、重传与多路复用决定弱网与高并发下的吞吐表现。
 
 **1. 三次握手与四次挥手、状态机**（★★★）
 　*握手用序号+确认在不可靠 IP 上建双向共识，挥手四次是因为全双工要各关一个方向*
@@ -1722,7 +1722,7 @@
 
 ### 操作系统 ｜ 进程线程模型与 IO 多路复用
 
-> 先问进程、线程、协程的区别，追到上下文切换与用户态内核态切换的代价；再深挖线程共享与独有资源、虚拟内存与页表 TLB。判据是伪共享为何拖慢性能能否解释，epoll 三种模式会被追问。
+> 操作系统是高并发服务性能的物理底座：进程、线程、协程划定了隔离边界与切换成本，虚拟内存、页缓存与零拷贝决定了数据搬运路径，epoll 事件驱动则是单机支撑十万级并发连接的根基。
 
 **1. 进程/线程/协程的区别**（★★★）
 　*进程管资源、线程管调度、协程管切换成本，一切差异都源自「是否共享地址空间」与「谁来做调度」*
@@ -1858,7 +1858,7 @@
 
 ### 安全 ｜ Web 漏洞原理与权限模型落地
 
-> 从 Web 安全风险全景切入，让你按注入、越权、认证逐类给防御清单；再深挖越权与权限模型，追问 RBAC 与 ABAC 的边界、IDOR 怎么防。判据是 JWT 的无状态代价与失效刷新能否讲清。
+> 安全架构我按「认证（你是谁）→ 授权（你能操作哪条数据）→ 输入输出边界」三道防线回答：无状态令牌换来水平扩展但要补主动失效机制，防越权必须在服务端把身份与资源归属做强绑定校验。
 
 **1. Web 安全风险全景与防御清单**（★★★）
 　*一切 Web 漏洞都归结为「把不可信输入当成代码/指令/权限」执行了*
@@ -1895,7 +1895,7 @@
 
 ### Linux ｜ 线上定位问题的命令与判断
 
-> 场景式提问：机器变慢或磁盘满了怎么查，看你能否按 CPU、内存、负载、磁盘与 inode 逐层缩小范围。判据是每条命令看哪个指标、结论怎么下能否说清，大文件定位与批量杀进程会被追到写法。
+> 线上 Linux 排障遵循「先看全局饱和度，再定进程与线程，最后抓现场证据」：按 CPU、内存、磁盘 IO 与网络连接逐层收敛，每条排查命令都直接对应一个可证伪的瓶颈假设。
 
 **1. 进程与端口定位（ps/top/ss/lsof/netstat）**（★★★）
 　*排查第一跳永远是「谁在占端口、PID 是多少、它的线程和 fd 长什么样」*
@@ -1924,7 +1924,7 @@
 
 ### 设计模式 ｜ 模式选型判据与真实落地
 
-> 先让你手写策略模式，再追问策略、责任链、工厂怎么选，判据是能否说出扩展点在哪、新增分支要改几处。再深挖单例的 DCL 加 volatile 与类加载实现，追到 Spring 作用域里的落地边界。
+> 设计模式在业务系统里的价值是「隔离频繁变化的分支」：策略模式平铺互斥算法，责任链串联多步校验与过滤，工厂收拢创建逻辑；衡量好坏就看新增一种业务规则时需要改动几处原有代码。
 
 **1. 策略模式（手撕高频）**（★★★）
 　*把可互换的算法抽成接口注入上下文，用 Map 路由替代 if-else，新增分支只加类不改旧码*
@@ -1954,13 +1954,13 @@
 
 ### 测试 / 工程实践 ｜ 工程规范、测试设计与回滚操作
 
-> 先问分支模型与 merge、rebase 的选择理由，追到冲突解决与 reset、revert 的差异；再深挖 Mock 外部依赖与用例测试点怎么设计。判据是能否覆盖边界与失败路径，AI 生成代码如何审查是新增追问。
+> 工程交付质量靠「可回滚的协作规范与覆盖失败路径的验证」兜底：公共分支历史要可追溯、可安全逆向回滚，单元与集成测试重点卡住边界值、幂等重放与下游超时异常。
 
 **1. Git 分支模型与 merge/rebase 选择**（★★★）
 　*merge 保留真实分叉供追溯，rebase 重写历史换线性提交，公共分支只 merge 不改写*
 - 本质：Git 是快照 DAG，分支只是指向 commit 的指针；merge 生成合并提交保真历史，rebase 把提交摘下来重放到新基点、换掉 commit hash 换线性历史。选谁取决于「历史要不要对协作者可追溯」。
 - 必答要点：① 团队主干用 trunk-based 或 GitFlow 二选一：大团队多环境发布用 GitFlow（main/develop/feature/release/hotfix，release 分支冻结），小步快跑用 trunk-based + feature flag，分支寿命 ≤ 2 天。 ② 个人分支同步主干用 `git rebase origin/main`（可先 `git pull --rebase`），合入主干用 `git merge --no-ff` 保合并点，便于 `git log --first-parent` 出一版本线。 ③ rebase 已推送的提交必须 `git push --force-with-lease`（比 `--force` 安全：远端被别人推过就拒绝），且只在私有分支做；公共分支禁止改写。 ④ 常见命令要能按场景答：`commit` 只进本地对象库，`push` 才同步远端；`cherry-pick` 挑单个修复到 release；`git bisect` 二分找引入 bug 的提交（log2 次定位）。
-- 高频追问：rebase 会不会丢代码、冲突要解几轮？ → 这样答：rebase 逐个提交重放，冲突可能每个提交都要解一次（`git rebase --continue`，可 `-i` squash 先压缩成 1 个提交减少冲突轮次）；merge 只解一次。丢代码的只有 `--hard` reset 和强推覆盖，靠 reflog（默认保留 90 天）可救。
+- 高频追问：rebase 会不会丢代码、冲突要解几轮？ → rebase 逐个提交重放，冲突可能每个提交都要解一次（`git rebase --continue`，可 `-i` squash 先压缩成 1 个提交减少冲突轮次）；merge 只解一次。丢代码的只有 `--hard` reset 和强推覆盖，靠 reflog（默认保留 90 天）可救。
 - 易错点：说「rebase 更高级所以一律用 rebase」——已被多人拉取的分支 rebase 后别人 pull 会产生重复提交与幽灵冲突；也别把 `reset --soft/--mixed/--hard` 三者对工作区/暂存区的影响说反。
 - （同组细分）Git 冲突解决、reset/revert 回滚与 stash：冲突是三方合并的产物，公共分支回滚用 revert 不用 reset，切分支前用 stash 暂存
 
@@ -1968,9 +1968,7 @@
 
 ## 六、手撕代码题（★）
 
-> **一句话定位**：白板实现经典结构与解析题
-
-> 直接让你在白板上写，常见是 LRU 或 LFU 缓存设计，看能否把哈希、链表与淘汰策略拼成可运行结构。判据是边界与异常是否想到，手写 SQL、图与网格搜索、DP 计数题用来检验熟练度。
+> 工程与 SQL 手撕重点在于「数据结构契约清晰、边界自洽、索引友好」：深分页与统计分组必须结合索引有序性与回表代价来写，不能只凑出语法正确但全表扫描的写法。
 
 **1. 滑动窗口（无重复最长子串/最小覆盖子串/窗口最大值）**（★★★）
 　*窗口扩张+收缩，把「所有子串」O(n²) 降到 O(n)*
@@ -2180,7 +2178,7 @@
 
 ### 消息队列 ｜ 可靠性与顺序性的三段式追问
 
-> 先问消息会不会丢，让你按生产确认、刷盘与副本、消费 ACK 三段讲全，判据是每段的配置与失败后果能否说清。再深挖 Kafka 的顺序写与零拷贝，追到分区 Key 设计与 Rebalance 抖动。
+> 消息队列在架构里承担解耦、削峰与最终一致，代价是多出三个信任边界：生产端确认、Broker 多副本持久化、消费端位点提交必须闭环才能保「不丢」，而重试与 Rebalance 决定了下游必须用业务唯一键兜住「不重」。
 
 **1. 消息可靠性三段式：生产确认 / 刷盘与副本 / 消费 ACK**（★★★）
 　*「不丢」不是一个开关，生产端 confirm、Broker 副本、消费端手动 ACK 三段各确认一次才成立*
@@ -2356,7 +2354,7 @@
 
 ### 分布式系统 ｜ 幂等、ID 与分布式事务取舍
 
-> 从接口幂等设计开场，追问幂等键放哪、怎么防重复提交；再深挖雪花与号段方案、时钟回拨怎么处理。判据是 2PC、TCC、Saga 与 Seata AT 的补偿边界能否讲清，fencing token 是深挖点。
+> 分布式系统的核心是承认网络分区、节点暂停与乱序重试必然发生：全局唯一 ID 解决无中心发号，幂等键加状态机吸收重复请求，跨服务一致性则根据延迟预算在强一致锁、TCC 预留与本地消息表异步补偿之间做取舍。
 
 **1. 接口幂等设计**（★★★）
 　*网络超时、重试、消息重投都消不掉重复，幂等是接入分布式的准入条件而不是优化项*
@@ -2483,7 +2481,7 @@
 
 ### 微服务 / RPC ｜ RPC 调用链路与协议设计
 
-> 先问 RPC 与 HTTP 的区别，让你解释为何要自定义协议；再按调用全过程拆框架组成，追到序列化与网络层。判据是 Protobuf 的编码方式与字段兼容规则能否说清，超时重试与幂等如何配合会被追问。
+> 微服务通信链路围绕「低开销编码、服务治理与故障隔离」构建：自定义二进制协议与连接复用压低单跳延迟，注册中心维护动态拓扑，而逐层递减的超时预算与只读/幂等重试规则防止单点慢调用演变成级联雪崩。
 
 **1. 微服务拆分与 DDD 限界上下文**（★★★）
 　*微服务是业务能力纵向切分，DDD 只提供切分依据，粒度判据是「能否独立发布与独立故障」*
@@ -2564,11 +2562,11 @@
 
 ### 高并发 / 性能优化 ｜ 限流、压测与延迟优化的量化思路
 
-> 先问接口变慢怎么优化，让你分层给出定位顺序；再深挖限流算法的选择，追问令牌桶与漏桶在突发流量下的差异。判据是压测方案能否给出性能指标与瓶颈判读，端到端延迟拆解要能落到链路。
+> 高并发性能优化先看尾延迟（P99）拐点与首个饱和资源，再用分层限流、异步削峰与降级守住系统吞吐上限；容量评估必须落到具体 QPS、连接池与内存开销数字上。
 
 **1. 限流算法与工程实现**（★★★）
 　*先问要不要允许突发：要，用令牌桶；要保护下游写平，用漏桶*
-- 本质：限流是用一部分拒绝，换整条链路还活着。我按面试官在保护谁来选。防自己被打爆、又想留住短时突发，用令牌桶：速率是长期平均，桶的容量是允许一下子进来多少。要保护后面的数据库、输出必须平稳，用漏桶，多出来的排队或丢掉。固定窗口最好写，但窗口交界两边都能打满，实际会放出两倍。滑动窗口把这一秒切成几小段再加总，换精度。集群里扣减必须放在一条 Lua 里，否则判断和扣减会拆开。下面是四种算法的数字和落地。
+- 本质：限流是用可控的拒绝，换整条链路不雪崩。选型先看要保护的对象：防自己被打爆、又想留住短时突发，用令牌桶：速率是长期平均，桶的容量是允许一下子进来多少。要保护后面的数据库、输出必须平稳，用漏桶，多出来的排队或丢掉。固定窗口最好写，但窗口交界两边都能打满，实际会放出两倍。滑动窗口把这一秒切成几小段再加总，换精度。集群里扣减必须放在一条 Lua 里，否则判断和扣减会拆开。下面是四种算法的数字和落地。
 - 必答要点：
   1. 固定窗口：按分钟/秒切桶计数，实现最简单（Redis `INCR`+`EXPIRE`），但有**临界问题**：窗口边界两侧各打满，实际 2 倍 QPS 通过（如 100 QPS 限制下 0.9s 与 1.1s 各放 100 个，1 秒内实际 200）。
   2. 滑动窗口：把窗口切 N 个子桶（如 1 秒切 10 个 100ms 桶），计数 = 当前窗口内所有子桶之和，精确度 = 1/N，内存与精度折中；日志式滑动窗口记录每请求时间戳最精确但内存 O(QPS)。
@@ -2607,7 +2605,7 @@
 
 ### 云原生 / 容器 ｜ 容器与 K8s 的机制和运维排查
 
-> 从容器原理与镜像分层切入，再深挖 K8s 核心组件与 Pod 创建全流程，看能否说清调度到 kubelet 落地的每一步。判据是排障：反复重启怎么查、滚动更新与流量路径怎么走、GPU 池化怎么调度。
+> 容器与 K8s 把单机进程管理抽象为「Namespace/Cgroups 资源隔离 + 声明式状态机调谐」：理解调度绑定、网络转发与探针摘流链路，线上遇到 Pod 异常重启或发布抖动时就能按控制面到节点面快速定位。
 
 **1. Docker 容器原理、镜像分层与容器化部署**（★★★）
 　*namespace 管「看得见什么」、cgroup 管「用多少」，共用宿主内核所以比 VM 少一层 Guest OS，启动从分钟级降到百毫秒级*
@@ -2631,7 +2629,7 @@
   2. `kubectl create pod` 的完整链路：提交 yaml → apiserver 准入并写 etcd（`spec.nodeName` 为空）→ scheduler watch 到未绑定 Pod，过滤掉资源不足/污点不符的节点，再按亲和性与负载打分选最高分节点 → 写 `binding` → 目标节点 kubelet watch 到自己 → 调 CRI 创建 sandbox → 调 CNI 分配 Pod IP → 拉镜像启动业务容器 → 探针通过后 Endpoints 加入该 Pod。
   3. 资源分配：`requests` 决定调度（节点可分配量 = Allocatable − 已分配 requests），`limits` 决定 cgroup 上限。**32 核机器跑 8 个 4 核 Pod，第 9 个会因为 requests 无法满足而 Pending**（还要扣掉 kube-reserved/system-reserved，实际连 8 个都未必满额）；若只设 limits=4 不设 requests，则按默认 requests 调度，能被调度但会互相抢 CPU 造成抖动。
   4. 对象模型：Deployment（无状态，管 ReplicaSet 版本、支持滚动与回滚）／StatefulSet（稳定 DNS + 有序 + 独占 PVC）／DaemonSet（每个节点一份，日志、监控 agent）／Job/CronJob（批处理）；Service 提供稳定虚拟 IP，ConfigMap/Secret 注入配置，PVC 挂持久卷。
-- 高频追问：「32 核创建 8 个 4 核实例，第九个能创建出来吗？」→ 标准答：requests=4 时第 9 个 Pending（Pod 事件报 `Insufficient cpu`）；补充一句「如果 requests 小于 4 只靠 limits 超卖，能创建但会 CPU 争抢导致延迟劣化」，并给出用 `kubectl describe node` 看 Allocated resources 验证的方法。
+- 高频追问：「32 核创建 8 个 4 核实例，第九个能创建出来吗？」→ requests=4 时第 9 个 Pending（Pod 事件报 `Insufficient cpu`）；补充一句「如果 requests 小于 4 只靠 limits 超卖，能创建但会 CPU 争抢导致延迟劣化」，并给出用 `kubectl describe node` 看 Allocated resources 验证的方法。
   「节点 NotReady 怎么排查？」→ 顺序：`kubectl describe node` 看 Conditions/Events → 查 kubelet 与容器运行时（`systemctl status kubelet`、`journalctl -u kubelet`）→ 查磁盘压力（DiskPressure 会驱逐 Pod）→ 查网络插件（CNI 未就绪会导致节点 NotReady）→ 查节点与 apiserver 的心跳超时（默认 node-monitor-grace-period 40s）。
 - 易错点：把「调度」说成 kubelet 干的事；忘记准入阶段（Admission Webhook 能改镜像、注入 sidecar）；把 Deployment 的「副本数」说成调度器保证——实际是 ReplicaSet 控制器保证。
 
@@ -2641,11 +2639,11 @@
 
 ### 场景题 · 系统设计 ｜ 业务域建模与可扩展架构设计
 
-> 给业务场景让你从领域模型讲起，先划清用户体系与多租户数据隔离，再深挖交易域从下单、支付到状态机与超时关单。判据是扩展点设计，灰度发布与规则引擎要能说清怎么加而不改。
+> 复杂业务系统设计我遵循「先划清领域边界与数据隔离，再用状态机锁住核心流转，最后把多变规则抽成可灰度配置」：让主干链路极简稳定，让新增业务形态尽量收敛为改配置而非改核心表和主流程。
 
 **1. 可配置化与可扩展架构：灰度发布、规则/表达式引擎、策略与审核扩展点**（★★★）
-　*面试官在验「扩展点怎么留」：把变化点抽成配置/规则/插件，新增业务不改主干代码、灰度可回滚*
-- 本质：这类题考的不是「你会不会用 LiteFlow」，而是**你能不能识别变化点并把它隔离成配置**——判据是「新增一个业务形态，需要改几个类、发几次版、能不能灰度回滚」。
+　*核心是识别高频变化点并下沉为配置、规则或插件，做到新增业务策略不改主干代码、支持按流量灰度与秒级回滚*
+- 本质：可扩展架构的关键不在引入多重的框架，而在于**把稳定主流程与高频业务变化点解耦**——衡量标准就是新增一种业务玩法或审核策略时，需要改动几个类、发几次版，出问题能否不发版秒级回滚。
 - 必答要点：
   1. 澄清约束：变化频率（每周新增 1 个活动 vs 每天改策略）、变更人（运营改还是开发改）、生效时效（秒级 vs 发版级）、出错容忍（策略错了能否只回滚一条规则）。
   2. 分层设计：**元数据层**（规则/模板/配置存表，带版本号与生效时间）→ **解析层**（表达式引擎把配置翻译成可执行逻辑）→ **执行层**（责任链/插件注册表按类型路由）→ **管控层**（灰度、灰度比例、一键回滚、审计）。
@@ -2679,7 +2677,7 @@
 
 **3. 交易域：下单→支付→状态机→超时关单**（★★★）
 　*订单是「状态机 + 幂等 + 超时补偿」三件套，价格快照与状态流转合法性是必答点*
-- 本质：订单系统 = **状态机（合法迁移）+ 幂等（重复请求不重复下单）+ 超时补偿（未支付自动关单）**；面试官真正验的是「并发下状态不会被改乱」。
+- 本质：交易核心链路等于**显式状态机（约束合法流转）+ 全链路幂等（防重复建单扣款）+ 异步超时关单（释放占用的库存与优惠券）**，系统设计的底线是高并发与乱序回调下状态绝不被改乱。
 - 必答要点：
   1. 澄清约束：峰值下单 TPS（如大促 5 万）、是否允许超卖、支付渠道数量、退款与售后是否在同一状态机。
   2. 容量估算：订单表按「日均单量 × 保留年限」估行数，单表控制在 1000 万行内；日 500 万单 × 365 × 3 年 ≈ 55 亿行 → 必须分库分表（按 user_id 或 order_id 哈希）。
@@ -2877,7 +2875,7 @@
 
 **15. 数据模型与表结构设计**（★）
 　*从 0 建表先定「实体-关系-粒度-索引-分片键」，再谈扩展字段与冷热分离*
-- 本质：从 0 建表的判据是**实体-关系-粒度-索引-分片键**五连问；面试官追问的往往是「数据量涨 100 倍后这张表还成立吗」。
+- 本质：从 0 设计库表模型，我会按**核心实体 → 关联基数 → 读写粒度 → 联合索引 → 未来分片键**五步推演，并提前验证数据量增长 10~100 倍后读写路径与归档方案是否依然成立。
 - 必答要点：
   1. 澄清约束：核心实体与关系（1:1/1:N/N:N）、写入频率与查询模式、是否需要历史版本、数据保留期。
   2. 建模步骤：识别实体 → 定主键（业务键 vs 自增 vs 分布式 ID）→ 定粒度（一行代表什么，避免混粒度）→ 建索引（按查询条件的最左前缀）→ 定分片键 → 预留扩展字段（`ext json`）与审计字段（created/updated/deleted）。
@@ -2891,7 +2889,7 @@
 
 ### 场景题 · 数据一致性 ｜ 幂等、防超卖与状态机一致性
 
-> 从接口幂等与重复提交防护开场，追问幂等键存哪、过期怎么处理，以及在锁与唯一索引之间怎么取舍。再深挖防超卖的扣减方案与状态机拦截非法流转，判据是超时取消与回补能否闭环。
+> 交易与资金数据一致性的铁律是「缓存与锁只做并发过滤，数据库唯一约束与条件状态机才做最终裁决」，配合超时关单、异步回补与周期对账形成完整闭环。
 
 **1. 接口幂等与重复提交防护**（★★★）
 　*幂等键 + 唯一索引 + 状态机三层兜底，让同一业务意图只产生一次副作用*
@@ -2931,7 +2929,7 @@
 
 ### 场景题 · 高并发与性能 ｜ 扛量与瓶颈定位的量化推演
 
-> 先给量级让你搭总纲，问分层、热点与容量怎么算，再深挖秒杀全链路从预热、扣减到削峰的每道闸门。判据是 QPS 放大时能否逐段指出瓶颈与扩容手段，深分页与消息积压会被追问。
+> 扛高并发场景的本质是「漏斗式逐层拦截与读写彻底解耦」：在到达数据库前用静态化、本地缓存、Redis 原子预扣与消息队列把瞬时洪峰削平，并为每一层设定明确的限流与降级逃生开关。
 
 **1. 高并发系统设计总纲：分层、热点与容量**（★★★）
 　*高并发 = 把不必要的工作移出同步链路 + 让每一层都有明确上限，判据是「瓶颈最先出现在哪一层」*
@@ -3020,14 +3018,14 @@
 
 ### 场景题 · 排障与线上问题 ｜ 线上问题的分层排查链路
 
-> 给故障现象让你排查，先问接口超时怎么分层定位，再看能否说清延迟是自身 GC 还是下游慢。判据是命令与指标能否对应到结论，CPU 飙高与 Full GC 各有标准链路，RAG 的 P99 突增是新增追问。
+> 线上排障我坚持「先对齐时间拐点与变更，再用链路追踪定层，最后进单机抓栈与日志取证」：先止血（回滚、限流、降级、关重试放大），再追根因，避免在故障期盲目重启抹掉现场。
 
 **1. 接口超时与响应慢的分层排查链路**（★★★）
 　*把"慢"按 网关-应用-GC-下游-DB-池 逐层切 span，先定层再进单机取证*
 - 本质：把"慢"沿 网关 → 应用 → GC → 下游 RPC → DB → 连接池/线程池 切成可量化的段，先由监控定层，再进单机取证。
 - 必答要点：① 先看拐点而非绝对值——P99 曲线抬升的时刻对齐发布记录、配置变更、流量突增（QPS 是否同比翻倍）、上下游告警，四项对齐基本能锁定 80% 的原因；② 链路追踪按 traceId 拆 span，按各 span 的 P99 排序取 Top3 贡献项，占比 >60% 即为主要矛盾；③ 单机取证三件套 `top -Hp <pid>` → `printf '%x\n' <tid>` → `jstack <pid> | grep -A 50 'nid=0x<hex>'`，看 RUNNABLE 多=CPU 打满、BLOCKED 多=锁竞争、WAITING 在 pool/连接池=池耗尽或下游无响应；④ 排除放大效应：一次前端请求重试 3 次 × 超时 2s，RT 直接变成 6s，先关重试看是否恢复。
-- 高频追问："P99 从 200ms 涨到 2s，怎么区分下游慢还是自己 GC？" → 答：把 GC 日志时间戳与耗时请求发生的时间窗对齐，重叠即自身 STW（`jstat -gcutil <pid> 1000` 同时看 FGCT 增速）；不重叠再按 span 拆下游，或把下游 mock 成 1ms 本地调用做对照。
-- 易错点：只说"看日志"没有判定阈值；把 DB 慢 SQL、连接池排队、DNS 解析都笼统算进"接口慢"，面试官一追问就断。
+- 高频追问："P99 从 200ms 涨到 2s，怎么区分下游慢还是自己 GC？" → 把 GC 日志时间戳与耗时请求发生的时间窗对齐，重叠即自身 STW（`jstat -gcutil <pid> 1000` 同时看 FGCT 增速）；不重叠再按 span 拆下游，或把下游 mock 成 1ms 本地调用做对照。
+- 易错点：只泛泛说查日志却给不出具体指标与分界阈值；把数据库慢查询、连接池排队、自身 STW 和下游网络抖动混为一谈，缺乏按 Span 定层的排查顺序。
 - （同组细分）延迟归因：自身 GC 还是下游慢：用 GC 时间轴与请求耗时段是否重叠做对照实验，而不是靠猜
 - （同组细分）CPU 飙到 100% 的标准排查链路：top -Hp 取 tid → 转 16 进制 → jstack 对 nid，把 CPU 落到具体方法
 - （同组细分）Full GC 频繁与 JVM 内存排查命令：FGC 间隔、回收后老年代水位、晋升速率三指标定性泄漏还是不够用
@@ -3036,7 +3034,7 @@
 　*多跳串联链路先按 span 排序找最大贡献项，再看 token 配额与检索 top_k*
 - 本质：Agent 是"多跳 + 外部大模型依赖"的串联，端到端 P99 ≈ 各跳长尾叠加，必须先按 span 切分再谈优化。
 - 必答要点：① 分段量化：LLM 首 token 延迟 TTFT、生成总时长（输出 token 数 ÷ 生成速率）、工具调用 RPC、向量检索、重排、编排开销，按各段 P99 排序找最大贡献项；② 判据：TTFT 涨多为供应商限流（并发 × 平均 token 超 RPM/TPM 配额）或 prompt 变长；生成时长涨看是否误关流式输出；检索涨看分片热点与 top_k 从 10 调到 50 这类隐性放大；③ CPU、内存都正常而 P99 涨，基本是同步等待 IO——同步阻塞调 LLM 未用流式、HTTP 连接池过小、线程被长任务占满；④ 止血：降级小模型、热问题结果缓存直返、限制 max_tokens 与 top_k、对慢工具调用设 800ms 超时并兜底。
-- 高频追问："一次请求输入更短，但缓存失效导致费用反而增加，怎么定位并验证？" → 答：核对缓存 key 是否含 session_id、时间戳、模型版本等易变字段，先看缓存命中率曲线；费用 = 输入 token + 系统 prompt 重放 + 输出 token，短输入但系统 prompt 每轮重放同样贵；用"命中率"与"token/请求"两个指标对照即可证伪。
+- 高频追问："一次请求输入更短，但缓存失效导致费用反而增加，怎么定位并验证？" → 核对缓存 key 是否含 session_id、时间戳、模型版本等易变字段，先看缓存命中率曲线；费用 = 输入 token + 系统 prompt 重放 + 输出 token，短输入但系统 prompt 每轮重放同样贵；用"命中率"与"token/请求"两个指标对照即可证伪。
 - 易错点：把 Agent 当单体服务看 CPU；忽略 token 计费与供应商配额这类"非资源型"瓶颈。
 - （同组细分）RAG 检索错答定位：切分/向量/知识更新：用 recall@k、命中 chunk id 与数据时点逐层断链，禁止全链路重训
 - （同组细分）Java 线上 GC 治理闭环：指标基线 → 分配/晋升速率 → 堆与收集器 → 一个业务周期验证
@@ -3045,7 +3043,7 @@
 
 ### 场景题 · 可靠性与容灾 ｜ 重试、限流与容灾的边界控制
 
-> 从失败处理切入，问什么情况该重试、重试上限与死信队列怎么设；再深挖指数退避为何必须加抖动，否则重试会被放大成雪崩。判据是限流算法与限流器该放在哪一层能否讲清。
+> 可靠性与容灾设计的核心是「控制故障半径」：重试必须绑定幂等、退避抖动与熔断阈值防止重试风暴，超时、隔舱、限流与死信兜底共同保证局部依赖挂掉时不拖垮整站。
 
 **1. 失败处理与重试机制**（★★★）
 　*重试的前提是幂等，核心是把失败变成可重放的有状态事件*
@@ -3078,7 +3076,7 @@
 
 ### 场景题 · 海量数据与算法 ｜ 分片、Top-K 与外部排序推演
 
-> 从大文件求交集与差集切入，让你先给分片策略再讲每片怎么合并；再深挖海量统计的 Top-K 与小顶堆、哈希计数的取舍。判据是内存与 IO 代价能否算清，深分页与外部排序会被追问。
+> 海量数据处理的约束永远是「单机内存上限与磁盘顺序 IO」：先用哈希分桶把相同键路由到同片，片内用哈希计数或小顶堆在受限内存里求解，最后做多路归并。
 
 **1. 大文件求交集/差集与分片查找**（★★★）
 　*内存装不下就按 hash 分片，把全局无序问题降成可入内存的局部问题*
@@ -3108,7 +3106,7 @@
 
 ### C++ ｜ 对象内存布局与并发底层细节
 
-> 先从多态与虚函数表切入，让你画对象内存布局，追问菱形继承下虚继承如何避免二义；再深挖双重检查锁定为何不安全与 C++11 的正确写法。判据是内存序与原子操作的语义能否说清。
+> C++ 底层机制围绕「零额外抽象开销与显式内存生命周期」展开：虚函数表用一次间接寻址实现运行期多态，RAII 与智能指针管住资源释放，内存序与原子操作定义多核可见性边界。
 
 **1. 多态与虚函数表底层实现、对象内存布局**（★★★）
 　*每类一张只读 vtable、每对象一个 vptr，把运行时类型分派压成两次间接寻址*
@@ -3175,7 +3173,7 @@
 
 ### Python ｜ GIL、容器与对象模型的机制题
 
-> 从 list、tuple、set、dict 的底层差异切入，追问哈希与有序性的代价；再深挖装饰器原理并要求手写一个带参数的装饰器。判据是深浅拷贝的边界能否讲清，GIL 与引用计数分代 GC 会被追。
+> Python 服务化工程需要兼顾对象模型开销与并发模型边界：理解可变容器引用语义与引用计数加分代回收，在 GIL 约束下用多进程跑 CPU 密集、用事件循环异步 IO 支撑高并发网关与 Agent 编排。
 
 **1. 容器对比 list/tuple/set/dict**（★★★）
 　*list 是动态指针数组、tuple 定长可哈希、set/dict 是哈希表，按"要不要序/去重/映射"选*
@@ -3211,7 +3209,7 @@
 
 ### MyBatis / ORM ｜ ORM 使用细节与执行链路
 
-> 从 #{} 与 ${} 的区别切入，追问预编译如何挡住 SQL 注入；再深挖 SqlSession 执行流程与 Mapper 动态代理、插件拦截器链。判据是分页插件的改写逻辑与自增 ID 回填能否说清。
+> ORM 层一边连接对象模型与接口代理，一边守住 SQL 执行安全与性能边界：参数绑定一律走预编译占位防注入，动态表名/排序列走白名单校验，分页与审计通过拦截器链统一收口。
 
 **1. #{} 与 ${} 区别及 SQL 注入防护**（★★★）
 　*`#{}` 走 PreparedStatement 占位符把值当数据，`${}` 拼进 SQL 文本直接改语义*
@@ -3221,12 +3219,12 @@
   2. `#{}` 附带三个好处：参数不参与语法解析（安全）、同结构 SQL 可复用执行计划（省解析）、null → `setNull(jdbcType)` 类型安全。
   3. `${}` 只允许出现在 SQL 结构位置：表名、列名、`order by` 字段与方向、部分方言的 `limit`，且必须走白名单枚举校验（如 `order by ${["id","ctime"].contains(sort) ? sort : "id"}`）。
   4. LIKE 模糊查询避开注入：写 `like concat('%', #{kw}, '%')` 或 Java 侧先拼 `"%" + kw + "%"` 再传 `#{}`；同时用 `ESCAPE '\'` 转义用户输入的 `%`/`_`，防止通配符膨胀成全表扫。
-- 高频追问：`#{}` 就一定安全吗？→ 这样答：值安全，但**结构位置**（表名/列名/排序字段）用 `#{}` 会变成 `order by 'name'` 这种字符串常量、排序失效，所以这类场景被迫用 `${}`，安全责任转移到白名单校验上。
+- 高频追问：`#{}` 就一定安全吗？→ 值安全，但**结构位置**（表名/列名/排序字段）用 `#{}` 会变成 `order by 'name'` 这种字符串常量、排序失效，所以这类场景被迫用 `${}`，安全责任转移到白名单校验上。
 - 易错点：拿"预编译更快"给 `${}` 找合理性（MySQL 驱动默认 `useServerPrepStmts=false` 走客户端预编译，收益本就有限）；以及在 `like '%${kw}%'` 上只加引号不加白名单。
 
 ### 行为面 / HR ｜ 动机、协作与自我认知的表达
 
-> 多从学习能力与技术基础的自证开始，让你举一个靠自己啃下来的例子；再深挖转岗动机与职业选择，追问为什么这么规划。判据是回答里有没有具体事实和反思，冲突处理与需求变更会被追问。
+> 工程协作与复盘表达重在「用客观指标对齐分歧、用事实闭环证明推进力」：技术方案争议拿压测数据与维护成本裁决，进度风险提前暴露并给出分阶段降级交付方案。
 
 **1. 团队分歧、冲突与进度压力处理**（★★★）
 　*事实分歧用数据裁决，目标分歧上升一层，敢按顺序升级*
@@ -3235,7 +3233,7 @@
   1. 拆两类分歧：事实分歧用数据裁决（两套接口各压测 1 小时，P99 200ms vs 65ms）；目标/优先级分歧上升一层对齐业务指标，不争方案。
   2. 与 leader 分歧：先执行 + 埋观测点（灰度 5%、留回滚开关），一周后拿数据复盘，而不是当场辩论谁对。
   3. 人手不够按顺序谈：砍范围（MoSCoW 保 Must 约 60%）→ 要人 → 延时间，先给方案再报困难。
-- 高频追问："个人进度落后拖累团队、其他成员对你不满怎么办？" → 怎么答：偏差 1 天内主动同步（不等 deadline），给"补回计划 + 需要谁帮什么 + 最坏交付日"，请 leader 决定取舍。
+- 高频追问："个人进度落后拖累团队、其他成员对你不满怎么办？" → 偏差 1 天内主动同步（不等 deadline），给"补回计划 + 需要谁帮什么 + 最坏交付日"，请 leader 决定取舍。
 - 易错点：把案例讲成"我说服了对方"（只显强势）；说"从不和人起分歧"，等于没主见或不诚实。
 
 ---
@@ -3295,7 +3293,7 @@
 
 ### Agent 架构 ｜ Agent 分层架构与推理范式选型
 
-> 从 ReAct 循环切入，追问它与 Plan-and-Execute 的选型判据；再深挖 Skill 分层设计，以及 Skill、MCP、Tool 的边界。判据是 Harness 与 Runtime 的分工能否讲清。
+> 设计生产级 Agent 架构，我的核心原则是「模型只负责不确定性的推理与路由，确定性的状态机、权限校验、重试与回放全部收归外层 Harness 代码」，按路径可预判程度在固定 Workflow 与动态 Agent 之间做最小化选型。
 
 **1. ReAct 循环与推理范式**（★★★）
 　*Thought→Action→Observation 交替，用真实工具结果推翻或推进下一步假设*
@@ -3448,7 +3446,7 @@
 
 ### 记忆 / 上下文工程 ｜ 上下文预算与记忆分层治理
 
-> 先问长任务里上下文怎么管，让你讲窗口预算与压缩策略；再深挖压缩后的信息保真如何校验、行为漂移怎么发现。判据是上下文、checkpoint 与长期记忆的分层能否说清，落盘与分批会被追问。
+> 上下文与记忆在系统设计里就是 Agent 的「分级存储体系」：窗口内按缓存友好的前缀固定加滑动预算管理工作集，大体积工具产物外置按需读取，跨轮任务靠结构化状态落盘，跨会话事实靠长期记忆分层检索。
 
 **1. 上下文窗口预算管理与压缩策略（截断/滑窗/摘要/外置检索）**（★★★）
 　*把窗口当内存管：水位线触发、按段预算、四类压缩手段组合使用*
@@ -3458,7 +3456,7 @@
   2. 用**水位线**触发而不是等报错：窗口 70%~80%（如 128K 窗口在 90K~100K token）就压缩；每次调用后用 `usage.prompt_tokens` 维护实时水位。
   3. prompt 分层：系统提示+工具 schema（稳定，走前缀缓存）→ 任务契约（钉住不压缩）→ 历史（可压缩）→ 最近 5~10 轮原文（不压缩）→ 本轮检索材料。
   4. 压缩产物要结构化：目标／已完成／待办／关键实体与常量／失败过的尝试，摘要长度 ≤ 原文 10%~15%，原文落盘并在摘要里留路径以便回捞。
-- 高频追问：追问"上下文压缩具体怎么做？" → 这样答：按"消息块"（用户轮＋其工具调用＋工具结果）切分可压缩区，用便宜模型生成结构化摘要，块级原子地替换，绝不切开一次工具调用与它的结果。
+- 高频追问：追问"上下文压缩具体怎么做？" → 按"消息块"（用户轮＋其工具调用＋工具结果）切分可压缩区，用便宜模型生成结构化摘要，块级原子地替换，绝不切开一次工具调用与它的结果。
 - 易错点：把系统提示和工具 schema 也拿去摘要，导致工具调用格式崩坏；只压 token 不删噪声（大量重复失败日志占 80% 却不处理）。
 - （同组细分）压缩后的信息保真与校验：压缩是有损操作，必须有硬约束清单与可判定校验兜底
 - （同组细分）长任务上下文衰减与行为漂移治理：任务契约钉在头部＋状态落盘成 checkpoint，比换更大模型有效
@@ -3472,7 +3470,7 @@
   1. 三层：静态记忆（项目背景、编码规范、用户长期偏好；人工或半自动写入、启动即注入）；动态记忆（会话中沉淀的结论与踩坑；任务结束异步写入）；任务状态（进行中的 plan/checkpoint，不进长期记忆）。
   2. 介质组合：Markdown 文件（人可读可审）＋ SQLite/Postgres 元数据（scope、时间、来源、importance、ttl）＋ 向量索引（语义召回），索引可由文件全量重建。
   3. 生命周期：写入打 importance 与置信度，检索按"相关度×重要度×新鲜度"排序，超期降权归档，冲突走合并或失效。
-- 高频追问：追问"每轮都触发存储导致记忆过多怎么办？" → 这样答：改成异步＋阈值触发（显式"记住"指令、同一事实第二次出现、任务结束 flush），同 scope 相似度 >0.9 走更新而非新增，并定期 compaction。
+- 高频追问：追问"每轮都触发存储导致记忆过多怎么办？" → 改成异步＋阈值触发（显式"记住"指令、同一事实第二次出现、任务结束 flush），同 scope 相似度 >0.9 走更新而非新增，并定期 compaction。
 - 易错点：整段对话当记忆存，召回全是噪声；没有 scope 隔离，测试项目记忆串到线上项目。
 - （同组细分）记忆写入控制与召回触发：显式指令才写、宁缺勿滥地召回，写入做成异步＋阈值触发
 - （同组细分）记忆污染纠正与遗忘机制：每条记忆可溯源，更新用 supersede 不覆盖，删除要级联索引
@@ -3486,7 +3484,7 @@
   1. 建库：tree-sitter 解析 AST 抽函数/类/接口与 import、调用边，落成符号表＋图；按函数边界切块（300~800 token，overlap 50）生成 embedding。
   2. 10 万文件量级：进程池并行解析，排除 `node_modules`/`dist`/`vendor`/二进制，只索引源码＋关键配置；图存 SQLite/Neo4j，向量存 FAISS/Milvus，冷启动可分片并行。
   3. 增量：`git diff`＋mtime＋内容 hash 判断变更，只重解析变更文件的 AST 及其**反向依赖边**（签名变了要更新调用点），删除文件同步清索引。
-- 高频追问：追问"Memory 会不会撑爆？" → 这样答：索引常驻磁盘、上下文只注入检索片段——"索引是外存、上下文是缓存"，撑爆的是上下文而不是索引。
+- 高频追问：追问"Memory 会不会撑爆？" → 索引常驻磁盘、上下文只注入检索片段——"索引是外存、上下文是缓存"，撑爆的是上下文而不是索引。
 - 易错点：每次任务全量重建；只按文件 hash 增量，忽略跨文件调用关系失效。
 - （同组细分）多会话 memory 隔离与 scope 分区：先按 tenant/project 过滤再 ANN，共享层只放人工确认过的稳定知识
 - （同组细分）Context 与长期 Memory 的区别：Context 是本次推理的工作集，Memory 是跨会话的持久存储
@@ -3498,13 +3496,13 @@
   1. 存储结构：session 表＋message 表（role、content、tool_calls、token 数、时间、parent_id 支持分支重试），或 append-only JSONL，按 session_id 分区。
   2. 选取：最近 5~10 轮原文（按 token 预算，如 20K）＋更早的摘要＋与当前问题相关的检索片段；系统提示与工具 schema 常驻。
   3. 优先级：用户显式指令与当前任务约束 > 最近原文 > 摘要 > 检索材料 > 旧工具输出（旧工具结果最先丢）。
-- 高频追问：追问"为何不能把所有历史都塞给大模型？" → 这样答：三条——窗口硬上限、成本随轮数线性增长、长上下文中间段信息被系统性忽略（Lost in the Middle）。
+- 高频追问：追问"为何不能把所有历史都塞给大模型？" → 三条——窗口硬上限、成本随轮数线性增长、长上下文中间段信息被系统性忽略（Lost in the Middle）。
 - 易错点：只按条数裁剪不看 token；把工具原始大结果长期留在历史里。
 - （同组细分）用户长期偏好提取与一次性描述区分：看范围词与跨会话复现，单次约束打 session 作用域
 
 ### 工具调用 / Function Call ｜ 工具选择、可靠性与上下文成本
 
-> 先问模型怎么判断该不该调用工具、工具多了怎么选，再深挖返回超大数据怎么裁剪，判据是上下文膨胀与 Token 节省的取舍能否说清。失败原因分类与能否安全重试会被追到幂等实现。
+> 工具调用是从「文本生成」跨越到「外部系统副作用」的边界层：工具数量靠分级路由与渐进加载控制选择准确率，入参靠强 Schema 与服务端二次鉴权防越权，出参靠裁剪与结构化错误码支撑自愈重试且不撑爆窗口。
 
 **1. 工具选择与是否调用工具的判定**（★★★）
 　*把"要不要调、调哪个"变成受限分类+参数生成，模型只出意图，执行权在后端*
@@ -3562,13 +3560,13 @@
 
 ### 多 Agent 协作 ｜ 上下文传递与协作拓扑设计
 
-> 从任务分解、分配与调度切入，追问子 Agent 的上下文怎么传、共享记忆放哪；再深挖上下文污染与 Token 爆炸怎么压缩。判据是进度同步与权限隔离能否给出方案，协作拓扑会被追到模式。
+> 引入多 Agent 不是为了堆角色，而是为了「隔离上下文窗口与并行化独立子任务」：父子之间只传结构化任务契约与摘要产物，不共享全量对话历史，并用明确的完成判据与仲裁机制收敛成本和延迟。
 
 **1. 上下文传递与共享记忆设计**（★★★）
 　*协作的本质是决定"谁在什么时刻看到什么上下文"，全量广播等于放大 token 与幻觉*
 - 本质：多 Agent 最稀缺的不是算力而是"干净且够用"的上下文，协作设计=谁在什么时刻看到什么。
 - 必答要点：①分层传递——主 Agent 只留任务摘要+验收标准+资源句柄（文件路径/query id/URL），子 Agent 拿全量原始材料，回传结构化结果 ≤500 token，禁止全量回灌；②三种通道：tool call 参数（同步小载荷）、共享黑板 KV（大对象存引用）、消息队列 topic（异步并行）；③共享内存只放进度、产物索引、决策记录、失败原因，不放原始长文，否则复制量随 Agent 数 O(n) 膨胀。
-- 高频追问："主 Agent 不读全部领域上下文怎么知道派给谁" → 答：每个子 Agent 常驻一段 ≤100 字领域卡片（能力清单+输入输出 schema+"何时别用我"），主 Agent 只读卡片做路由，细节懒加载。｜易错点：以为全量广播最安全，实际是 token 与幻觉的双重放大器。
+- 高频追问："主 Agent 不读全部领域上下文怎么知道派给谁" → 每个子 Agent 常驻一段 ≤100 字领域卡片（能力清单+输入输出 schema+"何时别用我"），主 Agent 只读卡片做路由，细节懒加载。｜易错点：以为全量广播最安全，实际是 token 与幻觉的双重放大器。
 - （同组细分）上下文污染、Token 爆炸与记忆压缩：上下文必须写入受控，只有 accepted 的结论能回写黑板
 - （同组细分）敏感上下文与子 Agent 权限隔离：凭据与源码不进模型上下文，只进工具进程，靠架构而非 prompt 防泄露
 
@@ -3576,31 +3574,31 @@
 　*调度器本质是带依赖图的 DAG 执行器，节点数/深度/预算必须设上限*
 - 本质：多 Agent 的收益来自可并行的独立子任务，调度器本质是带依赖图的 DAG 执行器。
 - 必答要点：①分解按数据源/工具域/产物类型切（搜索、比价、改码、测试），不按"角色人格"切；②动态图：Planner 只展开一层，运行中按结果扩边，硬上限节点 ≤20、深度 ≤3、总步 ≤50，超限强制收敛；③分配 push 为主（主 Agent 派活+超时），看板 pull 做削峰，两者混用。
-- 高频追问："Leader Agent 挂了怎么兜底" → 答：调度状态外置到持久化 DAG（DB/Redis），worker 无状态；Leader 重启从 checkpoint 恢复，租约+心跳（15s 心跳、连续 3 次失联回收任务）。｜易错点：拆到 20+ 节点后协调成本已超并行收益。
+- 高频追问："Leader Agent 挂了怎么兜底" → 调度状态外置到持久化 DAG（DB/Redis），worker 无状态；Leader 重启从 checkpoint 恢复，租约+心跳（15s 心跳、连续 3 次失联回收任务）。｜易错点：拆到 20+ 节点后协调成本已超并行收益。
 - （同组细分）主子进度同步与后台监控：状态变更用推、看板读取用拉，主 Agent 绝不阻塞轮询子 Agent
 
 **3. 协作拓扑与常见模式（Supervisor/Handoff/群聊/黑板）**（★★）
 　*选拓扑比选框架重要，四种形态决定可控性与成本量级*
 - 本质：所有框架最终落到四种拓扑，选拓扑比选框架重要。
 - 必答要点：①Supervisor：主 Agent 决定下一个说话者，可控可测，生产最常用；②Handoff：控制权直接转移（Swarm/Agents SDK 风格），轻量但难做全局优化；③群聊/黑板：多轮广播到收敛，灵活但通信量 O(n²) 且易失控；④流水线/层级团队：Planner-Executor-Critic，可并行、可 checkpoint。
-- 高频追问："为何很多多 Agent 系统最终退化为单 Agent 或固定工作流" → 答：任务分布稳定后动态路由收益低于不确定性成本，工程上收敛为 DAG+单 Agent 节点，动态只留在检索/工具选择层。｜易错点：把多 Agent 当目的，没算每多一跳≈多 1 次 LLM 调用 + 一份上下文复制。
+- 高频追问："为何很多多 Agent 系统最终退化为单 Agent 或固定工作流" → 任务分布稳定后动态路由收益低于不确定性成本，工程上收敛为 DAG+单 Agent 节点，动态只留在检索/工具选择层。｜易错点：把多 Agent 当目的，没算每多一跳≈多 1 次 LLM 调用 + 一份上下文复制。
 - （同组细分）Agent 间输入输出格式与协议统一：跨 Agent 接口是函数签名，先定 schema 再谈智能
 
 **4. 单 Agent vs 多 Agent 判据与对比**（★）
 　*多 Agent 只解决上下文隔离与并行专业化，不解决"更聪明"*
 - 本质：多 Agent 只解决两类问题——上下文隔离与任务并行/专业化，不解决"更聪明"。
 - 必答要点：①该拆的信号：工具 >15~20 且权限域不同、单任务上下文 >窗口 60%、子任务可并行且独立、需要不同模型档位（小模型路由+大模型推理）；②不该拆：强串行、共享状态多、延迟敏感（每跳 1~3s）、要求强一致；③前置条件：结构化输出、可观测 trace、幂等工具缺一不可，否则放大的是混乱。
-- 高频追问："同事说这是过度设计要改单 Agent" → 答：拿对照实验说话，同测试集 ≥100 条比准确率/P95 延迟/单任务成本，提升 <15% 或加速 <2× 就回退单 Agent。｜易错点：用"像人类团队分工"论证，没有可验证指标。
+- 高频追问："同事说这是过度设计要改单 Agent" → 拿对照实验说话，同测试集 ≥100 条比准确率/P95 延迟/单任务成本，提升 <15% 或加速 <2× 就回退单 Agent。｜易错点：用"像人类团队分工"论证，没有可验证指标。
 
 **5. 通信机制与消息协议**（★）
 　*首选进程内 tool call + 共享存储，网络协议只在跨机或异步时补上*
 - 本质：Agent 间通信以"进程内函数调用 + 共享存储"为主，网络协议是补充而非首选。
 - 必答要点：①为何不用网络：同进程 tool call 免序列化免鉴权，延迟 <1ms vs 网络 1~100ms，且大对象可按引用传；②协议层：MCP 管 Agent↔工具，A2A 管 Agent↔Agent（Agent Card + 任务状态 submitted/working/completed/failed + SSE 流式），AG-UI 管前端；③跨机才上 HTTP/gRPC/Kafka（每 Agent 一组 topic，天然异步与重放）。
-- 高频追问："子 Agent 返回自然语言怎么可靠解析" → 答：强制 function call/JSON mode + schema 校验 + 结论字段枚举化，自然语言只放 `summary`，不参与控制流。｜易错点：以为 MCP 与 A2A 是竞品，其实一个管工具、一个管 Agent 间任务，可叠加。
+- 高频追问："子 Agent 返回自然语言怎么可靠解析" → 强制 function call/JSON mode + schema 校验 + 结论字段枚举化，自然语言只放 `summary`，不参与控制流。｜易错点：以为 MCP 与 A2A 是竞品，其实一个管工具、一个管 Agent 间任务，可叠加。
 
 ### LangChain / LangGraph ｜ LangGraph 状态机与路由设计
 
-> 从 LangChain 与 LangGraph 的抽象差异切入，追问为何弃用 AgentExecutor；再深挖节点、边与条件边的路由。判据是 State 字段设计与状态污染怎么防，Checkpoint 会被追。
+> 编排框架选型看控制流透明度与状态持久化能力：单次无环流水线用轻量链式组合即可，多轮带环、需人工审批中断与断点恢复的生产长任务，则用显式状态图或自研确定性状态机管理。
 
 **1. LangChain 与 LangGraph 的抽象差异**（★★★）
 　*Chain 是"一次调用的流水线"，Graph 是"带共享状态的图状态机"，前者无环后者可环可中断*
@@ -3636,18 +3634,18 @@
 
 ### MCP ｜ 协议分层与传输方式的机制题
 
-> 先问 MCP 与 API 网关、本地 Tool 的边界，再深挖 Host、Client、Server 的职责与连接模型。判据是 JSON-RPC 消息类型与 initialize 协商能否说清，两种传输差异会被追问。
+> MCP 在架构上解决的是「工具生态与宿主应用的解耦复用」：通过标准 JSON-RPC 会话完成能力协商与动态发现，本地进程走 stdio 零网络暴露，远端多租户服务走流式 HTTP 并补齐鉴权、超时与限流网关治理。
 
 **1. MCP 定位与本质：与 API 网关、本地 Tool 的边界**（★★★）
 　*用一套 JSON-RPC 标准协议把「外部能力」外置成可发现的 Server，把 M×N 集成降成 M+N*
 - 本质：MCP（Model Context Protocol）是 Host 应用与外部能力之间的开放协议，消息用 JSON-RPC 2.0，能力由 Server 在运行时自描述并被模型动态发现，而不是编译期写死的插件。
 - 必答要点：M 个 AI 应用接 N 个系统的私有适配是 M×N，协议化后每个系统只写 1 个 Server、每个应用只写 1 个 Client，降到 M+N；三家（Anthropic/OpenAI/Google）生态已收敛到同一协议，所以「换模型不改接入」是它的真实价值。
 - 必答要点：与 API 网关的本质差别三条——网关面向「人写死的调用方」做路由、限流、鉴权；MCP 面向「模型自主选择」做 schema 自描述 + tools/list 运行时发现 + 结果回填上下文；网关在链路里是被动的，MCP Server 可以主动发通知（列表变更、进度）。
-- 高频追问：「MCP 是不是就是个 RPC 框架 / 网关？」→ 这样答：是协议不是网关，网关是流量入口，MCP 是能力描述与调用契约，重点是「模型能不能看懂并选对」；与本地 Tool 的差别是进程/网络边界与复用性，本地函数零跳转但只能自己用。｜易错点：只答「统一接口、解耦」不讲 JSON-RPC、发现机制与动态性，被追问就空。
+- 高频追问：「MCP 是不是就是个 RPC 框架 / 网关？」→ 是协议不是网关，网关是流量入口，MCP 是能力描述与调用契约，重点是「模型能不能看懂并选对」；与本地 Tool 的差别是进程/网络边界与复用性，本地函数零跳转但只能自己用。｜易错点：只答「统一接口、解耦」不讲 JSON-RPC、发现机制与动态性，被追问就空。
 
 ### 流式输出 / SSE ｜ 流式链路与断连治理
 
-> 先问流式输出为什么必要，让你讲端到端链路与逐 token 增量渲染；再深挖 SSE 与 WebSocket 的选型判据。判据是断连、中断与续传的幂等和资源释放能否讲全，分段错乱会被追问。
+> 大模型交互链路耗时长，流式传输是用「低首字延迟（TTFT）与过程可见性」换取可用体验：单向下行推送优先用轻量 SSE 配事件序号续传，全链路需关掉代理缓冲并在客户端断连时联动释放上游推理算力。
 
 **1. 流式输出为何必要与端到端链路（EventSource + Emitter）**（★★★）
 　*在一个不结束的 HTTP 响应上持续 flush 增量，把 TTFT 从整段生成时间压到首 token*
@@ -3672,7 +3670,7 @@
 
 ### RAG ｜ 端到端链路与召回排查
 
-> 先讲 RAG 端到端链路，再问召回效果差怎么分层排查，看能否区分切分、嵌入、检索与重排各段的问题。判据是向量相似度分数的局限能否解释，向量加 BM25 双路召回会被追到权重。
+> RAG 系统本质是一条「漏斗式证据供给管道」：离线解析与父子切分决定知识上限，在线混合检索（向量保语义泛化 + BM25 保精确词面）保召回率，Cross-Encoder 重排保进窗口的信噪比，效果不好时必须逐段归因而不是盲调 Prompt。
 
 **1. RAG 基本原理与端到端链路**（★★★）
 　*离线切块建索引、在线检索注入上下文，用可溯源证据替代参数记忆*
@@ -3682,7 +3680,7 @@
   2. 每一步都有可观测断点，出问题先定位断点：切分看"chunk 能否独立回答一个子问题"，召回看 Recall@K，排序看 nDCG@10，生成看忠实度。直接换大模型是最后手段。
   3. 关键取舍给数字：chunk 300~800 token、overlap 10~20%；召回池 50~100 条，rerank 后取 5~10 条进 prompt；链路比裸调模型多 200~800ms 延迟，靠并行召回 + 流式输出压回来。
   4. 生成侧强约束：system prompt 要求"仅依据编号证据作答、证据不足回答不知道"，输出带 [1][2] 引用，并做后置引用校验。
-- 高频追问：**"讲讲 RAG 检索的完整流程"** → 这样答：query → 改写（指代消解/扩写）→ 向量 + BM25 双路各取 50 → RRF(k=60) 融合 → cross-encoder rerank 取 8 → 按分数首尾排布拼装 → 生成 + 引用校验，每一步说一个典型失败点和对应指标。**"RAG 的基本原理"** → 一句话：外部知识检索增强生成，换来时效性与可溯源，代价是链路长、有召回噪声。
+- 高频追问：**"讲讲 RAG 检索的完整流程"** → query → 改写（指代消解/扩写）→ 向量 + BM25 双路各取 50 → RRF(k=60) 融合 → cross-encoder rerank 取 8 → 按分数首尾排布拼装 → 生成 + 引用校验，每一步说一个典型失败点和对应指标。**"RAG 的基本原理"** → 一句话：外部知识检索增强生成，换来时效性与可溯源，代价是链路长、有召回噪声。
 - 易错点：把 RAG 答成"接个向量库就完事"，说不清离线/在线分离、评测集怎么来、badcase 怎么回流；忽略权限过滤与增量更新这两个上线必被问的点。
 - （同组细分）从零搭建团队知识问答的落地流程：先定评测集与权限边界，再串起七阶段链路，否则调参无度量
 - （同组细分）召回效果差的分层排查：语料→解析→切分→召回→排序五层漏斗逐层证伪，别一上来换模型
@@ -3773,7 +3771,7 @@
 
 ### Prompt 工程 ｜ Prompt 结构与治理的工程视角
 
-> 从系统 Prompt 的结构与调优切入，追问静态与动态部分怎么拆；再深挖前缀缓存与版本治理，判据是改一处会影响哪些缓存命中能否说清。主子 Agent 的任务拆解、先改 Prompt 还是微调会被追问。
+> Prompt 工程在生产环境里是「接口契约与前缀缓存设计」：静态规则前置钉死以吃满 Prefix Cache 降本降延迟，动态检索与历史后置隔离并做防注入边界，所有改动必须像代码发版一样走评测集回归与灰度。
 
 **1. 系统 Prompt 的结构与调优**（★★★）
 　*用分层可验证的结构把不变量钉进 system，调优靠 bad case 回归而不是感觉*
@@ -3821,13 +3819,13 @@
 
 ### Transformer ｜ 结构细节与训练稳定性辨析
 
-> 让你讲整体架构与各模块作用，再深挖 LayerNorm 与 BatchNorm 的差异、Pre-LN 与 Post-LN 对训练稳定性的影响。判据是多头为何不能退化为单头能否解释，FFN 与 MoE、计算复杂度会被追。
+> 理解 Transformer 架构重点抓住「训练稳定性与推理显存/算力瓶颈的来源」：Pre-LN 与残差支撑深层梯度传播，自注意力 O(L²) 复杂度与 KV Cache 决定了长上下文成本，GQA 与 MoE 则分别从访存带宽和激活参数量上做工程折中。
 
 **1. Transformer 整体架构与各模块作用**（★★★）
 　*一套「Attention 混残差 + FFN + LN」的堆叠：注意力做 token 间信息路由，FFN 做逐 token 特征变换*
 - 本质：把「token 间通信（Attention）」与「token 内计算（FFN）」解耦堆叠，每层 = 残差 + LN + 两/三个子层，N=6（原论文 encoder/decoder 各 6 层）、d_model=512、H=8、d_ff=2048、d_k=d_v=64。
 - 必答要点：① Embedding + 位置编码 → L 层 [Multi-Head Self-Attn → Add&Norm → FFN → Add&Norm]；② Self-Attn 负责跨位置路由，权重矩阵 W_Q/W_K/W_V/W_O 各 d×d，参数 4d²；FFN 为 d→4d→d 两层 + ReLU/GELU，参数 8d²，占单层参数 2/3；③ 残差解决深层退化、LN 稳定尺度，两者叠加才能堆 96 层（GPT-3 175B：96 层、d=12288、H=96）。
-- 高频追问：追问「每个模块能不能删」→ 答：删残差深层不收敛，删 LN 需换 RMSNorm+scaling 才稳，删 FFN 表达能力塌成线性加权（相当于只有 attention 的 bigram 模型）。
+- 高频追问：追问「每个模块能不能删」→ 删残差深层不收敛，删 LN 需换 RMSNorm+scaling 才稳，删 FFN 表达能力塌成线性加权（相当于只有 attention 的 bigram 模型）。
 - 易错点：把 Multi-Head 说成「多个 attention 相加提升精度」，漏掉「分头是为了在不同子空间建模不同关系，且总计算量与单头 d 维等价」。
 - （同组细分）LayerNorm 与 BatchNorm 的区别（为何不用 BN）：LN 在单样本的特征维归一化，与 batch、序列长度解耦，天然适配变长与 batch=1 推理
 - （同组细分）Pre-LN vs Post-LN 与训练稳定性：Pre-LN 让残差恒等通路直通输出，免 warmup 可堆上百层；Post-LN 表达更强但要 warmup 且怕深
@@ -3840,7 +3838,7 @@
 　*用 QK^T 算相似度、softmax 归一化成凸组合去加权 V，一次前向拿到全序列依赖*
 - 本质：Attention(Q,K,V)=softmax(QKᵀ/√d_k)V，本质是按相似度做可微的软检索；MHA 在 H 个子空间各做一次再拼接。
 - 必答要点：① 形状链：X(B,N,d) → Q=XW_Q、K=XW_K、V=XW_V 均 (B,N,d) → 切 H 头 (B,H,N,d_h) → scores (B,H,N,N) → 加权 V → 合并 (B,N,d) → ×W_O；② 每头 d_h=d/H，总 FLOPs 与单头 d 维等价（4n²d），多头不是「更贵」而是「更会分工」；③ 复杂度 O(n²d)，存储 scores 是 n² 级，这就是长序列与 FlashAttention 的出发点。
-- 高频追问：追问「Attention 的本质，用向量空间解释」→ 答：Q/K 把 token 投到同一度量空间算内积相似度，softmax 得到凸组合系数，输出是 V 的凸包内点（信息聚合而非信息变换），所以单层注意力无法改变表示的子空间跨度，必须靠 FFN 做非线性变换。
+- 高频追问：追问「Attention 的本质，用向量空间解释」→ Q/K 把 token 投到同一度量空间算内积相似度，softmax 得到凸组合系数，输出是 V 的凸包内点（信息聚合而非信息变换），所以单层注意力无法改变表示的子空间跨度，必须靠 FFN 做非线性变换。
 - 易错点：忘记 W_O 或忘记 concat 后投影；把「多头」写成循环 H 次独立 attention 而不用 reshape+bmm（手撕时会暴露）。
 - （同组细分）缩放点积为何除以 √d_k：q·k 的方差随 d_k 线性增长，除 √d_k 把方差拉回 1，避免 softmax 饱和导致梯度趋零
 - （同组细分）多头切分与手撕 MHA：reshape 成 (B,H,N,d_h) 后 batched matmul，最后 transpose+concat 再乘 W_O 回 d 维
@@ -3854,14 +3852,14 @@
 　*K/V 会被所有未来 token 复用故缓存，Q 用完即弃；显存换掉 decode 阶段 n² 次重复投影*
 - 本质：自回归 decode 第 t 步要算新 token 对全部历史位置的注意力，历史 token 的 K、V 与查询无关、可复用，缓存后就免掉重复投影。
 - 必答要点：① 显存公式：2（K、V）× L × H_kv × d_h × n × batch × dtype_bytes；LLaMA-2-7B（L=32、H=32、d_h=128、fp16）约 512KB/token，4096 上下文单请求 2GB；② 不缓存 Q 是因为 Q 只服务当前步，历史 Q 不再参与任何计算；③ 收益：decode 每步从 O(n·d²) 的重投影降为只算 1 个新 token 的投影 + O(n_kv·d) 的注意力，长上下文下吞吐提升一个数量级。
-- 高频追问：追问「KV Cache 与 batch/beam 的关系」→ 答：显存 ∝ batch × beam_width × 长度，beam=4、batch=32 时立刻吃掉几十 GB，所以线上必须限 max_len/max_batch 并做抢占式调度（vLLM 的 preemption）。
+- 高频追问：追问「KV Cache 与 batch/beam 的关系」→ 显存 ∝ batch × beam_width × 长度，beam=4、batch=32 时立刻吃掉几十 GB，所以线上必须限 max_len/max_batch 并做抢占式调度（vLLM 的 preemption）。
 - 易错点：以为 KV Cache 加速 prefill——它只在 decode（以及带前缀复用的 prefill）生效；另外训练时不用 cache（并行 teacher forcing 已一次性算完）。
 - （同组细分）MQA / GQA / MLA 与 KV Cache 压缩：让多个 Q 头共享 K/V 头（MQA 1 组、GQA G 组）或压成低秩潜向量（MLA），用少量质量换数倍显存
 - （同组细分）长上下文爆显存与 PagedAttention/vLLM：KV Cache 随 batch×长度线性涨，vLLM 用分页块管理把它从预分配浪费改成按需分配
 
 ### LLM 基础 ｜ 上下文、协议与分词的机制理解
 
-> 从上下文窗口切入，追问长度外推怎么做、Lost in the Middle 为何中段失效；再深挖 RAG 与长上下文是替代还是互补。判据是工具调用机制与流式调用协议能否说清，Tokenizer 与 BPE 会被追。
+> 模型基础机制直接约束上层应用架构：位置编码外推与注意力中段衰减决定了「窗口大不等于有效记忆长」，因此长窗口与 RAG 是互补关系；分词粒度、采样参数与结构化解码则直接影响延迟、成本与下游解析稳定性。
 
 **1. 采样参数：Temperature/Top-K/Top-P**（★★★）
 　*先温度缩放 logits，再 top-k/top-p 截断，最后采样*
@@ -3870,7 +3868,7 @@
   1. temperature：`softmax(logits/T)`，T<1 分布变尖更确定，T→0 退化为 argmax，T>1 更发散；它不改变候选集合，只改形状。
   2. top-k：只保留概率最高的 k 个候选（k=1 即贪心）；top-p（nucleus）：保留累计概率 ≥ p 的最小集合（常用 0.9~0.95），随分布形状自适应——分布尖时集合小、分布平时集合大。
   3. 顺序是先温度缩放、再 top-k/top-p 截断、再归一化采样；要稳定就 `temperature=0/0.1 + top_p=1`，要创意就 `T=0.8~1.0 + top_p=0.95`。
-- 高频追问："Temperature=0 为什么输出仍不完全一致？" → 这样答：贪心也受浮点非确定性支配——batch 组合不同导致算子归约顺序变化、tensor/pipeline 并行的 all-reduce 非结合、MoE 路由抖动、kernel 版本与硬件差异，使 logits 末位有微差，一个 token 翻转就整段分叉。工程上要稳定就固定模型快照版本 + seed，再加结构化约束与后置校验，不要指望 temperature 收敛。
+- 高频追问："Temperature=0 为什么输出仍不完全一致？" → 贪心也受浮点非确定性支配——batch 组合不同导致算子归约顺序变化、tensor/pipeline 并行的 all-reduce 非结合、MoE 路由抖动、kernel 版本与硬件差异，使 logits 末位有微差，一个 token 翻转就整段分叉。工程上要稳定就固定模型快照版本 + seed，再加结构化约束与后置校验，不要指望 temperature 收敛。
 - 易错点：同时设 temperature 和 top_p 却以为只有一个生效；把 top_p=0 当贪心（应设 top_k=1 或 temperature=0）。
 - （同组细分）结构化输出与截断续写：靠约束解码保证可解析，截断的 JSON 不能靠补括号救
 
@@ -3881,7 +3879,7 @@
   1. 位置上：放大 RoPE base（θ 10000→500000/1e6）、位置插值 PI（把超长位置线性压回训练区间）、NTK-aware 分频缩放、YaRN（分频段缩放 + attention 温度校正），把 32K 的相位塞进 128K。
   2. 训练上：改编码只是"能表示"，还得在长文语料上继续预训练（数亿~数十亿 token，长文占比 5%~30%）做长度课程，否则外推后 PPL 暴涨。
   3. 工程上：attention 计算与显存 O(n²)，靠 FlashAttention 分块 + KV Cache 线性增长；128K 单次请求的 prefill 成本约是 32K 的 4 倍量级。
-- 高频追问："Claude 这类模型窗口只有 200K，为什么不做得更大？" → 这样答：KV Cache 与 prefill 算力随长度线性/超线性增长，长文有效召回又下降（lost in the middle），加上长文训练数据稀缺、单位 query 成本高，128K~200K 是当前性价比拐点；再长用分块 map-reduce 或 RAG 更划算。
+- 高频追问："Claude 这类模型窗口只有 200K，为什么不做得更大？" → KV Cache 与 prefill 算力随长度线性/超线性增长，长文有效召回又下降（lost in the middle），加上长文训练数据稀缺、单位 query 成本高，128K~200K 是当前性价比拐点；再长用分块 map-reduce 或 RAG 更划算。
 - 易错点：把"支持 128K"当成"128K 内都有效"；忽略外推需要继续训练，只答"调大 max_position"。
 - （同组细分）Lost in the Middle：中段信息失效：关键信息放首尾有效，塞在中间等于没塞
 - （同组细分）RAG 与长上下文：替代还是互补：一个管"选什么进上下文"，一个管"进去后能读多长"，互补
@@ -3893,7 +3891,7 @@
   1. OpenAI 协议：`POST /v1/chat/completions`，`messages` 角色为 system/user/assistant/tool；工具调用放在 `tool_calls`（id + function.name + arguments 是 JSON 字符串），`finish_reason` 取 stop/length/tool_calls。
   2. 流式：SSE，逐条 `data: {...}` 返回 `delta.content`，以 `data: [DONE]` 结束；首 token 延迟（TTFT）与吐字吞吐要分开优化，流式不省 token 费用。
   3. Anthropic 协议：system 是顶层字段、content 是 block 数组（text/tool_use/tool_result）、stop_reason 用 tool_use；国内外大量网关提供 OpenAI-compatible 端点做统一抽象，Responses API 则是把工具/多轮状态进一步服务端化的新形态。
-- 高频追问："大模型本身有记忆吗？API 无状态客户端怎么实现记忆？" → 这样答：没有，服务端不保存会话，客户端每轮把历史 messages 全量重发；所谓记忆是框架侧持久化——滚动窗口、摘要、向量库、结构化 state。
+- 高频追问："大模型本身有记忆吗？API 无状态客户端怎么实现记忆？" → 没有，服务端不保存会话，客户端每轮把历史 messages 全量重发；所谓记忆是框架侧持久化——滚动窗口、摘要、向量库、结构化 state。
 - 易错点：回传历史时丢掉 assistant 的 tool_calls 消息或不匹配 tool_call_id 导致 400；以为 temperature 等参数会被服务端"记住"。
 - （同组细分）工具调用（Function Calling）底层机制：模型只生成"调用意图"，真正执行的是宿主进程
 
@@ -3904,7 +3902,7 @@
   1. 预训练：next-token 交叉熵，Chinchilla 口径约 20 token/参，7B 约需 140B token；这一步决定知识上限，也是时间与算力主要消耗（占总训练 90% 以上）。
   2. SFT：指令-回复对（数万到百万级），只对 assistant 段算 loss——prompt 段与 padding 的 label 置 -100，否则模型会学成"复述问题"。
   3. 偏好对齐：RLHF 训 Reward Model + PPO（贵、易不稳）；DPO 直接用偏好对做闭式优化，无需 RM；RLVR 用规则可验证的奖励（数学答案、单测通过）做 RL，是 R1 类推理模型的关键。
-- 高频追问："Chat Template、System Prompt 与训练阶段写入的行为先验是什么关系？" → 这样答：chat template 定义角色边界的特殊 token，训练与推理必须完全一致，不一致会显著掉点；system prompt 是推理期软约束，模型"愿意听 system"来自 SFT/对齐注入的行为先验，训练里没出现过的模板形态无法靠 prompt 补救。
+- 高频追问："Chat Template、System Prompt 与训练阶段写入的行为先验是什么关系？" → chat template 定义角色边界的特殊 token，训练与推理必须完全一致，不一致会显著掉点；system prompt 是推理期软约束，模型"愿意听 system"来自 SFT/对齐注入的行为先验，训练里没出现过的模板形态无法靠 prompt 补救。
 - 易错点：把 RLHF 说成"提升知识量"（它主要改偏好、格式与安全性）；SFT loss mask 写错导致 loss 虚低。
 - （同组细分）指令微调的作用与数据配比：质量优先于数量，1k 精选即能显著提升指令跟随
 
@@ -3915,13 +3913,13 @@
   1. BPE 训练：从字节/字符表出发，反复合并语料中最高频的相邻 pair，直到达到目标词表；词表从 32k（Llama2）→128k（Llama3）→200k（GPT-4o 系）。
   2. 换算口径：英文约 4 字符 ≈ 0.75 词 ≈ 1 token；中文粗估 1 汉字 ≈ 1~2 token（英文语料为主的 tokenizer 偏高，中文优化过的可接近 1）。
   3. 不用字符/单词的原因：字符级序列长 4 倍拖慢 attention 且语义粒度太细；单词级词表爆炸、无法处理新词/拼写变体/多语言；子词兼顾频率与组合性。
-- 高频追问："为什么 strawberry 会被拆成多个 token？" → 这样答：词表里高频的是 `straw`、`berry` 这类片段，整词词频低没进词表，所以模型看到的是 token 序列而非字符序列——这就是它数错字母 r 个数的根因，字符级任务要交给代码工具。
+- 高频追问："为什么 strawberry 会被拆成多个 token？" → 词表里高频的是 `straw`、`berry` 这类片段，整词词频低没进词表，所以模型看到的是 token 序列而非字符序列——这就是它数错字母 r 个数的根因，字符级任务要交给代码工具。
 - 易错点：用 `len(text)` 估 token；中文按英文比例折算导致预算低估约 1.5~2 倍。
 - （同组细分）Token 计费与成本估算：输入输出分开计价，输出贵 3~4 倍，前缀缓存打 1 折
 
 ### 向量检索 ｜ ANN 索引与调参的工程取舍
 
-> 先问 ANN 召回原理，再深挖 HNSW 结构，追问 M、efConstruction、efSearch 调大调小各换来什么代价。判据是能否结合召回率与延迟给参数结论，Milvus 与 pgvector 的选型会被追。
+> 向量检索是在「召回率、查询延迟（P99）与内存成本」三角里做近似折中：中小规模与强关系过滤优先复用 pgvector 减运维复杂度，千万至亿级高并发场景再引入独立向量库并按内存预算在 HNSW 与 IVF/量化索引间选型。
 
 **1. 向量检索原理与 ANN 近邻召回**（★★★）
 　*用“近似”换数量级加速：把 O(N·d) 全量算换成图/簇上的有界搜索*
@@ -3930,12 +3928,12 @@
   1. 精确检索复杂度与数据量线性相关，1 亿条 × 768 维 float32 = 约 300 GB，单次全扫不可能满足 100 ms 级 SLA；ANN 用索引把候选集压到 10²~10⁴ 量级。
   2. 三大流派：图（HNSW、DiskANN，召回延迟最好、内存重）、量化/聚类（IVF、IVF-PQ、SQ8，省内存、需训练）、哈希（LSH，理论漂亮但工程召回弱）。
   3. 工程链路是“向量化 → 归一化 → 建索引 → 带过滤召回 topK → 距离转分数（如 1/(1+d) 或 1-cos）→ 重排”，召回失真往往出在归一化缺失或 topK 太小（常用 50~200 再重排到 5~10）。
-- 高频追问：向量检索为什么要“近似”，不近似行不行？→ 这样答：给数量级——1 亿 × 768 维全量算一次要读 300 GB 内存、单机上千核秒级；ANN 只访问图上的几十到几百个节点或 1%~10% 的聚类桶，延迟从秒级降到 10 ms 级，而 Recall@10 仍能保持 95%+，所以“近似”是 SLA 逼出来的。
+- 高频追问：向量检索为什么要“近似”，不近似行不行？→ 给数量级——1 亿 × 768 维全量算一次要读 300 GB 内存、单机上千核秒级；ANN 只访问图上的几十到几百个节点或 1%~10% 的聚类桶，延迟从秒级降到 10 ms 级，而 Recall@10 仍能保持 95%+，所以“近似”是 SLA 逼出来的。
 - 易错点：把 ANN 召回率当成模型精度；或忽略“写入时和查询时必须用同一个 Embedding 模型 + 同一归一化方式”，否则索引与查询不同空间，召回直接崩。
 
 ### Embedding ｜ 模型选型与语义表示的判断
 
-> 先从文本为什么必须向量化问起，看你对语义表示原理的理解；再深挖编码模型的结构与能力评估，判据是检索任务上怎么比较两个模型能否说清。云端 API 与本地部署的取舍会被追到成本。
+> Embedding 模型决定了向量空间的语义区分度：选型时结合领域专有词表现、维度存储成本、上下文长度与数据合规要求，在自建评测集上用 Recall@K 与 MRR 实测对比，且换模型必须走双索引平滑重建。
 
 **1. Embedding 模型选型与云端 API / 本地部署取舍**（★★★）
 　*选型本质是在「效果—语言/领域匹配—成本延迟—可控性」四维上做约束求解，BGE-M3 胜在多语言+长文+三向量，Qwen/OpenAI 胜在开箱效果与生态*
@@ -3958,7 +3956,7 @@
 
 ### Agent 评测 ｜ 评测集构造与判分可信度
 
-> 从评测体系怎么搭、评测集怎么构造切入，再深挖 LLM-as-Judge 的评分细则与系统性偏差，判据是能否证明分数可信。线上 log 分层抽样与 Coding Agent 的 verifier 设计会被追问。
+> 没有可复现的评测与全链路 Trace，Agent 迭代就是在盲人摸象：离线靠分层基准集（常规 + 边界 + 对抗）卡住发版红线，裁判模型必须对齐人工抽检消除偏好偏差，线上靠 Span 级观测把坏例回流进回归集。
 
 **1. 评测体系搭建与评测集构造**（★★★）
 　*评测集 = 分层抽样的难题 + 可判定真值 + 可复现环境，先立指标再谈分数*
@@ -3967,7 +3965,7 @@
   1. 规模分三层：smoke 100~200 条（每次提交跑，<5min）、核心回归 1000~2000 条（每日，<1h）、全量 trace 抽检（每周，按预算）。
   2. 每条 case = 任务描述 + 环境快照（工具 mock、数据版本）+ 可执行校验器，三缺一都不可复现，也就无法定位退化。
   3. 指标先定后测：主指标任务成功率，护栏指标幻觉率、工具调用准确率、P95 延迟、单任务成本，护栏跌破即判不通过。
-- 高频追问：海量线上 log 如何转成有限线下评测集、为何随机抽样不行 → 怎么答：随机抽样是按调用次数分布的，会被高频简单 query 淹没；改为按「意图×难度×当前失败率」分层，每层配额按 √流量，失败样本过采样 3~5 倍。
+- 高频追问：海量线上 log 如何转成有限线下评测集、为何随机抽样不行 → 随机抽样是按调用次数分布的，会被高频简单 query 淹没；改为按「意图×难度×当前失败率」分层，每层配额按 √流量，失败样本过采样 3~5 倍。
 - 易错点：只报一个平均成功率，掩盖某任务族 40% 的崩溃；评测集只增不删，噪声 case 把上限压低。
 - （同组细分）LLM-as-Judge 评分细则与系统性偏差：judge 用 rubric + pairwise + 位置交换，偏差靠人工锚点校准到 Kappa≥0.6
 - （同组细分）线上 log 到离线评测集的分层抽样：随机抽样按调用次数加权，会被高频简单 query 淹没，必须按意图×难度×失败率分层
@@ -3980,7 +3978,7 @@
   1. 三维度：任务层（成功率、完成度）、轨迹层（步数、无效工具调用率、规划子目标完成率）、成本层（Token/任务、P95 延迟、单任务费用）。
   2. planning 量化：把任务拆成可判定子目标，planning 分 = 按序完成子目标数 / 总子目标数；全完成但顺序错，单独记「顺序错误率」。
   3. 幻觉率 = 无证据支持的断言数 / 总断言数；另设引用支持率（引用句能否在源文档命中），低于 90% 即告警。
-- 高频追问：评估节点报告任务完成但人工验收发现功能缺失，怎么排查 → 怎么答：校验器只查了「有没有输出」没查「功能是否实现」，要把验收标准前置成可执行断言，并按断言逐条回放该 trace。
+- 高频追问：评估节点报告任务完成但人工验收发现功能缺失，怎么排查 → 校验器只查了「有没有输出」没查「功能是否实现」，要把验收标准前置成可执行断言，并按断言逐条回放该 trace。
 - 易错点：只测终答不测中间步骤；幻觉率用整条回答二分类，粒度太粗，看不出是哪个断言编的。
 - （同组细分）评测集过拟合与正向优化证明：held-out + 新造 case + 线上 A/B 三重证据，才能证明不是背了评测集
 
@@ -3991,7 +3989,7 @@
   1. 用例 = 输入 + 环境 + expect；expect 分三级：确定性断言（JSON schema、字段值、正则）、语义断言（关键实体与数值全在）、人评（开放式文本）。
   2. 判定优先级：能断言的绝不用 judge；目标是断言覆盖 60%~70% 用例，judge 兜剩下 30%~40%。
   3. 边界与负样本：空输入、超长（超上下文 20%）、工具超时/500、提示注入、期望拒答，负样本占比 ≥20%。
-- 高频追问：测试大模型接口时如何判断一条用例通过 → 怎么答：先断言结构与必填字段，再判关键事实与 GT 一致，最后判是否出现禁止内容；三层全过才算 pass。
+- 高频追问：测试大模型接口时如何判断一条用例通过 → 先断言结构与必填字段，再判关键事实与 GT 一致，最后判是否出现禁止内容；三层全过才算 pass。
 - 易错点：用「回答看起来对」当通过标准；只测 happy path，没有越界与拒答用例。
 - （同组细分）回归测试与不稳定输出处理：temperature=0 也不确定，要 N 次重复取通过率并锁模型/prompt/工具快照
 - （同组细分）Skill 路由测试与自然语言 Skill 测试：路由测的是「该选谁」和「该拒谁」，靠混淆矩阵 + 负样本兜住误触发
@@ -4003,7 +4001,7 @@
   1. 口径分层：全成功=终态校验通过；部分成功=关键子目标完成率；按 task 族分别报，不报单一总成功率。
   2. 退化定位：固定 case 集，新旧模型 / 新旧 harness 各跑一遍做 case 级 diff，把退化聚成族，看是否集中在某类工具或某类文档。
   3. P/R 权衡：Agent 场景通常宁高召回低精度（多试几步、多召回候选），因为漏掉=任务失败、多做=多花 Token；成本靠重试预算与单步超时兜。
-- 高频追问：更换更强模型后任务完成率反而下降，如何定位退化来源 → 怎么答：查是否过度思考导致超轮次/超时、工具调用格式变化、对新 prompt 风格不服从；用同一 case 对比步数与工具序列。
+- 高频追问：更换更强模型后任务完成率反而下降，如何定位退化来源 → 查是否过度思考导致超轮次/超时、工具调用格式变化、对新 prompt 风格不服从；用同一 case 对比步数与工具序列。
 - 易错点：用「人工觉得做完了」当成功率；退化只看总分不做 case 级 diff，找不到是哪一族掉了。
 
 **5. 效果验证与归因：消融 / A-B / 无 GT 打分**（★）
@@ -4013,7 +4011,7 @@
   1. 消融：分别关掉规划、工具、记忆模块各跑一遍，看主指标掉多少，掉得最多的就是价值来源。
   2. A/B：同人群随机分流，看主指标 + 护栏（延迟、成本、投诉率）；分流单位选 user_id 或 session_id，请求级分流会让同一用户看到两套行为。
   3. 无 GT：pairwise 盲评（新旧各出结果、打乱顺序选优）+ 线上代理指标（采纳率、二次追问率、放弃率）。
-- 高频追问：如何验证收益来自 Agent 决策而非流量变化 → 怎么答：每组 ≥1000 会话；先做 AA 实验确认两组无差异；再看指标提升是否只在对照组之外的维度上也成立。
+- 高频追问：如何验证收益来自 Agent 决策而非流量变化 → 每组 ≥1000 会话；先做 AA 实验确认两组无差异；再看指标提升是否只在对照组之外的维度上也成立。
 - 易错点：拿上线前后对比当 A/B；只报正向指标不报 Token 与延迟代价。
 
 **6. 不依赖模型底座的 Agent 能力评测与确定性回放**（★）
@@ -4023,12 +4021,12 @@
   1. Fake LLM：用录制或脚本化的固定输出替换模型，让流程完全确定，可断言每一步调了哪个工具、入参是什么。
   2. 能测 / 不能测：能测工具选择与参数、多步顺序、超时与重试、上下文裁剪、幂等与回滚；不能测模型真实理解力、泛化与语言质量。
   3. 确定性回放：完整记录输入输出（含工具返回）做 replay，同 trace 重跑必须逐步一致，用于二分定位回归。
-- 高频追问：不考虑模型如何评价 Agent 能力 → 怎么答：看有效步数占比、无效工具调用率、错误恢复率，以及固定弱模型下的完成率上限（模型受限时 harness 的贡献）。
+- 高频追问：不考虑模型如何评价 Agent 能力 → 看有效步数占比、无效工具调用率、错误恢复率，以及固定弱模型下的完成率上限（模型受限时 harness 的贡献）。
 - 易错点：拿 Fake LLM 的通过率对外宣称「Agent 能力强」；回放没锁工具返回，重跑不稳定，定位结论不可信。
 
 ### AI 编程工具 ｜ AI 生成代码的判据与流程落地
 
-> 先问 AI 生成代码的正确性怎么判定、合入怎么把关，追问用什么标准拒绝一段代码；再深挖规则文件与 Skill 对 token 的控制。判据是需求到上线的全流程能否落地，遗留代码重构会被追问。
+> Coding Agent 的核心工程设计是「受限沙箱执行 + 自动化验证闭环（编译/单测/Lint）+ 风险分级人审」：把仓库规范沉淀为按需加载的上下文规则，让模型在确定性反馈循环里自修复，高风险核心链路保留人工合入闸门。
 
 **1. Claude Code 类 Coding Agent 的实现原理与多步自主循环**（★★★）
 　*单轮 = 模型输出工具调用 → 执行 → 结果回灌，循环到"任务可判定完成"*
@@ -4097,7 +4095,7 @@
 
 ### AI 工程化 ｜ 成本、可观测与长任务工程化
 
-> 从 Token 成本核算切入，追问语义缓存、结果复用与模型分档各能省多少；再深挖长任务断点续跑与状态持久化，判据是延迟突变时能否定位并取消。Trace 设计与任务回放是可观测性主线。
+> AI 应用从 Demo 走向生产，拼的是「单任务成本收敛、P99 延迟治理与长任务容错」：用大小模型路由与前缀/语义缓存砍掉无效算力开销，用外置 Checkpoint 与幂等工具契约让长链路随时可中断、可恢复、可回放。
 
 **1. Token 成本核算与预算控制**（★★★）
 　*token 是唯一可变成本，必须先能按请求/会话/租户三级归因，再做预算闸门*
@@ -4107,8 +4105,8 @@
   2. 预算三级闸门：单请求 `max_tokens`（如 4k）、单任务 token 预算（Agent loop 如 200k/任务，超 80% 触发上下文压缩、超 100% 转小模型或截断）、单租户日配额（如 500 万 token）；触发时记 `budget_exceeded` 并降级，不返回 500。
   3. 降本优先级：先输入侧（上下文膨胀常占 70%~90%）→ 再模型档位 → 再输出侧（收紧 max_tokens、要求结构化短输出）→ 最后才谈自建推理。
   4. 价格量级：旗舰模型约 $2~3/M 输入、$8~15/M 输出（输出贵 3~5 倍），小模型 $0.1~0.5/M；1000 行代码≈1.5~2 万 token，单次生成约 ¥0.3~1。
-- 高频追问：追问"写一千行代码消耗多少 token、成本多少" → 这样答：按 1 行≈15~20 token 估，1000 行≈1.5~2 万 token，输入输出各 2 万按旗舰价约 ¥0.5/次，日调用 1000 次≈¥500/天；给出估算路径比背死数更稳。
-- 易错点：只算 completion 不算 prompt；漏掉失败与重试请求（同样计费）；只报 token 数不折算金额，面试官必追问"折多少钱"。
+- 高频追问：追问"写一千行代码消耗多少 token、成本多少" → 按 1 行≈15~20 token 估，1000 行≈1.5~2 万 token，输入输出各 2 万按旗舰价约 ¥0.5/次，日调用 1000 次≈¥500/天；给出估算路径比背死数更稳。
+- 易错点：只算输出忽略了占大头的输入与历史拼接 Token；漏算超时重试与工具报错重放消耗的计费调用；容量评估只报 Token 数却不折算成日均与单任务人民币成本。
 - （同组细分）降本手段：语义缓存 / 结果复用 / 模型分档：用命中率换钱：把重复请求挡在模型之外，再对难请求升级档位
 
 **2. 长任务断点续跑与状态持久化**（★★）
@@ -4119,7 +4117,7 @@
   2. 续跑机制：每步结束提交 checkpoint（step_id + 幂等键），重启后从最后 checkpoint 重放；工具调用必须幂等或带去重键（request_id），否则重放会重复下单。
   3. 断点续写（输出超 MaxTokens）：按段落/JSON 片段切块，保存已生成内容 + "继续" 提示，拼装时去接缝；续写单独计费，预算里要预留续写额度。
   4. 超时与死信：单步超时（工具 10~30s、LLM 60s）+ 任务级 deadline（如 10min），超时进 dead-letter 队列支持人工重放。
-- 高频追问：追问"重启后到底要存哪些状态" → 这样答：只存重放必需的——任务目标、已完成 step 序列与输出摘要、下一步计划、已耗 token/耗时、外部副作用去重键；不要存整个内存对象，全量消息留 3 轮原文 + 摘要即可。
+- 高频追问：追问"重启后到底要存哪些状态" → 只存重放必需的——任务目标、已完成 step 序列与输出摘要、下一步计划、已耗 token/耗时、外部副作用去重键；不要存整个内存对象，全量消息留 3 轮原文 + 摘要即可。
 - 易错点：只存对话不存副作用去重键，恢复后重复执行；checkpoint 与业务写入不在同一事务，出现"做了但没记"。
 - （同组细分）长任务延迟突变排查与超时取消：延迟是分布问题：先分段埋点定位哪一段变长，再谈根因
 
@@ -4131,7 +4129,7 @@
   2. 职责边界：模型做语义理解、生成、模糊匹配；钱、权限、状态机、事务必须传统代码兜底。
   3. 质量指标：任务成功率、格式合规率、人工接管率、幻觉抽检率（抽 100 条错 5 条=5%）、P99 延迟、单任务成本；AI 生成代码可用率业界常在 30%~60%。
   4. Java 侧差异：SDK 本质是 HTTP + SSE 封装，真正的难点是流式、超时治理、token 计量、多模型抽象。
-- 高频追问：追问"AI 开发和普通后端最大区别" → 这样答：不可测——同样输入两次结果不同，所以要用评测集 + 断言式校验（schema、关键实体、禁止项）把不确定性收敛成可回归的边界。
+- 高频追问：追问"AI 开发和普通后端最大区别" → 不可测——同样输入两次结果不同，所以要用评测集 + 断言式校验（schema、关键实体、禁止项）把不确定性收敛成可回归的边界。
 - 易错点：答成"AI 只是调 API 更简单"；Prompt 当代码却没有版本管理；没有评测集就上线。
 
 **4. Java 对接大模型的工程挑战**（★）
@@ -4142,13 +4140,13 @@
   2. 超时与重试：连接/首包/总时长三级超时；Reactor 用 `timeout` + `retryWhen` 带退避，重试仅限幂等错误，绝不在阻塞线程池里等 LLM。
   3. 资源治理：LLM 调用是长耗时 IO，独立线程池或 JDK21 虚拟线程，连接池按供应商分池设上限。
   4. 生态差距：Spring AI / LangChain4j 已可用，但评测、缓存、可观测细节常要自建；新模型 SDK 通常先出 Python。
-- 高频追问：追问"相比 Python，用 Java 开发 AI 应用的优势和劣势" → 这样答：优势是工程化（强类型、Spring 生态、并发与可观测成熟、团队可复用存量能力）；劣势是模型生态与实验速度（新模型 SDK、评测/数据脚本不便）。
+- 高频追问：追问"相比 Python，用 Java 开发 AI 应用的优势和劣势" → 优势是工程化（强类型、Spring 生态、并发与可观测成熟、团队可复用存量能力）；劣势是模型生态与实验速度（新模型 SDK、评测/数据脚本不便）。
 - 易错点：同步阻塞调用跑高并发；忽略流式与首 token 时延优化；token 计量在业务层各写一遍导致口径不一。
 ---
 
 ### 微调 / 训练 ｜ 训练显存、数据与微调选型
 
-> 先问什么时候该微调、与 RAG 和 Prompt 的判据分别是什么，再深挖全参与 LoRA、Adapter 的选型理由，判据是训练显存构成能否算清。SFT 数据的配比与 loss mask、灾难性遗忘会被追问。
+> 路线演进我坚持「Prompt 调行为契约 → RAG 补动态私有事实 → 微调固窄域格式与路由能力」的增序原则：确需微调时先算清参数、梯度、优化器状态与激活值四块显存账，优先用高质量小样本 LoRA 验证收益并严防通用能力退化。
 
 **1. 训练显存构成与优化（ZeRO/梯度累积/梯度检查点）**（★★★）
 　*每参数约 16B 状态，靠切分+重算把 7B 全参从 112GB 压到单机可训*
@@ -4157,7 +4155,7 @@
   1. 混合精度 Adam 每参数约 16B（fp16 权重 2 + fp16 梯度 2 + fp32 master 4 + Adam m/v 各 4），7B 全参 ≈ 112GB，单卡 80G 放不下，纯推理只要 2B/参数。
   2. ZeRO-1 切优化器状态、ZeRO-2 再切梯度、ZeRO-3 再切参数，单卡显存约按 1/N 递减，代价是通信量递增；配 CPU offload 可再降但吞吐掉 30%+。
   3. 梯度累积用 micro-batch×N 换全局 batch，显存只与 micro-batch 相关；梯度检查点只存 O(√L) 段激活、反向重算，激活显存骤降 5~10 倍、时间 +20~30%。
-- 高频追问：7B 全参微调最低什么配置 → 答：ZeRO-3 + offload + 梯度检查点，8×80G 可跑；LoRA 冻结主干后只要 2B/参数 权重 + 少量适配器状态，单卡 40~80G 够。
+- 高频追问：7B 全参微调最低什么配置 → ZeRO-3 + offload + 梯度检查点，8×80G 可跑；LoRA 冻结主干后只要 2B/参数 权重 + 少量适配器状态，单卡 40~80G 够。
 - 易错点：以为梯度检查点能省模型和优化器状态（只省激活）；忽略激活 ∝ seq_len²，packing 到 32k 一样爆卡。
 - （同组细分）SFT 数据构建、配比与 loss mask：质量与配比决定上限，只对 response/tool-call token 算 loss
 - （同组细分）灾难性遗忘与过拟合识别：混通用回放数据防遗忘，看 dev loss 与输出多样性判过拟合
@@ -4170,7 +4168,7 @@
   1. 判据：知识要更新/要溯源/私域事实多 → RAG（改索引即可，天级迭代）；输出格式、话术、领域语言、指令遵循稳定性 → SFT；任务简单或样本少 → Prompt/Few-shot 起步。
   2. 成本量级：LoRA 一次微调 7B 约需几百到几千条数据 + 数卡时；RAG 主要是检索链路与索引运维；Prompt 无训练成本但吃 context 与 token 费用。
   3. 不该微调的场景：知识频繁变化（医药/政策）、缺高质量标注、必须给出引用出处、只有 <100 条样本且无法合成。
-- 高频追问：为何微调而非大模型+Prompt → 答：长尾指令用 Prompt 遵循不稳、占满 context 且每次付 token；微调把行为压进权重后，7B 可在窄域打平 32B zero-shot，延迟与成本降一个量级。
+- 高频追问：为何微调而非大模型+Prompt → 长尾指令用 Prompt 遵循不稳、占满 context 且每次付 token；微调把行为压进权重后，7B 可在窄域打平 32B zero-shot，延迟与成本降一个量级。
 - 易错点：用微调"灌知识"→ 幻觉更强且无法撤销；先上微调再想评测，没有 held-out 集就无法证明收益。
 - （同组细分）全参 vs LoRA/Adapter/P-Tuning 选型：数据量与算力定全参，资源紧与多租户选 LoRA
 - （同组细分）领域微调能力衰减、幻觉与权重合并：合并降延迟、不合并可热插拔多适配器，衰减靠混数据止血
@@ -4182,7 +4180,7 @@
   1. 标准三阶段：CPT（领域语料继续预训练，学知识与术语）→ SFT（学指令与格式）→ RL/偏好对齐（学偏好与成功率）。
   2. loss：`L = -Σ_t log π(y_t | x, y_<t)`，只在 assistant token 上取平均；通常 1~3 epoch、cosine 衰减、warmup 3%。
   3. SFT 显存量级：LoRA 约参数量的 2~4 倍，全参 Adam 混合精度约 16 倍（7B ≈ 112GB 状态）；seq 越长激活占比越大。
-- 高频追问：SFT 之后还有哪些 post-training、各自目的 → 答：拒绝采样/蒸馏提纯数据、DPO 做偏好对齐、GRPO 做可验证任务提分、模型融合与量化压缩上线。
+- 高频追问：SFT 之后还有哪些 post-training、各自目的 → 拒绝采样/蒸馏提纯数据、DPO 做偏好对齐、GRPO 做可验证任务提分、模型融合与量化压缩上线。
 - 易错点：把 CPT 与 SFT 混为一谈（CPT 用无标注纯文本、全 token 算 loss）；SFT 阶段就追求"正确率"，其实它只保证格式与风格。
 - （同组细分）SFT 与 RL 边界、数据能否复用：SFT 教怎么做、RL 挑哪个更好，RL 前必须 SFT 冷启动
 - （同组细分）长轨迹 SFT：截断/切分/掩码与 packing：按步切分保工具依赖，packing 提吞吐但必须隔样本 attention
@@ -4195,13 +4193,13 @@
   2. rank：8~64 常用，简单风格/格式 r=8~16 够，知识注入与复杂 Agent 行为 r=32~64；再大收益递减且易过拟合。
   3. alpha：前向按 α/r 缩放，常用 α=2r（r=16→α=32）；调 α 等价于调有效 lr，改 r 时同步改 α 才可比。
   4. 挂载位置：q,k,v,o + MLP gate/up/down 全挂显著优于只挂 q,v；只挂 q,v 省显存但上限低。
-- 高频追问：rank 怎么选 → 答：从小往大试（8→16→32），看 dev loss 与目标任务指标；数据 <1k 条 r≤16，避免记住训练集。
+- 高频追问：rank 怎么选 → 从小往大试（8→16→32），看 dev loss 与目标任务指标；数据 <1k 条 r≤16，避免记住训练集。
 - 易错点：A、B 都随机初始化导致起点偏离基座；只改 r 不改 α 却比较效果；以为 LoRA 能学新词表 token（需 resize embedding 另行处理）。
 - （同组细分）QLoRA 与 LoRA 变体：4bit NF4 量化基座 + 双重量化，7B 可上单张 24G
 
 ### 推理部署 ｜ 显存、调度与 KV Cache 量化
 
-> 从推理引擎选型切入，再深挖调度器里 Waiting 与 Running 状态和请求生命周期，判据是显存占用与并发上限能否算清。PagedAttention 如何减少碎片、Prefix Cache 命中率会被追问。
+> 大模型推理部署的瓶颈在 Prefill 阶段受限于算力、在 Decode 阶段受限于显存带宽与 KV Cache 容量：通过 Continuous Batching 消除填充空泡，用 PagedAttention 压低显存碎片，用 Prefix Cache 与量化换取高并发吞吐。
 
 **1. 推理框架全景与引擎选型（vLLM/SGLang/TensorRT-LLM/onnxruntime）**（★★★）
 　*选型本质是「编译式换性能、解释式换灵活性」，先看硬件与模型是否被官方 kernel 覆盖，再看调度与显存管理能力*
@@ -4242,7 +4240,7 @@
 
 ### 幻觉 / 安全对齐 ｜ 幻觉成因与分层治理手段
 
-> 先让你给幻觉分类，区分事实性、忠实性与推理型，再追问成因怎么分层治理。判据是 RAG 与引用约束、自检、Reflection 与交叉验证各自挡住哪一类能否说清，Agent 环节的幻觉来源要能对应。
+> 幻觉与安全治理不能寄希望于模型自觉，必须做成纵深防线：检索层保证据充足、提示层强约束无据拒答、解码与后处理层做引用核验，而在工具执行侧必须把外部不可信文本与系统指令隔离，高危写操作强制走代码鉴权与人工审批。
 
 **1. 幻觉成因与分层治理**（★★★）
 　*幻觉是"似然目标 + 知识边界 + 解码随机"的必然产物，只能按训练/检索/推理/后处理/评测五层逐层压降，不能单点清零*
@@ -4272,7 +4270,7 @@
 
 ### 多模态 ｜ 视觉桥接结构与图文对齐
 
-> 从架构切入，让你讲视觉编码器加投影层或 Q-Former 的桥接；再深挖早、中、晚融合的差异与 cross-attention 门控的作用。判据是图文对齐的训练目标能否说清，视频帧采样与 PTS 对齐会被追。
+> 多模态系统设计的关键是「视觉 Token 压缩效率与细粒度空间信息保留的平衡」：理解视觉编码器与投影桥接如何对齐语义空间，工程落地时结合 OCR 版面解析与置信度路由控制高分辨率图文与长视频的推理成本。
 
 **1. 多模态架构：视觉编码器 + 投影层/Q-Former 桥接**（★★★）
 　*ViT 切 patch 出 token，经可学习的模态桥接进 LLM 词嵌入空间，平均池化因丢空间与高频信息被淘汰*
@@ -4282,8 +4280,8 @@
   2. 桥接三档：**Linear/2 层 MLP**（LLaVA：1024 → 4096，等价于把视觉特征翻译成 LLM 词嵌入）；**Q-Former**（BLIP-2：32 个可学习 query 通过 cross-attention 抽取，576 → 32 token，压缩 ~18 倍）；**gated cross-attention adapter**（Flamingo：视觉 token 不进主序列，在 LLM 层间插交叉注意力）。
   3. 为什么不用平均池化：平均把空间位置抹平、把小字/表格笔画这类高频细节平均成糊状，且是固定不可学算子，无法针对任务决定"哪块区域重要"；Q-Former/注意力是 learnable 的软选择。
   4. 取舍判据：要细粒度（OCR、小目标、表格）→ MLP + 高分辨率/动态 tile，代价是 token 多；要省 token 或做检索 → Q-Former，代价是计数与空间关系弱（BLIP-2 的已知短板）。
-- 高频追问：**常见追问「多模态 Agent 中视觉编码器与 LLM 的连接方式（Q-Former、MLP Projector），为何不用平均池化」** → 怎么答：先画三段式架构，再说 576→32 的压缩比对成本的影响，最后给"要细节用 MLP+动态分辨率、要省 token 用 Q-Former"的判据，池化问题落在"丢空间 + 丢高频 + 不可学习"三点。
-- 高频追问：**「多模态大模型（VLM）的核心挑战是什么？如何实现不同模态信息的有效对齐和融合？」** → 怎么答：三条挑战——跨模态表示空间有语义鸿沟（靠对比对齐解决）、视觉 token 数与上下文成本矛盾（靠压缩/动态分辨率解决）、细粒度（文字/计数/空间）与幻觉（靠高分辨率 + 指令数据 + 拒答训练解决）。
+- 高频追问：**常见追问「多模态 Agent 中视觉编码器与 LLM 的连接方式（Q-Former、MLP Projector），为何不用平均池化」** → 先画三段式架构，再说 576→32 的压缩比对成本的影响，最后给"要细节用 MLP+动态分辨率、要省 token 用 Q-Former"的判据，池化问题落在"丢空间 + 丢高频 + 不可学习"三点。
+- 高频追问：**「多模态大模型（VLM）的核心挑战是什么？如何实现不同模态信息的有效对齐和融合？」** → 三条挑战——跨模态表示空间有语义鸿沟（靠对比对齐解决）、视觉 token 数与上下文成本矛盾（靠压缩/动态分辨率解决）、细粒度（文字/计数/空间）与幻觉（靠高分辨率 + 指令数据 + 拒答训练解决）。
 - 易错点：把 Q-Former 说成"视觉编码器"（它是 query 压缩器/桥接层）；说 projector 可以随机初始化直接上（必须先做投影层对齐训练，冻结 ViT 与 LLM）；忽略 CLIP 的 ViT 是"对齐过的"而 ImageNet 预训练 ViT 不是。
 - （同组细分）融合策略：早/中/晚融合与 cross-attention 动态门控：融合深度决定交互强度与成本，主流是"LLM 中间层 gated cross-attention + gate 初始化为 0"
 - （同组细分）图文对齐与对比学习（CLIP/SigLIP）：对称 InfoNCE + batch 内负样本把图文压进同一空间，σ(0.07) 温度与 batch 大小强耦合
@@ -4293,9 +4291,7 @@
 
 ## 十四、场景题（AI 应用设计）（★）
 
-> **一句话定位**：AI 应用的全链路系统设计
-
-> 给产品场景让你从骨架讲起，先定长任务规划与执行编排，再深挖工具与 MCP 的编排和调用治理。判据是 RAG 全链路能否讲通、无依据回答怎么兜底、引用如何归因，文件入口 Agent 会被追问。
+> 面对开放型 AI 系统设计题，我统一按「业务边界与 SLO 澄清 → Token 成本与并发容量估算 → 网关/编排/工具/记忆分层架构 → 降级兜底与离线在线评测闭环」四步推演，确保方案既有量化依据又能兜住模型不确定性。
 
 **1. 长任务规划与执行编排（拆解、状态机、中断恢复、审批与沙箱）**（★★★）
 　*把一次"订机票+订酒店"变成可落盘的状态机：分步、可停、可续、可补偿，不可逆动作必须过审批闸门*
@@ -4305,19 +4301,19 @@
   2. 编排模型：Planner 产 DAG（节点 = 子任务，边 = 依赖），Executor 单步执行并把每步结果写 `checkpoint`（step_id / 状态 / 产物引用 / 幂等键），最大步数默认 20~40，超限强制转 Critic 或人工。
   3. 精度衰减：多步链路单步成功率 0.95、10 步串行只剩 0.6，所以要么减少步数（合并同类工具调用），要么把关键步骤改成确定性代码（规则/模板），只让模型决策"选哪条路"。
   4. 中断与恢复：用户"打断"用取消信号置位 + 当前 step 完成后落盘退出（不是硬杀进程），"继续"时按 `session_id + plan_version` 从最近 checkpoint 重放，已完成步骤用幂等键跳过；需求变更则生成 plan v2 并对 v1 已执行的副作用出补偿动作（Saga）。
-- 高频追问："类似 Codex 的 Agent 执行任务时用户打断能立即中断，用户发送继续后又能接着执行，这种机制如何设计" → 答"取消标记 + 步间检查点 + 幂等重放"三件套，并说明为什么不能在工具调用中途硬中断（会留下只写了一半的副作用）。"中心调度 Agent 如何把复杂目标拆成子任务、分配给不同 Agent，并判断结果是否完整、如何汇总？" → 答：DAG + 每子任务出结构化 result（schema 固定），完整性由"计划里的必答槽位是否齐全"判定，不是让汇总模型自己感觉。 "多Agent并行执行部分失败，如何设计补偿机制" → 先定语义（全成功才提交 vs 部分成功降级），再定补偿（已成功的写反向流水/标记失效），最后对用户显式告知。
+- 高频追问："类似 Codex 的 Agent 执行任务时用户打断能立即中断，用户发送继续后又能接着执行，这种机制如何设计" → 答"取消标记 + 步间检查点 + 幂等重放"三件套，并说明为什么不能在工具调用中途硬中断（会留下只写了一半的副作用）。"中心调度 Agent 如何把复杂目标拆成子任务、分配给不同 Agent，并判断结果是否完整、如何汇总？" → DAG + 每子任务出结构化 result（schema 固定），完整性由"计划里的必答槽位是否齐全"判定，不是让汇总模型自己感觉。 "多Agent并行执行部分失败，如何设计补偿机制" → 先定语义（全成功才提交 vs 部分成功降级），再定补偿（已成功的写反向流水/标记失效），最后对用户显式告知。
 - 易错点：只说"用 LangGraph 做状态机"却不给步数上限和 checkpoint 字段；把"重试"当恢复（重试会重复副作用）；把用户中断做成 kill 进程导致状态丢失。
 
 **2. 开放型 Agent 产品系统设计骨架**（★★★）
 　*先问清边界与 SLO，再按网关-编排-工具-记忆-评测五层落图，最后一定补失败兜底与验收口径*
-- 本质：这是最高频的开放题（"让你设计一个 X Agent，你会怎么做"），考的是**是否有一套可复用的答题骨架**，X 换成行程规划、教育、硬件、支付诊断都不变。
-- 必答要点（四段骨架，逐段给时间，总时长控制在 4~5 分钟）：
+- 本质：设计任何垂直领域的生产级 Agent，底层架构骨架都是相通的：**先定业务边界、不可逆副作用与延迟成本预算，再搭网关、编排状态机、工具契约与记忆分层，最后补齐降级链路与评测红线**。
+- 必答要点：
   1. 澄清（30s）：用户是谁、用例边界（做不做支付/改数据）、规模（DAU/QPS/会话数）、时延与成本上限、合规与数据留存。
   2. 容量与成本估算（60s）：如日活 100 万 × 人均 5 轮 = 500 万次模型调用/天；单次输入 4k + 输出 500 token，按 ¥0.001/千 token 量级 ⇒ 日成本 2 万元级；据此决定"便宜模型兜 80% 流量 + 强模型兜疑难 + 语义缓存命中 20%~30%"。
   3. 分层设计（2min）：接入网关（鉴权/限流/灰度）→ 编排层（Router/Planner/Executor）→ 工具层（schema 契约 + 权限）→ 知识与记忆层（RAG + 长期记忆）→ 模型网关（provider 抽象 + 故障切换）→ 观测与评测。
   4. 失败兜底与评测（1min）：每层给出降级路径（模型 → 小模型 → 规则/模板 → 转人工）、拒答策略、灰度和回归门槛（核心任务集成功率不低于上一版 -1pt 才放量）。
 - 高频追问："如果选择一个开源框架构建 Agent Runtime，会从哪些维度选型" → 给维度表：状态持久化能力、工具协议（MCP 兼容）、可观测、多租户、可干预（HITL）、是否强绑定某家模型、社区活跃度与二次开发成本。"设计一个支付失败诊断 Agent：输入自然语言或订单信息，输出失败原因和证据" → 关键是把"诊断"落到可查的证据链：先做意图/槽位抽取拿订单号，再查状态机日志与规则库，输出"原因码 + 证据引用 + 建议动作 + 置信度"，低置信度转人工。"设计一个硬件场景的 Agent，和纯软件有什么区别" → 答三点：动作副作用物理不可逆（要审批+限速）、时延与离线约束（端侧小模型）、设备/协议的 schema 不统一。
-- 易错点：一上来就画多 Agent 图（面试官会追问"为什么不用 Workflow"）；不做估算（数量级都给不出）；把兜底当"加个 try-catch"。
+- 易错点：不判别路径确定性就盲目上多 Agent（固定流程用 Workflow 延迟与成本低得多）；缺少 QPS 与单日 Token 成本量级估算；把工程降级兜底简单等同于代码里的 `try-catch`。
 - （同组细分）会议纪要 / 写作与通用文件入口 Agent：长音频/任意文件类题的核心是"分片流式 + 只持久化终稿 + 结构化落库"，不是模型选型
 
 **3. 工具 / MCP 编排与调用治理（路由、超时重试、幂等、死循环）**（★★★）
@@ -4328,7 +4324,7 @@
   2. 路由与选择：工具数 >30 时必须做两级路由（向量召回 top-5 工具 → 模型在候选内选），否则描述全塞进 prompt 会 3k~10k token 爆炸；上百个 MCP 工具用"工具目录 + 按需加载"。
   3. 超时与重试：单工具超时按 P99×1.5 设（查询类 2~3s、写类 5~10s），整链设总预算（如 30s）；只对**幂等只读**工具自动重试 1~2 次，写类必须先拿幂等键；重试换工具仅限"同类工具多provider"（如两家地图 API）。
   4. 防死循环与越权：同工具同参数连续 2 次视为循环，直接返回失败并降级；工具级 ACL（谁能调、额度多少、是否需审批），高风险工具默认 requires_approval。
-- 高频追问："Agent 调用有副作用的下单接口发生超时并重试时，如何用幂等避免重复下单？幂等 Key 应如何生成，为什么不能交给大模型生成？" → 幂等键由服务端按 `业务单号+动作+参数哈希` 生成（或前置令牌），模型只传业务单号；不能交给模型是因为它会编造/漂移，且重放时两次生成的键不一致，幂等直接失效。 "并行调用工具时，某几个工具一直不返回结果，怎样处理？" → 答：并发发 + 总 deadline + 谁先回谁先用，超时工具记 partial 并让模型在"缺这一路"的前提下作答，缺关键路则降级。 "接入上百个 MCP 工具时如何做工具路由与选择？工具描述过长 token 爆炸怎么办？" → 工具目录 + embedding 召回 + 描述分层（短描述进上下文，长文档按需拉）。 "Agent 三次调用都报错，你会怎么办？" → 三次后不再重试，转"降级动作 + 明确告知 + 人工工单"，并把该次 trace 打标进错例池。
+- 高频追问："Agent 调用有副作用的下单接口发生超时并重试时，如何用幂等避免重复下单？幂等 Key 应如何生成，为什么不能交给大模型生成？" → 幂等键由服务端按 `业务单号+动作+参数哈希` 生成（或前置令牌），模型只传业务单号；不能交给模型是因为它会编造/漂移，且重放时两次生成的键不一致，幂等直接失效。 "并行调用工具时，某几个工具一直不返回结果，怎样处理？" → 并发发 + 总 deadline + 谁先回谁先用，超时工具记 partial 并让模型在"缺这一路"的前提下作答，缺关键路则降级。 "接入上百个 MCP 工具时如何做工具路由与选择？工具描述过长 token 爆炸怎么办？" → 工具目录 + embedding 召回 + 描述分层（短描述进上下文，长文档按需拉）。 "Agent 三次调用都报错，你会怎么办？" → 三次后不再重试，转"降级动作 + 明确告知 + 人工工单"，并把该次 trace 打标进错例池。
 - 易错点：对写接口无脑重试；把超时设成 60s 让用户干等；工具返回 10k token 原始 JSON 直接塞回上下文（应先裁剪成结构化摘要）。
 
 **4. RAG 知识库全链路（解析-切分-索引-召回-重排-组装）**（★★★）
@@ -4362,7 +4358,7 @@
   2. 分层 trace：一次请求 = 一个 trace，节点 = span，子 Agent 用 parent_span 串起来；记录"决策依据"（选了哪个工具、为什么），而不只是结果。
   3. 降级与恢复：模型超时/限流 → 切备用 provider → 切小模型 → 规则/模板兜底 → 转人工；长会话状态落库（checkpoint），恢复失败则从最近成功节点重建并告知用户。
   4. 失败回流：失败样例（含人工修正）打标入库，形成"错误类型 → 归属层 → 修复方式"的看板；路径震荡（反复失败）优先查"工具返回不稳定/上下文被污染/停止条件写错"。
-- 高频追问："多层 Agent 系统如何做链路追踪定位出错层？" → 答 parent_span + 每层"输入/输出/判定"三件套 + 可重放（存快照能离线重跑某层）。"运维 Agent 给出错误的故障诊断或维修建议时，在实际维修前应如何发现、拦截和兜底？" → 三道闸：证据校验（诊断必须挂监控指标/日志证据）、风险分级（不可逆操作需人工确认）、演练环境先验证。"如果上下文压缩把'不能修改生产配置'变成了'修改生产配置'，并写入长期记忆，怎么发现和避免？" → 答：压缩产物过"约束保真校验"（负向约束单独抽取成结构化 flag，不参与摘要改写）；长期记忆写入前做"事实 vs 推断"标注与人工抽检；关键规则存成硬约束而非自然语言记忆。
+- 高频追问："多层 Agent 系统如何做链路追踪定位出错层？" → 答 parent_span + 每层"输入/输出/判定"三件套 + 可重放（存快照能离线重跑某层）。"运维 Agent 给出错误的故障诊断或维修建议时，在实际维修前应如何发现、拦截和兜底？" → 三道闸：证据校验（诊断必须挂监控指标/日志证据）、风险分级（不可逆操作需人工确认）、演练环境先验证。"如果上下文压缩把'不能修改生产配置'变成了'修改生产配置'，并写入长期记忆，怎么发现和避免？" → 压缩产物过"约束保真校验"（负向约束单独抽取成结构化 flag，不参与摘要改写）；长期记忆写入前做"事实 vs 推断"标注与人工抽检；关键规则存成硬约束而非自然语言记忆。
 - 易错点：只记录最终回答不记录中间态；用"再让模型反思一下"当定位手段；把降级路径写成"重试三次"。
 
 **7. Agent 平台化：多租户/沙箱隔离、模型接入层与本体扩展**（★★）
@@ -4389,7 +4385,7 @@
 
 **9. 框架选型与架构权衡（自研 vs LangGraph、Workflow vs Agent、3 秒预算）**（★★）
 　*选型判据是"路径确定性 × 调试成本 × 可控性"，3 秒内首字要靠并行化与流式，不能靠换模型*
-- 本质：选型回答要有**判据表**，不是立场；同一家公司不同团队答案不同，面试官想看你依据什么决定。
+- 本质：架构与框架选型没有银弹，关键是给出**任务确定性、状态持久化诉求、延迟预算与团队维护成本**四维权衡依据，说明在什么约束下选自研状态机、什么场景下复用现成编排图。
 - 必答要点：
   1. 三个判据：路径确定性（步骤可枚举 → Workflow/图；需模型现场决策 → 自主 Agent）、可控与可调试性（要能单步重放、断点、改 prompt 即生效）、工程约束（多租户、状态持久化、私有化部署、团队熟悉度）。
   2. 框架边界：LangGraph 擅长"有状态图 + 人工介入 + 检查点"，弱在"多租户/配额/工具治理/成本核算"，这些通常自研；轻量本地 Agent 可以完全不用框架（一层 while + 工具注册表 + 事件流，代码 300~500 行，调试成本最低）。
@@ -4631,7 +4627,7 @@
 
 1. **只会名词不会判据**：被问"为什么用 Redis 不用本地缓存"，答"Redis 快"就废了。要答判据：多机共享 vs 单机、容量与成本、一致性与失效传播。
 2. **只讲正向不讲失败**：任何设计题都要主动补一句"如果 X 挂了会怎样、怎么兜底"。这是二面 / 三面的分水岭。
-3. **数字全靠感觉**：容量、QPS、延迟、阈值都要给量级和依据（如"单机 8~10 万 QPS""TTL 取 P99 的 3 倍"）。没有数字的方案在面试官眼里等于没做过。
+3. **方案缺少量化量级**：容量、QPS、延迟与超时阈值都要给出工程基线与推导依据（如 Redis 单实例 8~10 万 QPS、锁与幂等 TTL 取业务 P99 的 3 倍以上），有数字支撑的系统设计才经得起深挖。
 
 ---
 

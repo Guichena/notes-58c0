@@ -38,6 +38,15 @@ test('knowledge library imports split high-frequency boards, full detail pages, 
   const agentDetail = byId.get('exam-agent-detail').html;
   assert.equal((backendDetail.match(/class="kb-detail-card"/g) || []).length, 222);
   assert.equal((agentDetail.match(/class="kb-detail-card"/g) || []).length, 105);
+  assert.equal((backendDetail.match(/\|---/g) || []).length, 0);
+  assert.equal((agentDetail.match(/\|---/g) || []).length, 0);
+  assert.ok(!backendDetail.includes('<li>必答要点：</li>'));
+  assert.ok(!agentDetail.includes('<li>必答要点：</li>'));
+  assert.ok(backendDetail.includes('class="kb-ans-block kb-ans-essence"'));
+  assert.ok(agentDetail.includes('class="kb-qa-item"'));
+  for (const model of result.models.values()) {
+    assert.ok(!model.html.includes('面试官你好'), model.id + ': scripted hello');
+  }
   for (const m of backendBoard.matchAll(/href="#\/e\/exam-backend-detail\/([^"]+)"/g)) {
     assert.ok(backendDetail.includes('id="' + decodeURIComponent(m[1]) + '"'), m[1]);
   }

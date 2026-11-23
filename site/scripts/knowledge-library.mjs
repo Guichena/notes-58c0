@@ -452,13 +452,169 @@ function familyOf(p) {
   for (const [needle, slug, title, intro] of FAMILIES) if (needle.test(text)) return {slug, title, intro};
   return {slug:'other', title:'其他考点', intro:'下面按该考点自己的本质、必答要点、高频追问和易错点展开，不并进相邻章节。'};
 }
+function renderInlineMd(text) {
+  return esc(text)
+    .replace(/`([^`]+)`/g, '<code class="tok-inline">$1</code>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+}
+function splitInlinePoints(text) {
+  const s = text.trim();
+  if (/^①/.test(s) && /[；;。]\s*②/.test(s)) {
+    return s.split(/[；;。]\s*(?=[②③④⑤⑥⑦⑧⑨⑩])/).map((item) => item.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').trim()).filter(Boolean);
+  }
+  if (/^1[）)]/.test(s) && /[；;。]\s*2[）)]/.test(s)) {
+    return s.split(/[；;。]\s*(?=[2-9][）)])/).map((item) => item.replace(/^\d+[）)]\s*/, '').trim()).filter(Boolean);
+  }
+  return null;
+}
+function splitFollowUps(rawList) {
+  const out = [];
+  for (const raw of rawList) {
+    const pieces = raw.trim()
+      .split(/(?<=[。！？；;])\s*(?=追问[「"“：:]|「[^」]{3,70}」\s*→|"[^"]{3,90}"\s*→|\*\*["「]|[^。！？；;→]{4,60}[？?]\s*→)/)
+      .map((s) => s.trim()).filter(Boolean);
+    for (const piece of pieces) {
+      const cleaned = piece.replace(/^追问[：:]\s*/, '').replace(/^追问(?=[「"“])/, '').trim();
+      const arrow = cleaned.indexOf('→');
+      if (arrow > 0) {
+        const q = cleaned.slice(0, arrow).trim().replace(/^[「"“]|["”」]$/g, '').replace(/^\*\*|\*\*$/g, '').replace(/^[「"“]|["”」]$/g, '').trim();
+        const a = cleaned.slice(arrow + 1).trim().replace(/[；;]+$/, '');
+        out.push({q, a});
+      } else {
+        out.push({q: '', a: cleaned});
+      }
+    }
+  }
+  return out;
+}
+function splitPitfalls(rawList) {
+  const items = [];
+  for (const raw of rawList) {
+    let cur = '', depth = 0, inCode = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      if (ch === '`') inCode = !inCode;
+      else if (!inCode && (ch === '（' || ch === '(')) depth++;
+      else if (!inCode && (ch === '）' || ch === ')')) depth = Math.max(0, depth - 1);
+      if (!inCode && depth === 0 && ch === '；') {
+        if (cur.trim()) items.push(cur.trim());
+        cur = '';
+      } else cur += ch;
+    }
+    if (cur.trim()) items.push(cur.trim());
+  }
+  return items;
+}
+function renderExamPointBody(p, idPrefix) {
+  const lines = String(p.body || '').replace(/\r\n?/g, '\n').split('\n');
+  let mode = '';
+  const essence = [];
+  const mustBlocks = [];
+  const followUps = [];
+  const pitfalls = [];
+  const variants = [];
+  const extras = [];
+  let curMust = null;
+  const flushMust = () => { if (curMust) { mustBlocks.push(curMust); curMust = null; } };
+  for (const line of lines) {
+    let m;
+    if ((m = /^- 本质[：:]\s*(.*)$/.exec(line))) {
+      flushMust(); mode = 'essence';
+      if (m[1].trim()) essence.push(m[1].trim());
+      continue;
+    }
+    if ((m = /^- 必答要点(?:[①②③④⑤]|（[^）]*）)?[：:]\s*(.*)$/.exec(line))) {
+      flushMust(); mode = 'must';
+      curMust = [];
+      if (m[1].trim()) curMust.push(m[1].trim());
+      continue;
+    }
+    if ((m = /^- 高频追问[：:]\s*(.*)$/.exec(line))) {
+      flushMust(); mode = 'fup';
+      let rest = m[1].trim();
+      const inlinePit = rest.split(/[｜|]\s*易错点[：:]\s*/);
+      if (inlinePit.length > 1) {
+        if (inlinePit[0].trim()) followUps.push(inlinePit[0].trim());
+        pitfalls.push(inlinePit.slice(1).join('；').trim());
+      } else if (rest) {
+        followUps.push(rest);
+      }
+      continue;
+    }
+    if ((m = /^- 易错点[：:]\s*(.*)$/.exec(line))) {
+      flushMust(); mode = 'pitfall';
+      if (m[1].trim()) pitfalls.push(m[1].trim());
+      continue;
+    }
+    if ((m = /^- （同组细分）\s*(.*)$/.exec(line))) {
+      flushMust(); mode = 'variant';
+      if (m[1].trim()) variants.push(m[1].trim());
+      continue;
+    }
+    if (mode === 'must' && curMust) {
+      curMust.push(line.replace(/^\s+(?=\|)/, '').replace(/^  /, ''));
+    } else if (mode === 'fup' && line.trim()) {
+      const rest = line.trim();
+      const inlinePit = rest.split(/[｜|]\s*易错点[：:]\s*/);
+      if (inlinePit.length > 1) {
+        if (inlinePit[0].trim()) followUps.push(inlinePit[0].trim());
+        pitfalls.push(inlinePit.slice(1).join('；').trim());
+      } else followUps.push(rest);
+    } else if (mode === 'essence' && line.trim()) {
+      essence.push(line.trim());
+    } else if (mode === 'pitfall' && line.trim()) {
+      pitfalls.push(line.trim());
+    } else if (mode === 'variant' && line.trim()) {
+      variants.push(line.trim());
+    } else if (line.trim()) {
+      extras.push(line);
+    }
+  }
+  flushMust();
+
+  const out = [];
+  if (essence.length) {
+    out.push(`<div class="kb-ans-block kb-ans-essence"><div class="kb-ans-kicker">核心本质</div><div class="kb-ans-body">${essence.map((t) => `<p class="md-p">${renderInlineMd(t)}</p>`).join('')}</div></div>`);
+  }
+  if (mustBlocks.length) {
+    const renderedMust = mustBlocks.map((blockLines, bIdx) => {
+      if (blockLines.length === 1) {
+        const split = splitInlinePoints(blockLines[0]);
+        if (split) return `<ol class="md-list kb-must-list">${split.map((item) => `<li>${renderInlineMd(item)}</li>`).join('')}</ol>`;
+      }
+      const joined = blockLines.join('\n').trim();
+      if (!joined) return '';
+      return mdToSiteHtml(joined, {idPrefix: idPrefix + '-m' + bIdx, dropFirstHeading: false, knowledge: false}).html;
+    }).join('');
+    out.push(`<div class="kb-ans-block kb-ans-must"><div class="kb-ans-kicker">必答要点</div><div class="kb-ans-body">${renderedMust}</div></div>`);
+  }
+  if (followUps.length) {
+    const qas = splitFollowUps(followUps);
+    out.push(`<div class="kb-ans-block kb-ans-fup"><div class="kb-ans-kicker">高频追问</div><div class="kb-qa-list">${qas.map((qa) => qa.q
+      ? `<div class="kb-qa-item"><div class="kb-qa-q">${renderInlineMd(qa.q)}</div><div class="kb-qa-a">${renderInlineMd(qa.a)}</div></div>`
+      : `<div class="kb-qa-item"><div class="kb-qa-a">${renderInlineMd(qa.a)}</div></div>`
+    ).join('')}</div></div>`);
+  }
+  if (pitfalls.length) {
+    const pitItems = splitPitfalls(pitfalls);
+    out.push(`<div class="kb-ans-block kb-ans-pitfall"><div class="kb-ans-kicker">易错点与边界</div><ul class="md-list kb-pitfall-list">${pitItems.map((t) => `<li>${renderInlineMd(t)}</li>`).join('')}</ul></div>`);
+  }
+  if (variants.length) {
+    out.push(`<div class="kb-ans-block kb-ans-variants"><div class="kb-ans-kicker">关联延伸</div><ul class="md-list kb-variant-list">${variants.map((t) => `<li>${renderInlineMd(t)}</li>`).join('')}</ul></div>`);
+  }
+  if (extras.length) {
+    out.push(mdToSiteHtml(extras.join('\n'), {idPrefix: idPrefix + '-x', dropFirstHeading: false, knowledge: false}).html);
+  }
+  return `<div class="kb-ans-grid">${out.join('')}</div>`;
+}
 function lectureSection(p) {
-  const body = mdToSiteHtml(p.body,{idPrefix:'sup-' + p.anchor,dropFirstHeading:false,knowledge:true}).html;
+  const body = renderExamPointBody(p, 'sup-' + p.anchor);
   return `<section class="kb-lecture" id="sup-${p.anchor}"><h3 class="md-h md-h3">${p.no}. ${esc(p.title)}</h3><p class="exam-point-summary">${esc(p.summary)}</p>${algoLink(p.title)}${body}</section>`;
 }
 function supplementHtml(p) {
   const labels = ['本质','必答','高频追问','易错点'].filter((label) => p.body.includes(label));
-  const body = mdToSiteHtml(p.body,{idPrefix:'sup-' + p.anchor,dropFirstHeading:false,knowledge:true}).html;
+  const body = renderExamPointBody(p, 'sup-' + p.anchor);
   return `<details class="kb-supplement" id="sup-${p.anchor}"><summary><span>考点补强 · ${esc(p.title)}</span><b>${labels.join(' · ')}</b></summary><div class="kb-supplement-body"><p class="exam-point-summary">${esc(p.summary)}</p>${algoLink(p.title)}${body}</div></details>`;
 }
 function insertAfterHeading(html, anchor, blocks) {
@@ -603,11 +759,11 @@ function detailHtml(exam, track) {
   })).filter((s) => s.groups.length);
   const body = sections.flatMap((s) => s.groups.map((g) => {
     const bucket = pointBucket(g.points[0]);
-    const intro = g.intro.join('\n').trim();
-    const introHtml = intro ? mdToSiteHtml(intro,{idPrefix:'exam-intro',dropFirstHeading:false,knowledge:true}).html : '';
+    const intro = g.intro.map((line) => line.replace(/^>\s?/, '').trim()).filter(Boolean).join(' ');
+    const introHtml = intro ? `<div class="kb-group-intro">${renderInlineMd(intro)}</div>` : '';
     const cards = g.points.map((p) => {
       const lec = p.target.kind === 'enriched' ? `<a class="kb-lec-link" href="${pointHref(p)}">对应讲义 →</a>` : '';
-      return `<article class="kb-detail-card" id="${p.anchor}"><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading">${p.no}. ${esc(p.title)}</h3>${lec}</div><p class="exam-point-summary">${esc(p.summary)}</p>${mdToSiteHtml(p.body,{idPrefix:p.anchor,dropFirstHeading:false,knowledge:true}).html}</article>`;
+      return `<article class="kb-detail-card" id="${p.anchor}"><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3>${lec}</div><p class="exam-point-summary">${esc(p.summary)}</p>${renderExamPointBody(p, p.anchor)}</article>`;
     }).join('');
     return `<section class="kb-dgroup kb-filter-item" data-kb-type="${esc(bucket)}"><h2 class="md-h md-h2">${esc(g.title)}</h2>${introHtml}${cards}</section>`;
   })).join('');

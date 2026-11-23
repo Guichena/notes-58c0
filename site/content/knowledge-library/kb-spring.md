@@ -55,7 +55,7 @@ Spring MVC 最常见的考法就是“执行流程”和“核心组件”。
 
 ### Spring IOC
 
-Spring IOC 是 Spring 框架的核心，也是面试的必考题，面试官通常会问"什么是 IOC"，然后深挖 Bean 生命周期和循环依赖。
+Spring IoC 把对象的创建与依赖装配收归容器统一管理，底层主线是 BeanDefinition 注册、Bean 生命周期扩展点，以及三级缓存如何拆解单例循环依赖。
 
 ### 什么是IOC
 
@@ -615,7 +615,7 @@ Spring 注解题一般不是让你背名字，而是看你是否知道“这个�
 
 ## 05 Spring事务
 
-Spring 事务是面试的高频考点，面试官通常会问"事务的传播机制"和"@Transactional 什么时候会失效"。
+Spring 声明式事务基于 AOP 动态代理与 ThreadLocal 绑定数据库连接，核心要说清七种传播行为语义，以及代理边界、异常类型和跨线程调用导致的失效场景。
 
 ### Spring事务的基本概念
 
@@ -940,7 +940,7 @@ flowchart TD
 
 ## 06 Spring自动装配
 
-SpringBoot 自动装配是面试的高频考点，面试官通常会问"SpringBoot 是如何实现自动配置的"。
+Spring Boot 自动装配通过扫描类路径上的自动配置候选类，再结合 `@Conditional` 条件注解按依赖和配置动态决定是否注册 Bean，既省去手工装配又允许用户自定义覆盖。
 
 ### SpringBoot的核心注解
 
@@ -1133,7 +1133,7 @@ public class MyService {
 
 > 💡 **Q：SpringBoot 的启动流程是怎样的？**
 
-> 📝 面试官你好，SpringBoot 的启动流程主要分为以下几个步骤：
+> 📝 SpringBoot 的启动流程主要分为以下几个步骤：
 > **第一步是创建 SpringApplication 对象**，在 `SpringApplication.run()` 方法中，会先创建一个 SpringApplication 对象。这个对象会做一些初始化工作：
 > - 推断应用类型（Web 应用还是非 Web 应用）。
 > - 加载 ApplicationContextInitializer 和 ApplicationListener。
@@ -1174,7 +1174,7 @@ SpringBoot 通过 **ServletWebServerFactory** 来创建和启动内嵌的 Web �
 
 > 💡 **Q：SpringBoot 相比传统的 Spring 有什么优势？**
 
-> 📝 面试官你好，SpringBoot 相比传统的 Spring 主要有以下几个优势：
+> 📝 SpringBoot 相比传统的 Spring 主要有以下几个优势：
 > **第一个是简化配置**。传统的 Spring 需要大量的 XML 配置，而 SpringBoot 通过自动配置和约定优于配置的理念，大大简化了配置。
 > **第二个是快速开发**。SpringBoot 提供了大量的 Starter，引入一个 Starter 就可以快速集成一个功能（如 Redis、MyBatis），不需要手动配置。
 > **第三个是内嵌服务器**。SpringBoot 内嵌了 Tomcat、Jetty 等服务器，可以直接打成 jar 包运行，不需要部署到外部服务器。

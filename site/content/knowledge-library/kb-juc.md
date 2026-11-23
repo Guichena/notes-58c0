@@ -76,13 +76,13 @@
 
 ## 02 volatile关键字
 
-volatile 是并发编程中的高频考点，面试官通常会从"volatile 有什么作用"切入，然后深挖可见性、重排序等底层原理。
+volatile 是并发编程里的基础原语，重点在于说清可见性、内存屏障与禁止指令重排，以及它为什么不能替代锁保证复合操作原子性。
 
 ### volatile的作用
 
 > 💡 **Q：volatile 关键字有什么作用？**
 
-> 📝 面试官你好，volatile 主要有两个作用：
+> 📝 volatile 主要有两个作用：
 > 第一个是**保证可见性**。当一个线程修改了 volatile 变量的值，这个新值会立即刷新到主内存，其他线程读取这个变量时，会从主内存中读取最新值，而不是使用自己工作内存中的旧值。
 > 第二个是**禁止指令重排序**。编译器和处理器为了优化性能，可能会对指令进行重排序，但 volatile 通过内存屏障，禁止特定类型的重排序，保证代码按照我们预期的顺序执行。
 > 需要注意的是，volatile **不能保证原子性**，这是它和 synchronized 的一个重要区别。
@@ -99,7 +99,7 @@ volatile 是并发编程中的高频考点，面试官通常会从"volatile 有�
 
 > 💡 **Q：volatile 是如何保证可见性和禁止重排序的？**
 
-> 📝 面试官你好，volatile 的底层实现依赖于**内存屏障**（Memory Barrier）。
+> 📝 volatile 的底层实现依赖于**内存屏障**（Memory Barrier）。
 > 对于可见性，当写一个 volatile 变量时，JMM（Java 内存模型）会在写操作后插入一个 Store 屏障，强制将缓存中的数据刷新到主内存。当读一个 volatile 变量时，JMM 会在读操作前插入一个 Load 屏障，强制从主内存中读取最新值，使工作内存中的缓存失效。
 > 对于禁止重排序，volatile 通过内存屏障，禁止了几种重排序：写 volatile 变量之前的操作不能重排序到写操作之后，读 volatile 变量之后的操作不能重排序到读操作之前。这样就保证了代码的执行顺序符合我们的预期。
 
@@ -113,7 +113,7 @@ volatile 是并发编程中的高频考点，面试官通常会从"volatile 有�
 
 > 💡 **Q：volatile 能保证原子性吗？为什么？**
 
-> 📝 面试官你好，volatile **不能保证原子性**。
+> 📝 volatile **不能保证原子性**。
 > 我举个例子，比如 `count++` 这个操作，看起来是一条语句，但实际上包含三个步骤：读取 count 的值、将 count 的值加 1、将新值写回 count。
 > 在多线程环境下，可能出现这样的情况：线程 A 和线程 B 同时读取 count = 0，然后都计算出 1，最后都写回 1。这样执行了两次 count++，但最终 count 只等于 1，而不是期望的 2。
 > 如果要保证原子性，我们需要使用 synchronized 或者 Lock，或者使用 AtomicInteger 这样的原子类。
@@ -132,7 +132,7 @@ volatile 是并发编程中的高频考点，面试官通常会从"volatile 有�
 
 > 💡 **Q：volatile 和 synchronized 有什么区别？**
 
-> 📝 面试官你好，volatile 和 synchronized 的区别主要有以下几点：
+> 📝 volatile 和 synchronized 的区别主要有以下几点：
 > 首先，**作用范围不同**。volatile 只能修饰变量，而 synchronized 可以修饰方法和代码块。
 > 其次，**原子性不同**。volatile 不能保证原子性，synchronized 可以保证原子性。但它们都能保证可见性和有序性。
 > 第三，**性能不同**。volatile 是轻量级的同步机制，性能更好，不会阻塞线程。synchronized 是重量级的同步机制，可能会阻塞线程，但 JDK 1.6 之后做了很多优化，性能也提升了不少。
@@ -147,7 +147,7 @@ volatile 是并发编程中的高频考点，面试官通常会从"volatile 有�
 
 > 💡 **Q：volatile 有哪些典型的应用场景？**
 
-> 📝 面试官你好，volatile 的典型应用场景主要有两个：
+> 📝 volatile 的典型应用场景主要有两个：
 > 第一个是**状态标志**。最常见的就是用 volatile 修饰一个布尔变量，作为线程的停止标志。比如我有一个 `volatile boolean stop = false`，在线程的 run 方法里用 `while (!stop)` 循环执行任务，当其他线程调用 `stop = true` 时，执行任务的线程能立即看到这个修改，退出循环。
 > 第二个是**双重检查锁定（DCL）单例模式**。在单例模式中，我们会用 `volatile` 修饰 instance 变量。这是因为 `instance = new Singleton()` 这行代码实际上包含三个步骤：分配内存空间、初始化对象、将 instance 指向分配的内存地址。由于指令重排序，可能变成先分配内存、再指向内存、最后初始化对象。如果线程 A 执行到指向内存这一步时，线程 B 进入第一次检查，发现 instance 不为 null，直接返回，但此时对象还没有初始化完成，就会出现空指针异常。volatile 的作用就是禁止这种重排序，保证对象初始化完成后，才将引用赋值给 instance。
 
@@ -161,13 +161,13 @@ volatile 是并发编程中的高频考点，面试官通常会从"volatile 有�
 
 ## 03 ThreadLocal
 
-ThreadLocal 是 JUC 中的高频考点，面试官通常会问"ThreadLocal 是什么"，然后深挖内存泄漏问题。
+ThreadLocal 用线程封闭避免共享竞争，核心在于 ThreadLocalMap 的线性探测结构、弱引用 key 与强引用 value 带来的泄漏链，以及线程池复用时的清理规范。
 
 ### ThreadLocal是什么
 
 > **Q：ThreadLocal 是什么？有什么作用？**
 
-> 📝 面试官你好，ThreadLocal 是 Java 提供的一个**线程局部变量**工具类。它的作用是让每个线程都拥有自己独立的变量副本，线程之间互不干扰。
+> 📝 ThreadLocal 是 Java 提供的一个**线程局部变量**工具类。它的作用是让每个线程都拥有自己独立的变量副本，线程之间互不干扰。
 > 简单来说，就是我在 ThreadLocal 里存一个值，线程 A 存的是 A 的值，线程 B 存的是 B 的值，它们互相看不到对方的值，这样就避免了线程安全问题。
 > 典型的使用场景有这么几个：第一个是**数据库连接管理**，每个线程持有自己的数据库连接。第二个是**用户信息传递**，在 Web 应用中，把用户信息存在 ThreadLocal 里，整个请求链路都能访问。第三个是**SimpleDateFormat**，因为 SimpleDateFormat 不是线程安全的，可以用 ThreadLocal 让每个线程持有自己的实例。
 
@@ -181,7 +181,7 @@ ThreadLocal 是 JUC 中的高频考点，面试官通常会问"ThreadLocal 是�
 
 > 💡 **Q：ThreadLocal 的底层实现原理是什么？**
 
-> 📝 面试官你好，ThreadLocal 的底层实现其实挺巧妙的。
+> 📝 ThreadLocal 的底层实现其实挺巧妙的。
 > 每个 **Thread 对象**内部都有一个 **ThreadLocalMap** 属性，这个 Map 的 Key 是 ThreadLocal 对象，Value 是我们存储的值。
 > 当我们调用 `threadLocal.set(value)` 时，实际上是：
 > 1. 获取当前线程的 ThreadLocalMap
@@ -205,7 +205,7 @@ ThreadLocalMap 和 HashMap 虽然都是 Map，但实现上有很大区别：
 
 > 💡 **Q：ThreadLocal 会导致内存泄漏吗？为什么？**
 
-> 📝 面试官你好，ThreadLocal **可能会导致内存泄漏**，这是一个很经典的问题。
+> 📝 ThreadLocal **可能会导致内存泄漏**，这是一个很经典的问题。
 > 我先说一下原因：ThreadLocalMap 的 Key 是 **WeakReference**（弱引用），Value 是**强引用**。
 > 当 ThreadLocal 对象没有外部强引用时，在 GC 时，Key 会被回收，变成 null。但是 Value 还是强引用，不会被回收。这样就会出现 Key 为 null，但 Value 还在的情况，这个 Value 就永远访问不到了，但又占着内存，这就是内存泄漏。
 > 而且，如果使用的是线程池，线程会被复用，线程对象不会被回收，ThreadLocalMap 也不会被回收，这些泄漏的 Value 就会一直存在，越积越多。
@@ -241,7 +241,7 @@ try {
 
 > 💡 **Q：ThreadLocal 有哪些典型的使用场景？**
 
-> 📝 面试官你好，ThreadLocal 的典型使用场景主要有这么几个：
+> 📝 ThreadLocal 的典型使用场景主要有这么几个：
 > **第一个是数据库连接管理**。在传统的 JDBC 编程中，每个线程需要持有自己的数据库连接，可以用 ThreadLocal 来存储。这样在事务管理时，同一个线程的多个 DAO 操作可以共享同一个连接。
 > **第二个是用户信息传递**。在 Web 应用中，我们可以在 Filter 或拦截器里把用户信息（如用户 ID、用户名）存到 ThreadLocal，然后在 Controller、Service、Dao 等各层都能直接获取，不需要层层传递参数。Spring Security 就是这么做的。
 > **第三个是 SimpleDateFormat**。SimpleDateFormat 不是线程安全的，如果多个线程共享一个实例，会出现问题。可以用 ThreadLocal 让每个线程持有自己的 SimpleDateFormat 实例。
@@ -259,7 +259,7 @@ try {
 
 > 💡 **Q：使用 ThreadLocal 有哪些注意事项？**
 
-> 📝 面试官你好，使用 ThreadLocal 主要有这么几个注意事项：
+> 📝 使用 ThreadLocal 主要有这么几个注意事项：
 > **第一个是一定要记得 remove**。这是最重要的，尤其是在使用线程池的场景下，线程会被复用，如果不 remove，上一个请求的数据可能会影响下一个请求。
 > **第二个是不要存储大对象**。因为 ThreadLocal 的数据是存在线程对象里的，如果存储的对象很大，会占用大量内存。而且在线程池场景下，线程不会被回收，这些大对象会一直占着内存。
 > **第三个是注意父子线程的数据传递**。ThreadLocal 的数据是线程隔离的，子线程无法访问父线程的 ThreadLocal 数据。如果需要传递，可以使用 **InheritableThreadLocal**。
@@ -277,13 +277,13 @@ InheritableThreadLocal 是 ThreadLocal 的子类，它可以让**子线程继承
 
 线程池是 JUC 中**面试出现频率最高**的知识点，几乎是必问题。
 
-面试官通常会从"你项目中怎么用线程池"切入，然后深挖底层原理、参数配置、拒绝策略等。
+线程池一边解耦线程生命周期与任务执行，一边通过有界队列和拒绝策略做流量背压；回答时把执行四步流程、参数估算与异常边界串起来即可。
 
 ### 为什么要使用线程池
 
 > 💡 **Q：为什么要使用线程池？有什么好处？**
 
-> 📝 面试官你好，使用线程池主要有三大好处：
+> 📝 使用线程池主要有三大好处：
 > 第一个是**降低资源消耗**。因为线程的创建和销毁是有开销的，需要调用操作系统内核。线程池通过复用已创建的线程，避免了频繁创建销毁的开销。
 > 第二个是**提高响应速度**。任务到达时，不需要等待线程创建，可以立即执行。
 > 第三个是**提高线程的可管理性**。线程是稀缺资源，如果无限制创建，会消耗系统资源，甚至导致系统崩溃。线程池可以统一分配、调优和监控线程。
@@ -292,7 +292,7 @@ InheritableThreadLocal 是 ThreadLocal 的子类，它可以让**子线程继承
 
 > 💡 **Q：ThreadPoolExecutor 有哪些核心参数？分别是什么作用？**
 
-> 📝 面试官你好，ThreadPoolExecutor 有**七个核心参数**：
+> 📝 ThreadPoolExecutor 有**七个核心参数**：
 > 我详细说一下这七个参数：
 > 第一个是 **corePoolSize（核心线程数）**，它表示线程池中常驻的线程数量。即使这些线程处于空闲状态，也不会被回收，除非设置了 `allowCoreThreadTimeOut`。
 > 第二个是 **maximumPoolSize（最大线程数）**，它表示线程池允许创建的最大线程数量。当任务队列满了，且当前线程数小于最大线程数时，会创建新线程处理任务。
@@ -306,7 +306,7 @@ InheritableThreadLocal 是 ThreadLocal 的子类，它可以让**子线程继承
 
 > 💡 **Q：线程池的执行流程是怎样的？**
 
-> 📝 面试官你好，线程池的执行流程可以总结为以下几步：
+> 📝 线程池的执行流程可以总结为以下几步：
 > 首先，我们调用 `execute()` 或 `submit()` 提交任务。
 > 然后，线程池会判断当前运行的线程数是不是小于核心线程数。如果小于，就直接创建新线程执行任务，即使有空闲线程也会创建新的。
 > 如果当前运行的线程数大于等于核心线程数，任务会被放入任务队列等待。
@@ -322,7 +322,7 @@ InheritableThreadLocal 是 ThreadLocal 的子类，它可以让**子线程继承
 
 > 💡 **Q：线程池有哪些拒绝策略？分别适用什么场景？**
 
-> 📝 面试官你好，JDK 提供了**四种**内置的拒绝策略：
+> 📝 JDK 提供了**四种**内置的拒绝策略：
 > 第一个是 **AbortPolicy（默认）**，它会直接抛出异常 `RejectedExecutionException`。这个适用于需要感知任务被拒绝的情况，及时发现问题。
 > 第二个是 **CallerRunsPolicy**，它会由调用线程（提交任务的线程）自己执行任务。这个适用于任务不能丢失，且可以接受降低提交速度的场景。这种策略会降低任务提交的速度，起到一定的限流作用。
 > 第三个是 **DiscardPolicy**，它会直接丢弃任务，不抛异常。这个适用于允许任务丢失的场景，比如日志记录。
@@ -342,7 +342,7 @@ InheritableThreadLocal 是 ThreadLocal 的子类，它可以让**子线程继承
 
 > 💡 **Q：Executors 提供了哪些常见的线程池？有什么问题？**
 
-> 📝 面试官你好，Executors 工具类提供了几种快速创建线程池的方法：
+> 📝 Executors 工具类提供了几种快速创建线程池的方法：
 > 第一个是 **newFixedThreadPool(int n)**，它是固定大小的线程池，核心线程数等于最大线程数等于 n。它使用 `LinkedBlockingQueue`（无界队列）。问题是队列无界，可能导致内存溢出（OOM）。
 > 第二个是 **newSingleThreadExecutor()**，它只有一个线程的线程池，也使用 `LinkedBlockingQueue`。同样存在 OOM 风险。
 > 第三个是 **newCachedThreadPool()**，它的核心线程数为 0，最大线程数为 `Integer.MAX_VALUE`，使用 `SynchronousQueue`（不存储任务）。问题是可能创建大量线程，导致系统资源耗尽。
@@ -373,7 +373,7 @@ ThreadPoolExecutor executor = new ThreadPoolExecutor(
 
 > 💡 **Q：如何合理设置线程池的核心线程数和最大线程数？**
 
-> 📝 面试官你好，线程池参数的配置需要根据**任务类型**来决定：
+> 📝 线程池参数的配置需要根据**任务类型**来决定：
 > **第一种是 CPU 密集型任务**，任务主要消耗 CPU 资源，比如计算、加密这种。推荐配置是核心线程数等于 CPU 核心数加 1。原因是 CPU 密集型任务，线程数过多会导致频繁的上下文切换，反而降低性能。加 1 是为了在某个线程因为偶尔的内存页失效或其他原因暂停时，额外的线程可以顶上。
 > **第二种是 IO 密集型任务**，任务主要等待 IO 操作，比如网络请求、数据库查询、文件读写这种。推荐配置是核心线程数等于 CPU 核心数乘以 2，或者 CPU 核心数除以（1 减去阻塞系数）。阻塞系数通常在 0.8 到 0.9 之间，也就是线程有 80% 到 90% 的时间在等待 IO。原因是 IO 密集型任务，线程大部分时间在等待，可以创建更多线程来提高 CPU 利用率。
 > **第三种是混合型任务**，建议拆分成 CPU 密集型和 IO 密集型任务，分别用不同的线程池处理。
@@ -392,7 +392,7 @@ ThreadPoolExecutor executor = new ThreadPoolExecutor(
 
 > 💡 **Q：如何正确关闭线程池？shutdown 和 shutdownNow 有什么区别？**
 
-> 📝 面试官你好，线程池提供了两种关闭方法：
+> 📝 线程池提供了两种关闭方法：
 > 第一个是 **shutdown()**，这是温柔关闭。它不再接受新任务，但会执行完队列中的所有任务。已提交的任务会继续执行，线程池状态变为 `SHUTDOWN`。
 > 第二个是 **shutdownNow()**，这是强制关闭。它不再接受新任务，尝试停止正在执行的任务，并返回队列中未执行的任务列表。它通过调用线程的 `interrupt()` 方法来中断线程，线程池状态变为 `STOP`。
 > 推荐的做法是这样：
@@ -467,7 +467,7 @@ AQS 是 JUC 中最核心的底层框架，面试官通常用它来考察候选�
 
 > 💡 **Q：什么是 AQS？它的作用是什么？**
 
-> 📝 面试官你好，AQS 全称是 **AbstractQueuedSynchronizer**（抽象队列同步器），它是 JUC 包中**最核心的基础框架**。
+> 📝 AQS 全称是 **AbstractQueuedSynchronizer**（抽象队列同步器），它是 JUC 包中**最核心的基础框架**。
 > AQS 的作用是为实现锁和同步器提供一个**通用的框架**。像 ReentrantLock、Semaphore、CountDownLatch、ReentrantReadWriteLock 这些同步工具，底层都是基于 AQS 实现的。
 > AQS 的核心思想是：如果请求的共享资源空闲，就把当前请求资源的线程设置为有效的工作线程，并将共享资源设置为锁定状态。如果请求的共享资源被占用，就需要一套**线程阻塞等待以及被唤醒时锁分配的机制**。AQS 用的是 **CLH 队列锁**（一个虚拟的双向队列）来实现这个机制，将暂时获取不到锁的线程加入到队列中。
 
@@ -481,7 +481,7 @@ synchronized 是 JVM 层面的，功能比较固定，不够灵活。而 AQS 提
 
 > 💡 **Q：AQS 的核心原理是什么？**
 
-> 📝 面试官你好，AQS 的核心原理主要包括三个部分：
+> 📝 AQS 的核心原理主要包括三个部分：
 > **第一个是 state 状态**。AQS 内部维护了一个 **volatile int state** 变量，用来表示同步状态。比如在 ReentrantLock 中，state = 0 表示锁空闲，state > 0 表示锁被占用，state 的值表示重入次数。
 > **第二个是 CLH 队列**。AQS 内部维护了一个 **FIFO 的双向队列**，用来存放等待获取锁的线程。当线程获取锁失败时，会被封装成一个 Node 节点，加入到队列尾部。当持有锁的线程释放锁时，会唤醒队列中的第一个线程。
 > **第三个是独占模式和共享模式**。AQS 支持两种模式：
@@ -505,7 +505,7 @@ CLH 队列是一种**基于链表的 FIFO 队列**，全称是 Craig, Landin, an
 
 > 💡 **Q：AQS 的加锁和释放锁的流程是怎样的？**
 
-> 📝 面试官你好，我以独占模式（比如 ReentrantLock）为例，说一下 AQS 的工作流程：
+> 📝 我以独占模式（比如 ReentrantLock）为例，说一下 AQS 的工作流程：
 > **加锁流程（acquire）**：
 > 1. 首先，线程调用 `tryAcquire()` 尝试获取锁（这个方法由子类实现）。
 > 2. 如果获取成功（state 从 0 变成 1），直接返回，线程获得锁。
@@ -541,7 +541,7 @@ CLH 队列是一种**基于链表的 FIFO 队列**，全称是 Craig, Landin, an
 
 > 💡 **Q：ReentrantLock 是如何基于 AQS 实现的？**
 
-> 📝 面试官你好，ReentrantLock 内部有一个 **Sync 类**，它继承了 AQS。Sync 又有两个子类：**FairSync（公平锁）和NonfairSync（非公平锁）**。
+> 📝 ReentrantLock 内部有一个 **Sync 类**，它继承了 AQS。Sync 又有两个子类：**FairSync（公平锁）和NonfairSync（非公平锁）**。
 > **非公平锁的实现**：
 > 当调用 `lock()` 时：
 > 1. 首先用 CAS 尝试将 state 从 0 改成 1，如果成功，直接获取锁。
@@ -566,7 +566,7 @@ state 是用 **volatile** 修饰的，保证了可见性。
 
 > 💡 **Q：AQS 的共享模式是怎么实现的？**
 
-> 📝 面试官你好，AQS 的共享模式和独占模式的主要区别在于：**共享模式下，多个线程可以同时获取资源**。
+> 📝 AQS 的共享模式和独占模式的主要区别在于：**共享模式下，多个线程可以同时获取资源**。
 > 典型的例子是 **Semaphore（信号量）**。Semaphore 可以控制同时访问某个资源的线程数量。
 > **实现原理**：
 > 在共享模式下，state 表示**可用的资源数量**。比如 `new Semaphore(3)` 表示最多允许 3 个线程同时访问。
@@ -601,7 +601,7 @@ CountDownLatch 也是基于 AQS 的共享模式实现的。
 
 > 💡 **Q：AQS 相比 synchronized 有什么优势？**
 
-> 📝 面试官你好，AQS 相比 synchronized 的优势主要有这么几点：
+> 📝 AQS 相比 synchronized 的优势主要有这么几点：
 > **第一个是灵活性更高**。AQS 提供了一个可扩展的框架，我们可以根据不同的需求实现各种同步器。比如公平锁、非公平锁、读写锁、信号量等，这些用 synchronized 都很难实现。
 > **第二个是功能更强大**。AQS 支持可中断的锁获取（lockInterruptibly）、超时获取（tryLock(timeout)）、非阻塞获取（tryLock），而 synchronized 只能阻塞等待。
 > **第三个是性能更好**。在高并发场景下，AQS 的性能通常比 synchronized 好。虽然 JDK 1.6 后 synchronized 做了很多优化，但 AQS 的灵活性让它在某些场景下性能更优。
@@ -697,13 +697,13 @@ CAS、原子类、乐观锁悲观锁通常是一套组合题，面试官很喜�
 
 synchronized 和 Lock 是 Java 并发编程中最常用的两种锁机制，面试中经常会被拿来对比。
 
-面试官通常会问"synchronized 和 Lock 有什么区别"，然后深挖锁升级、公平锁、死锁等问题。
+synchronized 和 ReentrantLock 的核心差异落在底层实现（对象头 Monitor vs AQS）以及公平性、可中断、超时与多条件队列的能力取舍上。
 
 ### synchronized与Lock的区别
 
 > 💡 **Q：synchronized 和 Lock 有什么区别？**
 
-> 📝 面试官你好，synchronized 和 Lock 的主要区别可以从以下几个维度来看：
+> 📝 synchronized 和 Lock 的主要区别可以从以下几个维度来看：
 > 我详细说一下：
 > 第一个是**使用方式**，synchronized 是关键字，使用简单，自动加锁解锁。而 Lock 是接口，需要手动 lock 和 unlock，通常在 finally 块中释放锁。
 > 第二个是**锁的获取**，synchronized 只能阻塞等待，无法中断。而 Lock 提供了 `tryLock()`（尝试获取锁）、`tryLock(timeout)`（超时获取）、`lockInterruptibly()`（可中断获取）等方法。
@@ -723,7 +723,7 @@ synchronized 和 Lock 是 Java 并发编程中最常用的两种锁机制，面�
 
 > 💡 **Q：synchronized 的底层实现原理是什么？**
 
-> 📝 面试官你好，synchronized 的底层实现依赖于 **JVM 的 Monitor（监视器锁）**。
+> 📝 synchronized 的底层实现依赖于 **JVM 的 Monitor（监视器锁）**。
 > 我分两种情况来说：
 > **第一种是同步代码块**，编译后会在代码块前后插入 `monitorenter` 和 `monitorexit` 指令。`monitorenter` 会尝试获取对象的 Monitor，如果获取成功，锁计数器 +1；如果失败，线程阻塞等待。`monitorexit` 会释放 Monitor，锁计数器 -1，当计数器为 0 时，锁被释放。
 > **第二种是同步方法**，方法上加 synchronized 关键字，编译后会在方法的访问标志中添加 `ACC_SYNCHRONIZED` 标记。JVM 在调用方法时，会检查这个标记，自动获取和释放 Monitor。
@@ -754,7 +754,7 @@ synchronized (obj) { }
 
 > 💡 **Q：synchronized 的锁升级过程是怎样的？**
 
-> 📝 面试官你好，JDK 1.6 对 synchronized 做了大量优化，引入了**锁升级机制**，从低到高依次是：
+> 📝 JDK 1.6 对 synchronized 做了大量优化，引入了**锁升级机制**，从低到高依次是：
 > **无锁 → 偏向锁 → 轻量级锁 → 重量级锁**
 > 这个过程是**单向的**，只能升级，不能降级（为了提高效率）。
 > 我详细说一下这几种锁：
@@ -783,7 +783,7 @@ synchronized (obj) { }
 
 > 💡 **Q：ReentrantLock 怎么使用？有什么注意事项？**
 
-> 📝 面试官你好，ReentrantLock 的基本使用是这样的：先调用 lock() 获取锁，然后在 try中执行业务逻辑，最后一定要在 finally 中调用 unlock() 释放锁。
+> 📝 ReentrantLock 的基本使用是这样的：先调用 lock() 获取锁，然后在 try中执行业务逻辑，最后一定要在 finally 中调用 unlock() 释放锁。
 > **注意事项**有这么几点：
 > 第一个是**必须手动释放锁**，一定要在 `finally` 块中调用 `unlock()`，否则如果发生异常，锁永远不会被释放，导致死锁。
 > 第二个是**lock 和 unlock 要成对出现**，每次 `lock()` 必须对应一次 `unlock()`。
@@ -796,7 +796,7 @@ synchronized (obj) { }
 
 > 💡 **Q：什么是公平锁和非公平锁？有什么区别？**
 
-> 📝 面试官你好，我先解释一下这两个概念：
+> 📝 我先解释一下这两个概念：
 > **公平锁**是指多个线程按照**申请锁的顺序**来获取锁（先到先得），内部维护了一个 FIFO 队列。
 > **非公平锁**是指线程获取锁的顺序**不确定**，可能后来的线程先获取到锁。新来的线程会先尝试直接获取锁（插队），如果失败再进入队列。
 > **区别**主要体现在这几个方面：
@@ -824,7 +824,7 @@ synchronized 是**非公平锁**，且无法改变。这也是为什么在需要
 
 > 💡 **Q：什么是可重入锁？synchronized 和 ReentrantLock 是可重入的吗？**
 
-> 📝 面试官你好，**可重入锁**（Reentrant Lock）是指**同一个线程可以多次获取同一把锁**，而不会被自己阻塞。
+> 📝 **可重入锁**（Reentrant Lock）是指**同一个线程可以多次获取同一把锁**，而不会被自己阻塞。
 > **为什么需要可重入**呢？因为在递归调用或方法嵌套调用时，如果锁不可重入，线程会被自己持有的锁阻塞，导致死锁。
 > **synchronized 和 ReentrantLock 都是可重入锁**。
 > 我举个例子：
