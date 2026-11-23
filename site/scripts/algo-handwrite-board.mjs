@@ -116,22 +116,21 @@ export function handwriteBoardHtml(rows, entries) {
     byNumber.get(number).push(entry.id);
   }
   const resolved = rows.map((row) => ({...row, target: resolveTarget(row, byId, byNumber)}));
-  const maxFreq = resolved[0]?.frequency || 1;
-  const filters = `<div class="ab-filters"><button type="button" class="on" data-ab-type="all">全部 65</button>${TYPE_ORDER.map((type) => {
+  const filters = `<div class="ab-filters kb-filter-bar"><button type="button" class="on" data-ab-type="all">全部 <b>${resolved.length}</b></button>${TYPE_ORDER.map((type) => {
     const n = resolved.filter((row) => row.type === type).length;
     return `<button type="button" data-ab-type="${esc(type)}">${esc(type.split(' / ')[0])} <b>${n}</b></button>`;
   }).join('')}</div>`;
-  const list = `<ol class="ab-list">${resolved.map((row) => {
+  const list = `<ol class="ab-list kb-board-list">${resolved.map((row) => {
     const href = row.target.gap ? '#' + gapAnchor(row) : '#/e/' + encodeURIComponent(row.target.id);
     const twin = CODE_TWIN[row.title];
     const twinLink = twin && byId.has(twin) ? `<a class="ab-twin" href="#/e/${twin}">工程手撕</a>` : '';
     const pairId = row.title.includes('用栈实现队列') ? (byNumber.get('232') || [])[0] : '';
     const pair = pairId ? `<a class="ab-twin" href="#/e/${encodeURIComponent(pairId)}">LC232</a>` : '';
     const lc = row.lc === '—' ? '无题号' : 'LC ' + row.lc;
-    return `<li class="ab-row${row.rank <= 3 ? ' ab-top' : ''}" data-type="${esc(row.type)}" style="--w:${Math.max(8, Math.round(row.frequency / maxFreq * 100))}%"><a class="ab-hit" href="${href}"><span class="ab-rank">${String(row.rank).padStart(2, '0')}</span><span class="ab-main"><span class="ab-title">${esc(row.title)}</span><span class="ab-sub"><span class="ab-chip">${esc(row.type.split(' / ')[0])}</span><span>${esc(lc)}</span>${row.target.gap ? '<span>解法在本页</span>' : ''}</span></span><span class="ab-freq"><b>${row.frequency}</b><i class="ab-bar"></i></span></a>${twinLink}${pair}</li>`;
+    return `<li class="ab-row kb-board-row${row.rank <= 10 ? ' ab-top' : ''}" data-type="${esc(row.type)}"><a class="ab-hit kb-board-hit" href="${href}"><span class="ab-rank">${String(row.rank).padStart(2, '0')}</span><span class="ab-main"><span class="kb-btitle-row"><span class="ab-title">${esc(row.title)}</span><span class="ab-chip">${esc(row.type.split(' / ')[0])}</span></span><span class="ab-sub"><span>${esc(lc)}</span>${row.target.gap ? '<span>解法在本页</span>' : ''}</span></span></a>${twinLink}${pair}</li>`;
   }).join('')}</ol>`;
   const lectures = resolved.filter((row) => row.target.gap).map((row) => `<div class="ab-gap" data-type="${esc(row.type)}">${gapHtml(row)}</div>`).join('');
-  return `<div class="ab-page"><p class="ab-lead">按面经出现次数从高到低。点一行进入题解，上一题 / 下一题也按这个顺序。工程向的 LRU、Top-K、单例另外链到代码手撕。</p>${filters}${list}<div class="ab-gaps">${lectures}</div></div>`;
+  return `<div class="ab-page kb-board-page"><p class="ab-lead">65 道题按高频从高到低排好，不标具体次数。点一行进入完整题解，上一题 / 下一题也按这个顺序。工程向的 LRU、Top-K、单例另外链到代码手撕。</p>${filters}${list}<div class="ab-gaps">${lectures}</div></div>`;
 }
 export function boardRankIds(markdown) {
   return parseHandwriteRanking(markdown).flatMap((row) => {
@@ -211,7 +210,7 @@ function handwriteChain(ids, head) {
       const n = state.mod === 'algo' ? index + 1 : CODE_RANK_NO[index];
       return \`<a class="side-item ab-side\${cur === entry ? ' active' : ''}" href="\${href(entry)}"><span class="ab-side-n">\${n}</span><span class="t">\${h(entry.title)}</span><span class="n">\${h(entry.number || '')}</span></a>\`;
     }).join('');
-    if (links) html = \`<div class="side-part">按考频</div><div class="ab-side-list">\${links}</div>\` + html;
+    if (links) html = \`<div class="side-part">高频顺序</div><div class="ab-side-list">\${links}</div>\` + html;
   }
   ` + SIDE_FROM;
     const listener = `

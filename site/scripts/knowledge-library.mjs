@@ -73,6 +73,8 @@ function cleanLibraryMarkdown(markdown) {
     }
     if (skippingToc || skipLevel) continue;
     if (beforeFirstSection && /^>\s*\*\*(?:模块|来源|构成|规模|状态|生成)/.test(line)) continue;
+    if (/^>\s*(?:\*\*)?来源(?:\*\*)?[：:]\s*购买资料/.test(line)) continue;
+    if (/^>\s*题目是我出的/.test(line)) continue;
     out.push(line);
   }
   return out.join('\n');
@@ -460,11 +462,11 @@ function renderInlineMd(text) {
 }
 function splitInlinePoints(text) {
   const s = text.trim();
-  if (/^①/.test(s) && /[；;。]\s*②/.test(s)) {
-    return s.split(/[；;。]\s*(?=[②③④⑤⑥⑦⑧⑨⑩])/).map((item) => item.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').trim()).filter(Boolean);
+  if (/^①/.test(s) && /(?:[；;。]|\n)\s*②/.test(s)) {
+    return s.split(/(?:[；;。]|\n)\s*(?=[②③④⑤⑥⑦⑧⑨⑩])/).map((item) => item.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '').trim()).filter(Boolean);
   }
-  if (/^1[）)]/.test(s) && /[；;。]\s*2[）)]/.test(s)) {
-    return s.split(/[；;。]\s*(?=[2-9][）)])/).map((item) => item.replace(/^\d+[）)]\s*/, '').trim()).filter(Boolean);
+  if (/^1[）)]/.test(s) && /(?:[；;。]|\n)\s*2[）)]/.test(s)) {
+    return s.split(/(?:[；;。]|\n)\s*(?=[2-9][）)])/).map((item) => item.replace(/^\d+[）)]\s*/, '').trim()).filter(Boolean);
   }
   return null;
 }
@@ -472,10 +474,10 @@ function splitFollowUps(rawList) {
   const out = [];
   for (const raw of rawList) {
     const pieces = raw.trim()
-      .split(/(?<=[。！？；;])\s*(?=追问[「"“：:]|「[^」]{3,70}」\s*→|"[^"]{3,90}"\s*→|\*\*["「]|[^。！？；;→]{4,60}[？?]\s*→)/)
+      .split(/(?<=[。！？；;])\s*(?=追问[「"“：:]|追问[^。！？；;→]{2,55}→|「[^」]{3,70}」\s*→|"[^"]{3,90}"\s*→|\*\*["「]|[^。！？；;→]{4,60}[？?]\s*→)/)
       .map((s) => s.trim()).filter(Boolean);
     for (const piece of pieces) {
-      const cleaned = piece.replace(/^追问[：:]\s*/, '').replace(/^追问(?=[「"“])/, '').trim();
+      const cleaned = piece.replace(/^追问(?:者常追加)?[：:]?\s*/, '').trim();
       const arrow = cleaned.indexOf('→');
       if (arrow > 0) {
         const q = cleaned.slice(0, arrow).trim().replace(/^[「"“]|["”」]$/g, '').replace(/^\*\*|\*\*$/g, '').replace(/^[「"“]|["”」]$/g, '').trim();
@@ -578,15 +580,20 @@ function renderExamPointBody(p, idPrefix) {
     out.push(`<div class="kb-ans-block kb-ans-essence"><div class="kb-ans-kicker">核心本质</div><div class="kb-ans-body">${essence.map((t) => `<p class="md-p">${renderInlineMd(t)}</p>`).join('')}</div></div>`);
   }
   if (mustBlocks.length) {
-    const renderedMust = mustBlocks.map((blockLines, bIdx) => {
-      if (blockLines.length === 1) {
-        const split = splitInlinePoints(blockLines[0]);
-        if (split) return `<ol class="md-list kb-must-list">${split.map((item) => `<li>${renderInlineMd(item)}</li>`).join('')}</ol>`;
-      }
-      const joined = blockLines.join('\n').trim();
-      if (!joined) return '';
-      return mdToSiteHtml(joined, {idPrefix: idPrefix + '-m' + bIdx, dropFirstHeading: false, knowledge: false}).html;
-    }).join('');
+    let renderedMust;
+    if (mustBlocks.length > 1 && mustBlocks.every((b) => b.length === 1 && !/^\s*(?:\||[-*]|\d+\.)/.test(b[0]))) {
+      renderedMust = `<ol class="md-list kb-must-list">${mustBlocks.map((b) => `<li>${renderInlineMd(b[0])}</li>`).join('')}</ol>`;
+    } else {
+      renderedMust = mustBlocks.map((blockLines, bIdx) => {
+        const joined = blockLines.join('\n').trim();
+        if (!joined) return '';
+        if (!blockLines.some((l) => /^\s*(?:\||```)/.test(l))) {
+          const split = splitInlinePoints(joined);
+          if (split) return `<ol class="md-list kb-must-list">${split.map((item) => `<li>${renderInlineMd(item)}</li>`).join('')}</ol>`;
+        }
+        return mdToSiteHtml(joined, {idPrefix: idPrefix + '-m' + bIdx, dropFirstHeading: false, knowledge: false}).html;
+      }).join('');
+    }
     out.push(`<div class="kb-ans-block kb-ans-must"><div class="kb-ans-kicker">必答要点</div><div class="kb-ans-body">${renderedMust}</div></div>`);
   }
   if (followUps.length) {

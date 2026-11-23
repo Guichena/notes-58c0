@@ -1416,7 +1416,7 @@ function renderSidebar() {
       const n = state.mod === 'algo' ? index + 1 : CODE_RANK_NO[index];
       return `<a class="side-item ab-side${cur === entry ? ' active' : ''}" href="${href(entry)}"><span class="ab-side-n">${n}</span><span class="t">${h(entry.title)}</span><span class="n">${h(entry.number || '')}</span></a>`;
     }).join('');
-    if (links) html = `<div class="side-part">按考频</div><div class="ab-side-list">${links}</div>` + html;
+    if (links) html = `<div class="side-part">高频顺序</div><div class="ab-side-list">${links}</div>` + html;
   }
     list.innerHTML = html || '<div class="side-empty">没有匹配的条目</div>';
   const act = list.querySelector('.side-item.active');

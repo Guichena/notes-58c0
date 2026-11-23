@@ -26,6 +26,9 @@ test('every ranked problem opens a real page, except the two written on the boar
   assert.equal(page.cat, '原题榜');
   assert.equal((page.html.match(/class="ab-row/g) || []).length, 65);
   assert.ok(!page.html.includes('kb-top-table'));
+  assert.ok(!page.html.includes('ab-freq'));
+  assert.ok(!page.html.includes('--w:'));
+  assert.ok(page.html.includes('kb-filter-bar'));
   assert.ok(page.html.indexOf('LRU 缓存') < page.html.indexOf('无重复字符的最长子串'));
   assert.ok(page.html.indexOf('无重复字符的最长子串') < page.html.indexOf('K 个一组翻转链表'));
   assert.ok(page.html.includes('#/e/handwrite-47'));
@@ -37,7 +40,7 @@ test('every ranked problem opens a real page, except the two written on the boar
   assert.ok(pager.includes('const ALGO_RANK = '));
   assert.ok(pager.includes("e.id === 'algo-handwrite-board'"));
   const side = projectHandwriteBoardRuntime('src/app/navigation.js', "  list.innerHTML = html || '<div class=\"side-empty\">没有匹配的条目</div>';\n");
-  assert.ok(side.includes('按考频'));
+  assert.ok(side.includes('高频顺序'));
   assert.ok(side.includes('data-ab-type'));
   const catalogJs = projectHandwriteBoardRuntime('src/app/catalog.js', "start: ['p-hash', '1'],\nstart: ['handwrite-45', 'database-71'],\n");
   assert.ok(catalogJs.includes("start: ['algo-handwrite-board']"));
