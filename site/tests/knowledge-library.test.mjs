@@ -10,22 +10,41 @@ const entries = [];
 const result = await mergeKnowledgeLibrary(entries, path.join(root, 'content', 'knowledge-library'));
 const byId = new Map(entries.map((entry) => [entry.id, entry]));
 
-test('knowledge library imports all exam points and documents', () => {
-  assert.equal(entries.length, 30);
+test('knowledge library imports split high-frequency boards, full detail pages, and 25 lectures', () => {
+  assert.equal(entries.length, 31);
   assert.equal(result.report.documents, 25);
   assert.equal(result.report.backendPoints, 270);
   assert.equal(result.report.agentPoints, 105);
   assert.equal(result.report.topBackend, 40);
   assert.equal(result.report.topAgent, 40);
   assert.deepEqual(result.report.unmatchedTop, []);
-  const map = byId.get('interview-map').html;
-  const backendTop = map.slice(map.indexOf('id="kb-backend-top"'), map.indexOf('id="kb-agent-top"'));
-  assert.equal((backendTop.match(/双指针同向|链表指针重排|LRU\/LFU 缓存设计|树形 DP|排序算法与复杂度|图与网格搜索/g) || []).length, 0);
-  assert.ok(backendTop.includes('手写 SQL'));
-  assert.ok(backendTop.includes('联合索引与最左前缀'));
-  assert.ok(map.includes('#/e/algo-handwrite-board'));
-  assert.ok((map.match(/class="kb-point"/g) || []).length < 375);
-  assert.ok((map.match(/class="kb-point"/g) || []).length > 300);
+
+  const backendBoard = byId.get('interview-map').html;
+  const agentBoard = byId.get('kb-agent-board').html;
+  assert.equal((backendBoard.match(/双指针同向|链表指针重排|LRU\/LFU 缓存设计|树形 DP|排序算法与复杂度|图与网格搜索/g) || []).length, 0);
+  assert.ok(backendBoard.includes('手写 SQL'));
+  assert.ok(backendBoard.includes('联合索引与最左前缀'));
+  assert.ok(backendBoard.includes('#/e/exam-backend-detail'));
+  assert.ok(backendBoard.includes('#/e/algo-handwrite-board'));
+  assert.ok(!backendBoard.includes('kb-frequency'));
+  assert.ok(!backendBoard.includes('kb-top-table'));
+  assert.ok((backendBoard.match(/class="ab-row kb-board-row/g) || []).length >= 50);
+
+  assert.equal((agentBoard.match(/class="ab-row kb-board-row/g) || []).length, 40);
+  assert.ok(agentBoard.includes('#/e/exam-agent-detail'));
+  assert.ok(!agentBoard.includes('kb-frequency'));
+
+  const backendDetail = byId.get('exam-backend-detail').html;
+  const agentDetail = byId.get('exam-agent-detail').html;
+  assert.equal((backendDetail.match(/class="kb-detail-card"/g) || []).length, 222);
+  assert.equal((agentDetail.match(/class="kb-detail-card"/g) || []).length, 105);
+  for (const m of backendBoard.matchAll(/href="#\/e\/exam-backend-detail\/([^"]+)"/g)) {
+    assert.ok(backendDetail.includes('id="' + decodeURIComponent(m[1]) + '"'), m[1]);
+  }
+  for (const m of agentBoard.matchAll(/href="#\/e\/exam-agent-detail\/([^"]+)"/g)) {
+    assert.ok(agentDetail.includes('id="' + decodeURIComponent(m[1]) + '"'), m[1]);
+  }
+
   const route = byId.get('kb-interview-routes').html;
   for (const id of ['route-mysql', 'route-redis', 'route-kafka']) assert.ok(route.includes('id="' + id + '"'), id);
   assert.ok(route.includes('points * 10^10'));

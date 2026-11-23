@@ -4,7 +4,7 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
   if (baselineTest) return text;
   if (file === 'src/app/catalog.js') {
     const before = "  { id: 'bagu', name: '八股', full: '系统设计八股', icon: 'B', must: true,";
-    const addition = "  { id: 'knowledge', name: '考点', full: '后端 + Agent 考点', icon: 'K', start: ['interview-map'],\n    desc: '按真实面试出现次数查看后端与 Agent 考点；点击考点直达对应知识库小节，再按章内目录系统补齐。' },\n";
+    const addition = "  { id: 'knowledge', name: '考点', full: '后端 + Agent 考点', icon: 'K', start: ['interview-map', 'kb-agent-board'],\n    desc: '拆分为传统后端高频榜与 AI Agent 高频榜，按重要度排好顺序、不标次数；全量考点完整收录在独立详解页，底部附 25 册系统讲义。' },\n";
     if (!text.includes(before)) throw new Error('Knowledge runtime: catalog module boundary not found');
     return text.replace(before, addition + before);
   }
@@ -26,6 +26,12 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
     if (e?.kind === 'doc') {
       const anchor = document.getElementById(r.q);
       if (anchor) requestAnimationFrame(() => {
+        const page = anchor.closest('.kb-filter-page');
+        if (page) {
+          page.querySelectorAll('.kb-filter-bar button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-type') === 'all'));
+          page.querySelectorAll('.kb-filter-item').forEach((it) => { it.hidden = false; });
+          page.querySelectorAll('.kb-route-tip').forEach((it) => { it.hidden = true; });
+        }
         if (anchor.tagName === 'DETAILS') anchor.open = true;
         $$('.kb-anchor-hit').forEach((x) => x.classList.remove('kb-anchor-hit'));
         anchor.classList.add('kb-anchor-hit');
@@ -36,7 +42,18 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
     else focusQuestion(r.q, true);
   }`;
     if (text.split(before).length !== 2) throw new Error('Knowledge runtime: routing focus boundary not found');
-    return text.replace(before, after);
+    return text.replace(before, after) + `
+document.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-kb-type]');
+  if (!btn) return;
+  const page = btn.closest('.kb-filter-page');
+  if (!page) return;
+  const type = btn.getAttribute('data-kb-type');
+  page.querySelectorAll('.kb-filter-bar button').forEach((item) => item.classList.toggle('on', item === btn));
+  page.querySelectorAll('.kb-filter-item').forEach((item) => { item.hidden = type !== 'all' && item.getAttribute('data-kb-type') !== type; });
+  page.querySelectorAll('.kb-route-tip').forEach((item) => { item.hidden = item.getAttribute('data-kb-route') !== type; });
+});
+`;
   }
   return text;
 }
