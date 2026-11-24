@@ -15,6 +15,7 @@ function inline(text, imageBase = '') {
     })
     .replace(/`([^`]+)`/g, '<code class="tok-inline">$1</code>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/\[([^\]]+)\]\((#\/e\/[^)\s]+)\)/g, '<a href="$2">$1</a>')
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
 }
 

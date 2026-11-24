@@ -912,6 +912,58 @@ flowchart LR
 > - 孤儿进程会被接管，僵尸进程要及时回收
 > - 上下文切换的成本主要来自状态保存和缓存失效
 
+### 高频追问补充：秋招底层机制深挖（虚拟线程 M:N、IPC 六大通道与 epoll 脉冲/阶跃响应）
+
+> 💡 **Q：Java 21 虚拟线程（Virtual Thread）的底层调度原理是什么？和平台线程 1:1 模型差在哪？什么时候会发生 Pinning（钉死）？**
+
+> 📝 Java 平台线程（Platform Thread）采用 **1:1 内核线程模型**，每次 `new Thread()` 都要调用 `pthread_create`/`clone` 分配约 `1MB` 独立线程栈，发生网络或锁阻塞时必须陷入内核态挂起并触发微秒级上下文切换。
+> **JDK 21（JEP 444）虚拟线程**改为 **M:N 用户态调度模型**，核心由三个组件协同工作：
+> 1. **载体线程池（Carrier Threads）**：底层默认是一个并行度等于 CPU 核数的 `ForkJoinPool`（工作窃取队列），真正在物理核上跑的只有这几个平台线程。
+> 2. **续体（`Continuation`）与堆上栈块（`StackChunk`）**：每个虚拟线程包装一个 `Continuation`，初始栈仅几百字节，按需在 JVM 堆上动态伸缩。
+> 3. **阻塞自动卸载（Unmount）与唤醒挂载（Mount）**：JDK 21 重写了 `Socket`、`LockSupport`、`Thread.sleep` 等阻塞点——当虚拟线程发起阻塞 IO 时，底层向 OS `epoll` 注册非阻塞事件后立即调用 `Continuation.yield()`，将栈帧快照冻结到堆上的 `StackChunk` 并从载体线程卸载，载体线程立刻去执行下一个就绪虚拟线程；待 `epoll` 收到 IO 就绪事件后，再将该虚拟线程投回 `ForkJoinPool` 队列，由任意空闲载体线程调用 `Continuation.run()` 恢复栈帧继续执行，全程留在用户态（纳秒级）。
+> - **Pinning（钉死）边界与解法**：在 JDK 21 中，若虚拟线程在 **`synchronized` 代码块/方法内部发生阻塞**（HotSpot 的 `ObjectMonitor` 绑定在载体 OS 线程上）或正在执行 **JNI 本地方法**，它会被钉在载体线程上无法卸载，高并发慢 IO 下会耗尽全部载体线程造成饥饿。生产中应将包裹 IO 的 `synchronized` 替换为 `ReentrantLock`，或升级至 **JDK 24（JEP 491）** 解除 `synchronized` 对载体线程的钉死；同时切忌将大对象放入虚拟线程的 `ThreadLocal`（百万虚拟线程会引发堆内存爆炸，应改用 `ScopedValue`）。
+
+> 💡 **Q：Linux 进程间通信（IPC）里管道、消息队列、信号量、共享内存、Unix Domain Socket 在内核里分别怎么实现？拷贝几次？**
+
+| IPC 方式 | 内核核心数据结构 | CPU 拷贝次数 | 边界与同步特性 | 典型工程落地场景 |
+| :--- | :--- | :--- | :--- | :--- |
+| **匿名管道 `pipe`** | `pipe_inode_info` 环形页缓冲（默认 16 页 = **64KB**） | **2 次**（写进程→内核→读进程） | 半双工字节流无边界；单次写 `<= PIPE_BUF (4KB)` 保证原子不交错 | Shell 管道 `a \| b`、父子进程流式传递 |
+| **命名管道 `FIFO`** | VFS 路径挂载具名 `inode`，底层复用 `pipe` 缓冲 | **2 次**（纯内存，不落磁盘） | 无亲缘进程可按路径打开；默认阻塞直到读写两端同时打开 | 同机无亲缘脚本或守护进程简单流 |
+| **消息队列（POSIX / SysV）** | 内核消息链表（含 `mtype` / 优先级与长度） | **2 次** | 保留消息边界，可按类型/优先级读取；POSIX `mq_open` 本质是文件描述符，可挂入 `epoll` | 本机轻量异步指令解耦 |
+| **信号量（Semaphore）** | 内核原子计数器与等待队列 | **0 次载荷传输**（纯同步原语） | P（等待减 1）/ V（释放加 1）；SysV 支持 `SEM_UNDO`，进程崩溃内核自动回滚防死锁 | 配合共享内存做跨进程互斥与同步 |
+| **共享内存（`mmap` / `shm`）** | 多进程页表 `PTE` 直接映射同一组物理页框 | **0 次内核拷贝**（建映射后直读写） | 最快 IPC，但无内置同步，必须配 `PTHREAD_PROCESS_SHARED` 健壮互斥锁或内存屏障 | 同机超低延迟行情分发、推理张量零拷贝共享 |
+| **Unix Domain Socket (`AF_UNIX`)** | 内核 `sock` 与 `sk_buff` 队列（走 VFS 鉴权） | **1~2 次**（绕过完整 TCP/IP 栈） | 全双工、支持 `epoll`，无需三次握手/路由/校验和，支持 **`SCM_RIGHTS` 跨进程传递 `fd`** | Nginx ↔ 本机上游、Docker/containerd、Envoy Sidecar |
+
+> 💡 **Q：详细说说 `epoll` 的水平触发（LT）和边缘触发（ET）为什么本质上是“阶跃响应”和“脉冲响应”？内核 `rdllist` 怎么处理它们？**
+
+> 📝 `epoll` 在内核 `struct eventpoll` 中维护两棵核心结构：**红黑树 `rbr`**（存储 `epoll_ctl` 注册的所有监控 `epitem`，增删改查 `O(log N)`，避免 `select/poll` 每次把全量 `fd` 集合拷入内核）和 **双向就绪链表 `rdllist`**（网卡软中断数据到达时通过回调 `ep_poll_callback` 将 `epitem` `O(1)` 插入 `rdllist`）。注意：`epoll_wait` 在 `ep_send_events_proc` 中是通过 `__put_user` 把就绪事件拷贝到用户态数组，**并非**网传的 `mmap` 共享内存（真正用 `mmap` 共享提交/完成环的是 `io_uring`）。
+> 从信号与系统角度看 LT 与 ET 的本质差异，全在内核 `ep_send_events_proc` 扫描 `rdllist` 的那一步：
+> 1. **水平触发 LT（Level-Triggered）= 阶跃响应（电平触发）**：只要内核 Socket 接收缓冲区中**仍有未读完的字节**（高电平持续存在），内核把该 `epitem` 从 `rdllist` 弹出拷给用户态后，会**立即调用 `list_add_tail` 把它重新放回 `rdllist`**，下次 `epoll_wait` 依然立即返回。优点是编程容错高、阻塞与非阻塞 `fd` 均可工作；缺点是单次未读完或多写事件注册时会产生多余的 `epoll_wait` 系统调用。
+> 2. **边缘触发 ET（Edge-Triggered）= 脉冲响应（边沿跳变触发）**：仅在缓冲区从**“空 → 非空”**或有**新报文到达**触发 `ep_poll_callback` 边沿跳变的那一瞬间产生一次脉冲通知；`ep_send_events_proc` 把 `epitem` 从 `rdllist` 摘下后**绝不再塞回链表**。即使你只读了 `1KB`、缓冲区还剩 `7KB`，只要对端不再发新包，`epoll_wait` 就永远不会再通知该连接（导致连接饥饿假死）。
+> 3. **ET 的三条硬铁律**：① **必须设置 `O_NONBLOCK` 非阻塞 `fd`**；② **收到 `EPOLLIN` 必须 `while` 循环 `read` 直到返回 `-1` 且 `errno == EAGAIN / EWOULDBLOCK`**（若误用阻塞 `fd`，最后一次确认读空的 `read` 会把整个 Reactor IO 线程永久阻塞挂起，拖死同线程上的上万条连接）；③ 多线程共享同一个 `epfd` 时必须加 **`EPOLLONESHOT`**，避免新包到来让两个工作线程同时并发读取同一个 Socket 造成字节交错。
+
+```java
+// 伪代码对照：ET 模式下唯一正确的非阻塞循环读空范式（Linux C / Native Reactor 语义）
+while (true) {
+    int n = read(fd, buf, sizeof(buf));
+    if (n > 0) {
+        appendToFrameDecoder(buf, n);
+    } else if (n == 0) {
+        // 对端发送 FIN 正常关闭连接，务必 close 防止陷入 CLOSE_WAIT 泄漏
+        close(fd);
+        break;
+    } else {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // 内核接收缓冲区已彻底读空，本次脉冲事件安全收尾
+            break;
+        }
+        if (errno == EINTR) continue;
+        close(fd);
+        break;
+    }
+}
+```
+
 ---
 
 ## 来源档案（原始文件，仅供溯源）

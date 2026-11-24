@@ -1493,6 +1493,48 @@ MQ 更偏异步解耦，强调削峰和事件通知。
 > 所以真正的选型不是“谁功能最多”，而是：  
 > **哪个最适合当前业务和团队。**
 
+### 对比补充：RocketMQ vs Kafka 存储架构权衡、顺序消息毒丸隔离与端到端零丢失清单
+
+> 💡 **Q：为什么 Kafka 单机吞吐能到百万级，而业务 Topic 上千之后吞吐会断崖下跌？RocketMQ 是怎么在“业务消息”和“高吞吐”之间做存储架构 Trade-off 的？**
+
+| 核心维度 | Kafka（大数据流 / 日志管道取向） | RocketMQ（核心在线交易 / 业务消息取向） |
+| :--- | :--- | :--- |
+| **物理存储布局** | **每个 Partition 独立目录与 `.log` 段文件**（单分区严格顺序追加） | **单 Broker 全局唯一 `CommitLog`（1GB/文件）混合顺序追加** + **定长 `20B` `ConsumeQueue` 逻辑索引**（`8B phyOffset + 4B size + 8B tagHashCode`） |
+| **Topic/分区规模上限** | 单机超过 **几百~几千个 Partition** 后，数千个 `.log` 文件并发刷盘退化为**磁盘随机写**，吞吐雪崩 | 即使创建 **上万个业务 Topic / 队列**，底层写入永远汇聚成同一个 `CommitLog` 的 **100% 顺序追加写** |
+| **网络零拷贝机制** | **`sendfile`（`FileChannel.transferTo`）+ SG-DMA**：PageCache 直送网卡，0 次 CPU 拷贝，无需把消息体读回用户态，极致吞吐达百万 TPS | **`mmap`（`MappedByteBuffer` 内存映射）**：省掉内核→用户缓冲拷贝，但保留在进程地址空间可见，以便 Broker 读取消息属性、做 Tag/SQL92 过滤、半消息改投和重试路由 |
+| **读取路径代价** | 消费者按 offset 直接在对应 Partition `.log` 连续顺序扫描，一次命中 PageCache | **两跳读取**：先读紧凑 `20B` 的 `ConsumeQueue`（常驻 PageCache），再按物理偏移去 `CommitLog` 取完整消息（冷数据回溯时可能产生随机读） |
+| **原生业务特性** | 无原生延迟队列、无服务端 Tag 过滤、事务仅限 `Kafka → Kafka` 流处理 EOS，不感知外部 DB | 原生支持 **2PC 半消息事务回查**、**任意时间轮延迟消息（5.x）**、消费组级 `%RETRY%` 重试队列与 `%DLQ%` 死信队列 |
+
+> 💡 **Q：顺序消息在消费端如果遇到一条无法恢复的“毒丸消息（Poison Pill）”一直报错，卡住整个队列怎么办？扩容分区时又怎么防止乱序？**
+
+> 📝 这是秋招拷打顺序消息最经典的工程连环问，千万不能只答“无限重试”或“直接丢进死信跳过”：
+> 1. **为什么不能直接跳过单条失败消息**：同一订单的 `[创建订单 → 支付成功 → 商家发货]` 三条消息在同一队列内串行。若 `创建订单` 因短暂脏数据失败被直接丢入死信跳过，紧接着消费 `支付成功` 就会因查不到订单主表而连锁报错或产生悬挂账务。
+> 2. **生产正解——有限重试 + 实体级熔断隔离表（Entity-Level Quarantine）**：
+>    - 消费线程用单线程从 Partition/Queue 拉取保序后，在应用内存按 `Math.abs(orderId.hashCode()) % workerCount` 哈希分发到 `M` 条单线程内存队列，既保同一 `orderId` 严格串行，又把单分区消费并发提升 `M` 倍。
+>    - 某条消息本地带退避重试 `3` 次仍失败时，**不在 MQ 层阻塞整个分区位点**，而是在本地事务中将该 `orderId` 写入 Redis/DB **挂起黑名单（`status = SUSPENDED`）**，并把当前消息落入 `mq_order_quarantine` 异常隔离表后正常提交 MQ 位点。
+>    - 此后凡是到达消费端且命中 `SUSPENDED` 集合的同 `orderId` 后续事件，**一律按到达顺序追加进同一张隔离表**而不直接执行业务逻辑；同分区其余 `99.9%` 正常订单完全不受影响！待人工或补偿脚本修复根因后，按隔离表自增序号重放该 `orderId` 积压事件流再解除挂起。
+> 3. **分区扩容不乱序迁移**：直接在线将 Topic 从 `4` 分区扩到 `8` 分区会导致 `hash(orderId) % P` 映射突变，旧分区的存量老消息与新分区的新消息并发消费即乱序。严格顺序业务采用**双 Topic 平滑切换**：新建 `8` 分区新 Topic → 生产者切写新 Topic → 等待旧 Topic 所有分区 `Lag` 彻底归零后 → 消费者再切读新 Topic（或在消费端基于业务单调版本号 `seq_no` 做短窗口缓冲重排）。
+
+> 💡 **Q：把“消息端到端绝对不丢失 + 不重复执行”浓缩成一张生产核查参数清单，三段分别怎么配？**
+
+```properties
+# 1. Producer 生产端：禁止 fire-and-forget，必须异步回调兜底 + 全部 ISR 确认 + 幂等序列号
+acks=all
+retries=2147483647
+enable.idempotence=true
+max.in.flight.requests.per.connection=5
+
+# 2. Broker 存储端：至少 3 副本、最少 2 个同步副本在 ISR 中、严禁非同步落后副本脏选主
+replication.factor=3
+min.insync.replicas=2
+unclean.leader.election.enable=false
+
+# 3. Consumer 消费端：关闭自动提交，坚持“业务落库与幂等去重表同一本地事务提交成功 → 再手动提交位点”
+enable.auto.commit=false
+# 注意：若采用“拉取后丢进内存异步线程池”提速，绝不能在 poll 线程立即 commitSync！
+# 必须维护分区内连续已完成的最大安全位点（Contiguous Safe Offset Prefix）再提交，防止断电漏消费中间慢任务。
+```
+
 ---
 
 ## 来源档案（原始文件，仅供溯源）

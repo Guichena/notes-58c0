@@ -1044,6 +1044,47 @@ DNS 和 CDN 是网络面试里经常和 `URL 到页面展示`、`HTTP 性能优�
 > 一句话面试版：
 > 网络排查的核心不是背命令，而是顺着 DNS、连通性、端口、协议、应用这一条链路逐层缩小范围。
 
+### 高频追问补充：线上数千个存活连接（ESTABLISHED）排障 SOP 与后端全链路拆解
+
+> 💡 **Q：线上告警某台 Java 服务存在数千个存活的 `ESTABLISHED` 连接，导致响应变慢甚至报 `Too many open files`，你如何一步步排查定位根因？**
+
+> 📝 面试遇到这道实战排障题，切忌只答一句“用 `netstat` 看一下”，标准回答按**“全局定性 → 队列与定时器判因 → 对端聚类 → 进程 `fd` 核对 → JVM 线程栈闭环”**五步展开：
+
+```bash
+# 1. 秒级查看全局 TCP 状态分布（严禁在高连接机器直接敲 netstat -a，遍历 /proc 极慢，优先用 netlink 内核接口的 ss）
+ss -s
+
+# 2. 检查 ESTABLISHED 连接的 Recv-Q、Send-Q、所属进程 PID 与内核重传/保活定时器
+ss -tanpo state established | head -n 40
+
+# 3. 按对端 IP 聚合统计，3 秒分清是上游网关打进来的入向连接，还是本机连 Redis/MySQL/下游 HTTP 的出向连接泄漏
+ss -tn state established | awk 'NR>1 {split($4,a,":"); print a[1]}' | sort | uniq -c | sort -nr | head -n 10
+
+# 4. 核对目标 Java 进程实际持有的 fd 总量与 ulimit 硬上限（排查 CLOSE_WAIT / Socket 泄漏）
+ls /proc/<pid>/fd | wc -l
+cat /proc/<pid>/limits | grep "Max open files"
+
+# 5. 抓取 JVM 线程栈，定位阻塞在网络读或连接池获取的调用链
+jstack <pid> | grep -A 20 -E "socketRead0|HikariPool|NioEndpoint"
+```
+
+> 📝 拿到第 2 步 `ss -tanpo` 输出后，按三类典型病灶精准下结论：
+> 1. **`Recv-Q`（接收队列）持续积压大于 0**：说明对端报文已经到达本机内核缓冲区，但 **Java 应用线程根本没来得及调 `read()` 取走**。根因通常是 JVM 正在经历长时间 Full GC STW、Tomcat `Worker` 业务线程池被慢 SQL/死锁全部占满，或者在 Netty `EventLoop` IO 线程里违规执行了同步阻塞数据库查询。
+> 2. **`Send-Q`（发送队列）持续积压大于 0**：观察右侧 `timer` 列——若显示 `(on, 1.2s, 5)` 说明发出的包迟迟收不到对端 `ACK` 正在指数退避重传（查跨机房链路丢包或对端宕机）；若显示 `(persist, ...)` 说明对端通告了 `rwnd=0` 零窗口，本机正发 Zero Window Probe 探测包，根因是对端消费不过来触发了 TCP 反压。
+> 3. **`Recv-Q = 0` 且 `Send-Q = 0`，但存活连接数千且长期不释放**：分两种情况——① 若 `jstack` 看到几百个业务线程卡在 `SocketInputStream.socketRead0`，90% 是 `OkHttp` / `HttpClient` / `OpenFeign` **漏配 `readTimeout`**（默认无限等）或未用 `try-with-resources` 关闭响应体导致连接池只借不还；② 若没有任何线程在读，则是**半开僵尸死连接（Half-Open Connection）**——中间 NAT 网关、防火墙或云 SLB 因空闲超时（常见 `60s~300s`）静默清理了状态表却未向两端发 `RST`，而 Linux 默认 `tcp_keepalive_time=7200s` 两个小时才探测。解法是：**长连接网关加 30s 应用层 Ping/Pong 心跳 + Netty `IdleStateHandler` 空闲断连；数据库连接池（如 HikariCP）将 `maxLifetime` 设为比 MySQL `wait_timeout` 短 30~60 秒**。
+
+> 💡 **Q：“浏览器输入 URL 到页面返回”如果面试官让你少讲前端、重点深挖后端接入与 Spring 容器内部发生了什么，怎么答出彩？**
+
+| 阶段 | 关键协议 / 组件 | 核心动作与高并发卡点 |
+| :--- | :--- | :--- |
+| **1. 寻址与接入路由** | DNS → Anycast CDN → 四层 LVS（DR/FullNAT） | 浏览器/OS/LocalDNS 缓存未命中后向根/顶级/权威域名服务器迭代查询拿到 VIP；静态资源在 CDN 边缘节点直接命中返回，动态请求经同网段/网关 ARP 解析 MAC 后送达四层负载均衡 LVS |
+| **2. 七层反向代理** | Nginx / Envoy（TLS 1.3 卸载 + 限流） | 完成 TCP 三次握手（检查 `SYN queue` 与 `Accept queue`）及 TLS 1.3 `1-RTT` ECDHE 密钥交换；Nginx 按域名/路径匹配 `location`，通过 **`upstream keepalive` 连接池**转发给内网网关，避免后端反复建连 |
+| **3. 微服务网关** | Spring Cloud Gateway（Netty WebFlux） | 执行全局过滤器：路由鉴权（验签 JWT 或查 Redis Session）、请求 traceId 注入、灰度染色标签透传、Sentinel 令牌桶/滑动窗口限流 |
+| **4. Web 容器线程模型** | Spring Boot 内嵌 Tomcat NIO Endpoint | `LimitLatch` 控制最大连接数（默认 `maxConnections=8192`）→ `Acceptor` 线程 `accept()` 拿到 Socket 设为非阻塞 → 注册进 `Poller` 线程管理的 `epoll` Selector → Socket 可读时封装任务投入 `Worker` 线程池（默认 `maxThreads=200`）解析 HTTP 报文（处理 `Content-Length` / `chunked` 解决粘包半包） |
+| **5. Spring MVC 调度** | `FilterChain` → `DispatcherServlet` | 穿过 Servlet `Filter` 链（跨域、链路追踪、安全过滤）进入 `DispatcherServlet#doDispatch`：`HandlerMapping` 匹配 Controller 方法 → `HandlerInterceptor#preHandle` → `HandlerAdapter` 驱动 `HttpMessageConverter`（Jackson）反序列化 `@RequestBody` 并执行 `@Valid` 参数校验 |
+| **6. 业务逻辑与数据层** | AOP 代理 → Redis → HikariCP → MySQL | 若方法带 `@Transactional`，先经 CGLIB 代理的 `TransactionInterceptor` 从 HikariCP 借出物理连接并关闭自动提交；先查本地 Caffeine / Redis 缓存，未命中则走 MySQL 优化器与 InnoDB Buffer Pool，写操作完成 Redo `prepare` → Binlog → Redo `commit` 两阶段提交后归还连接 |
+| **7. 响应回传与渲染** | Jackson 序列化 → Gzip/Brotli → 浏览器合成 | 返回值序列化为 JSON 写入 Socket 发送缓冲区（或 Agent 场景通过 `SseEmitter` 走 `text/event-stream` 逐 chunk flush 流式推送），浏览器解析 DOM/CSSOM、执行脚本、布局分层合成上屏 |
+
 ---
 
 ## 来源档案（原始文件，仅供溯源）

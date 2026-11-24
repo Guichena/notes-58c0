@@ -1492,6 +1492,10 @@ function parseHash() {
     parts[1] = parts[1] + '-' + (n - 1); parts.length = 2;
   }
   if (parts[0] === 'e' && byId.has(parts[1])) return { view: 'entry', id: parts[1], q: parts[2] != null && parts[2] !== '' ? parts[2] : null };
+  if (parts[0] === 'e' && !DATA.archivedRoutes?.[parts[1]]) {
+    const mappedKb = resolveRetiredKnowledgeRoute(parts[1]);
+    if (mappedKb && byId.has(mappedKb)) return { view: 'entry', id: mappedKb, q: null };
+  }
   const archivedId = parts[0] === 'e' ? parts[1] : parts.join('/');
   if (DATA.archivedRoutes?.[archivedId]) return { view: 'archived', id: archivedId };
   // 兼容 v7 书签：#<id>
@@ -1544,7 +1548,7 @@ async function render() {
     state.curQ = -1;
     if (!e || e.kind !== 'qa') state.mustOnly = false;
     let html = '';
-    if (r.view === 'archived') { const owner = byId.get(DATA.archivedRoutes[r.id].ownerId); html = '<section class="hero"><h1>实现参考已归档</h1><p>本页原始源码与历史进度已保留。面试阅读请从问题、原理、适用条件与取舍继续。</p><p><a class="btn primary" href="' + href(owner) + '">继续学习：' + h(owner.title) + '</a></p></section>'; }
+    if (r.view === 'archived') { const owner = byId.get(DATA.archivedRoutes[r.id].ownerId) || byId.get('interview-map') || ENTRIES[0]; html = '<section class="hero"><h1>实现参考已归档</h1><p>本页原始源码与历史进度已保留。面试阅读请从问题、原理、适用条件与取舍继续。</p><p><a class="btn primary" href="' + href(owner) + '">继续学习：' + h(owner.title) + '</a></p></section>'; }
     else if (r.view === 'nf') html = renderNotFound(r.id);
     else if (r.view === 'home') html = renderHome();
     else if (r.view === 'mod') html = renderModHome(mod);
@@ -1556,6 +1560,7 @@ async function render() {
     page.querySelectorAll('.sec-h > .n').forEach((x, i) => { x.textContent = pad2(i + 1); });
     page.style.cssText = modColor(mod === 'home' ? 'algo' : mod);
     hydrateCode(page);
+    hydrateKnowledgePage(page);
     wireVizIn(page);
     DG.mountAll(page);
     page.classList.toggle('hm-wide', r.view === 'hl');
@@ -1573,7 +1578,8 @@ async function render() {
         const page = anchor.closest('.kb-filter-page');
         if (page) {
           page.querySelectorAll('.kb-filter-bar button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-type') === 'all'));
-          page.querySelectorAll('.kb-filter-item').forEach((it) => { it.hidden = false; });
+          page.querySelectorAll('[data-kb-mfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-mfilter') === 'all'));
+          applyKbFilters(page);
           page.querySelectorAll('.kb-route-tip').forEach((it) => { it.hidden = true; });
         }
         if (anchor.tagName === 'DETAILS') anchor.open = true;
@@ -1604,14 +1610,185 @@ function updateQaStat() {
 }
 
 
+function resolveRetiredKnowledgeRoute(id) {
+  const raw = String(id || '').trim();
+  if (!raw) return null;
+  const exact = {
+    'ai-': 'kb-agent-board',
+    'bg-': 'interview-map',
+    'ai-agent-1': 'kb-agent',
+    'ai-agent-3': 'kb-agent',
+    'ai-agent-4': 'kb-agent',
+    'ai-agent-5': 'kb-multiagent',
+    'ai-agent-6': 'kb-aicoding',
+    'ai-agent-7': 'kb-runtime',
+    'ai-agent-8': 'kb-security',
+    'ai-agent-9': 'kb-eval',
+    'doc-17': 'kb-multiagent',
+    'own-es-reading-guide': 'kb-mq',
+    'own-os-containers': 'kb-distributed',
+    'own-practice-analysis-artifact-gates': 'new-systems-billion-row-analysis-agent'
+  }[raw];
+  if (exact) return exact;
+  if (/^(?:ai-rag-|own-rag-)/.test(raw)) return 'kb-rag';
+  if (/^(?:bg-elasticsearch-|bg-kafka-|bg-rabbitmq-|bg-rocketmq-|own-mq-)/.test(raw)) return 'kb-mq';
+  if (/^(?:bg-redis-|own-redis-)/.test(raw)) return 'kb-redis';
+  if (/^own-mysql-/.test(raw)) return 'kb-mysql';
+  if (/^own-network-/.test(raw)) return 'kb-network';
+  if (/^own-spring-/.test(raw)) return 'kb-spring';
+  if (/^own-java-/.test(raw)) return 'kb-javase';
+  if (/^own-juc-/.test(raw)) return 'kb-juc';
+  if (/^(?:own-jvm-|q-own-jvm-)/.test(raw)) return 'kb-jvm';
+  if (/^own-os-/.test(raw)) return 'kb-os';
+  if (/^own-distributed-/.test(raw)) return 'kb-distributed';
+  if (/^own-memory-/.test(raw)) return 'kb-memory';
+  if (/^own-runtime-/.test(raw)) return 'kb-runtime';
+  if (/^own-tools-/.test(raw)) return 'kb-tools';
+  if (/^own-theory-/.test(raw)) return 'kb-llm';
+  if (/^ai-/.test(raw)) return 'kb-agent';
+  if (/^bg-/.test(raw)) return 'interview-map';
+  return null;
+}
+function getKbProg() {
+  const raw = store.get('iv8-kb-prog', {});
+  return raw && typeof raw === 'object' ? raw : {};
+}
+function setKbProgStatus(key, s) {
+  const prog = getKbProg();
+  if (!s) delete prog[key];
+  else prog[key] = s;
+  store.set('iv8-kb-prog', prog);
+  return prog;
+}
+function updateKbDetailStat(page, prog) {
+  const stat = page.querySelector('[data-kb-stat]');
+  if (!stat) return;
+  const cards = page.querySelectorAll('.kb-detail-card[data-kb-key]');
+  let ok = 0, fuzzy = 0;
+  cards.forEach((card) => {
+    const s = Number(prog[card.getAttribute('data-kb-key')] || 0);
+    if (s === 2) ok += 1;
+    else if (s === 1) fuzzy += 1;
+  });
+  const rest = Math.max(0, cards.length - ok - fuzzy);
+  stat.textContent = `已掌握 ${ok} · 模糊 ${fuzzy} · 未学 ${rest}`;
+}
+function applyKbFilters(page) {
+  if (!page) return;
+  const activeTypeBtn = page.querySelector('.kb-filter-bar button.on');
+  const type = activeTypeBtn ? activeTypeBtn.getAttribute('data-kb-type') : 'all';
+  const activeMBtn = page.querySelector('[data-kb-mfilter].on');
+  const mfilter = activeMBtn ? activeMBtn.getAttribute('data-kb-mfilter') : 'all';
+  const isDetail = page.classList.contains('kb-detail-page');
+  page.querySelectorAll('.kb-filter-item').forEach((item) => {
+    const typeMatch = type === 'all' || item.getAttribute('data-kb-type') === type;
+    if (!isDetail) {
+      item.hidden = !typeMatch;
+      return;
+    }
+    if (!typeMatch) {
+      item.hidden = true;
+      return;
+    }
+    let visibleCards = 0;
+    item.querySelectorAll('.kb-detail-card[data-kb-key]').forEach((card) => {
+      const s = card.getAttribute('data-kb-status') || '0';
+      const show = mfilter === 'all' || s === mfilter;
+      card.hidden = !show;
+      if (show) visibleCards += 1;
+    });
+    item.hidden = visibleCards === 0;
+  });
+}
+function hydrateKnowledgePage(root) {
+  if (!root) return;
+  root.querySelectorAll('a[href^="#/e/"]').forEach((a) => {
+    const rawHref = a.getAttribute('href') || '';
+    const m = /^#\/e\/([^/#?]+)(?:\/([^#?]+))?/.exec(rawHref);
+    if (!m) return;
+    let id = m[1];
+    try { id = decodeURIComponent(m[1]); } catch {}
+    if (byId.has(id) || DATA.archivedRoutes?.[id]) return;
+    const mapped = resolveRetiredKnowledgeRoute(id);
+    if (mapped && byId.has(mapped)) a.setAttribute('href', '#/e/' + encodeURIComponent(mapped));
+  });
+  const prog = getKbProg();
+  root.querySelectorAll('[data-kb-badge]').forEach((badge) => {
+    const s = Number(prog[badge.getAttribute('data-kb-badge')] || 0);
+    if (s === 2) { badge.textContent = '已掌握'; badge.className = 'kb-board-badge s2'; badge.hidden = false; }
+    else if (s === 1) { badge.textContent = '模糊'; badge.className = 'kb-board-badge s1'; badge.hidden = false; }
+    else { badge.textContent = ''; badge.hidden = true; }
+  });
+  const detailPage = root.querySelector('.kb-detail-page');
+  if (!detailPage) return;
+  const reciteOn = Boolean(store.get('iv8-kb-recite', false));
+  detailPage.classList.toggle('kb-recite-on', reciteOn);
+  const reciteBtn = detailPage.querySelector('[data-kb-recite]');
+  if (reciteBtn) {
+    reciteBtn.classList.toggle('on', reciteOn);
+    reciteBtn.setAttribute('aria-pressed', reciteOn ? 'true' : 'false');
+    reciteBtn.textContent = reciteOn ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
+  }
+  detailPage.querySelectorAll('.kb-detail-card[data-kb-key]').forEach((card) => {
+    const key = card.getAttribute('data-kb-key');
+    const s = Number(prog[key] || 0);
+    card.setAttribute('data-kb-status', String(s));
+    card.querySelectorAll('[data-kb-mark]').forEach((b) => b.classList.toggle('on', Number(b.getAttribute('data-kb-mark')) === s));
+  });
+  updateKbDetailStat(detailPage, prog);
+  applyKbFilters(detailPage);
+}
 document.addEventListener('click', (ev) => {
+  const markBtn = ev.target.closest('[data-kb-mark]');
+  if (markBtn) {
+    const card = markBtn.closest('.kb-detail-card[data-kb-key]');
+    const page = markBtn.closest('.kb-detail-page');
+    if (!card || !page) return;
+    const key = card.getAttribute('data-kb-key');
+    const s = Number(markBtn.getAttribute('data-kb-mark') || 0);
+    const prog = setKbProgStatus(key, s);
+    card.setAttribute('data-kb-status', String(s));
+    card.querySelectorAll('[data-kb-mark]').forEach((b) => b.classList.toggle('on', b === markBtn));
+    updateKbDetailStat(page, prog);
+    applyKbFilters(page);
+    if (s === 2 && typeof toast === 'function') toast('已标记为掌握');
+    return;
+  }
+  const revealBtn = ev.target.closest('[data-kb-reveal]');
+  if (revealBtn) {
+    const card = revealBtn.closest('.kb-detail-card');
+    if (card) card.classList.add('kb-revealed');
+    return;
+  }
+  const reciteBtn = ev.target.closest('[data-kb-recite]');
+  if (reciteBtn) {
+    const page = reciteBtn.closest('.kb-detail-page');
+    if (!page) return;
+    const next = !page.classList.contains('kb-recite-on');
+    page.classList.toggle('kb-recite-on', next);
+    if (next) page.querySelectorAll('.kb-detail-card.kb-revealed').forEach((c) => c.classList.remove('kb-revealed'));
+    store.set('iv8-kb-recite', next);
+    reciteBtn.classList.toggle('on', next);
+    reciteBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+    reciteBtn.textContent = next ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
+    if (typeof toast === 'function') toast(next ? '已开启背诵遮挡：先口述再点卡片展开核对' : '已显示全部答案');
+    return;
+  }
+  const mfilterBtn = ev.target.closest('[data-kb-mfilter]');
+  if (mfilterBtn) {
+    const page = mfilterBtn.closest('.kb-detail-page');
+    if (!page) return;
+    page.querySelectorAll('[data-kb-mfilter]').forEach((b) => b.classList.toggle('on', b === mfilterBtn));
+    applyKbFilters(page);
+    return;
+  }
   const btn = ev.target.closest('[data-kb-type]');
   if (!btn) return;
   const page = btn.closest('.kb-filter-page');
   if (!page) return;
   const type = btn.getAttribute('data-kb-type');
   page.querySelectorAll('.kb-filter-bar button').forEach((item) => item.classList.toggle('on', item === btn));
-  page.querySelectorAll('.kb-filter-item').forEach((item) => { item.hidden = type !== 'all' && item.getAttribute('data-kb-type') !== type; });
+  applyKbFilters(page);
   page.querySelectorAll('.kb-route-tip').forEach((item) => { item.hidden = item.getAttribute('data-kb-route') !== type; });
 });
 
@@ -1744,7 +1921,8 @@ async function runSearch() {
     }
     if (!ok) continue;
     if (r.e.kind === 'algo' && String(r.e.number) === raw) score += 40;
-    if (r.qi == null && r.e.kind !== 'qa') score += 1.5;
+    if (r.qi == null && !r.anchor && r.e.kind !== 'qa') score += 1.5;
+    if (r.anchor) score += 1.2;
     out.push({ r, score });
   }
   out.sort((a, b) => b.score - a.score);
@@ -1755,11 +1933,12 @@ async function runSearch() {
 }
 function plItem(r, i, terms) {
   const e = r.e, m = MOD[e.mod];
-  const isQ = r.qi != null;
-  const title = isQ ? r.title : (e.kind === 'algo' ? e.number + '. ' : '') + e.title;
-  const sub = isQ ? `${learnerLabel('cat', e.cat)} · ${e.title}` : `${KIND_LABEL[e.kind] || ''} · ${learnerLabel('cat', e.cat)}`;
+  const isQ = r.qi != null, isKbCard = Boolean(r.anchor);
+  const title = (isQ || isKbCard) ? r.title : (e.kind === 'algo' ? e.number + '. ' : '') + e.title;
+  const sub = (isQ || isKbCard) ? `${learnerLabel('cat', e.cat)} · ${e.title}` : `${KIND_LABEL[e.kind] || ''} · ${learnerLabel('cat', e.cat)}`;
   const snip = terms.length && r.text ? snippet(learnerSearchText(r), terms) : '';
-  return `<a class="pl-item" data-i="${i}" href="${isQ ? href(e, r.qi) : href(e)}" style="${modColor(e.mod)}"><span class="pl-ic">${m.icon}</span><span><span class="pl-title">${hl(title, terms)}<small>${h(sub)}</small></span>${snip ? `<span class="pl-snip">${snip}</span>` : ''}</span></a>`;
+  const targetHref = isKbCard ? `#/e/${encodeURIComponent(e.id)}/${encodeURIComponent(r.anchor)}` : isQ ? href(e, r.qi) : href(e);
+  return `<a class="pl-item" data-i="${i}" href="${targetHref}" style="${modColor(e.mod)}"><span class="pl-ic">${m.icon}</span><span><span class="pl-title">${hl(title, terms)}<small>${h(sub)}</small></span>${snip ? `<span class="pl-snip">${snip}</span>` : ''}</span></a>`;
 }
 function markSel() {
   const items = $$('#palette-list .pl-item');

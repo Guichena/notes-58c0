@@ -585,6 +585,47 @@ flowchart LR
 > - 合理做读写分离
 > - 对关键业务做主读或延迟感知
 
+### 高频追问补充：RR 幻读复现反例、两阶段提交 XID 崩溃判据与 Doublewrite 双写缓冲
+
+> 💡 **Q：InnoDB 的可重复读（RR）真的 100% 解决幻读了吗？请写出一个在 RR 下依然发生幻读的具体 SQL 时序！**
+
+> 📝 **没有 100% 解决**。InnoDB 在 RR 下靠 **MVCC（复用首次快照读生成的 `ReadView`）** 屏蔽纯快照读的幻读，靠 **Next-Key Lock（记录锁 + 间隙锁）** 阻断纯当前读的幻读；但一旦同一事务内**“先快照读、后当前读 `UPDATE`”混用**，隐藏列 `DB_TRX_ID` 被当前事务改写，就会穿透 `ReadView` 产生幻读：
+
+```sql
+-- 表 t(id PRIMARY KEY, name VARCHAR(32)) 初始只有 id=1 一行，隔离级别为 REPEATABLE READ
+-- 时刻 1：事务 T1 开启并做第一次普通快照读，生成并锁定整个事务周期复用的 ReadView
+BEGIN;
+SELECT * FROM t WHERE id = 5; -- 返回空集（0 rows）
+
+-- 时刻 2：另一事务 T2 插入 id=5 并立即提交（T1 刚才只是快照读，未加任何 Gap Lock，因此 T2 插入不阻塞）
+BEGIN;
+INSERT INTO t(id, name) VALUES (5, 'init');
+COMMIT;
+
+-- 时刻 3：T1 对 id=5 发起 UPDATE —— 注意 UPDATE 是当前读，会读取最新版本并把该行的 DB_TRX_ID 改成 T1 自己！
+UPDATE t SET name = 'updated_by_t1' WHERE id = 5; -- Query OK, 1 row affected!
+
+-- 时刻 4：T1 再次执行与时刻 1 完全相同的普通快照读
+SELECT * FROM t WHERE id = 5;
+-- 竟然查出了 (5, 'updated_by_t1')！因为可见性规则第一条就是 trx_id == creator_trx_id 对自己可见，幻读复现！
+COMMIT;
+```
+
+> 📝 **防幻读工程铁律**：若事务后续需要根据读取结果做写入判断，**第一条查询就必须显式使用当前读（`SELECT ... FOR UPDATE` 或 `LOCK IN SHARE MODE`）** 提前锁住目标记录及间隙，切忌先普通 `SELECT` 判空再更新。此外，互联网大厂高并发交易库常改为 **`READ COMMITTED + binlog_format=ROW`**：关闭绝大多数 Gap Lock 消除间隙锁交叉死锁，并激活半一致读（Semi-consistent read，提前释放不满足条件行的锁）。
+
+> 💡 **Q：Redo Log、Undo Log、Binlog 在崩溃恢复时到底怎么靠两阶段提交（2PC）保证主从绝对一致？为什么还要有 Doublewrite Buffer？**
+
+| 崩溃发生时刻 | Redo Log 状态 | Binlog 状态 | 重启恢复裁决动作（按内部事务 `XID` 核对） | 主从一致性结果 |
+| :--- | :--- | :--- | :--- | :--- |
+| 写入 Redo `prepare` 前崩溃 | 无记录 / 未完成 | 未写入 | 无需提交，Undo 回滚未完成修改 | 主库无、从库无（一致） |
+| Redo `prepare` 落盘后、写 Binlog 前崩溃 | `prepare`（含 `XID`） | **无该 `XID` 或残缺** | 扫描 Binlog 未找到完整 `XID` → **执行 Undo 回滚** | 主库回滚、从库未收到 Binlog（一致） |
+| Binlog 落盘后、Redo 写 `commit` 标记前崩溃 | `prepare`（含 `XID`） | **已有完整 `XID` 事务** | 扫描 Binlog 确认 `XID` 完整落盘 → **自动补提交事务** | 主库提交、从库亦重放该 Binlog（一致） |
+| Redo `commit` 落盘后 | `commit` | 完整 | 直接认定已提交 | 主从均已提交（一致） |
+
+> 📝 **两个必答底层追问**：
+> 1. **双 `1` 配置下性能为什么没崩（组提交 Group Commit）**：开启 `innodb_flush_log_at_trx_commit=1` 与 `sync_binlog=1` 后，MySQL 将提交拆成 `FLUSH → SYNC → COMMIT` 三个队列，由队列 Leader 线程把同一时刻到达的几十个并发事务的 Binlog / Redo `fsync` 合并为单次磁盘刷盘，摊薄 IOPS 成本。
+> 2. **为什么有了 Redo Log 还需要 Doublewrite Buffer（双写缓冲）**：InnoDB 数据页是 `16KB`，而 Linux 文件系统页与磁盘扇区原子写通常是 `4KB`，刷脏页中途掉电会产生只写了前 `4KB` 或 `8KB` 的**残损页（Torn Page）**。由于 Redo Log 记录的是**生理日志**（“对第 N 号页偏移量 M 处做某某逻辑修改”，并非整页镜像），面对残损旧页根本无法正确重放！因此刷脏前先将完整 `16KB` 页顺序写入系统表空间的 Doublewrite Buffer 落盘，再异步离散写入 `.ibd` 数据文件；崩溃恢复时若校验和发现数据页损坏，先从双写缓冲拷回好页，再重放 Redo Log。
+
 ---
 
 ## 来源档案（原始文件，仅供溯源）

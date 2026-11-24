@@ -743,7 +743,7 @@ function boardHtml(exam, track) {
     const p = it.point;
     const rank = String(idx + 1).padStart(2, '0');
     const twin = p.target.kind === 'enriched' ? `<a class="ab-twin" href="${pointHref(p)}">讲义 →</a>` : '';
-    return `<li class="ab-row kb-board-row kb-filter-item${idx < 10 ? ' ab-top' : ''}" data-kb-type="${esc(it.bucket)}"><a class="kb-board-hit" href="${detailPointHref(p)}"><span class="ab-rank">${rank}</span><span class="ab-main"><span class="kb-btitle-row"><span class="ab-title">${esc(p.title)}</span><span class="ab-chip">${esc(p.topic)}</span></span><span class="kb-bdesc">${esc(it.conclusion)}</span></span></a>${twin}</li>`;
+    return `<li class="ab-row kb-board-row kb-filter-item${idx < 10 ? ' ab-top' : ''}" data-kb-type="${esc(it.bucket)}" data-kb-key="${p.anchor}"><a class="kb-board-hit" href="${detailPointHref(p)}"><span class="ab-rank">${rank}</span><span class="ab-main"><span class="kb-btitle-row"><span class="ab-title">${esc(p.title)}</span><span class="ab-chip">${esc(p.topic)}</span><span class="kb-board-badge" data-kb-badge="${p.anchor}" hidden></span></span><span class="kb-bdesc">${esc(it.conclusion)}</span></span></a>${twin}</li>`;
   }).join('')}</ol>`;
   const note = track === 'backend'
     ? '按真实面试高频度从前到后排好，不标具体次数；算法与数据结构手撕已独立归入《手撕算法原题榜》。点任意考点直达完整解析卡片，需要看全量细分考点可点上方全量详解。'
@@ -756,6 +756,7 @@ function detailHtml(exam, track) {
   const backHref = track === 'backend' ? '#/e/interview-map' : '#/e/kb-agent-board';
   const backText = track === 'backend' ? '← 返回传统后端高频榜' : '← 返回 AI Agent 高频榜';
   const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 保留完整原理、参数边界、连环追问与易错点</span></div>`;
+  const studyBar = `<div class="kb-study-bar"><div class="kb-mfilter-group" role="group" aria-label="掌握状态筛选"><span class="kb-study-label">掌握筛选</span><button type="button" class="on" data-kb-mfilter="all">全部</button><button type="button" data-kb-mfilter="0">未学</button><button type="button" data-kb-mfilter="1">模糊</button><button type="button" data-kb-mfilter="2">已掌握</button></div><div class="kb-study-right"><span class="kb-mastery-stat" data-kb-stat data-kb-total="${allPoints.length}">掌握 0 · 模糊 0 · 未学 ${allPoints.length}</span><button type="button" class="kb-recite-btn" data-kb-recite aria-pressed="false">背诵自测：遮挡答案</button></div></div>`;
   const filters = `<div class="ab-filters kb-filter-bar"><button type="button" class="on" data-kb-type="all">全部 <b>${allPoints.length}</b></button>${buckets.map((b) => {
     const n = allPoints.filter((p) => pointBucket(p) === b).length;
     return `<button type="button" data-kb-type="${esc(b)}">${esc(b)} <b>${n}</b></button>`;
@@ -770,11 +771,66 @@ function detailHtml(exam, track) {
     const introHtml = intro ? `<div class="kb-group-intro">${renderInlineMd(intro)}</div>` : '';
     const cards = g.points.map((p) => {
       const lec = p.target.kind === 'enriched' ? `<a class="kb-lec-link" href="${pointHref(p)}">对应讲义 →</a>` : '';
-      return `<article class="kb-detail-card" id="${p.anchor}"><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3>${lec}</div><p class="exam-point-summary">${esc(p.summary)}</p>${renderExamPointBody(p, p.anchor)}</article>`;
+      const marks = `<div class="kb-mark-group" data-kb-mark-group="${p.anchor}"><button type="button" data-kb-mark="0" class="on">未学</button><button type="button" data-kb-mark="1">模糊</button><button type="button" data-kb-mark="2">掌握</button></div>`;
+      const reveal = `<button type="button" class="kb-reveal-bar" data-kb-reveal>先在脑中口述核心结论与连环追问 · 点击展开核对答案</button>`;
+      return `<article class="kb-detail-card" id="${p.anchor}" data-kb-key="${p.anchor}"><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3><div class="kb-dcard-acts">${marks}${lec}</div></div>${reveal}<p class="exam-point-summary">${esc(p.summary)}</p>${renderExamPointBody(p, p.anchor)}</article>`;
     }).join('');
     return `<section class="kb-dgroup kb-filter-item" data-kb-type="${esc(bucket)}"><h2 class="md-h md-h2">${esc(g.title)}</h2>${introHtml}${cards}</section>`;
   })).join('');
-  return `<div class="kb-detail-page kb-filter-page">${head}${filters}${body}</div>`;
+  return `<div class="kb-detail-page kb-filter-page">${head}${studyBar}${filters}${body}</div>`;
+}
+
+export function resolveRetiredKnowledgeRoute(id) {
+  const raw = String(id || '').trim();
+  if (!raw) return null;
+  const exact = {
+    'ai-': 'kb-agent-board',
+    'bg-': 'interview-map',
+    'ai-agent-1': 'kb-agent',
+    'ai-agent-3': 'kb-agent',
+    'ai-agent-4': 'kb-agent',
+    'ai-agent-5': 'kb-multiagent',
+    'ai-agent-6': 'kb-aicoding',
+    'ai-agent-7': 'kb-runtime',
+    'ai-agent-8': 'kb-security',
+    'ai-agent-9': 'kb-eval',
+    'doc-17': 'kb-multiagent',
+    'own-es-reading-guide': 'kb-mq',
+    'own-os-containers': 'kb-distributed',
+    'own-practice-analysis-artifact-gates': 'new-systems-billion-row-analysis-agent'
+  }[raw];
+  if (exact) return exact;
+  if (/^(?:ai-rag-|own-rag-)/.test(raw)) return 'kb-rag';
+  if (/^(?:bg-elasticsearch-|bg-kafka-|bg-rabbitmq-|bg-rocketmq-|own-mq-)/.test(raw)) return 'kb-mq';
+  if (/^(?:bg-redis-|own-redis-)/.test(raw)) return 'kb-redis';
+  if (/^own-mysql-/.test(raw)) return 'kb-mysql';
+  if (/^own-network-/.test(raw)) return 'kb-network';
+  if (/^own-spring-/.test(raw)) return 'kb-spring';
+  if (/^own-java-/.test(raw)) return 'kb-javase';
+  if (/^own-juc-/.test(raw)) return 'kb-juc';
+  if (/^(?:own-jvm-|q-own-jvm-)/.test(raw)) return 'kb-jvm';
+  if (/^own-os-/.test(raw)) return 'kb-os';
+  if (/^own-distributed-/.test(raw)) return 'kb-distributed';
+  if (/^own-memory-/.test(raw)) return 'kb-memory';
+  if (/^own-runtime-/.test(raw)) return 'kb-runtime';
+  if (/^own-tools-/.test(raw)) return 'kb-tools';
+  if (/^own-theory-/.test(raw)) return 'kb-llm';
+  if (/^ai-/.test(raw)) return 'kb-agent';
+  if (/^bg-/.test(raw)) return 'interview-map';
+  return null;
+}
+
+export function remapRetiredArchivedRoutes(archivedRoutes, liveIds) {
+  const next = {};
+  for (const [id, info] of Object.entries(archivedRoutes || {})) {
+    if (info && liveIds.has(info.ownerId)) {
+      next[id] = info;
+      continue;
+    }
+    const fallback = resolveRetiredKnowledgeRoute(id) || resolveRetiredKnowledgeRoute(info?.ownerId) || 'interview-map';
+    next[id] = { ownerId: liveIds.has(fallback) ? fallback : 'interview-map', mod: 'knowledge' };
+  }
+  return next;
 }
 function routeHtml(exam) {
   const find = (needle) => {

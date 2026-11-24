@@ -82,8 +82,16 @@ export async function mergeDesignLectures(entries, dir) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
   const added = [];
   const missingTargets = [];
+  const fileRoutes = new Map(LECTURES.map((x) => [x.file, x.mode === 'merge' ? x.target : x.id]));
+  const rewriteLectureLinks = (raw) => String(raw)
+    .replace(/\[([^\]]+)\]\(\.\.\/参考文献\.md\)/g, '**$1**')
+    .replace(/\[([^\]]+)\]\(([^)\s]+\.md)\)/g, (full, label, target) => {
+      const clean = target.replace(/^\.\//, '');
+      const route = fileRoutes.get(clean);
+      return route ? `[${label}](#/e/${route})` : full;
+    });
   for (const item of LECTURES) {
-    const markdown = await readFile(path.join(dir, item.file), 'utf8');
+    const markdown = rewriteLectureLinks(await readFile(path.join(dir, item.file), 'utf8'));
     const {html, toc} = mdToSiteHtml(markdown, {idPrefix: item.id});
     if (item.mode === 'merge') {
       const target = byId.get(item.target);

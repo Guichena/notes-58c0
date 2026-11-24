@@ -18,7 +18,7 @@ import {attachCodeTopSprint, attachMySeen, projectAlgoFocusRuntime} from './algo
 import {attachHandwriteBoard, projectHandwriteBoardRuntime} from './algo-handwrite-board.mjs';
 import {projectDesignRuntime} from './design-runtime.mjs';
 import {mergeDesignLectures} from './design-lectures.mjs';
-import {mergeKnowledgeLibrary} from './knowledge-library.mjs';
+import {mergeKnowledgeLibrary, remapRetiredArchivedRoutes} from './knowledge-library.mjs';
 import {projectKnowledgeRuntime} from './knowledge-runtime.mjs';
 import {projectAlgoProblemPages} from './algo-problem-pages.mjs';
 import {projectAlgorithmCorrections} from './algorithm-corrections.mjs';
@@ -183,7 +183,8 @@ for(const entry of liveEntries) {
  compiledChunks.get(chunk).entries.push(entry);
 }
 const fields = ['id','kind','mod','part','cat','title','number','progressKey'];
-const catalog = {...meta, ...(baselineTest ? {} : {archivedRoutes:reading.archivedRoutes}), entries: liveEntries.map(e => {
+const liveIds = new Set(liveEntries.map((e) => e.id));
+const catalog = {...meta, ...(baselineTest ? {} : {archivedRoutes:remapRetiredArchivedRoutes(reading.archivedRoutes, liveIds)}), entries: liveEntries.map(e => {
   const record = Object.fromEntries(fields.filter(k=>Object.hasOwn(e,k)).map(k=>[k,e[k]]));
   if(e.kind==='qa'&&e.items) record.items=e.items.map(it=>({mk:it.mk,...(it.id?{id:it.id}:{})}));
   record._chunk=entriesById.get(e.id).chunk;

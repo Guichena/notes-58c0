@@ -101,7 +101,8 @@
   2. 持久性 = redo log（WAL）：改页时先写 redo（顺序写、小 IO）再改 Buffer Pool 里的脏页，事务提交时 `innodb_flush_log_at_trx_commit=1` 保证 redo 落盘；崩溃后用 redo 重放，避免"改了内存没刷盘"丢数据。
   3. 隔离性 = 锁 + MVCC：写写靠行锁/间隙锁，读写靠 MVCC 快照读（不加锁）。
   4. 一致性 = 以上三者 + 数据库约束（主键/唯一/外键/CHECK）+ 业务正确性；这也是唯一"不能只靠数据库"的一项。
-  5. InnoDB vs MyISAM：事务/行锁/MVCC/崩溃恢复/外键 InnoDB 全有，MyISAM 只有表锁、无事务、索引与数据分离；所以 MyISAM 只适合只读或可重建的日志类数据（5.5 起 InnoDB 就是默认引擎）。
+  5. Doublewrite Buffer（双写缓冲）：InnoDB 页 16KB 而 OS/磁盘原子写常为 4KB，刷脏页中途断电会出现"部分写失效（Torn Page）"，此时物理页已损坏，直接重放 redo（生理日志：物理定位页 + 页内逻辑修改）也会失败；因此刷脏前先把完整 16KB 页顺序写入共享表空间的 Doublewrite Buffer 落盘，再离散写数据文件，崩溃时先用双写副本修复损坏页再重放 redo。
+  6. InnoDB vs MyISAM：事务/行锁/MVCC/崩溃恢复/外键 InnoDB 全有，MyISAM 只有表锁、无事务、索引与数据分离；所以 MyISAM 只适合只读或可重建的日志类数据（5.5 起 InnoDB 就是默认引擎）。
 - 高频追问：redo log 满了怎么办 → 它是固定大小的循环写（`innodb_log_file_size`，总容量建议能扛 1~2 小时写入），`write pos` 追上 `checkpoint` 时**必须**停下来推进 checkpoint（即刷脏页），表现为业务写入卡顿/报 `ERROR 1206`，所以要监控 `Log sequence number - Last checkpoint` 的差值。追问"为什么 redo 比直接刷盘快" → 顺序追加 vs 随机写 16KB 页、且可以把多次修改合并成一次刷页（写放大从 N 降到 1）。
 - 易错点：把"一致性"说成靠 undo/redo（它靠约束 + 业务）；说 MyISAM 支持行锁；漏掉 Buffer Pool 这一层导致"redo 写盘=数据已落盘"的误解（数据页仍是脏页）。
 
@@ -145,8 +146,8 @@
   1. 三种行锁：记录锁（Record Lock，锁索引上的一条记录）、间隙锁（Gap Lock，锁两条记录之间的开区间）、临键锁（Next-Key Lock = 记录锁 + 前面的间隙，左开右闭 `(a,b]`）。RR 下加锁的基本单位是临键锁。
   2. 退化规则：**唯一索引等值命中**时临键锁退化为记录锁（唯一性保证只有一行，无需锁间隙）；**非唯一索引或范围查询**则锁住扫描到的临键区间；**未命中任何记录**时退化为间隙锁（锁住该值所在的间隙）。
   3. 间隙锁的特性：**间隙锁之间互不冲突**（两个事务可以同时持有同一个间隙锁，因为目的只是阻止插入），但**插入意向锁会与间隙锁冲突**——这是"间隙锁不互斥却导致死锁/卡死"的根源。RC 级别下间隙锁几乎不生效（只锁记录），所以并发插入能力更强。
-  4. RR 下仍可能幻读的两条路径：①先快照读、后当前读（`SELECT` 看不到新行，但 `UPDATE`/`SELECT FOR UPDATE` 会看到）；②事务开始时未加锁，另一事务插入并提交后，本事务用当前读。所以严格答案：**MVCC 解决快照读幻读，临键锁解决当前读幻读，两者合起来才"基本"消除**。
-- 高频追问：为什么要用 RR 而不是 RC 当默认 → binlog statement 格式的一致性（见⑤）。追问"线上 RR 下间隙锁导致插入卡死怎么排查" → 看 `performance_schema.data_locks`（8.0）/`information_schema.innodb_locks`（5.7），如果有 `LOCK_MODE: X,GAP` 就是间隙锁；治理是把大范围 `UPDATE ... WHERE range` 拆小批、或降到 RC。
+  4. RR 下仍会出现幻读的经典反例（必背 SQL 时序）：①**先快照读、后当前读 `UPDATE`**：T1 `SELECT * FROM t WHERE id=5`（空集，建 ReadView）→ T2 `INSERT (5, 'x')` 并 `COMMIT` → T1 执行 `UPDATE t SET name='y' WHERE id=5`（`UPDATE` 是当前读，命中 T2 新行并将其隐藏列 `DB_TRX_ID` 改写为 T1 自己的 `creator_trx_id`）→ T1 再次普通 `SELECT` 时因 `trx_id == creator_trx_id` 突然看见了 `(5, 'y')`，产生幻读；②事务中途才首次执行 `SELECT ... FOR UPDATE`，只能锁住加锁时刻之后的插入，拦不住加锁前已提交的新行。
+- 高频追问：为什么要用 RR 而不是 RC 当默认 → binlog statement 格式的一致性（见⑤）；而大厂常用 `RC + binlog_format=ROW` 是因为关闭了绝大部分 Gap Lock 并开启半一致读（Semi-consistent read，不匹配行提前释放锁），显著降低高并发死锁率。追问"线上 RR 下间隙锁导致插入卡死怎么排查" → 看 `performance_schema.data_locks`（8.0）/`information_schema.innodb_locks`（5.7），如果有 `LOCK_MODE: X,GAP` 就是间隙锁；治理是把大范围 `UPDATE ... WHERE range` 拆小批、或降到 RC。
 - 易错点：说"间隙锁互斥"（间隙锁之间兼容，插入意向锁才互斥）；说 RR 彻底解决幻读；把临键锁说成"记录锁+后间隙"（是**前**间隙，左开右闭）。
 
 **9. 按条件设计索引（WHERE/ORDER BY/范围/JOIN）**（★★）
@@ -223,8 +224,9 @@
   1. redo log：InnoDB 层、物理、**固定大小循环写**（`innodb_log_file_size` 单文件建议 1~2GB，总容量扛 1~2 小时写入）、顺序追加、用于崩溃恢复（保证持久性）。`innodb_flush_log_at_trx_commit`：1=每次提交刷盘（不丢）、0=每秒刷（宕机丢 1s）、2=写 OS 缓存（宕机丢、OS 崩丢）。
   2. undo log：InnoDB 层、逻辑、记录反向操作，用于**回滚（原子性）+ MVCC 版本链**；存在 undo 表空间，由 purge 线程回收，长事务会撑大它。
   3. binlog：Server 层、逻辑、**追加写不覆盖**、格式 `ROW`（推荐，记录行变更，主从一致性强）/`STATEMENT`（记录 SQL，函数与 `NOW()` 会导致主从不一致）/`MIXED`；用于主从复制与按时间点恢复（`mysqlbinlog`）。`sync_binlog=1` 保证每次提交刷盘。
-  4. Canal：伪装成 MySQL 从库，向主库发 `dump` 请求拿 binlog，解析成行变更事件投递到 MQ，用于缓存失效、异构同步（ES/数仓）、双写一致性兜底。可靠性要点：位点（`binlog file + position` 或 GTID）持久化 + 消费幂等 + 顺序消费（同主键哈希到同一分区）。
-- 高频追问：为什么需要 redo 而不是直接刷数据页 → ①随机写 16KB 页 vs 顺序写 redo（顺序 IO 比随机快 1~2 个数量级）；②一次事务改多页可合并成一次刷页，减少写放大；③崩溃时脏页丢失可用 redo 重放。追问"回滚用哪个日志" → undo；"主从同步用哪个" → binlog。
+  4. 两阶段提交（2PC）崩溃恢复精确判据（以内部事务 `XID` 对账）：① redo 已处于 `commit` 状态 → 直接认定提交；② redo 处于 `prepare` 状态 → 去 binlog 查找完整匹配的 `XID`：若 binlog 存在且校验完整则补提交事务（保证主从一致），若 binlog 不存在或截断则用 undo log 回滚事务。高并发下通过组提交（Group Commit：`FLUSH → SYNC → COMMIT` 三阶段队列）将并发事务的 `fsync` 合并为一次落盘，解决双 `1`（`innodb_flush_log_at_trx_commit=1` + `sync_binlog=1`）下的磁盘 IOPS 瓶颈。
+  5. Canal：伪装成 MySQL 从库，向主库发 `dump` 请求拿 binlog，解析成行变更事件投递到 MQ，用于缓存失效、异构同步（ES/数仓）、双写一致性兜底。可靠性要点：位点（`binlog file + position` 或 GTID）持久化 + 消费幂等 + 顺序消费（同主键哈希到同一分区）。
+- 高频追问：为什么需要 redo 而不是直接刷数据页 → ①随机写 16KB 页 vs 顺序写 redo（顺序 IO 比随机快 1~2 个数量级）；②一次事务改多页可合并成一次刷页，减少写放大；③崩溃时脏页丢失可用 redo 重放。追问"如果不做 2PC 先写其中一个会怎样" → 先写 redo 后写 binlog 崩溃：主库恢复新值、从库缺 binlog 仍为旧值；先写 binlog 后写 redo 崩溃：主库回滚为旧值、从库重放 binlog 变新值，两者都会造成主从永久数据分叉。
 - 易错点：说 redo 能恢复 binlog 丢失的数据（redo 只保证本机页一致，跨库/跨实例靠 binlog）；把 undo 说成物理日志；说 binlog 是 InnoDB 独有（MyISAM 也有 binlog，只是没有 redo）。
 
 **16. 主键设计：自增 vs UUID**（★）
@@ -315,7 +317,7 @@
   1. 加锁必须一条命令：`SET lock:order:123 <uuid> NX PX 30000`（Redis 2.6.12 起 `SET` 支持 `NX/EX/PX`），**不能**写成 `SETNX` + `EXPIRE` 两条（中间宕机就死锁）。
   2. value 必须是唯一标识（UUID + 线程 ID），解锁用 Lua 保证"比对 + 删除"原子：`if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end`；否则 A 的锁过期后 B 拿到锁，A 执行完把 B 的锁删了。
   3. TTL 与业务时长矛盾：业务可能超时 → 要么预估上限给足 TTL，要么后台线程续期（看门狗），要么把"锁"降级为"幂等 + 状态机"。
-  4. 已知短板：主从异步复制，主节点写入锁后未同步就宕机、从库升主 → 两个客户端同时持锁；单点/网络分区下的"锁失效但业务仍在跑"只能靠 `fencing token`（单调递增版本号，写存储时校验）真正防住。
+  4. 主从切换丢锁与 Fencing Token 终极兜底：Redis 主从是异步复制，主节点刚写入锁尚未同步即宕机、从库升主会导致两个客户端同时持锁；即便上 Redlock，若客户端 A 发生长 Full GC STW 暂停导致锁超时释放、醒来后仍继续写库，单纯靠锁层依然挡不住并发覆盖。工程终局是在锁之上叠加 **Fencing Token（防护令牌）** 或数据库乐观锁版本号：每次获锁分配全局单调递增 token，下游 MySQL 执行 `UPDATE t SET val=?, last_token=34 WHERE id=? AND last_token < 34`，由存储层直接拒绝携带旧 token（如 33）的迟到写入。
   5. 实现层面：`RedisTemplate.opsForValue().setIfAbsent(key, val, 30, SECONDS)` + AOP 自定义注解 `@DistributedLock(key="#orderId")` 是最常见的落地方式；锁粒度按业务键（订单/商品/用户）划分，全局锁冲突就改分片锁（`lock:{biz}:{hash%N}`）。
 - 高频追问：业务执行超过锁过期时间怎么办 → 三选一——① 看门狗自动续期（Redisson，默认 30s/每 10s 续）；② 业务侧把长任务拆小、每段重新抢锁；③ 不靠锁保正确性，改用状态机 CAS（`update ... where status='INIT'`）+ 幂等，锁只做"减少并发"的优化。
 - 高频追问：集群主从切换时锁为什么会丢 → 复制是异步的，锁写入主节点后还没同步到从节点主就挂了，哨兵/Cluster 提升从节点后锁"凭空消失"；解法是 Redlock（多主多数派）或换 ZooKeeper/etcd（Raft 强一致），但工程上更常见的是接受"锁可能失效"，用幂等与 fencing 兜底。
@@ -455,7 +457,7 @@
 - 必答要点：
   1. 路由：`CRC16(key) % 16384` → 槽 → 节点；客户端缓存槽映射表，命中直连；若打到错节点返回 `MOVED <slot> <ip:port>`（永久重定向，客户端更新映射）；迁移中返回 `ASK`（临时重定向，客户端只本次加 `ASKING` 转发，不更新映射）。
   2. 为什么是 16384 而不是 65536：槽位图用 bitmap 表示，16384 bit = 2KB，节点间 Gossip 心跳要携带槽位图，65536 会到 8KB 浪费带宽；且集群主节点数实际远小于 16384（作者 antirez 的解释）。
-  3. 为什么用槽而不用一致性哈希：槽让"迁移"变成以槽为单位的原子操作（`CLUSTER SETSLOT`），可精确控制数据分布与再平衡，避免一致性哈希的"虚拟节点调参"与级联迁移。
+  3. 一致性哈希 vs 哈希槽对比：传统 `hash(key) % N` 在节点 `N→N+1` 时约 `N/(N+1)` 的缓存集体失效引发雪崩；**一致性哈希**将空间映射为 `0 ~ 2^32-1` 顺时针闭合环，增删节点只影响环上相邻弧段约 **`1/(N+1)`** 的数据，再为每个物理节点引入 **150~200 个虚拟节点（Virtual Nodes）**把负载标准差压到 `<5%` 并把单点下线流量均摊给全集群（Nginx `consistent`、客户端分片常用）；而 Redis Cluster 进一步采用 **16384 固定哈希槽**，解耦"哈希计算"与"槽到节点的显式映射"，让迁移按槽原子调度（`CLUSTER SETSLOT`），无需维护复杂的虚拟节点红黑树。
   4. 迁移流程：`CLUSTER SETSLOT <slot> IMPORTING/MIGRATING` → 逐 key `MIGRATE` → `CLUSTER SETSLOT <slot> NODE <target>`；期间客户端靠 `ASK` 保证可用。
   5. 故障转移：节点间 Gossip 传播拓扑与槽位，`cluster-node-timeout`（默认 15000ms）判下线；主节点被半数以上主节点标记 FAIL → 其从库发起选举（Raft 式，需多数主节点投票）晋升。
   6. 限制：多 key 命令与事务/Lua 要求同槽（用 `{tag}` 强制，如 `{user:1}:cart`），否则 CROSSSLOT；不支持跨槽 `MGET`；`SELECT` 只有 db0。
@@ -564,10 +566,10 @@
 - 本质：String 类型上的位操作，1 bit 表示一个布尔状态，把"用户 ID → 是否签到/已读/在线"压缩到极致。
 - 必答要点：
   1. 命令：`SETBIT key offset 1`、`GETBIT`、`BITCOUNT`（可带 `BYTE|BIT` 区间，7.0 起支持 `BIT` 单位）、`BITOP AND/OR/XOR` 做多日签到合并、`BITPOS`。
-  2. 内存量级：1 亿用户 1 个状态 ≈ 12.5MB（1e8/8）；日活统计用"日期做 key、UID 做 offset"，一年 365 个 key 各 12.5MB —— 因此通常只保留近期或按需归档。
-  3. 稀疏大 ID 的坑（高频追问）：offset 是绝对位置，若 UID 是雪花算法生成的 19 位大数（如 1.8e18），`SETBIT` 会按 offset 分配内存 → 直接 OOM；解决：UID 映射为自增序号（`INCR` 发号）、按 hash 分桶（`uid % 1024` 决定 key + 商做 offset）、或换 `Roaring Bitmap`（压缩稀疏位图，按 65536 分块 + 容器编码）。
+  2. Bitmap vs Set 定量内存对比（必算账）：以 **1 亿（`10^8`）连续 UID、5000 万日活（50% 稠密度）**为例——`Bitmap` 占用恒为 `10^8 bits / 8 / 1024^2 ≈ 11.92 MB`（按最大 offset 定空间，与 1 人还是 1 亿人活跃无关）；而 Redis `Set` 在元素超 `set-max-intset-entries`（默认 512）后转为 `hashtable`，每个成员需 `dictEntry(24B) + redisObject/SDS(~32B) + 哈希桶指针(8B) ≈ 56~64B`，5000 万活跃需 **`2.6 GB ~ 3.0 GB`**，差距超 **220 倍**！多天连续活跃聚合时，`BITOP AND` 直接做 CPU 64 位寄存器字长按位与（毫秒级），而 `SINTER` 需遍历最小集合逐个哈希查找（O(N·M) 易阻塞单线程）。但若**极度稀疏**（如 1 亿用户中仅 500 人领券），`Set` 仅占约 30KB，远省于 Bitmap 的 11.92MB（约活跃率 `< 0.2%` 时 `Set` 反超）。
+  3. 稀疏大 ID 的坑与 RoaringBitmap：offset 是绝对位置，若 UID 是雪花算法生成的 64 位大整数，`SETBIT` 会直接尝试分配上限 512MB 甚至撑爆内存；工程解法是①映射为紧凑自增 ID、②按 `uid / 1000000` 分桶拆小 key、或③升级 **RoaringBitmap**（按高 16 位分块，低 16 位装入 3 种自适应容器：元素 `≤4096` 用有序 `short[]` `ArrayContainer`、`>4096` 自动转固定 8KB `BitmapContainer`、连续区间用游程编码 `RunContainer`，兼顾稠密与稀疏）。
   4. 落库与一致性：位图数据量大且写频繁，通常"Redis 记增量 + 定时/阈值触发落 DB（按批 upsert）+ 重启后重建"；计数类要防重（幂等 key）。
-- 高频追问：bitmap 相比数据库有什么优势 → 位运算与 `BITCOUNT` 在服务端完成，O(n/64) 级聚合、无需拉全量数据到应用；存储密度高（1 bit vs 1 行）；但只适合"布尔/计数"语义，无法做多维查询。
+- 高频追问：bitmap 相比 Set 和数据库分别有什么优劣 → 相比 Set 在稠密布尔场景省 200 倍内存且 `BITOP` 位级并行极快，但无法直接 `SMEMBERS` 枚举活跃 UID 列表，且稀疏时浪费空间；相比数据库无需拉全量行回应用，O(n/64) 级聚合，但只适合"布尔/计数"语义，无法做多维查询。
 - 易错点：直接用大 ID 做 offset；把 Bitmap 当独立类型（它是 String 编码）；`BITCOUNT` 全 key 扫描大位图阻塞；忘记 `BITOP` 结果 key 也需要管理 TTL。
 
 **22. Redisson 看门狗与 Redlock**（★）
@@ -971,7 +973,7 @@
   2. put 流程（1.8 源码顺序）：①`hash(key) = h ^ (h >>> 16)`；②表为空先 `resize()`；③`(n-1) & hash` 定位桶，桶空则 CAS/直接放新 Node；④桶头 key 相同（`hash` 相等且 `==` 或 `equals`）则覆盖；⑤是 TreeNode 则走红黑树插入；⑥否则遍历链表尾插，链表长度达到 8 尝试树化（`treeifyBin` 内部再判容量是否 ≥64）；⑦`++size > threshold` 则 `resize()`。
   3. get 流程：`hash` → 定位桶 → 桶头比对 → 树则 `getTreeNode` → 否则遍历链表比对 `hash` 与 `equals`。注意先比 `hash` 再比 `equals`，因为 hash 不等一定不等，能省掉大量 equals 调用。
   4. 关键细节：HashMap 允许 **1 个 null key**（hash 记 0，落在 index 0）与多个 null value；非线程安全；`keySet()/values()/entrySet()` 都是视图，修改会写回原 map；迭代顺序不保证（1.8 也不保证，别拿它当有序容器）。
-- 高频追问：HashMap 如何判断两个对象相等 → 先比 `hash`，相等再 `==` 或 `equals`；所以自定义对象做 key 必须**同时**重写 equals 与 hashCode，否则两个"相等"的对象落在不同桶。追问"HashMap 与 Hashtable/TreeMap 区别" → Hashtable 全表 synchronized 且不允许 null；TreeMap 红黑树按 key 排序、O(logN)、需要 Comparable/Comparator；HashMap 无序、O(1)、允许一个 null key。追问"为什么用红黑树不用别的" → 见第 19 条。
+- 高频追问：为什么树化阈值是 8、退化阈值是 6、且要求数组容量 ≥64 → 源码注释给出在良好哈希下桶长服从 `λ=0.5` 的泊松分布，桶长达到 8 的概率仅 `0.00000006`（千万分之六），纯粹是防御哈希碰撞退化/DoS 的兜底（因为 `TreeNode` 体积约为普通 `Node` 的两倍）；容量 `<64` 时冲突主因是桶太少，直接 `resize()` 比建树更划算；退化设为 6 而非 7 是留出迟滞缓冲带（Hysteresis），防止同一 key 反复增删造成频繁树化与链化抖动。追问"HashMap 如何判断两个对象相等" → 先比 `hash`，相等再 `==` 或 `equals`，自定义 key 必须同时重写 `equals` 与 `hashCode`。
 - 易错点：说"1.8 用头插"（1.8 是尾插，1.7 才是头插）；说"容量可以随便设"（会被 `tableSizeFor` 向上取到 2 的幂）；忘记 null key 只允许一个；把 `size()` 当容量（size 是元素数，capacity 是桶数组长度）。
 - （同组细分）HashMap 扩容机制：0.75 负载因子与高低位拆分：阈值 = 容量×0.75，扩容翻倍后每个节点只需看 `hash & oldCap` 决定留原位还是 +oldCap
 - （同组细分）为什么容量必须是 2 的幂：hash 扰动与 (n-1)&hash：`(n-1) & hash` 等价取模但更快，且让扩容变成"要么不动要么 +oldCap"的零成本 rehash
@@ -1015,8 +1017,8 @@
 **1. Spring Boot 自动装配原理**（★★★）
 　*@EnableAutoConfiguration 把 classpath 上的自动配置类按 @Conditional 筛出来注册成 Bean*
 - 本质：把"手写 @Bean 装配"换成"框架按 classpath 猜测并批量注册"，靠条件注解保证猜错时不生效。
-- 必答要点：①`@SpringBootApplication` = `@SpringBootConfiguration` + `@EnableAutoConfiguration` + `@ComponentScan`，`@EnableAutoConfiguration` 经 `@Import(AutoConfigurationImportSelector)` 触发装配；②装配源文件随版本变：2.7 前读 `META-INF/spring.factories` 的 `EnableAutoConfiguration` 键，2.7+ 改用 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`，3.0 彻底移除前者；③候选类 100+（2.x 约 130 个），真正生效仅 20~30 个——先按 `@ConditionalOnClass`/`@ConditionalOnMissingBean`/`@ConditionalOnProperty` 过滤，再按 `@AutoConfigureOrder`、`@AutoConfigureAfter/Before` 排序，由 `ConfigurationClassPostProcessor` 解析成 BeanDefinition。
-- 高频追问：自动装配和 SPI 什么关系 → 本质是 Spring 版 SPI，`imports`/`spring.factories` 是扩展点声明文件；starter 只做依赖聚合，逻辑在 `xxx-autoconfigure` 里，`@ConditionalOnMissingBean` 保证用户自定义 Bean 优先，这就是"零代码改默认行为"的机制。
+- 必答要点：①`@SpringBootApplication` = `@SpringBootConfiguration` + `@EnableAutoConfiguration` + `@ComponentScan`，`@EnableAutoConfiguration` 经 `@Import(AutoConfigurationImportSelector)` 触发装配；②装配源文件随版本变：2.7 前读 `META-INF/spring.factories` 的 `EnableAutoConfiguration` 键，2.7+ 改用 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`，3.0 彻底移除前者；③为什么 `@ConditionalOnMissingBean` 不会抢在用户自定义 Bean 前面误生效：`AutoConfigurationImportSelector` 实现了 **`DeferredImportSelector`**，Spring 的 `ConfigurationClassParser` 会在所有业务 `@ComponentScan` 与用户显式 `@Configuration` 全部解析注册完之后，最后才执行 `DeferredImportSelector.Group#process`；同时借助编译期生成的 `META-INF/spring-autoconfigure-metadata.properties` + ASM 字节码扫描在不加载 `.class` 的前提下极速筛掉不满足 `@ConditionalOnClass` 的百余个候选类。
+- 高频追问：自动装配和 JDK SPI 什么关系 → 本质是按条件裁剪的增强版 SPI：JDK `ServiceLoader` 会把 `META-INF/services` 里的全部实现无差别实例化，而 Spring Boot 的 `imports` 只做声明，配合 ASM 元数据预筛与 `@ConditionalOnMissingBean` 实现按需装配、用户自定义 Bean 零侵入覆盖默认配置。
 - 易错点：把自动装配答成"注解扫描"——扫描（`@ComponentScan` 扫当前包及子包）与自动装配（读 classpath 元数据文件）是两条独立路径。
 - （同组细分）Spring Boot 启动流程与启动类三大注解：SpringApplication.run 十一步 refresh，启动类必须放根包才能扫到全部组件
 - （同组细分）Spring 与 Spring Boot 的定位差异：Spring 是 IoC+AOP 内核，Boot 是它的约定优于配置的脚手架
@@ -1520,7 +1522,8 @@
   2. 队列溢出表现：半连接队列满 → 客户端重传 SYN、表现为建连慢；全连接队列（accept queue）满 → 服务端默认丢弃 ACK，客户端看到连接建立但请求超时，`ss -lnt` 的 Send-Q 即 backlog 实际排队数。
   3. 长连接治理：HTTP/1.1 默认 Keep-Alive（`Connection: keep-alive` + `keepalive_timeout` 75s 量级），WebSocket/TCP 长连接必须做应用层心跳（如 30s 一次 ping，3 次失败判死），因为 TCP Keepalive 默认 7200s 才探测，管不了业务存活；心跳还能顺带刷新 NAT/LB 的空闲超时（常见 60s~900s）。
   4. 大量长连接的代价：每连接占 fd + 内核 socket 缓冲区（读+写各几十 KB），10 万连接量级就要算内存与 epoll 事件开销，通常靠多实例水平扩，而不是单机堆。
-- 高频追问：连接建立后服务端怎么保活、客户端断开有哪些原因？→ 服务端分层保活：TCP Keepalive 探测链路、应用心跳探测进程、业务层 ack 探测逻辑；断开原因按「客户端主动关闭 / 空闲超时被 LB 或 NAT 踢 / 网络中断 RST / 服务端重启」四类排查。
+  5. 线上出现几千个异常存活 `ESTABLISHED` 连接的标准排查五步 SOP（高频拷打）：① `ss -s` 看全局连接分布（区分 `estab`、`closed`、`timewait`、`synrecv`）；② `ss -tanpo | grep ESTAB` 看缓冲队列与定时器——若 **`Recv-Q` 持续 > 0** 说明报文已到内核但 Java 应用线程卡死（Full GC / 死锁 / 业务线程池耗尽）没来得及 `read`；若 **`Send-Q` 持续 > 0 且 timer 为 `on/retrans`** 说明网络丢包或对端窗口为 0（`persist` 零窗口探测）；若 **`Recv-Q=0` 且 `Send-Q=0`** 则是空闲连接池或半开僵尸死连接；③ 按对端 IP 聚合 `ss -tn state established | awk 'NR>1{split($4,a,":");print a[1]}' | sort | uniq -c | sort -nr | head` 分清是上游网关突增还是下游 Redis/MySQL/HTTP 连接泄漏；④ `lsof -p <pid>` 与 `ls /proc/<pid>/fd | wc -l` 比对 `cat /proc/<pid>/limits` 的 `Max open files`；⑤ `jstack <pid>` 查线程栈——大量阻塞在 `SocketInputStream.socketRead0` 多为 HttpClient/Feign **未设 `readTimeout`** 或连接池未归还（如 `CloseableHttpResponse` 未进 `try-with-resources`），空闲死连接多为 NAT/SLB 空闲静默摘除 conntrack 表项而未发 RST，或 HikariCP `maxLifetime` 大于 MySQL `wait_timeout`（应设比 DB 短 30~60s）。
+- 高频追问：连接建立后服务端怎么保活、客户端突然拔网线/断电服务端多久能感知？→ 无数据发送且未开应用心跳时，默认 TCP Keepalive 要等 `tcp_keepalive_time=7200s + 75s×9 ≈ 2 小时 11 分钟`才断开；若有数据发送则触发指数退避重传，`tcp_retries2=15` 约 **13~15 分钟**才报 `ETIMEDOUT`；因此生产长连接必须靠 30s 级应用层 Ping/Pong 心跳 + `IdleStateHandler` 读写空闲超时主动摘除僵尸连接。
 - 易错点：把 backlog 只当「队列大小」而不区分半连接/全连接；用 TCP Keepalive 代替业务心跳；认为端口范围决定最大连接数（服务端连接数由 fd 与四元组决定，客户端才受本地端口限制）。
 
 **3. 应用层协议与自定义协议设计（ARP/ICMP/MQTT/解析器）**（★★★）
@@ -1572,7 +1575,7 @@
 - 本质：一道用来串起 DNS、TCP、TLS、HTTP、反向代理、后端与浏览器渲染的「总纲题」，答得好不好等于整章掌握度。
 - 必答要点：
   1. 网络段：浏览器缓存/Service Worker → DNS（浏览器缓存→系统 hosts→本地 DNS→根/顶级/权威，迭代查询）→ TCP 三次握手 → TLS 握手 → 发 HTTP 请求（含 Cookie、UA、Accept）→ 可能经 CDN/LB/Nginx 反向代理到后端。
-  2. 服务端段：网关鉴权 → 业务服务 → 缓存/DB → 组装响应，可能流式返回。
+  2. 服务端段（Java 后端面试重点展开）：四层 LVS（DR/FullNAT 模式抗百万并发转发）→ 七层 Nginx（TLS 卸载、限流、`upstream keepalive` 复用长连接）→ API 网关（Spring Cloud Gateway/APISIX 做 JWT 鉴权、染色灰度、Sentinel 限流）→ Spring Boot 内嵌 Tomcat NIO 模型（`Acceptor` `accept` 连接 → 注册至 `Poller` 线程的 `epoll` Selector → 就绪后交由 `Worker` 业务线程池解析 HTTP）→ Servlet `FilterChain` → `DispatcherServlet` → `HandlerMapping` 匹配路由与 `HandlerInterceptor#preHandle` → `HandlerAdapter` 参数解析与 `@Valid` 校验 → Controller/Service（`@Transactional` 代理边界、Redis 多级缓存、HikariCP 连接池执行 SQL）→ Jackson 序列化写出响应。
   3. 浏览器段：解析 HTML 构建 DOM、CSSOM → 遇到 JS 阻塞解析（defer/async）→ 布局 → 绘制 → 合成；图片字体等子资源复用同域名连接（HTTP/1.1 每域名 6 个并发，HTTP/2 单连接多路复用）。
   4. 优化锚点：DNS 预解析/preconnect、CDN 边缘缓存、TLS 1.3 + OCSP stapling、开启 HTTP/2 或 3、压缩与 Brotli、首屏关键资源内联。
 - 高频追问：哪些环节可优化、HTTP/1.0/2.0 会限制并发吗？→ 1.0 默认短连接、每请求一次握手；1.1 每域名 6 条并发连接（浏览器限制）；2.0 单连接承载上百条流，限制从「连接数」变成「流的优先级与流量控制」。
@@ -1649,9 +1652,9 @@
 - 必答要点：
   1. select：`fd_set` 位图，FD_SETSIZE 默认 1024，每次调用把集合从用户态拷进内核并线性扫描，返回后还要自己再扫一遍找就绪 fd → O(n) 拷贝 + O(n) 扫描。
   2. poll：`pollfd` 数组无 1024 上限，但仍需全量拷贝与线性扫描，只是去掉了 fd 数量限制。
-  3. epoll：`epoll_create` 建实例，`epoll_ctl` 把 fd 挂到内核红黑树（O(logN) 增删改），`epoll_wait` 只返回就绪链表（O(就绪数)），支持 LT（水平触发，未读完下次还通知）与 ET（边沿触发，只在状态变化时通知一次，必须循环读到 EAGAIN）。
-  4. ET 要点：必须配非阻塞 fd + 一次性读完；多线程下用 EPOLLONESHOT 防止同一连接被两个线程同时处理；忘了读空会导致「连接饿死」（数据永远留在缓冲区但不再通知）。
-- 高频追问：为什么用红黑树？→ 需要按 fd 快速增删改查且有序遍历，红黑树 O(logN) 且实现稳定；就绪事件用双向链表，避免遍历全部 fd。
+  3. epoll：`epoll_create` 建 `eventpoll` 实例，`epoll_ctl` 把 fd 封装为 `epitem` 挂到内核红黑树 `rbr`（O(logN) 增删改）并注册回调 `ep_poll_callback`，网卡软中断数据就绪时回调将 `epitem` O(1) 挂入双向就绪链表 `rdllist`，`epoll_wait` 仅将就绪项拷回用户态（O(就绪数)）。
+  4. LT（阶跃响应）vs ET（脉冲响应）底层本质：从信号系统看，**LT（水平触发）本质是阶跃/电平响应**——只要内核接收缓冲区非空（高电平），`ep_send_events_proc` 弹出 `epitem` 通知用户后还会将其**重新塞回 `rdllist` 队尾**，下次 `epoll_wait` 继续上报；**ET（边缘触发）本质是脉冲响应**——仅在缓冲区"空→非空"或新报文到达触发 `ep_poll_callback` 边沿跳变时产生一次脉冲通知，弹出 `epitem` 后**绝不重入 `rdllist`**。因此 ET **必须配合非阻塞 `O_NONBLOCK` fd 循环 `read` 直到 `EAGAIN`**，否则残留数据永远失去边沿跳变导致连接假死，若误配阻塞 fd 则最后一次空读会直接挂死整个 Reactor 线程；多线程共享 epoll 时加 `EPOLLONESHOT` 防止同一连接并发串台。
+- 高频追问：为什么用红黑树？→ 需要按 fd 快速增删改查且防退化，红黑树最坏 O(logN) 且无需像哈希表扩容抖动；就绪事件用双向链表 `rdllist` O(1) 增删。追问「Netty/Nginx/Redis 分别用 LT 还是 ET」→ Nginx 默认 ET；Netty 的 `NioEventLoop`（JDK Selector）走 LT，原生 `EpollEventLoop` 默认用 ET 减少 `epoll_ctl` 系统调用；Redis 事件循环 `ae_epoll.c` 采用 LT 追求简洁稳健。
 - 易错点：ET 模式不读到 EAGAIN；注册了 EPOLLIN 却从不注册 EPOLLOUT（只在需要写且遇到 EAGAIN 后才注册）；认为 epoll 一定比 select 快（连接少且都活跃时差别不大）。
 
 **15. HTTP 与 HTTPS 区别、证书校验与 PKI**（★）
@@ -1731,8 +1734,8 @@
   1. 资源视角：进程有独立虚拟地址空间、页表、fd 表、信号处理表；同进程线程共享地址空间/全局变量/堆/fd/信号处理，独有栈（Linux 默认 8MB）、寄存器、PC、errno、信号掩码。
   2. 切换成本：进程切换要换页表（CR3）→ TLB 失效（PCID 可缓解）+ 内核栈 + 刷新部分 cache，约 3~10us 量级；线程切换同地址空间只换栈与寄存器，约 1~3us；协程切换只保存少量寄存器与用户栈指针，约几十~几百纳秒。
   3. 隔离与故障：进程崩溃不互相影响，线程一个段错误会带崩整个进程（共享地址空间）；协程崩溃等于所在线程崩溃，需要框架自己兜住。
-  4. 典型对应：Linux 上线程就是轻量级进程（clone 共享 CLONE_VM 等标志），Java 平台线程 = 1:1 内核线程（`-Xss` 默认 1MB），Java 21 虚拟线程 = M:N（`Continuation` + 载体线程池，栈以 StackChunk 存堆上、初始几 KB）。
-- 高频追问：有了进程为什么还要线程？→ 并发粒度更细、共享数据无需 IPC、切换更便宜；「3 万虚拟线程与 3 万平台线程在 8 核 16 线程上差别」→ 平台线程栈 1MB×3 万 = 30GB 虚拟地址 + 3 万份内核结构、上下文切换数以万计；虚拟线程栈几 KB 起、只有 16 个载体线程真在跑，切换留在用户态。
+  4. Java 调度原理深挖（1:1 平台线程 vs JDK 21 M:N 虚拟线程）：传统 `java.lang.Thread` 是 1:1 绑定 OS 内核线程（`pthread_create`/`clone`，默认 `-Xss1m` 栈，阻塞即陷入内核调度）；JDK 21（JEP 444）虚拟线程采用 **M:N 协作+工作窃取调度**——底层由 **`Continuation`（续体）+ `ForkJoinPool` 载体线程池（Carrier Threads，默认并行度等于 CPU 核数）+ 堆上按需伸缩的 `StackChunk`** 组成：遇到 Socket/LockSupport/sleep 等阻塞点时，JVM 已改写底层类库改为注册非阻塞 `epoll` 事件并调用 `Continuation.yield()`，将当前栈帧拷回堆内存 **卸载（Unmount）**，载体线程立即去跑其他虚拟线程；IO 就绪后再由任意空闲载体线程通过工作窃取队列 **挂载（Mount）** 调用 `Continuation.run()` 恢复栈帧继续执行，全程无 Ring3↔Ring0 陷入。
+- 高频追问：虚拟线程什么场景会退化（Pinning 钉死问题）？→ JDK 21 中①在 **`synchronized` 块/方法内发生阻塞**（底层 C++ `ObjectMonitor` 绑定在载体 OS 线程上）、②调用 **JNI 本地方法** 时，虚拟线程会被钉死在载体线程上无法卸载，高并发下会耗尽 `ForkJoinPool` 载体线程引发饥饿；工程解法是把守护 IO 的 `synchronized` 换为 `ReentrantLock`，或升级至 **JDK 24（JEP 491）** 实现 `ObjectMonitor` 与载体线程解绑。此外 CPU 密集型计算绝不能用虚拟线程提速（算力上限永远是物理核数），且勿在虚拟线程上滥用大对象 `ThreadLocal`（百万虚拟线程会打爆堆内存，应改用 `ScopedValue`）。
 - 易错点：说「进程比线程安全」却不提线程共享地址空间才是根因；把协程说成「不需要栈」（它有用户态栈，只是可增长）；认为线程一定比进程切换快（跨核/跨 NUMA 时不一定）。
 
 **2. 上下文切换与用户态/内核态**（★★★）
@@ -1750,11 +1753,11 @@
 　*管道最简、消息队列解耦、共享内存最快但必须自己做同步，选型看「要不要拷贝」*
 - 本质：进程地址空间隔离，IPC 就是内核提供的「共享通道」，快慢取决于拷贝次数与同步成本。
 - 必答要点：
-  1. 六种方式对比：管道（半双工、字节流、父子进程常用）、命名管道 FIFO（无亲缘关系）、消息队列（有边界、可按类型取）、共享内存（最快，零拷贝，需信号量/互斥保护）、信号量（同步计数，非数据传输）、Socket（跨机，本机可用 Unix Domain Socket，比 TCP 回环快）。
-  2. 共享内存为什么最快：`mmap` 把同一物理页映射进两个进程页表，读写不经过内核，只付一次映射成本；代价是要自己解决竞态（`shm` + 信号量/文件锁）。
-  3. 选型判据：小数据低频 → 管道/消息队列；大数据高频（视频帧、行情）→ 共享内存 + ring buffer；跨机 → Socket/gRPC；需要事件通知 → eventfd/signalfd + epoll。
+  1. 六种机制底层内核结构对比：① **匿名管道 `pipe`**（内核 `pipe_inode_info` 环形页缓冲，Linux 默认 **64KB = 16×4KB**，半双工字节流，写进程→内核→读进程共 **2 次 CPU 拷贝**，`< PIPE_BUF (4KB)` 写保证原子性）；② **命名管道 `FIFO`**（在 VFS 挂载具名 inode 供无亲缘进程打开，数据传输仍在内核内存不落盘）；③ **消息队列**（内核消息链表，保留消息边界与 `mtype`/优先级，2 次拷贝；POSIX `mq_open` 支持 `epoll` 监听且引用计数归零自动清理，优于易残留的 System V `msgget`）；④ **信号量**（纯同步计数器，P/V 原子操作不传业务载荷；System V 支持 `SEM_UNDO` 在进程崩溃时由内核自动回滚锁计数防死锁）；⑤ **共享内存**（多进程页表 PTE 指向同一组物理页帧，映射后读写 **0 次内核拷贝、0 次系统调用**，必须配 `PTHREAD_PROCESS_SHARED` 健壮互斥锁或原子内存屏障）；⑥ **Socket 与 Unix Domain Socket (`AF_UNIX`)**（网络 Socket 跨机通用但要走完整 TCP/IP 协议栈；本机同宿主机通信首选 **UDS**，绕过路由、分片、校验和与三次握手，直接在内核 `sk_buff` 间拷贝，吞吐高约一倍，且能通过辅助数据 **`SCM_RIGHTS` 跨进程传递文件描述符 fd**，Nginx 热升级与容器运行时核心机制）。
+  2. 共享内存为什么最快与线上坑：`mmap`/`shmget` 把同一物理页映射进两个进程页表，读写不经过内核；但若持锁进程在共享内存中途 `kill -9` 崩溃会导致普通锁永久死锁，必须启用 `pthread_mutexattr_setrobust(..., PTHREAD_MUTEX_ROBUST)` 让接管进程捕获 `EOWNERDEAD` 修复状态。
+  3. 选型判据：小数据父子流 → `pipe`；本机微服务 Sidecar / Nginx ↔ 本地上游 / Docker 守护进程 → **Unix Domain Socket**；同机超低延迟高频大吞吐（行情、推理张量传输）→ **共享内存 RingBuffer + `eventfd` 通知**；跨机分布式 → TCP Socket / gRPC / MQ。
   4. 共享内存传 1KB 的做法：`shm_open` + `ftruncate` + `mmap`，写方 memcpy 后 `sem_post`，读方 `sem_wait` 后 memcpy，或直接用无锁环形队列 + 内存屏障。
-- 高频追问：哪种最快、为什么？→ 共享内存，因为它消除了内核缓冲区这一跳；但「最快」不等于「最好」，同步与生命周期管理（谁 unlink）才是坑。
+- 高频追问：本机两进程通信为什么用 Unix Domain Socket 而不是 `127.0.0.1` TCP 回环？→ `127.0.0.1` 仍要经过完整 TCP/IP 协议栈（三次握手、序号/ACK、流量控制、TCP/IP 首部封装与校验和计算），而 UDS 在 VFS 路径鉴权后直接在内核 socket 缓冲区点对点搬运数据，延迟低 30%~50% 且支持 `SCM_RIGHTS` 传 fd。
 - 易错点：以为管道能双向（普通 pipe 单向，socketpair 才双向）；共享内存忘记 `shm_unlink` 导致泄漏；把信号量当数据通道。
 
 **4. 虚拟内存、页表与 TLB**（★★）
@@ -1796,9 +1799,9 @@
 - 必答要点：
   1. select：fd_set 位图（`FD_SETSIZE` 默认 1024）、每次全量拷贝进内核并线性扫描、返回后还要用户态再扫一遍找就绪位 → O(n) 拷贝 + O(n) 扫描；另有 fd 值上限与每次重置集合的麻烦。
   2. poll：`struct pollfd` 数组，去掉 1024 限制，但仍全量拷贝 + 线性扫描；水平触发。
-  3. epoll：`epoll_create/epoll_ctl/epoll_wait`；fd 挂在红黑树上（O(logN) 增删），就绪 fd 挂就绪链表，`epoll_wait` 只带回就绪列表 → O(就绪数)；内核与用户态通过 mmap 共享就绪队列，避免拷贝。
-  4. 适用：连接多但活跃比例低（长连接网关、IM）用 epoll；连接少且都很活跃（内部 RPC）select/poll 也够；跨平台兼容走 select。
-- 高频追问：为什么用红黑树？→ 需要按 fd 快速查找/删除/修改且遍历有序，红黑树 O(logN) 且最坏也有保证；就绪事件用链表 O(1) 插入。
+  3. epoll：`epoll_create/epoll_ctl/epoll_wait`；监控的 fd 挂在内核 `eventpoll` 红黑树 `rbr` 上（O(logN) 增删改，无需每次系统调用重复传全量 fd 集），网卡中断回调 `ep_poll_callback` 把就绪 `epitem` O(1) 链入双向链表 `rdllist`，`epoll_wait` 在 `ep_send_events_proc` 中通过 `__put_user` **仅把就绪事件拷回用户态数组** → O(就绪数)（注：网传"epoll 用 `mmap` 共享内核与用户态就绪队列"是常见误传，Linux 内核 `fs/eventpoll.c` 并未用 `mmap`，真正实现内核/用户共享环形队列免拷贝的是 **`io_uring`**）。
+  4. LT（阶跃响应）与 ET（脉冲响应）对比：**LT（默认水平触发 = 阶跃响应）**只要 socket 接收缓冲区还有未读字节，`ep_send_events_proc` 上报后会将 `epitem` 重新加回 `rdllist`，下次 `epoll_wait` 继续返回，编程安全不易丢事件；**ET（边缘触发 = 脉冲响应）**仅在状态"无→有"跳变时触发一次脉冲通知，弹出后不再重入 `rdllist`，减少重复系统调用但**强制要求非阻塞 fd + `while(read)` 循环读到 `EAGAIN`**。适用上：连接数万但瞬时活跃比例低（网关、IM）必选 epoll；连接少且全部高频活跃时 select/poll 差距不大。
+- 高频追问：为什么 ET 模式下用阻塞 fd 会把整个服务卡死？→ 假设对端发来 1024B，应用按 1024B 循环 `read`：第 1 次读完 1024B 后缓冲区已空，为了确认读尽发起第 2 次 `read` 时，非阻塞 fd 会立即返回 `-1 (EAGAIN)` 让出线程，而阻塞 fd 会直接把当前 Reactor IO 线程挂起睡眠，导致同线程托管的成千上万条其他连接全部假死。
 - 易错点：把 epoll 说成「轮询更快」（它是事件驱动）；忘记 epoll 也需要应用自己 read/write；忽略 ET+阻塞 fd 会导致读循环卡死。
 
 **8. 调度算法、银行家算法与中断**（★）
@@ -2242,8 +2245,8 @@
   1. Kafka：同 key → 同分区，分区内 offset 天然有序；但生产者重试 + `max.in.flight.requests.per.connection>1` 会乱序，必须开 `enable.idempotence=true`（或把 in-flight 设为 1）。
   2. RocketMQ：普通顺序消息用 `MessageQueueSelector` 按 ShardingKey 选同一队列，消费用 `MessageListenerOrderly`（队列级本地锁 + 失败挂起重试，会阻塞该队列后续消息）；严格顺序 = 单队列单线程。
   3. RabbitMQ：单队列 + 单消费者 + `prefetch=1` 才有顺序，多消费者即无序（这也是它不适合顺序场景的原因）。
-  4. 并发与有序的折中：把实体 id 哈希到 M 个桶，桶内串行、桶间并行，吞吐约 M 倍，M 受分区数约束。
-- 高频追问：K8s 滚动发布如何避免新旧版本同时消费同一消息 → 用静态成员 `group.instance.id` 避免发布触发 rebalance，或发布时先停旧实例消费再启新版本（灰度期间限制单实例并行），保证同一分区不被两个版本同时持有。追问「同一 partition 能否被多台机器消费」→ 同组不行，见第 19 条。
+  4. 消费端并行加速与"毒丸消息（Poison Pill）阻塞"治理：单线程拉取分区保证读取有序后，在内存按 `hash(orderId) % N` 路由至 N 个单线程内存队列并行消费；若某笔订单遇到脏数据持续抛异常阻塞队列，不能无限挂起整个分区，也**不能直接跳过第一条继续跑该订单后续事件**（会导致未建单先发货的状态错乱）——工程正解是重试 3 次失败后触发**实体级熔断暂存**：在 DB/Redis 标记 `order_id` 为 `SUSPENDED` 并将失败消息写入异常隔离表，此后该分区内凡命中 `SUSPENDED` 订单的后续消息一律按序追加进隔离表，同分区其余 99.9% 正常订单丝滑推进，修复后再按序重放隔离表。
+- 高频追问：K8s 滚动发布如何避免新旧版本同时消费同一消息 → 用静态成员 `group.instance.id` 避免发布触发 rebalance，或发布时先停旧实例消费再启新版本（灰度期间限制单实例并行），保证同一分区不被两个版本同时持有。追问「分区扩容期间如何不乱序」→ 直接在线改分区数会让 `hash(key)%P` 突变导致新旧分区并存乱序；严格保序需新建扩容 Topic，先切生产者写新 Topic，等旧 Topic 存量消息消费排空后再切消费者（或消费端按业务版本号 `version` 重排乱序窗口）。
 - 易错点：以为开了幂等就保证业务有序（幂等只防重复不防乱序）；忽略重试导致的乱序；用多线程消费还想保序却不在应用层按 key 分桶。
 
 **7. 死信队列与重试退避**（★★）
@@ -2305,7 +2308,8 @@
   1. 选 RabbitMQ 的判据：业务解耦为主、路由规则复杂（一个事件按多种规则分发）、消息量中小（<1 万 QPS）、需要低延迟与优先级、团队运维人力有限。
   2. 不选它的判据：需要百万级吞吐或大数据管道（选 Kafka）、需要事务消息/延迟等级/消息回溯（选 RocketMQ）、需要海量堆积与多租户（选 Pulsar）。
   3. 迁移代价要一起说：换 MQ 意味着重写生产确认、消费幂等、延迟方案、监控告警四套代码，选型前先确认现有链路是否真的撞到瓶颈。
-- 高频追问：既然 Kafka 吞吐最高，为什么很多业务系统还是选 RabbitMQ/RocketMQ → 业务消息量根本到不了 Kafka 的量级，而路由、延迟、事务这些「业务功能」Kafka 反而缺，补起来的复杂度高于收益。
+  4. RocketMQ vs Kafka 核心存储架构权衡（必考深问）：**Kafka 采用 Partition 级独立物理 `.log` 文件 + `sendfile` 零拷贝**，在少量 Topic（几十~几百 Partition）下极致顺序读写可达百万 TPS，但一旦业务微服务建出**几千上万个 Topic/Partition**，数万个文件同时追加会让底层磁盘彻底退化为**随机写**导致吞吐雪崩；**RocketMQ 改为单机全局唯一 `CommitLog`（默认 1GB/文件）混合顺序追加 + 轻量定长 20B `ConsumeQueue`（`8B phyOffset + 4B size + 8B tagHashCode`）逻辑索引 + `mmap`**，保证即使上万个业务 Topic 并发写也永远是 100% 磁盘顺序写，代价是消费需先读 `ConsumeQueue` 再跳 `CommitLog` 二次读取，且因需在用户态解析消息体/按 Tag 过滤而用 `mmap` 替代 `sendfile`，峰值吞吐（十万级）略低于 Kafka，但完美契合多 Topic、事务消息、延迟队列与死信重试的交易业务诉求。
+- 高频追问：既然 Kafka 吞吐最高，为什么很多核心交易系统还是选 RocketMQ → 一是交易系统往往有上千个细分业务 Topic，RocketMQ 单一 `CommitLog` 抗多 Topic 随机写退化；二是交易强依赖半消息 2PC 事务回查、任意时间延迟关单、Tag 服务端过滤与消费组级重试/死信队列，这些在 Kafka 中都需要业务侧自建复杂外挂组件。
 - 易错点：只比吞吐；忽略「消息堆积能力」（RabbitMQ 堆积会拖垮整个 Broker）；拿 RabbitMQ 的 confirm 当分布式事务。
 
 **12. 重复消费归因与业务幂等**（★）
@@ -4085,12 +4089,12 @@
 　*稳定工作流 = 定规格 → 收敛上下文 → 小步改 → 自测 → 人审；最难是"验证"*
 - 本质：可复述的稳定工作流比"会用某个工具"更值钱；而全流程里最难、最不可替代的一环是"验证"。
 - 必答要点：
-  1. 固定五步：写规格（目标/约束/验收）→ 检索相关文件并让 AI 复述理解 → 小步实现（一次一个函数/文件）→ 跑测试与 lint 自证 → 读 diff 人工合入。
-  2. 收敛技巧（10 万行仓库）：先让它给"改动计划（文件清单 + 顺序）"，人确认后再执行；禁止"顺手重构"，只动计划内文件；单次上下文 ≤ 3~5 文件。
-  3. 最难环节的答案：验证。因为 AI 产出的测试可能自洽而错，需要人定义"什么算对"（AC、契约测试、影子比对）才能判定。
-  4. 沉淀：把重复出现的流程（新建模块、加表、回归）写成 Skill/脚本，把踩过的坑写成规则条款，形成团队复用资产。
-- 高频追问：「完整的 AI Coding 工作流，AI 参与哪些环节？」→ 给五步 + 每步 AI 与人分别做什么，强调人在"规格"和"验收"两端。
-  「AI Coding 最难做好的是哪个环节？」→ 答验证，并给手段：可运行证据、契约测试、灰度与影子流量。
+  1. 后端工程师的四层确定性 AI 协作闭环（面试高分骨架）：① **规格与契约先行（Spec-First）**——绝不直接丢模糊口语需求，人先敲定 MySQL 表结构 DDL（主键、唯一幂等索引、状态机合法流转图）、OpenAPI/Protobuf 接口契约与仓库级 `AGENTS.md`/`CLAUDE.md`（写明 JDK 21/Spring Boot 3 规范、禁止大事务内嵌 RPC、异常码体系，控制在 300 行内防注意力稀释）；② **最小上下文切片与先规划后动手（Plan-Before-Act）**——只喂强相关的 3~5 个类（Entity/Mapper/DTO），强制 AI 先输出改动文件清单、并发/故障边界推演，确认无误再按小步可编译切片写代码（复杂多方案用 `git worktree` 物理隔离并行验证）；③ **高危后端红线人工强审（Human-in-the-Loop）**——AI 极易写出"Happy Path 能跑但高并发必炸"的代码，人工 Code Review 死磕四条红线：**事务粒度与加锁顺序**（防 `@Transactional` 包裹 HTTP/MQ 拖死连接池或间隙锁死锁）、**连接与流释放**（`try-with-resources` + 显式 `connectTimeout/readTimeout`）、**超时结果未知（UNKNOWN）的幂等与状态回查**、**SQL 执行计划与内存上界**（拒绝深分页全扫与无界集合 OOM）；④ **可证伪断言验证与坏例沉淀（Verify & Compound）**——用 Testcontainers / JUnit 5 并发压测验证真实约束（严防 AI 靠自造 Mock 写出"假绿单测"），每次踩坑后提炼为 1~2 条禁令反哺 `AGENTS.md` 或封装成按需渐进加载的 `SKILL.md`。
+  2. 收敛技巧（10 万行以上大仓）：先让检索子代理只做只读 grep/AST 定位输出带行号的摘要，主会话只拿最小切片，避免探索日志撑爆上下文导致后半程遗忘约束。
+  3. 最难环节的答案：**验证与并发/异常边界把关**。因为 AI 生成的实现与自测往往共享同一套错误假设（例如同时漏掉主从延迟、锁过期或重复投递），必须由工程师定义独立不变量（唯一键、状态机 CAS、对账脚本、影子流量比对）才能证伪。
+  4. 资产沉淀：高频确定性机械流程（如根据 DDL 生成基础 CRUD/DTO、日志脱敏扫描、慢 SQL 索引审查）固化为 `SKILL.md + 校验脚本`，把个人习惯升级为团队工程资产。
+- 高频追问：「完整的 AI Coding 工作流，AI 参与哪些环节？能举个 AI 写错被你拦住的真实例子吗？」→ 先讲上述"契约先行→切片规划→四条红线人审→断言闭环"四层，再举后端真实例子：例如让 AI 写分布式锁扣减或异步状态流转时，AI 常直接用非原子解锁或在 `@Transactional` 内同步调外部接口/发 MQ，Review 时发现一旦下游抖动就会打满 HikariCP 连接池或事务回滚产生脏消息，于是人工重构为最小同库待发事件表/事务后置回调 + 数据库条件更新兜底，并把"严禁在 `@Transactional` 内执行远程 IO"写进仓库 `AGENTS.md`。
+  「AI Coding 最难做好的是哪个环节？」→ 答验证与边界收敛，并给出"禁止 AI 修改验收断言、关键分支变异测试看单测是否真会变红、核心写链路灰度放量"三项硬手段。
 - 易错点：工作流讲成"打开工具→说需求"；不提 token 与轮次控制；把最难环节答成"提示词写好"（可被替代性太强）。
 
 ### AI 工程化 ｜ 成本、可观测与长任务工程化
