@@ -5,9 +5,9 @@ export const stripTags = (s) => String(s || '').replace(/<[^>]+>/g, ' ').replace
 export function buildSearchRecords(entries, topics) {
   const records = [];
   for (const e of entries) {
-    if (e.id === 'exam-backend-detail' || e.id === 'exam-agent-detail') {
+    if (e.id === 'exam-backend-detail' || e.id === 'exam-agent-detail' || e.id === 'kb-project-stack') {
       records.push({ id: e.id, title: e.title, text: stripTags([e.title, e.number, e.cat, e.part, e.lead].filter(Boolean).join(' ')) });
-      for (const m of String(e.html || '').matchAll(/<article class="kb-detail-card" id="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)) {
+      for (const m of String(e.html || '').matchAll(/<article class="kb-detail-card[^"]*" id="([^"]+)"[^>]*>([\s\S]*?)<\/article>/g)) {
         const anchor = m[1];
         const bodyHtml = m[2];
         const headingMatch = /<h3[^>]*class="[^"]*exam-point-heading[^"]*"[^>]*>(?:<span class="kb-dcard-no">[\s\S]*?<\/span>)?([\s\S]*?)<\/h3>/.exec(bodyHtml);

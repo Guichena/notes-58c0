@@ -65,6 +65,7 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
         if (page) {
           page.querySelectorAll('.kb-filter-bar button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-type') === 'all'));
           page.querySelectorAll('[data-kb-mfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-mfilter') === 'all'));
+          page.querySelectorAll('[data-kb-pfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-pfilter') === 'all'));
           applyKbFilters(page);
           page.querySelectorAll('.kb-route-tip').forEach((it) => { it.hidden = true; });
         }
@@ -117,6 +118,8 @@ function applyKbFilters(page) {
   const type = activeTypeBtn ? activeTypeBtn.getAttribute('data-kb-type') : 'all';
   const activeMBtn = page.querySelector('[data-kb-mfilter].on');
   const mfilter = activeMBtn ? activeMBtn.getAttribute('data-kb-mfilter') : 'all';
+  const activePBtn = page.querySelector('[data-kb-pfilter].on');
+  const pfilter = activePBtn ? activePBtn.getAttribute('data-kb-pfilter') : 'all';
   const isDetail = page.classList.contains('kb-detail-page');
   page.querySelectorAll('.kb-filter-item').forEach((item) => {
     const typeMatch = type === 'all' || item.getAttribute('data-kb-type') === type;
@@ -131,7 +134,10 @@ function applyKbFilters(page) {
     let visibleCards = 0;
     item.querySelectorAll('.kb-detail-card[data-kb-key]').forEach((card) => {
       const s = card.getAttribute('data-kb-status') || '0';
-      const show = mfilter === 'all' || s === mfilter;
+      const mMatch = mfilter === 'all' || s === mfilter;
+      const projs = (card.getAttribute('data-kb-projects') || '').split('|').filter(Boolean);
+      const pMatch = pfilter === 'all' || !projs.length || projs.includes(pfilter);
+      const show = mMatch && pMatch;
       card.hidden = !show;
       if (show) visibleCards += 1;
     });
@@ -217,6 +223,14 @@ document.addEventListener('click', (ev) => {
     const page = mfilterBtn.closest('.kb-detail-page');
     if (!page) return;
     page.querySelectorAll('[data-kb-mfilter]').forEach((b) => b.classList.toggle('on', b === mfilterBtn));
+    applyKbFilters(page);
+    return;
+  }
+  const pfilterBtn = ev.target.closest('[data-kb-pfilter]');
+  if (pfilterBtn) {
+    const page = pfilterBtn.closest('.kb-detail-page');
+    if (!page) return;
+    page.querySelectorAll('[data-kb-pfilter]').forEach((b) => b.classList.toggle('on', b === pfilterBtn));
     applyKbFilters(page);
     return;
   }

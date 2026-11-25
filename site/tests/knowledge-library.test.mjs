@@ -10,8 +10,8 @@ const entries = [];
 const result = await mergeKnowledgeLibrary(entries, path.join(root, 'content', 'knowledge-library'));
 const byId = new Map(entries.map((entry) => [entry.id, entry]));
 
-test('knowledge library imports split high-frequency boards, full detail pages, and 25 lectures', () => {
-  assert.equal(entries.length, 31);
+test('knowledge library imports split high-frequency boards, project stack page, full detail pages, and 25 lectures', () => {
+  assert.equal(entries.length, 32);
   assert.equal(result.report.documents, 25);
   assert.equal(result.report.backendPoints, 270);
   assert.equal(result.report.agentPoints, 105);
@@ -62,6 +62,22 @@ test('knowledge library imports split high-frequency boards, full detail pages, 
   assert.ok(!route.includes('想屁吃') && !route.includes('拍马屁') && !route.includes('面试官你好'));
   assert.ok(byId.get('kb-mysql').html.includes('#/e/kb-interview-routes/route-mysql'));
   assert.ok(byId.get('kb-mq').html.includes('#/e/kb-interview-routes/route-kafka'));
+
+  const proj = byId.get('kb-project-stack');
+  assert.ok(proj, 'missing kb-project-stack entry');
+  assert.equal((proj.html.match(/class="kb-detail-card kb-proj-card"/g) || []).length, 39);
+  assert.equal((proj.html.match(/class="kb-ans-block kb-proj-spoken"/g) || []).length, 32);
+  assert.equal((proj.html.match(/class="code-card md-code-card"/g) || []).length, 5);
+  assert.equal((proj.html.match(/class="kb-formula-card"/g) || []).length, 2);
+  assert.ok(!proj.html.includes('drive.google.com'));
+  assert.ok(!proj.html.includes('黄文杰'));
+  assert.ok(!proj.html.includes('脱稿背诵'));
+  assert.ok(!/\$[^$<]{1,40}\$/.test(proj.html), 'raw LaTeX leaked into project-stack HTML');
+  assert.ok(proj.html.includes('id="proj-1-1"'));
+  assert.ok(proj.html.includes('id="proj-metrics-appendix"'));
+  assert.ok(proj.html.includes('data-kb-pfilter="NoteWeave"'));
+  assert.ok(!proj.html.includes('kb-proj-xref'), 'standalone page must not include internal cross-links');
+  assert.ok(!proj.html.includes('href="#/e/'), 'standalone page must not link to other site entries');
 });
 
 test('knowledge chapters carry the full interview answer, not just a jump link', () => {

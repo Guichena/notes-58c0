@@ -4,6 +4,7 @@
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {mdToSiteHtml} from './md-lite.mjs';
+import {renderProjectStackPage} from './project-stack.mjs';
 
 const SOURCE = '后端 + Agent 面试知识库';
 export const KNOWLEDGE_DOCS = [
@@ -891,6 +892,11 @@ export async function mergeKnowledgeLibrary(entries, dir) {
     lead:'只列传统后端核心高频考点，按重要度排好顺序、不标具体次数。全部 222 个后端考点完整收录在《传统后端 · 全量考点详解》。',html:boardHtml(exam,'backend')});
   push({id:'kb-agent-board',kind:'doc',mod:'knowledge',part:'考点总览',cat:'高频考点榜',title:'AI Agent 高频榜',number:'Agent榜',source:SOURCE,
     lead:'只列 AI Agent 核心高频考点，按重要度排好顺序、不标具体次数。全部 105 个 Agent 考点完整收录在《AI Agent · 全量考点详解》。',html:boardHtml(exam,'agent')});
+  const projectStackSource = await readFile(path.join(dir,'project-stack.md'),'utf8');
+  const projectStack = renderProjectStackPage(projectStackSource);
+  push({id:'kb-project-stack',kind:'doc',mod:'knowledge',part:'考点总览',cat:'项目八股专题',title:'项目技术栈与中间件八股（三段经历串联）',number:'项目',source:SOURCE,
+    lead:`串联 NoteWeave、制造业生产事件平台与 TencentDB Agent Memory 的 ${projectStack.topics.length} 个核心专题（含 5 套同名工程手撕与全量指标口径卡），支持按经历、技术域与掌握状态筛选。`,
+    html:projectStack.html});
   for (const track of ['backend','agent']) {
     const ps = exam.points.filter((p) => p.track === track && (track !== 'backend' || !isHandwriteAlgorithm(p)));
     push({id:'exam-' + track + '-detail',kind:'doc',mod:'knowledge',part:'考点总览',cat:'全量考点详解',
