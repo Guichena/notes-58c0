@@ -723,7 +723,14 @@ function highFreqList(exam, track) {
     ...extra3.map((p) => ({point: p, conclusion: p.summary, bucket: pointBucket(p)}))
   ];
 }
-function boardHtml(exam, track) {
+function renderOralBlock(oralItem) {
+  if (!oralItem || !oralItem.oral) return '';
+  const pts = Array.isArray(oralItem.points) && oralItem.points.length
+    ? `<div class="kb-oral-pts-kicker">必踩采分点</div><ul class="md-list kb-oral-pts">${oralItem.points.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`
+    : '';
+  return `<div class="kb-ans-block kb-ans-oral"><div class="kb-ans-kicker">面试作答主线</div><p class="md-p kb-oral-speech">${esc(oralItem.oral)}</p>${pts}</div>`;
+}
+function boardHtml(exam, track, oralMap = {}) {
   const items = highFreqList(exam, track);
   const buckets = (track === 'backend' ? BACKEND_BUCKETS : AGENT_BUCKETS).filter((b) => items.some((it) => it.bucket === b));
   const backendTotal = exam.points.filter((p) => p.track === 'backend' && !isHandwriteAlgorithm(p)).length;
@@ -743,10 +750,10 @@ function boardHtml(exam, track) {
   const rapidBar = `<div class="kb-rapid-bar">
     <label class="kb-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input type="search" class="kb-inpage-q" data-kb-search placeholder="页内筛题（如 ${track === 'backend' ? 'MVCC、锁、Redis、Kafka' : 'RAG、MCP、记忆、评测'}）…" aria-label="页内筛选高频考点"></label>
     <div class="kb-mode-seg" role="group" aria-label="考前速过密度">
-      <button type="button" class="on" data-kb-bmode="brief" title="零点击直接显示每题的核心本质与必答要点，顺着往下滑即可过完一轮">重点全展</button>
-      <button type="button" data-kb-bmode="full" title="连同高频追问与易错点也全部直接摊开，零点击通读">全量摊开</button>
+      <button type="button" class="on" data-kb-bmode="oral" title="考前零点击默认模式：专业凝练的面试作答主线 + 必踩采分点，精简代码噪声、直接下滑过完一轮">面试速过</button>
+      <button type="button" data-kb-bmode="full" title="连同完整底层原理、参数细节、高频追问与易错点全部直接摊开">全量摊开</button>
       <button type="button" data-kb-bmode="scan" title="只留标题与一句话结论，适合极速扫目录">纯目录</button>
-      <button type="button" data-kb-bmode="recite" title="遮住结论与答案，只看题名脱稿练嘴，点单卡展开核对">背诵自测</button>
+      <button type="button" data-kb-bmode="recite" title="遮住结论与作答主线，只看题名脱稿演练，点单卡展开核对">背诵自测</button>
     </div>
     <button type="button" class="kb-recite-btn" data-kb-board-random title="从当前筛选范围随机抽一道高频题自测">随机抽一题</button>
     <span class="kb-inpage-count" data-kb-count>共 ${items.length} 题</span>
@@ -756,10 +763,12 @@ function boardHtml(exam, track) {
     const rank = String(idx + 1).padStart(2, '0');
     const twin = p.target.kind === 'enriched' ? `<a class="ab-twin" href="${pointHref(p)}">讲义 →</a>` : '';
     const lecFoot = p.target.kind === 'enriched' ? `<a class="kb-board-meta-link" href="${pointHref(p)}">完整系统讲义 →</a>` : '';
+    const oralItem = oralMap[p.anchor] || null;
+    const oralBlock = renderOralBlock(oralItem);
     const drawerBody = renderExamPointBody(p, 'board-' + p.anchor);
-    const hasExtra = /kb-ans-fup|kb-ans-pitfall|kb-ans-variants/.test(drawerBody);
-    const extraBtn = hasExtra ? `<button type="button" class="kb-board-more" data-kb-board-more aria-expanded="false">展开追问与易错点 ▾</button>` : '';
-    const searchBlob = `${p.title} ${p.topic} ${it.bucket} ${it.conclusion} ${p.body}`.slice(0, 1200).toLowerCase();
+    const extraBtn = `<button type="button" class="kb-board-more" data-kb-board-more aria-expanded="false">展开底层原理与追问 ▾</button>`;
+    const oralSearch = oralItem ? `${oralItem.oral} ${(oralItem.points || []).join(' ')}` : '';
+    const searchBlob = `${p.title} ${p.topic} ${it.bucket} ${it.conclusion} ${oralSearch} ${p.body}`.slice(0, 1600).toLowerCase();
     return `<li class="ab-row kb-board-row kb-filter-item${idx < 10 ? ' ab-top' : ''}" data-kb-type="${esc(it.bucket)}" data-kb-key="${p.anchor}" data-kb-search-text="${esc(searchBlob)}">
       <div class="kb-board-top">
         <button type="button" class="kb-board-hit" data-kb-board-toggle aria-expanded="true">
@@ -772,8 +781,9 @@ function boardHtml(exam, track) {
         </button>
         ${twin}
       </div>
-      <button type="button" class="kb-board-reveal" data-kb-board-reveal>先自己口述核心结论与必答要点 · 点击原地展开核对</button>
+      <button type="button" class="kb-board-reveal" data-kb-board-reveal>先自己口述核心逻辑与采分点 · 点击原地展开核对</button>
       <div class="kb-board-drawer">
+        ${oralBlock}
         ${drawerBody}
         <div class="kb-board-drawer-foot">
           ${extraBtn}
@@ -784,19 +794,23 @@ function boardHtml(exam, track) {
     </li>`;
   }).join('')}</ol><div class="empty-state kb-empty" hidden>当前筛选条件下没有匹配的考点</div>`;
   const note = track === 'backend'
-    ? '考前零点击速过主战场：默认「重点全展」，不用逐条点击，直接往下滑就能一次过完所有传统后端高频考点的核心本质与必答要点；想连追问和易错点一起看可切「全量摊开」，练脱稿可切「背诵自测」。算法手撕见《手撕算法原题榜》。'
-    : 'AI Agent 考前零点击速过：默认「重点全展」，直接往下滑就能当页过完 40 个高频考点的核心本质与必答要点；可一键切换「全量摊开 / 纯目录 / 背诵自测」。';
-  return `<div class="ab-page kb-board-page kb-filter-page" data-kb-bmode-state="brief">${head}<p class="ab-lead">${esc(note)}</p>${rapidBar}${filters}${routeTips}${list}</div>`;
+    ? '考前零点击速过主战场：默认「面试速过」，以专业凝练、可直接作答的逻辑主线与必踩采分点呈现 54 道后端高频题（精简代码噪声）；想深挖底层参数与连环追问可点单卡「展开底层原理与追问」或切「全量摊开」，脱稿演练切「背诵自测」。算法手撕见《手撕算法原题榜》。'
+    : 'AI Agent 考前零点击速过：默认「面试速过」，直接下滑过完 40 道高频考点的专业面试作答主线与必踩采分点；按需展开底层原理与追问，或一键切换「全量摊开 / 纯目录 / 背诵自测」。';
+  return `<div class="ab-page kb-board-page kb-filter-page" data-kb-bmode-state="oral">${head}<p class="ab-lead">${esc(note)}</p>${rapidBar}${filters}${routeTips}${list}</div>`;
 }
-function detailHtml(exam, track) {
+function detailHtml(exam, track, oralMap = {}) {
   const allPoints = exam.points.filter((p) => p.track === track && (track !== 'backend' || !isHandwriteAlgorithm(p)));
   const buckets = (track === 'backend' ? BACKEND_BUCKETS : AGENT_BUCKETS).filter((b) => allPoints.some((p) => pointBucket(p) === b));
   const backHref = track === 'backend' ? '#/e/interview-map' : '#/e/kb-agent-board';
   const backText = track === 'backend' ? '← 返回传统后端高频榜' : '← 返回 AI Agent 高频榜';
-  const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 保留完整原理、参数边界、连环追问与易错点</span></div>`;
+  const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 高频题置顶专业面试作答主线，支持一键切「考前速扫」降噪</span></div>`;
   const studyBar = `<div class="kb-study-bar">
     <label class="kb-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input type="search" class="kb-inpage-q" data-kb-search placeholder="页内实时筛题（如 ${track === 'backend' ? 'MVCC、线程池、死锁、Kafka' : 'RAG、MCP、ReAct、记忆'}）…" aria-label="页内筛选考点"></label>
     <div class="kb-study-right">
+      <div class="kb-mode-seg kb-dmode-seg" role="group" aria-label="详解阅读密度">
+        <button type="button" class="on" data-kb-dmode="full" title="显示完整原理、代码参数、高频追问与易错点">完整详解</button>
+        <button type="button" data-kb-dmode="skim" title="考前速扫模式：优先只展示面试口述或核心本质，折叠冗长代码与追问，按需点单卡展开">考前速扫</button>
+      </div>
       <span class="kb-inpage-count" data-kb-count>共 ${allPoints.length} 题</span>
       <button type="button" class="kb-recite-btn" data-kb-recite aria-pressed="false">背诵自测：遮挡答案</button>
     </div>
@@ -816,11 +830,15 @@ function detailHtml(exam, track) {
     const cards = g.points.map((p) => {
       const lec = p.target.kind === 'enriched' ? `<a class="kb-lec-link" href="${pointHref(p)}">对应讲义 →</a>` : '';
       const reveal = `<button type="button" class="kb-reveal-bar" data-kb-reveal>先在脑中口述核心结论与连环追问 · 点击展开核对答案</button>`;
-      return `<article class="kb-detail-card" id="${p.anchor}" data-kb-key="${p.anchor}"><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3>${lec ? `<div class="kb-dcard-acts">${lec}</div>` : ''}</div>${reveal}<p class="exam-point-summary">${esc(p.summary)}</p>${renderExamPointBody(p, p.anchor)}</article>`;
+      const oralItem = oralMap[p.anchor] || null;
+      const oralBlock = renderOralBlock(oralItem);
+      const oralAttr = oralBlock ? ' data-kb-has-oral="1"' : '';
+      const moreBtn = `<button type="button" class="kb-dcard-more" data-kb-dcard-more aria-expanded="false">展开完整原理与追问 ▾</button>`;
+      return `<article class="kb-detail-card" id="${p.anchor}" data-kb-key="${p.anchor}"${oralAttr}><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3>${lec ? `<div class="kb-dcard-acts">${lec}</div>` : ''}</div>${reveal}<p class="exam-point-summary">${esc(p.summary)}</p>${oralBlock}${renderExamPointBody(p, p.anchor)}${moreBtn}</article>`;
     }).join('');
     return `<section class="kb-dgroup kb-filter-item" data-kb-type="${esc(bucket)}"><h2 class="md-h md-h2">${esc(g.title)}</h2>${introHtml}${cards}</section>`;
   })).join('');
-  return `<div class="kb-detail-page kb-filter-page">${head}${studyBar}${filters}${body}<div class="empty-state kb-empty" hidden>当前筛选条件下没有匹配的考点</div></div>`;
+  return `<div class="kb-detail-page kb-filter-page" data-kb-dmode-state="full">${head}${studyBar}${filters}${body}<div class="empty-state kb-empty" hidden>当前筛选条件下没有匹配的考点</div></div>`;
 }
 
 export function resolveRetiredKnowledgeRoute(id) {
@@ -928,12 +946,16 @@ export async function mergeKnowledgeLibrary(entries, dir) {
   const unpinnedTop = [...topTitles].filter((title) => title.includes('多态与虚函数表') ? false : !TOP_EXACT.some(([needle]) => title.includes(needle)));
   if (unpinnedTop.length) throw new Error('Knowledge map: unpinned top points ' + unpinnedTop.join(' | '));
   const enriched = enrichKnowledgeModels(exam,models);
+  let oralMap = {};
+  try {
+    oralMap = JSON.parse(await readFile(path.join(dir,'highfreq-oral.json'),'utf8'));
+  } catch {}
   const added = [];
   const push = (entry) => { entries.push(entry); added.push(entry.id); };
   push({id:'interview-map',kind:'doc',mod:'knowledge',part:'考点总览',cat:'高频考点榜',title:'传统后端高频榜',number:'后端榜',source:SOURCE,
-    lead:'只列传统后端核心高频考点，按重要度排好顺序、不标具体次数。全部 222 个后端考点完整收录在《传统后端 · 全量考点详解》。',html:boardHtml(exam,'backend')});
+    lead:'考前零点击速过主战场：默认以专业凝练的面试作答主线与必踩采分点呈现 54 个后端核心高频考点，精简代码噪声，按需展开底层原理与追问。',html:boardHtml(exam,'backend',oralMap)});
   push({id:'kb-agent-board',kind:'doc',mod:'knowledge',part:'考点总览',cat:'高频考点榜',title:'AI Agent 高频榜',number:'Agent榜',source:SOURCE,
-    lead:'只列 AI Agent 核心高频考点，按重要度排好顺序、不标具体次数。全部 105 个 Agent 考点完整收录在《AI Agent · 全量考点详解》。',html:boardHtml(exam,'agent')});
+    lead:'考前零点击速过：默认以专业凝练的面试作答主线与必踩采分点呈现 40 个 AI Agent 核心高频考点，按需展开底层原理与追问。',html:boardHtml(exam,'agent',oralMap)});
   const projectStackSource = await readFile(path.join(dir,'project-stack.md'),'utf8');
   const projectStack = renderProjectStackPage(projectStackSource);
   push({id:'kb-project-stack',kind:'doc',mod:'knowledge',part:'考点总览',cat:'项目八股专题',title:'项目技术栈与中间件八股（三段经历串联）',number:'项目',source:SOURCE,
@@ -944,8 +966,8 @@ export async function mergeKnowledgeLibrary(entries, dir) {
     push({id:'exam-' + track + '-detail',kind:'doc',mod:'knowledge',part:'考点总览',cat:'全量考点详解',
       title:(track === 'backend' ? '传统后端' : 'AI Agent') + ` · 全量考点详解（${ps.length} 题）`,number:'全量',source:SOURCE,
       lead:track === 'backend'
-        ? '完整收录传统后端全部非算法考点（手写 SQL 保留在本页，算法归入《手撕算法原题榜》）。支持按模块一键筛选，每题保留本质、必答要点、高频追问与易错点。'
-        : '完整收录 AI Agent 全部考点，支持按模块一键筛选，每题保留本质、必答要点、高频追问与易错点。',html:detailHtml(exam,track)});
+        ? '完整收录传统后端全部非算法考点（手写 SQL 保留在本页，算法归入《手撕算法原题榜》）。高频题置顶专业面试作答主线，支持一键切「考前速扫」降噪与模块筛选。'
+        : '完整收录 AI Agent 全部考点，高频题置顶专业面试作答主线，支持一键切「考前速扫」降噪、模块筛选与背诵自测。',html:detailHtml(exam,track,oralMap)});
   }
   push({id:'kb-interview-routes',kind:'doc',mod:'knowledge',part:'考点总览',cat:'路线与速查',title:'MySQL / Redis / Kafka 面试路线',number:'路线',source:SOURCE,
     lead:'按面试里怎么开口来排。先给结论，再用一个例子接住追问。点进去才是参数和边界。',

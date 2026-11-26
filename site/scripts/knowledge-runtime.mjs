@@ -69,6 +69,7 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
           page.querySelectorAll('.kb-route-tip').forEach((it) => { it.hidden = true; });
         }
         if (anchor.tagName === 'DETAILS') anchor.open = true;
+        if (anchor.classList.contains('kb-detail-card')) anchor.classList.add('kb-dcard-expanded');
         $$('.kb-anchor-hit').forEach((x) => x.classList.remove('kb-anchor-hit'));
         anchor.classList.add('kb-anchor-hit');
         anchor.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -89,7 +90,7 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
 ${resolveRetiredKnowledgeRoute.toString()}
 function syncBoardRowState(row, page) {
   if (!row || !page) return;
-  const mode = page.getAttribute('data-kb-bmode-state') || 'brief';
+  const mode = page.getAttribute('data-kb-bmode-state') || 'oral';
   const btn = row.querySelector('[data-kb-board-toggle]');
   const chev = row.querySelector('.kb-board-chev');
   const isOpen = (mode === 'scan' || mode === 'recite')
@@ -212,7 +213,7 @@ document.addEventListener('click', (ev) => {
     if (!row) return;
     const open = row.classList.toggle('show-extra');
     boardMore.setAttribute('aria-expanded', open ? 'true' : 'false');
-    boardMore.textContent = open ? '收起追问与易错点 ▴' : '展开追问与易错点 ▾';
+    boardMore.textContent = open ? '收起底层原理与追问 ▴' : '展开底层原理与追问 ▾';
     return;
   }
   const boardReveal = ev.target.closest('[data-kb-board-reveal]');
@@ -229,7 +230,7 @@ document.addEventListener('click', (ev) => {
     const row = boardToggle.closest('.kb-board-row');
     const page = boardToggle.closest('.kb-board-page');
     if (!row || !page) return;
-    const mode = page.getAttribute('data-kb-bmode-state') || 'brief';
+    const mode = page.getAttribute('data-kb-bmode-state') || 'oral';
     if (mode === 'scan' || mode === 'recite') {
       row.classList.toggle('is-open');
     } else {
@@ -248,12 +249,37 @@ document.addEventListener('click', (ev) => {
     page.querySelectorAll('.kb-board-row').forEach((r) => {
       r.classList.remove('is-open', 'is-collapsed', 'show-extra');
       const more = r.querySelector('[data-kb-board-more]');
-      if (more) { more.setAttribute('aria-expanded', 'false'); more.textContent = '展开追问与易错点 ▾'; }
+      if (more) { more.setAttribute('aria-expanded', 'false'); more.textContent = '展开底层原理与追问 ▾'; }
       syncBoardRowState(r, page);
     });
-    if (mode === 'brief' && typeof toast === 'function') toast('重点全展：不用点击，直接下滑速过全部核心本质与必答要点');
-    else if (mode === 'full' && typeof toast === 'function') toast('全量摊开：核心要点 + 连环追问 + 易错点全部展开');
-    else if (mode === 'recite' && typeof toast === 'function') toast('背诵自测：答案已遮挡，先口述再点单卡核对');
+    if (mode === 'oral' && typeof toast === 'function') toast('面试速过：直接下滑过完专业凝练的作答主线与必踩采分点，按需点单卡展开底层细节');
+    else if (mode === 'full' && typeof toast === 'function') toast('全量摊开：作答主线 + 完整底层原理 + 连环追问 + 易错点全部展开');
+    else if (mode === 'recite' && typeof toast === 'function') toast('背诵自测：答案已遮挡，先构思作答再点单卡核对');
+    return;
+  }
+  const dmodeBtn = ev.target.closest('[data-kb-dmode]');
+  if (dmodeBtn) {
+    const page = dmodeBtn.closest('.kb-detail-page');
+    if (!page) return;
+    const mode = dmodeBtn.getAttribute('data-kb-dmode');
+    page.setAttribute('data-kb-dmode-state', mode);
+    page.querySelectorAll('[data-kb-dmode]').forEach((b) => b.classList.toggle('on', b === dmodeBtn));
+    page.querySelectorAll('.kb-detail-card').forEach((c) => {
+      c.classList.remove('kb-dcard-expanded');
+      const mbtn = c.querySelector('[data-kb-dcard-more]');
+      if (mbtn) { mbtn.setAttribute('aria-expanded', 'false'); mbtn.textContent = '展开完整原理与追问 ▾'; }
+    });
+    if (mode === 'skim' && typeof toast === 'function') toast('考前速扫：每题精简展示口述/核心本质，按需点单卡展开底层细节');
+    else if (mode === 'full' && typeof toast === 'function') toast('完整详解：已展开全部原理、参数边界与追问');
+    return;
+  }
+  const dcardMore = ev.target.closest('[data-kb-dcard-more]');
+  if (dcardMore) {
+    const card = dcardMore.closest('.kb-detail-card');
+    if (!card) return;
+    const open = card.classList.toggle('kb-dcard-expanded');
+    dcardMore.setAttribute('aria-expanded', open ? 'true' : 'false');
+    dcardMore.textContent = open ? '收起完整原理与追问 ▴' : '展开完整原理与追问 ▾';
     return;
   }
   const randBtn = ev.target.closest('[data-kb-board-random]');
