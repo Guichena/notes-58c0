@@ -417,6 +417,7 @@ export function renderProjectStackPage(markdown) {
   </div>`;
 
   const studyBar = `<div class="kb-study-bar">
+    <label class="kb-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input type="search" class="kb-inpage-q" data-kb-search placeholder="页内筛专题（如 Outbox、Redis、MCP、缓存）…" aria-label="页内筛选项目专题"></label>
     <div class="kb-pfilter-group" role="group" aria-label="按项目经历筛选">
       <span class="kb-study-label">经历</span>
       <button type="button" class="on" data-kb-pfilter="all">全部</button>
@@ -425,6 +426,7 @@ export function renderProjectStackPage(markdown) {
       <button type="button" data-kb-pfilter="TencentDB">TencentDB</button>
     </div>
     <div class="kb-study-right">
+      <span class="kb-inpage-count" data-kb-count>共 ${totalCards} 专题</span>
       <button type="button" class="kb-recite-btn" data-kb-recite aria-pressed="false">背诵自测：遮挡答案</button>
     </div>
   </div>`;
@@ -458,7 +460,7 @@ export function renderProjectStackPage(markdown) {
   }).join('\n');
 
   return {
-    html: `<div class="kb-detail-page kb-filter-page kb-proj-page">${projectHero}${studyBar}${domainFilters}${bodyHtml}</div>`,
+    html: `<div class="kb-detail-page kb-filter-page kb-proj-page">${projectHero}${studyBar}${domainFilters}${bodyHtml}<div class="empty-state kb-empty" hidden>当前筛选条件下没有匹配的专题</div></div>`,
     topics: allTopics
   };
 }

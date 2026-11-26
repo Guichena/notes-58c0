@@ -87,32 +87,72 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
       .replace(hydrateBefore, hydrateAfter)
       .replace(before, after) + `
 ${resolveRetiredKnowledgeRoute.toString()}
+function syncBoardRowState(row, page) {
+  if (!row || !page) return;
+  const mode = page.getAttribute('data-kb-bmode-state') || 'brief';
+  const btn = row.querySelector('[data-kb-board-toggle]');
+  const chev = row.querySelector('.kb-board-chev');
+  const isOpen = (mode === 'scan' || mode === 'recite')
+    ? row.classList.contains('is-open')
+    : !row.classList.contains('is-collapsed');
+  if (btn) btn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+  if (chev) chev.textContent = isOpen ? '收起 ▴' : '展开 ▾';
+}
 function applyKbFilters(page) {
   if (!page) return;
   const activeTypeBtn = page.querySelector('.kb-filter-bar button.on');
   const type = activeTypeBtn ? activeTypeBtn.getAttribute('data-kb-type') : 'all';
   const activePBtn = page.querySelector('[data-kb-pfilter].on');
   const pfilter = activePBtn ? activePBtn.getAttribute('data-kb-pfilter') : 'all';
+  const searchEl = page.querySelector('[data-kb-search]');
+  const q = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  const terms = q ? q.split(/\s+/).filter(Boolean) : [];
   const isDetail = page.classList.contains('kb-detail-page');
+  let shown = 0, total = 0;
+
   page.querySelectorAll('.kb-filter-item').forEach((item) => {
     const typeMatch = type === 'all' || item.getAttribute('data-kb-type') === type;
     if (!isDetail) {
-      item.hidden = !typeMatch;
+      total += 1;
+      let qMatch = true;
+      if (terms.length) {
+        const hay = item.getAttribute('data-kb-search-text') || item.textContent.toLowerCase();
+        qMatch = terms.every((t) => hay.includes(t));
+      }
+      const vis = typeMatch && qMatch;
+      item.hidden = !vis;
+      if (vis) shown += 1;
       return;
     }
+    const cards = item.querySelectorAll('.kb-detail-card[data-kb-key]');
+    total += cards.length;
     if (!typeMatch) {
       item.hidden = true;
       return;
     }
     let visibleCards = 0;
-    item.querySelectorAll('.kb-detail-card[data-kb-key]').forEach((card) => {
+    cards.forEach((card) => {
       const projs = (card.getAttribute('data-kb-projects') || '').split('|').filter(Boolean);
-      const show = pfilter === 'all' || !projs.length || projs.includes(pfilter);
+      const pMatch = pfilter === 'all' || !projs.length || projs.includes(pfilter);
+      let qMatch = true;
+      if (terms.length) {
+        if (!card._kbHay) card._kbHay = card.textContent.toLowerCase();
+        qMatch = terms.every((t) => card._kbHay.includes(t));
+      }
+      const show = pMatch && qMatch;
       card.hidden = !show;
-      if (show) visibleCards += 1;
+      if (show) { visibleCards += 1; shown += 1; }
     });
     item.hidden = visibleCards === 0;
   });
+
+  const countEl = page.querySelector('[data-kb-count]');
+  if (countEl) {
+    const unit = page.classList.contains('kb-proj-page') ? '专题' : '题';
+    countEl.textContent = (shown === total) ? ('共 ' + total + ' ' + unit) : ('显示 ' + shown + ' / ' + total + ' ' + unit);
+  }
+  const emptyEl = page.querySelector('.kb-empty');
+  if (emptyEl) emptyEl.hidden = shown > 0;
 }
 function hydrateKnowledgePage(root) {
   if (!root) return;
@@ -126,19 +166,115 @@ function hydrateKnowledgePage(root) {
     const mapped = resolveRetiredKnowledgeRoute(id);
     if (mapped && byId.has(mapped)) a.setAttribute('href', '#/e/' + encodeURIComponent(mapped));
   });
-  const detailPage = root.querySelector('.kb-detail-page');
-  if (!detailPage) return;
-  const reciteOn = Boolean(store.get('iv8-kb-recite', false));
-  detailPage.classList.toggle('kb-recite-on', reciteOn);
-  const reciteBtn = detailPage.querySelector('[data-kb-recite]');
-  if (reciteBtn) {
-    reciteBtn.classList.toggle('on', reciteOn);
-    reciteBtn.setAttribute('aria-pressed', reciteOn ? 'true' : 'false');
-    reciteBtn.textContent = reciteOn ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
+  const supBtn = root.querySelector('[data-kb-sup-all]');
+  if (supBtn) {
+    const sups = root.querySelectorAll('details.kb-supplement');
+    if (!sups.length) supBtn.hidden = true;
+    else supBtn.textContent = '展开全部考点补强（' + sups.length + '）';
   }
-  applyKbFilters(detailPage);
+  const filterPage = root.querySelector('.kb-filter-page');
+  if (!filterPage) return;
+  const searchEl = filterPage.querySelector('[data-kb-search]');
+  if (searchEl && !searchEl._kbBound) {
+    searchEl._kbBound = true;
+    searchEl.addEventListener('input', () => {
+      clearTimeout(searchEl._t);
+      searchEl._t = setTimeout(() => applyKbFilters(filterPage), 70);
+    });
+  }
+  const detailPage = root.querySelector('.kb-detail-page');
+  if (detailPage) {
+    const reciteOn = Boolean(store.get('iv8-kb-recite', false));
+    detailPage.classList.toggle('kb-recite-on', reciteOn);
+    const reciteBtn = detailPage.querySelector('[data-kb-recite]');
+    if (reciteBtn) {
+      reciteBtn.classList.toggle('on', reciteOn);
+      reciteBtn.setAttribute('aria-pressed', reciteOn ? 'true' : 'false');
+      reciteBtn.textContent = reciteOn ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
+    }
+  }
+  applyKbFilters(filterPage);
 }
 document.addEventListener('click', (ev) => {
+  const supAllBtn = ev.target.closest('[data-kb-sup-all]');
+  if (supAllBtn) {
+    const page = document.getElementById('page');
+    const sups = Array.from(page ? page.querySelectorAll('details.kb-supplement') : []);
+    if (!sups.length) return;
+    const allOpen = sups.every((d) => d.open);
+    sups.forEach((d) => { d.open = !allOpen; });
+    supAllBtn.textContent = (!allOpen ? '收起全部考点补强（' : '展开全部考点补强（') + sups.length + '）';
+    return;
+  }
+  const boardMore = ev.target.closest('[data-kb-board-more]');
+  if (boardMore) {
+    const row = boardMore.closest('.kb-board-row');
+    if (!row) return;
+    const open = row.classList.toggle('show-extra');
+    boardMore.setAttribute('aria-expanded', open ? 'true' : 'false');
+    boardMore.textContent = open ? '收起追问与易错点 ▴' : '展开追问与易错点 ▾';
+    return;
+  }
+  const boardReveal = ev.target.closest('[data-kb-board-reveal]');
+  if (boardReveal) {
+    const row = boardReveal.closest('.kb-board-row');
+    const page = boardReveal.closest('.kb-board-page');
+    if (!row || !page) return;
+    row.classList.add('is-open', 'show-extra');
+    syncBoardRowState(row, page);
+    return;
+  }
+  const boardToggle = ev.target.closest('[data-kb-board-toggle]');
+  if (boardToggle) {
+    const row = boardToggle.closest('.kb-board-row');
+    const page = boardToggle.closest('.kb-board-page');
+    if (!row || !page) return;
+    const mode = page.getAttribute('data-kb-bmode-state') || 'brief';
+    if (mode === 'scan' || mode === 'recite') {
+      row.classList.toggle('is-open');
+    } else {
+      row.classList.toggle('is-collapsed');
+    }
+    syncBoardRowState(row, page);
+    return;
+  }
+  const bmodeBtn = ev.target.closest('[data-kb-bmode]');
+  if (bmodeBtn) {
+    const page = bmodeBtn.closest('.kb-board-page');
+    if (!page) return;
+    const mode = bmodeBtn.getAttribute('data-kb-bmode');
+    page.setAttribute('data-kb-bmode-state', mode);
+    page.querySelectorAll('[data-kb-bmode]').forEach((b) => b.classList.toggle('on', b === bmodeBtn));
+    page.querySelectorAll('.kb-board-row').forEach((r) => {
+      r.classList.remove('is-open', 'is-collapsed', 'show-extra');
+      const more = r.querySelector('[data-kb-board-more]');
+      if (more) { more.setAttribute('aria-expanded', 'false'); more.textContent = '展开追问与易错点 ▾'; }
+      syncBoardRowState(r, page);
+    });
+    if (mode === 'brief' && typeof toast === 'function') toast('重点全展：不用点击，直接下滑速过全部核心本质与必答要点');
+    else if (mode === 'full' && typeof toast === 'function') toast('全量摊开：核心要点 + 连环追问 + 易错点全部展开');
+    else if (mode === 'recite' && typeof toast === 'function') toast('背诵自测：答案已遮挡，先口述再点单卡核对');
+    return;
+  }
+  const randBtn = ev.target.closest('[data-kb-board-random]');
+  if (randBtn) {
+    const page = randBtn.closest('.kb-board-page');
+    if (!page) return;
+    const rows = Array.from(page.querySelectorAll('.kb-board-row')).filter((r) => !r.hidden);
+    if (!rows.length) return;
+    const pick = rows[Math.floor(Math.random() * rows.length)];
+    page.setAttribute('data-kb-bmode-state', 'recite');
+    page.querySelectorAll('[data-kb-bmode]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-bmode') === 'recite'));
+    page.querySelectorAll('.kb-board-row').forEach((r) => {
+      r.classList.remove('is-open', 'is-collapsed', 'show-extra');
+      syncBoardRowState(r, page);
+    });
+    pick.classList.add('kb-anchor-hit');
+    setTimeout(() => pick.classList.remove('kb-anchor-hit'), 1800);
+    pick.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (typeof toast === 'function') toast('抽中一题：先口述结论与必答要点，再点卡片核对');
+    return;
+  }
   const revealBtn = ev.target.closest('[data-kb-reveal]');
   if (revealBtn) {
     const card = revealBtn.closest('.kb-detail-card');

@@ -740,23 +740,67 @@ function boardHtml(exam, track) {
     ['Redis 与缓存', 'route-redis', '开口串联：先说业务用哪种结构解决什么问题，再讲大 Key / 热 Key 拆分与本地缓存，最后收口到先改库再删缓存的一致性边界与持久化取舍。'],
     ['消息队列', 'route-kafka', '开口串联：先绑定业务要保不丢、保顺序还是削峰，按生产回执、ISR 副本、手动提交三段确认展开，再接分区热点、积压扩容上限与业务唯一键幂等。']
   ].map(([b, rid, text]) => `<div class="kb-route-tip" data-kb-route="${esc(b)}" hidden><span>${esc(text)}</span><a href="#/e/kb-interview-routes/${rid}">完整开口路线 →</a></div>`).join('') : '';
+  const rapidBar = `<div class="kb-rapid-bar">
+    <label class="kb-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input type="search" class="kb-inpage-q" data-kb-search placeholder="页内筛题（如 ${track === 'backend' ? 'MVCC、锁、Redis、Kafka' : 'RAG、MCP、记忆、评测'}）…" aria-label="页内筛选高频考点"></label>
+    <div class="kb-mode-seg" role="group" aria-label="考前速过密度">
+      <button type="button" class="on" data-kb-bmode="brief" title="零点击直接显示每题的核心本质与必答要点，顺着往下滑即可过完一轮">重点全展</button>
+      <button type="button" data-kb-bmode="full" title="连同高频追问与易错点也全部直接摊开，零点击通读">全量摊开</button>
+      <button type="button" data-kb-bmode="scan" title="只留标题与一句话结论，适合极速扫目录">纯目录</button>
+      <button type="button" data-kb-bmode="recite" title="遮住结论与答案，只看题名脱稿练嘴，点单卡展开核对">背诵自测</button>
+    </div>
+    <button type="button" class="kb-recite-btn" data-kb-board-random title="从当前筛选范围随机抽一道高频题自测">随机抽一题</button>
+    <span class="kb-inpage-count" data-kb-count>共 ${items.length} 题</span>
+  </div>`;
   const list = `<ol class="ab-list kb-board-list">${items.map((it, idx) => {
     const p = it.point;
     const rank = String(idx + 1).padStart(2, '0');
     const twin = p.target.kind === 'enriched' ? `<a class="ab-twin" href="${pointHref(p)}">讲义 →</a>` : '';
-    return `<li class="ab-row kb-board-row kb-filter-item${idx < 10 ? ' ab-top' : ''}" data-kb-type="${esc(it.bucket)}" data-kb-key="${p.anchor}"><a class="kb-board-hit" href="${detailPointHref(p)}"><span class="ab-rank">${rank}</span><span class="ab-main"><span class="kb-btitle-row"><span class="ab-title">${esc(p.title)}</span><span class="ab-chip">${esc(p.topic)}</span></span><span class="kb-bdesc">${esc(it.conclusion)}</span></span></a>${twin}</li>`;
-  }).join('')}</ol>`;
+    const lecFoot = p.target.kind === 'enriched' ? `<a class="kb-board-meta-link" href="${pointHref(p)}">完整系统讲义 →</a>` : '';
+    const drawerBody = renderExamPointBody(p, 'board-' + p.anchor);
+    const hasExtra = /kb-ans-fup|kb-ans-pitfall|kb-ans-variants/.test(drawerBody);
+    const extraBtn = hasExtra ? `<button type="button" class="kb-board-more" data-kb-board-more aria-expanded="false">展开追问与易错点 ▾</button>` : '';
+    const searchBlob = `${p.title} ${p.topic} ${it.bucket} ${it.conclusion} ${p.body}`.slice(0, 1200).toLowerCase();
+    return `<li class="ab-row kb-board-row kb-filter-item${idx < 10 ? ' ab-top' : ''}" data-kb-type="${esc(it.bucket)}" data-kb-key="${p.anchor}" data-kb-search-text="${esc(searchBlob)}">
+      <div class="kb-board-top">
+        <button type="button" class="kb-board-hit" data-kb-board-toggle aria-expanded="true">
+          <span class="ab-rank">${rank}</span>
+          <span class="ab-main">
+            <span class="kb-btitle-row"><span class="ab-title">${esc(p.title)}</span><span class="ab-chip">${esc(p.topic)}</span></span>
+            <span class="kb-bdesc">${esc(it.conclusion)}</span>
+          </span>
+          <span class="kb-board-chev" aria-hidden="true">收起 ▴</span>
+        </button>
+        ${twin}
+      </div>
+      <button type="button" class="kb-board-reveal" data-kb-board-reveal>先自己口述核心结论与必答要点 · 点击原地展开核对</button>
+      <div class="kb-board-drawer">
+        ${drawerBody}
+        <div class="kb-board-drawer-foot">
+          ${extraBtn}
+          <a class="kb-board-meta-link" href="${detailPointHref(p)}">全量详解定位 ↗</a>
+          ${lecFoot}
+        </div>
+      </div>
+    </li>`;
+  }).join('')}</ol><div class="empty-state kb-empty" hidden>当前筛选条件下没有匹配的考点</div>`;
   const note = track === 'backend'
-    ? '按真实面试高频度从前到后排好，不标具体次数；算法与数据结构手撕已独立归入《手撕算法原题榜》。点任意考点直达完整解析卡片，需要看全量细分考点可点上方全量详解。'
-    : '按 AI Agent 面试高频度从前到后排好，不标具体次数。点任意考点直达完整解析卡片，全部 105 个考点收录在上方全量详解页。';
-  return `<div class="ab-page kb-board-page kb-filter-page">${head}<p class="ab-lead">${esc(note)}</p>${filters}${routeTips}${list}</div>`;
+    ? '考前零点击速过主战场：默认「重点全展」，不用逐条点击，直接往下滑就能一次过完所有传统后端高频考点的核心本质与必答要点；想连追问和易错点一起看可切「全量摊开」，练脱稿可切「背诵自测」。算法手撕见《手撕算法原题榜》。'
+    : 'AI Agent 考前零点击速过：默认「重点全展」，直接往下滑就能当页过完 40 个高频考点的核心本质与必答要点；可一键切换「全量摊开 / 纯目录 / 背诵自测」。';
+  return `<div class="ab-page kb-board-page kb-filter-page" data-kb-bmode-state="brief">${head}<p class="ab-lead">${esc(note)}</p>${rapidBar}${filters}${routeTips}${list}</div>`;
 }
 function detailHtml(exam, track) {
   const allPoints = exam.points.filter((p) => p.track === track && (track !== 'backend' || !isHandwriteAlgorithm(p)));
   const buckets = (track === 'backend' ? BACKEND_BUCKETS : AGENT_BUCKETS).filter((b) => allPoints.some((p) => pointBucket(p) === b));
   const backHref = track === 'backend' ? '#/e/interview-map' : '#/e/kb-agent-board';
   const backText = track === 'backend' ? '← 返回传统后端高频榜' : '← 返回 AI Agent 高频榜';
-  const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 保留完整原理、参数边界、连环追问与易错点</span><button type="button" class="kb-recite-btn" data-kb-recite aria-pressed="false" style="margin-left:auto">背诵自测：遮挡答案</button></div>`;
+  const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 保留完整原理、参数边界、连环追问与易错点</span></div>`;
+  const studyBar = `<div class="kb-study-bar">
+    <label class="kb-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input type="search" class="kb-inpage-q" data-kb-search placeholder="页内实时筛题（如 ${track === 'backend' ? 'MVCC、线程池、死锁、Kafka' : 'RAG、MCP、ReAct、记忆'}）…" aria-label="页内筛选考点"></label>
+    <div class="kb-study-right">
+      <span class="kb-inpage-count" data-kb-count>共 ${allPoints.length} 题</span>
+      <button type="button" class="kb-recite-btn" data-kb-recite aria-pressed="false">背诵自测：遮挡答案</button>
+    </div>
+  </div>`;
   const filters = `<div class="ab-filters kb-filter-bar"><button type="button" class="on" data-kb-type="all">全部 <b>${allPoints.length}</b></button>${buckets.map((b) => {
     const n = allPoints.filter((p) => pointBucket(p) === b).length;
     return `<button type="button" data-kb-type="${esc(b)}">${esc(b)} <b>${n}</b></button>`;
@@ -776,7 +820,7 @@ function detailHtml(exam, track) {
     }).join('');
     return `<section class="kb-dgroup kb-filter-item" data-kb-type="${esc(bucket)}"><h2 class="md-h md-h2">${esc(g.title)}</h2>${introHtml}${cards}</section>`;
   })).join('');
-  return `<div class="kb-detail-page kb-filter-page">${head}${filters}${body}</div>`;
+  return `<div class="kb-detail-page kb-filter-page">${head}${studyBar}${filters}${body}<div class="empty-state kb-empty" hidden>当前筛选条件下没有匹配的考点</div></div>`;
 }
 
 export function resolveRetiredKnowledgeRoute(id) {
@@ -919,7 +963,7 @@ export async function mergeKnowledgeLibrary(entries, dir) {
       : '<a class="btn" href="#/e/interview-map">← 传统后端高频榜</a><a class="btn" href="#/e/exam-backend-detail">全量考点详解</a>';
     push({id:doc.id,kind:'doc',mod:'knowledge',part:doc.part,cat:doc.cat,title:doc.title,number:'知识',source:SOURCE,
       lead:`${chapters} 个知识章节。可从高频榜或全量详解直达对应小节，也可按本篇目录系统学习。`,
-      html:`<div class="kb-doc-tools"><div class="kb-doc-btns">${backBoard}${doc.id === 'kb-mysql' || doc.id === 'kb-redis' || doc.id === 'kb-mq' ? `<a class="btn" href="#/e/kb-interview-routes/${doc.id === 'kb-mq' ? 'route-kafka' : 'route-' + doc.id.slice(3)}">面试路线 →</a>` : ''}</div><span>${chapters} 章 · 完整讲义</span></div>${tocHtml(model.toc)}${model.html}`});
+      html:`<div class="kb-doc-tools"><div class="kb-doc-btns">${backBoard}${doc.id === 'kb-mysql' || doc.id === 'kb-redis' || doc.id === 'kb-mq' ? `<a class="btn" href="#/e/kb-interview-routes/${doc.id === 'kb-mq' ? 'route-kafka' : 'route-' + doc.id.slice(3)}">面试路线 →</a>` : ''}<button type="button" class="btn kb-sup-toggle" data-kb-sup-all>展开全部考点补强</button></div><span>${chapters} 章 · 完整讲义</span></div>${tocHtml(model.toc)}${model.html}`});
   }
   const libraryLinks = exam.points.filter((p) => p.target.kind === 'enriched').length;
   const report = {documents:KNOWLEDGE_DOCS.length,backendPoints:exam.points.filter((p)=>p.track==='backend').length,
