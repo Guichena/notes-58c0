@@ -1760,9 +1760,68 @@ function hydrateKnowledgePage(root) {
       reciteBtn.setAttribute('aria-pressed', reciteOn ? 'true' : 'false');
       reciteBtn.textContent = reciteOn ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
     }
+    renderKbCustomRanks(detailPage);
   }
   applyKbFilters(filterPage);
 }
+function kbCustomKey(page) {
+  const fb = page && page.querySelector('.kb-fboard');
+  const track = fb ? (fb.getAttribute('data-kb-track') || 'backend') : 'backend';
+  return 'iv8-kb-custom-rank-' + track;
+}
+function renderKbCustomRanks(page) {
+  if (!page) return;
+  const listEl = page.querySelector('[data-kb-fcustom-list]');
+  if (!listEl) return;
+  const items = Array.isArray(store.get(kbCustomKey(page), [])) ? store.get(kbCustomKey(page), []) : [];
+  if (!items.length) {
+    listEl.innerHTML = '<div class="kb-fcustom-empty">暂无自定义追加条目，可在下方输入新考点直接加入排名。</div>';
+    return;
+  }
+  const escHtml = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  listEl.innerHTML = items.map((it, idx) => '<div class="kb-fcustom-row">' +
+    '<span class="kb-frank-no">+' + (idx + 1) + '</span>' +
+    '<span class="kb-fcustom-text"><strong>' + escHtml(it.title) + '</strong>' + (it.cat ? '<small>' + escHtml(it.cat) + '</small>' : '') + '</span>' +
+    '<button type="button" class="kb-fcustom-del" data-kb-fcustom-del="' + idx + '" title="移除这条追加考点">移除</button>' +
+    '</div>').join('');
+}
+function syncRankLimitUI(pane, shown) {
+  const grid = pane.querySelector('.kb-frank-grid');
+  if (!grid) return;
+  const total = Number(grid.getAttribute('data-kb-rank-total') || 0);
+  const next = Math.min(total, Math.max(30, shown));
+  grid.setAttribute('data-kb-rank-shown', String(next));
+  grid.querySelectorAll('.kb-frank-item').forEach((el, idx) => { el.hidden = idx >= next; });
+  const moreBtn = pane.querySelector('[data-kb-rank-more]');
+  const allBtn = pane.querySelector('[data-kb-rank-all]');
+  const resetBtn = pane.querySelector('[data-kb-rank-reset]');
+  const left = total - next;
+  if (moreBtn) {
+    moreBtn.hidden = left <= 0;
+    moreBtn.textContent = '继续展开 +' + Math.min(30, left) + ' 名（当前 ' + next + ' / ' + total + '）';
+  }
+  if (allBtn) allBtn.hidden = left <= 0;
+  if (resetBtn) resetBtn.hidden = next <= 30;
+}
+document.addEventListener('submit', (ev) => {
+  const form = ev.target.closest('[data-kb-fcustom-form]');
+  if (!form) return;
+  ev.preventDefault();
+  const page = form.closest('.kb-detail-page');
+  const titleEl = form.querySelector('[data-kb-fcustom-title]');
+  const catEl = form.querySelector('[data-kb-fcustom-cat]');
+  const title = titleEl ? titleEl.value.trim() : '';
+  const cat = catEl ? catEl.value.trim() : '';
+  if (!page || !title) return;
+  const key = kbCustomKey(page);
+  const cur = Array.isArray(store.get(key, [])) ? store.get(key, []) : [];
+  cur.push({ title, cat });
+  store.set(key, cur);
+  if (titleEl) titleEl.value = '';
+  if (catEl) catEl.value = '';
+  renderKbCustomRanks(page);
+  if (typeof toast === 'function') toast('已追加到你的重点排名榜');
+});
 document.addEventListener('click', (ev) => {
   const supAllBtn = ev.target.closest('[data-kb-sup-all]');
   if (supAllBtn) {
@@ -1915,6 +1974,51 @@ document.addEventListener('click', (ev) => {
       b.classList.toggle('on', on);
       b.setAttribute('aria-selected', on ? 'true' : 'false');
     });
+    return;
+  }
+  const cpageBtn = ev.target.closest('[data-kb-cpage-btn]');
+  if (cpageBtn) {
+    const card = cpageBtn.closest('.kb-fchart-card');
+    if (!card) return;
+    const pg = cpageBtn.getAttribute('data-kb-cpage-btn');
+    card.querySelectorAll('[data-kb-cpage-btn]').forEach((b) => b.classList.toggle('on', b === cpageBtn));
+    card.querySelectorAll('[data-kb-cpage]').forEach((svg) => { svg.hidden = svg.getAttribute('data-kb-cpage') !== pg; });
+    return;
+  }
+  const rankMoreBtn = ev.target.closest('[data-kb-rank-more]');
+  if (rankMoreBtn) {
+    const pane = rankMoreBtn.closest('.kb-fboard-pane-rank');
+    const grid = pane && pane.querySelector('.kb-frank-grid');
+    if (!pane || !grid) return;
+    const cur = Number(grid.getAttribute('data-kb-rank-shown') || 30);
+    const step = Number(rankMoreBtn.getAttribute('data-kb-rank-more') || 30);
+    syncRankLimitUI(pane, cur + step);
+    return;
+  }
+  const rankAllBtn = ev.target.closest('[data-kb-rank-all]');
+  if (rankAllBtn) {
+    const pane = rankAllBtn.closest('.kb-fboard-pane-rank');
+    const grid = pane && pane.querySelector('.kb-frank-grid');
+    if (!pane || !grid) return;
+    syncRankLimitUI(pane, Number(grid.getAttribute('data-kb-rank-total') || 999));
+    return;
+  }
+  const rankResetBtn = ev.target.closest('[data-kb-rank-reset]');
+  if (rankResetBtn) {
+    const pane = rankResetBtn.closest('.kb-fboard-pane-rank');
+    if (pane) syncRankLimitUI(pane, 30);
+    return;
+  }
+  const delCustomBtn = ev.target.closest('[data-kb-fcustom-del]');
+  if (delCustomBtn) {
+    const page = delCustomBtn.closest('.kb-detail-page');
+    const idx = Number(delCustomBtn.getAttribute('data-kb-fcustom-del'));
+    if (!page || Number.isNaN(idx)) return;
+    const key = kbCustomKey(page);
+    const cur = Array.isArray(store.get(key, [])) ? store.get(key, []) : [];
+    cur.splice(idx, 1);
+    store.set(key, cur);
+    renderKbCustomRanks(page);
     return;
   }
   const jumpEl = ev.target.closest('[data-kb-jump]');

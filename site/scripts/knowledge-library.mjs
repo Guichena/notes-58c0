@@ -811,35 +811,73 @@ function detailFreqDashboardHtml(exam, track, allPoints, buckets) {
   const rawTops = track === 'backend'
     ? exam.tops.backend.filter((r) => r.point && !isHandwriteAlgorithm(r.point))
     : exam.tops.agent.filter((r) => r.point);
-  const topMap = new Map();
-  rawTops.forEach((r, idx) => {
-    topMap.set(r.point.anchor, { rank: idx + 1, frequency: r.frequency, point: r.point, bucket: pointBucket(r.point) });
+  const topAnchorSet = new Set(rawTops.map((r) => r.point.anchor));
+  const topFreqByAnchor = new Map(rawTops.map((r) => [r.point.anchor, r.frequency]));
+
+  // Build unified full priority ranking across ALL points (#01 .. #222 / #105)
+  const starScore = (p) => (p.stars === '★★★' ? 3 : p.stars === '★★' ? 2 : 1);
+  const remaining = allPoints
+    .filter((p) => !topAnchorSet.has(p.anchor))
+    .sort((a, b) => (starScore(b) - starScore(a)) || (a.no - b.no));
+  const rankedAll = [
+    ...rawTops.map((r) => r.point),
+    ...remaining
+  ];
+  const rankMap = new Map();
+  rankedAll.forEach((p, idx) => {
+    rankMap.set(p.anchor, { rank: idx + 1, starLv: starScore(p), isTopTier: idx < rawTops.length });
   });
+
   const starCounts = { 3: 0, 2: 0, 1: 0 };
-  for (const p of allPoints) {
-    const lv = p.stars === '★★★' ? 3 : p.stars === '★★' ? 2 : 1;
-    starCounts[lv] += 1;
-  }
+  for (const p of allPoints) starCounts[starScore(p)] += 1;
   const total = allPoints.length || 1;
   const pct3 = ((starCounts[3] / total) * 100).toFixed(1);
   const pct2 = ((starCounts[2] / total) * 100).toFixed(1);
   const pct1 = (100 - Number(pct3) - Number(pct2)).toFixed(1);
 
-  // SVG 1: Top 15 exact-frequency horizontal bar chart (clickable to jump to card)
-  const top15 = rawTops.slice(0, 15);
-  const maxFreq = top15.length ? Math.max(...top15.map((r) => r.frequency), 1) : 1;
-  const rowH = 26, topPad = 14, labelX = 186, barX = 194, barMaxW = 282, svg1H = topPad + top15.length * rowH + 10;
-  const top15SvgRows = top15.map((r, i) => {
-    const y = topPad + i * rowH;
-    const w = Math.max(8, Math.round((r.frequency / maxFreq) * barMaxW));
-    const isTop3 = i < 3;
-    const rankStr = String(i + 1).padStart(2, '0');
-    const lbl = shortLabel(r.point.title, 13);
-    return `<g class="kb-svg-row${isTop3 ? ' is-top3' : ''}" data-kb-jump="${esc(r.point.anchor)}" role="button" tabindex="0"><title>${esc(r.point.title)} · ${r.frequency} 次（点击定位详解）</title><rect class="kb-svg-hit" x="0" y="${y - 2}" width="540" height="${rowH - 2}" rx="5"></rect><text class="kb-svg-rk" x="22" y="${y + 15}" text-anchor="end">${rankStr}</text><text class="kb-svg-lbl" x="${labelX}" y="${y + 15}" text-anchor="end">${esc(lbl)}</text><rect class="kb-svg-track" x="${barX}" y="${y + 4}" width="${barMaxW}" height="14" rx="7"></rect><rect class="kb-svg-bar" x="${barX}" y="${y + 4}" width="${w}" height="14" rx="7"></rect><text class="kb-svg-val" x="${barX + barMaxW + 8}" y="${y + 15}">${r.frequency}次</text></g>`;
-  }).join('');
-  const svgTop15 = `<svg class="kb-fchart-svg" viewBox="0 0 540 ${svg1H}" role="img" aria-label="Top 15 真题考频排行柱状图">${top15SvgRows}</svg>`;
+  // Compute purely visual relative bar weights (0.28..1.0) without exposing any numeric frequency
+  const maxRawFreq = rawTops.length ? Math.max(...rawTops.map((r) => r.frequency), 1) : 1;
+  const minRawFreq = rawTops.length ? Math.min(...rawTops.map((r) => r.frequency), 1) : 1;
+  const weightOf = (p, idx) => {
+    const f = topFreqByAnchor.get(p.anchor);
+    if (f != null) {
+      return 0.56 + 0.44 * ((f - minRawFreq) / Math.max(1, maxRawFreq - minRawFreq));
+    }
+    const lv = starScore(p);
+    if (lv === 3) return Math.max(0.44, 0.54 - ((idx - rawTops.length) * 0.0025));
+    if (lv === 2) return 0.36;
+    return 0.24;
+  };
 
-  // SVG 2: Module stacked star distribution chart (clickable to filter bucket)
+  // SVG 1: Paginated Ranking Bar Chart (Top 1–15 / 16–30 / 31–45 / 46–60), pure #rank + tier, zero counts
+  const pageSize = 15;
+  const chartCap = Math.min(rankedAll.length, 60);
+  const chartPages = Math.ceil(chartCap / pageSize);
+  const rowH = 26, topPad = 12, labelX = 186, barX = 194, barMaxW = 276;
+  const svgPageBlocks = [];
+  for (let pg = 0; pg < chartPages; pg++) {
+    const start = pg * pageSize;
+    const slice = rankedAll.slice(start, Math.min(start + pageSize, chartCap));
+    const svgH = topPad + slice.length * rowH + 10;
+    const rowsHtml = slice.map((p, i) => {
+      const globalIdx = start + i;
+      const y = topPad + i * rowH;
+      const w = Math.max(24, Math.round(weightOf(p, globalIdx) * barMaxW));
+      const isTop3 = globalIdx < 3;
+      const rankStr = '#' + String(globalIdx + 1).padStart(2, '0');
+      const lbl = shortLabel(p.title, 13);
+      const tierStr = p.stars === '★★★' ? '★★★' : p.stars === '★★' ? '★★' : '★';
+      return `<g class="kb-svg-row${isTop3 ? ' is-top3' : ''}" data-kb-jump="${esc(p.anchor)}" role="button" tabindex="0"><title>第 ${globalIdx + 1} 名 · ${esc(p.title)}（点击定位详解）</title><rect class="kb-svg-hit" x="0" y="${y - 2}" width="540" height="${rowH - 2}" rx="5"></rect><text class="kb-svg-rk" x="28" y="${y + 15}" text-anchor="end">${rankStr}</text><text class="kb-svg-lbl" x="${labelX}" y="${y + 15}" text-anchor="end">${esc(lbl)}</text><rect class="kb-svg-track" x="${barX}" y="${y + 4}" width="${barMaxW}" height="14" rx="7"></rect><rect class="kb-svg-bar" x="${barX}" y="${y + 4}" width="${w}" height="14" rx="7"></rect><text class="kb-svg-val" x="${barX + barMaxW + 8}" y="${y + 15}">${tierStr}</text></g>`;
+    }).join('');
+    svgPageBlocks.push(`<svg class="kb-fchart-svg kb-fchart-page" data-kb-cpage="${pg}"${pg > 0 ? ' hidden' : ''} viewBox="0 0 540 ${svgH}" role="img" aria-label="考点重要度排名第 ${start + 1} 至 ${start + slice.length} 名">${rowsHtml}</svg>`);
+  }
+  const chartPagerBtns = Array.from({ length: chartPages }, (_, pg) => {
+    const s = pg * pageSize + 1;
+    const e = Math.min((pg + 1) * pageSize, chartCap);
+    return `<button type="button"${pg === 0 ? ' class="on"' : ''} data-kb-cpage-btn="${pg}">${s}–${e}</button>`;
+  }).join('');
+
+  // SVG 2: Module stacked importance distribution chart (clickable to filter bucket)
   const bucketStats = buckets.map((b) => {
     const pts = allPoints.filter((p) => pointBucket(p) === b);
     const s3 = pts.filter((p) => p.stars === '★★★').length;
@@ -856,32 +894,35 @@ function detailFreqDashboardHtml(exam, track, allPoints, buckets) {
     const w1 = Math.round((st.s1 / maxBTotal) * bBarMaxW);
     const x2 = bBarX + w3;
     const x1 = x2 + w2;
-    return `<g class="kb-svg-row kb-svg-modrow" data-kb-fchart-bucket="${esc(st.bucket)}" role="button" tabindex="0"><title>${esc(st.bucket)}：共 ${st.total} 题（高频 ${st.s3} / 中频 ${st.s2} / 进阶 ${st.s1}）· 点击筛选该模块</title><rect class="kb-svg-hit" x="0" y="${y - 2}" width="500" height="${bRowH - 2}" rx="5"></rect><text class="kb-svg-lbl" x="${bLabelX}" y="${y + 16}" text-anchor="end">${esc(st.bucket)}</text><rect class="kb-svg-track" x="${bBarX}" y="${y + 5}" width="${bBarMaxW}" height="14" rx="4"></rect>${w3 ? `<rect class="kb-svg-s3" x="${bBarX}" y="${y + 5}" width="${w3}" height="14" rx="3"></rect>` : ''}${w2 ? `<rect class="kb-svg-s2" x="${x2}" y="${y + 5}" width="${w2}" height="14" rx="2"></rect>` : ''}${w1 ? `<rect class="kb-svg-s1" x="${x1}" y="${y + 5}" width="${w1}" height="14" rx="2"></rect>` : ''}<text class="kb-svg-val" x="${bBarX + bBarMaxW + 8}" y="${y + 16}">${st.total}题 · ${st.s3}高频</text></g>`;
+    return `<g class="kb-svg-row kb-svg-modrow" data-kb-fchart-bucket="${esc(st.bucket)}" role="button" tabindex="0"><title>${esc(st.bucket)}：共 ${st.total} 题（核心 ${st.s3} / 常考 ${st.s2} / 进阶 ${st.s1}）· 点击筛选该模块</title><rect class="kb-svg-hit" x="0" y="${y - 2}" width="500" height="${bRowH - 2}" rx="5"></rect><text class="kb-svg-lbl" x="${bLabelX}" y="${y + 16}" text-anchor="end">${esc(st.bucket)}</text><rect class="kb-svg-track" x="${bBarX}" y="${y + 5}" width="${bBarMaxW}" height="14" rx="4"></rect>${w3 ? `<rect class="kb-svg-s3" x="${bBarX}" y="${y + 5}" width="${w3}" height="14" rx="3"></rect>` : ''}${w2 ? `<rect class="kb-svg-s2" x="${x2}" y="${y + 5}" width="${w2}" height="14" rx="2"></rect>` : ''}${w1 ? `<rect class="kb-svg-s1" x="${x1}" y="${y + 5}" width="${w1}" height="14" rx="2"></rect>` : ''}<text class="kb-svg-val" x="${bBarX + bBarMaxW + 8}" y="${y + 16}">${st.total}题 · ${st.s3}核心</text></g>`;
   }).join('');
-  const svgMods = `<svg class="kb-fchart-svg" viewBox="0 0 500 ${svg2H}" role="img" aria-label="各技术模块考频层级分布图">${modSvgRows}</svg>`;
+  const svgMods = `<svg class="kb-fchart-svg" viewBox="0 0 500 ${svg2H}" role="img" aria-label="各技术模块重要度分层分布图">${modSvgRows}</svg>`;
 
-  // Full clickable exact-count leaderboard
-  const rankRows = rawTops.map((r, i) => {
-    const pct = Math.max(8, Math.round((r.frequency / maxFreq) * 100));
+  // Full progressive leaderboard (#01 .. #222 / #105, default shows 30, user can click "+30" or "全部" AND add custom items!)
+  const initShow = Math.min(30, rankedAll.length);
+  const rankRows = rankedAll.map((p, i) => {
+    const pct = Math.max(18, Math.round(weightOf(p, i) * 100));
     const rankStr = String(i + 1).padStart(2, '0');
-    const bkt = pointBucket(r.point);
-    return `<button type="button" class="kb-frank-item${i < 3 ? ' is-top3' : ''}" data-kb-jump="${esc(r.point.anchor)}">
+    const bkt = pointBucket(p);
+    const tierTag = p.stars === '★★★' ? '★★★' : p.stars === '★★' ? '★★' : '★';
+    const isHidden = i >= initShow ? ' hidden' : '';
+    return `<button type="button" class="kb-frank-item${i < 3 ? ' is-top3' : ''}" data-kb-rank-idx="${i}" data-kb-jump="${esc(p.anchor)}"${isHidden}>
       <span class="kb-frank-no">${rankStr}</span>
       <span class="kb-frank-main">
-        <span class="kb-frank-title">${esc(r.point.title)}</span>
+        <span class="kb-frank-title">${esc(p.title)}</span>
         <span class="kb-frank-sub"><span>${esc(bkt)}</span><span class="kb-frank-meter"><i style="width:${pct}%"></i></span></span>
       </span>
-      <span class="kb-frank-cnt">${r.frequency} 次</span>
+      <span class="kb-frank-cnt">${tierTag}</span>
     </button>`;
   }).join('');
 
-  const html = `<details class="kb-fboard" open>
+  const html = `<details class="kb-fboard" data-kb-track="${esc(track)}" open>
     <summary class="kb-fboard-sum">
       <div class="kb-fboard-sum-l">
-        <span class="kb-fboard-title">考频分布图谱与高频直达榜</span>
+        <span class="kb-fboard-title">重要度排名图谱与直达榜</span>
         <span class="kb-fboard-pills">
-          <span class="kb-fpill kb-fpill-3">★★★ 高频 ${starCounts[3]}</span>
-          <span class="kb-fpill kb-fpill-2">★★ 中频 ${starCounts[2]}</span>
+          <span class="kb-fpill kb-fpill-3">★★★ 核心 ${starCounts[3]}</span>
+          <span class="kb-fpill kb-fpill-2">★★ 常考 ${starCounts[2]}</span>
           <span class="kb-fpill kb-fpill-1">★ 进阶 ${starCounts[1]}</span>
         </span>
       </div>
@@ -892,31 +933,50 @@ function detailFreqDashboardHtml(exam, track, allPoints, buckets) {
     </summary>
     <div class="kb-fboard-body" data-kb-ftab-state="chart">
       <div class="kb-fboard-bar">
-        <div class="kb-mode-seg" role="tablist" aria-label="考频展示视图">
-          <button type="button" class="on" data-kb-ftab="chart" role="tab" aria-selected="true">可视化考频图谱</button>
-          <button type="button" data-kb-ftab="rank" role="tab" aria-selected="false">完整考频直达榜（${rawTops.length} 题）</button>
+        <div class="kb-mode-seg" role="tablist" aria-label="排名展示视图">
+          <button type="button" class="on" data-kb-ftab="chart" role="tab" aria-selected="true">可视化排名图谱</button>
+          <button type="button" data-kb-ftab="rank" role="tab" aria-selected="false">完整排名直达榜（共 ${rankedAll.length} 名）</button>
         </div>
-        <span class="kb-fboard-hint">点击柱条或榜单条目可直接定位到本页对应详解卡；点击模块条自动筛选该模块</span>
+        <span class="kb-fboard-hint">只按重要度排先后、不标具体次数；点击柱条或榜单直接定位详解，支持继续展开与追加自定义考点</span>
       </div>
       <div class="kb-fboard-pane kb-fboard-pane-chart">
         <div class="kb-fchart-grid">
           <div class="kb-fchart-card">
-            <div class="kb-fchart-h"><strong>Top 15 真题出现频次排行</strong><small>本方向统计次数 · 点击直达</small></div>
-            ${svgTop15}
+            <div class="kb-fchart-h">
+              <strong>重点考点排名总览</strong>
+              <div class="kb-cpage-seg" role="group" aria-label="切换排名区间">${chartPagerBtns}</div>
+            </div>
+            ${svgPageBlocks.join('')}
           </div>
           <div class="kb-fchart-card">
-            <div class="kb-fchart-h"><strong>各技术模块考频分层分布</strong><small class="kb-flegend"><span><i class="s3"></i>★★★ 高频</span><span><i class="s2"></i>★★ 中频</span><span><i class="s1"></i>★ 进阶</span></small></div>
+            <div class="kb-fchart-h"><strong>各技术模块重要度分层分布</strong><small class="kb-flegend"><span><i class="s3"></i>★★★ 核心</span><span><i class="s2"></i>★★ 常考</span><span><i class="s1"></i>★ 进阶</span></small></div>
             ${svgMods}
           </div>
         </div>
       </div>
       <div class="kb-fboard-pane kb-fboard-pane-rank">
-        <div class="kb-frank-grid">${rankRows}</div>
-        <p class="kb-fboard-note">口径说明：频次为该方向面经真实出现次数（传统后端与 AI Agent 各自独立统计、互不混算）；其余未入 Top 榜的考点可在下方按「★★★ / ★★ / ★」考频档位一键筛选。</p>
+        <div class="kb-frank-grid" data-kb-rank-shown="${initShow}" data-kb-rank-total="${rankedAll.length}">${rankRows}</div>
+        <div class="kb-frank-more-bar">
+          <button type="button" class="btn" data-kb-rank-more="30">继续展开 +30 名（当前 ${initShow} / ${rankedAll.length}）</button>
+          <button type="button" class="btn" data-kb-rank-all>展开全部 ${rankedAll.length} 名</button>
+          <button type="button" class="btn" data-kb-rank-reset hidden>收起回前 30 名</button>
+        </div>
+        <div class="kb-fcustom-box" data-kb-fcustom-box>
+          <div class="kb-fcustom-head">
+            <strong>我的追加重点排名</strong>
+            <small>面试遇到新题或想单独标红的考点，可直接追加并自动保存在本机浏览器</small>
+          </div>
+          <div class="kb-fcustom-list" data-kb-fcustom-list></div>
+          <form class="kb-fcustom-form" data-kb-fcustom-form>
+            <input type="text" class="kb-fcustom-inp" data-kb-fcustom-title placeholder="输入要追加的考点名称（如：MySQL 死锁日志分析 / Agent 多租户隔离）…" maxlength="80" required>
+            <input type="text" class="kb-fcustom-tag" data-kb-fcustom-cat placeholder="模块标签（可选）" maxlength="20">
+            <button type="submit" class="btn primary">+ 追加进榜单</button>
+          </form>
+        </div>
       </div>
     </div>
   </details>`;
-  return { html, topMap, starCounts };
+  return { html, rankMap, starCounts };
 }
 function detailHtml(exam, track, oralMap = {}) {
   const allPoints = exam.points.filter((p) => p.track === track && (track !== 'backend' || !isHandwriteAlgorithm(p)));
@@ -924,12 +984,12 @@ function detailHtml(exam, track, oralMap = {}) {
   const backHref = track === 'backend' ? '#/e/interview-map' : '#/e/kb-agent-board';
   const backText = track === 'backend' ? '← 返回传统后端高频榜' : '← 返回 AI Agent 高频榜';
   const freqBoard = detailFreqDashboardHtml(exam, track, allPoints, buckets);
-  const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 附可视化考频图谱与 Top 直达榜，高频题置顶面试作答主线</span></div>`;
+  const head = `<div class="kb-board-head"><a class="btn" href="${backHref}">${backText}</a><span class="kb-detail-stat">共 ${allPoints.length} 个考点 · 附重要度排名图谱与全量可续展直达榜，高频题置顶面试作答主线</span></div>`;
   const studyBar = `<div class="kb-study-bar">
     <label class="kb-search-box"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg><input type="search" class="kb-inpage-q" data-kb-search placeholder="页内实时筛题（如 ${track === 'backend' ? 'MVCC、线程池、死锁、Kafka' : 'RAG、MCP、ReAct、记忆'}）…" aria-label="页内筛选考点"></label>
     <div class="kb-study-right">
-      <div class="kb-sfilter-group" role="group" aria-label="按考频星级筛选">
-        <button type="button" class="on" data-kb-sfilter="all">全考频</button>
+      <div class="kb-sfilter-group" role="group" aria-label="按重要度筛选">
+        <button type="button" class="on" data-kb-sfilter="all">全部重要度</button>
         <button type="button" data-kb-sfilter="3">★★★ <b>${freqBoard.starCounts[3]}</b></button>
         <button type="button" data-kb-sfilter="2">★★ <b>${freqBoard.starCounts[2]}</b></button>
         <button type="button" data-kb-sfilter="1">★ <b>${freqBoard.starCounts[1]}</b></button>
@@ -960,13 +1020,15 @@ function detailHtml(exam, track, oralMap = {}) {
       const oralItem = oralMap[p.anchor] || null;
       const oralBlock = renderOralBlock(oralItem);
       const oralAttr = oralBlock ? ' data-kb-has-oral="1"' : '';
-      const starLv = p.stars === '★★★' ? 3 : p.stars === '★★' ? 2 : 1;
-      const topInfo = freqBoard.topMap.get(p.anchor);
-      const topBadge = topInfo ? `<span class="kb-fbadge kb-fbadge-top" title="本方向面经高频 Top 榜">TOP ${String(topInfo.rank).padStart(2, '0')} · ${topInfo.frequency}次</span>` : '';
-      const starLabel = starLv === 3 ? '★★★ 高频' : starLv === 2 ? '★★ 中频' : '★ 进阶';
+      const rInfo = freqBoard.rankMap.get(p.anchor) || { rank: p.no, starLv: 1, isTopTier: false };
+      const starLv = rInfo.starLv;
+      const rankBadge = rInfo.isTopTier
+        ? `<span class="kb-fbadge kb-fbadge-top" title="本方向重要度排名">TOP ${String(rInfo.rank).padStart(2, '0')}</span>`
+        : `<span class="kb-fbadge kb-fbadge-rk" title="全量重要度排位">#${String(rInfo.rank).padStart(2, '0')}</span>`;
+      const starLabel = starLv === 3 ? '★★★ 核心' : starLv === 2 ? '★★ 常考' : '★ 进阶';
       const starBadge = `<span class="kb-fbadge kb-fbadge-${starLv}">${starLabel}</span>`;
       const moreBtn = `<button type="button" class="kb-dcard-more" data-kb-dcard-more aria-expanded="false">展开完整原理与追问 ▾</button>`;
-      return `<article class="kb-detail-card" id="${p.anchor}" data-kb-key="${p.anchor}" data-kb-star="${starLv}"${oralAttr}><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3><div class="kb-dcard-acts">${topBadge}${starBadge}${lec}</div></div>${reveal}<p class="exam-point-summary">${esc(p.summary)}</p>${oralBlock}${renderExamPointBody(p, p.anchor)}${moreBtn}</article>`;
+      return `<article class="kb-detail-card" id="${p.anchor}" data-kb-key="${p.anchor}" data-kb-star="${starLv}"${oralAttr}><div class="kb-dcard-head"><h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${String(p.no).padStart(2, '0')}</span>${esc(p.title)}</h3><div class="kb-dcard-acts">${rankBadge}${starBadge}${lec}</div></div>${reveal}<p class="exam-point-summary">${esc(p.summary)}</p>${oralBlock}${renderExamPointBody(p, p.anchor)}${moreBtn}</article>`;
     }).join('');
     return `<section class="kb-dgroup kb-filter-item" data-kb-type="${esc(bucket)}"><h2 class="md-h md-h2">${esc(g.title)}</h2>${introHtml}${cards}</section>`;
   })).join('');
