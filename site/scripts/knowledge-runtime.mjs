@@ -65,6 +65,7 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
         if (page) {
           page.querySelectorAll('.kb-filter-bar button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-type') === 'all'));
           page.querySelectorAll('[data-kb-pfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-pfilter') === 'all'));
+          page.querySelectorAll('[data-kb-sfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-sfilter') === 'all'));
           applyKbFilters(page);
           page.querySelectorAll('.kb-route-tip').forEach((it) => { it.hidden = true; });
         }
@@ -105,6 +106,8 @@ function applyKbFilters(page) {
   const type = activeTypeBtn ? activeTypeBtn.getAttribute('data-kb-type') : 'all';
   const activePBtn = page.querySelector('[data-kb-pfilter].on');
   const pfilter = activePBtn ? activePBtn.getAttribute('data-kb-pfilter') : 'all';
+  const activeSBtn = page.querySelector('[data-kb-sfilter].on');
+  const sfilter = activeSBtn ? activeSBtn.getAttribute('data-kb-sfilter') : 'all';
   const searchEl = page.querySelector('[data-kb-search]');
   const q = searchEl ? searchEl.value.trim().toLowerCase() : '';
   const terms = q ? q.split(/\s+/).filter(Boolean) : [];
@@ -135,12 +138,14 @@ function applyKbFilters(page) {
     cards.forEach((card) => {
       const projs = (card.getAttribute('data-kb-projects') || '').split('|').filter(Boolean);
       const pMatch = pfilter === 'all' || !projs.length || projs.includes(pfilter);
+      const sAttr = card.getAttribute('data-kb-star') || '';
+      const sMatch = sfilter === 'all' || !sAttr || sAttr === sfilter;
       let qMatch = true;
       if (terms.length) {
         if (!card._kbHay) card._kbHay = card.textContent.toLowerCase();
         qMatch = terms.every((t) => card._kbHay.includes(t));
       }
-      const show = pMatch && qMatch;
+      const show = pMatch && sMatch && qMatch;
       card.hidden = !show;
       if (show) { visibleCards += 1; shown += 1; }
     });
@@ -327,6 +332,61 @@ document.addEventListener('click', (ev) => {
     if (!page) return;
     page.querySelectorAll('[data-kb-pfilter]').forEach((b) => b.classList.toggle('on', b === pfilterBtn));
     applyKbFilters(page);
+    return;
+  }
+  const sfilterBtn = ev.target.closest('[data-kb-sfilter]');
+  if (sfilterBtn) {
+    const page = sfilterBtn.closest('.kb-detail-page');
+    if (!page) return;
+    page.querySelectorAll('[data-kb-sfilter]').forEach((b) => b.classList.toggle('on', b === sfilterBtn));
+    applyKbFilters(page);
+    return;
+  }
+  const ftabBtn = ev.target.closest('[data-kb-ftab]');
+  if (ftabBtn) {
+    const body = ftabBtn.closest('.kb-fboard-body');
+    if (!body) return;
+    const tab = ftabBtn.getAttribute('data-kb-ftab');
+    body.setAttribute('data-kb-ftab-state', tab);
+    body.querySelectorAll('[data-kb-ftab]').forEach((b) => {
+      const on = b === ftabBtn;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    return;
+  }
+  const jumpEl = ev.target.closest('[data-kb-jump]');
+  if (jumpEl) {
+    const id = jumpEl.getAttribute('data-kb-jump');
+    const page = jumpEl.closest('.kb-detail-page');
+    const target = id ? document.getElementById(id) : null;
+    if (!target) return;
+    if (page && (target.hidden || target.closest('.kb-dgroup')?.hidden)) {
+      page.querySelectorAll('.kb-filter-bar button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-type') === 'all'));
+      page.querySelectorAll('[data-kb-sfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-sfilter') === 'all'));
+      const qEl = page.querySelector('[data-kb-search]');
+      if (qEl && qEl.value) qEl.value = '';
+      applyKbFilters(page);
+    }
+    target.classList.add('kb-dcard-expanded');
+    const mbtn = target.querySelector('[data-kb-dcard-more]');
+    if (mbtn) { mbtn.setAttribute('aria-expanded', 'true'); mbtn.textContent = '收起完整原理与追问 ▴'; }
+    $$('.kb-anchor-hit').forEach((x) => x.classList.remove('kb-anchor-hit'));
+    target.classList.add('kb-anchor-hit');
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    return;
+  }
+  const modBar = ev.target.closest('[data-kb-fchart-bucket]');
+  if (modBar) {
+    const page = modBar.closest('.kb-detail-page');
+    const bkt = modBar.getAttribute('data-kb-fchart-bucket');
+    if (!page || !bkt) return;
+    const matchBtn = Array.from(page.querySelectorAll('.kb-filter-bar button')).find((b) => b.getAttribute('data-kb-type') === bkt);
+    if (matchBtn) {
+      matchBtn.click();
+      const bar = page.querySelector('.kb-filter-bar');
+      if (bar) bar.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
     return;
   }
   const btn = ev.target.closest('[data-kb-type]');
