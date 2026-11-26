@@ -417,13 +417,6 @@ export function renderProjectStackPage(markdown) {
   </div>`;
 
   const studyBar = `<div class="kb-study-bar">
-    <div class="kb-mfilter-group" role="group" aria-label="掌握状态筛选">
-      <span class="kb-study-label">掌握筛选</span>
-      <button type="button" class="on" data-kb-mfilter="all">全部</button>
-      <button type="button" data-kb-mfilter="0">未学</button>
-      <button type="button" data-kb-mfilter="1">模糊</button>
-      <button type="button" data-kb-mfilter="2">已掌握</button>
-    </div>
     <div class="kb-pfilter-group" role="group" aria-label="按项目经历筛选">
       <span class="kb-study-label">经历</span>
       <button type="button" class="on" data-kb-pfilter="all">全部</button>
@@ -432,7 +425,6 @@ export function renderProjectStackPage(markdown) {
       <button type="button" data-kb-pfilter="TencentDB">TencentDB</button>
     </div>
     <div class="kb-study-right">
-      <span class="kb-mastery-stat" data-kb-stat data-kb-total="${totalCards}">已掌握 0 · 模糊 0 · 未学 ${totalCards}</span>
       <button type="button" class="kb-recite-btn" data-kb-recite aria-pressed="false">背诵自测：遮挡答案</button>
     </div>
   </div>`;
@@ -446,7 +438,6 @@ export function renderProjectStackPage(markdown) {
       const meta = TOPIC_META[topic.code] || { projects: ['NoteWeave', '制造业平台', 'TencentDB'] };
       const projects = meta.projects;
       const projBadges = projects.map((name) => `<span class="kb-proj-tag ${projectBadgeClass(name)}">${esc(name)}</span>`).join('');
-      const marks = `<div class="kb-mark-group" data-kb-mark-group="${topic.anchor}"><button type="button" data-kb-mark="0" class="on">未学</button><button type="button" data-kb-mark="1">模糊</button><button type="button" data-kb-mark="2">掌握</button></div>`;
       const reveal = `<button type="button" class="kb-reveal-bar" data-kb-reveal>先结合项目经历在脑中口述核心机制与权衡 · 点击展开核对完整解析</button>`;
       const renderedBody = renderTopicBody(topic.lines.join('\n'), {
         isHandwrite: ch.slug === '项目手撕',
@@ -458,7 +449,6 @@ export function renderProjectStackPage(markdown) {
             <h3 class="md-h md-h3 exam-point-heading"><span class="kb-dcard-no">${esc(topic.code)}</span>${inlineHtml(topic.title)}</h3>
             <div class="kb-proj-tags">${projBadges}</div>
           </div>
-          <div class="kb-dcard-acts">${marks}</div>
         </div>
         ${reveal}
         ${renderedBody}

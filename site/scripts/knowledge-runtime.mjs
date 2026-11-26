@@ -64,7 +64,6 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
         const page = anchor.closest('.kb-filter-page');
         if (page) {
           page.querySelectorAll('.kb-filter-bar button').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-type') === 'all'));
-          page.querySelectorAll('[data-kb-mfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-mfilter') === 'all'));
           page.querySelectorAll('[data-kb-pfilter]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-kb-pfilter') === 'all'));
           applyKbFilters(page);
           page.querySelectorAll('.kb-route-tip').forEach((it) => { it.hidden = true; });
@@ -88,36 +87,10 @@ export function projectKnowledgeRuntime(file, text, {baselineTest = false} = {})
       .replace(hydrateBefore, hydrateAfter)
       .replace(before, after) + `
 ${resolveRetiredKnowledgeRoute.toString()}
-function getKbProg() {
-  const raw = store.get('iv8-kb-prog', {});
-  return raw && typeof raw === 'object' ? raw : {};
-}
-function setKbProgStatus(key, s) {
-  const prog = getKbProg();
-  if (!s) delete prog[key];
-  else prog[key] = s;
-  store.set('iv8-kb-prog', prog);
-  return prog;
-}
-function updateKbDetailStat(page, prog) {
-  const stat = page.querySelector('[data-kb-stat]');
-  if (!stat) return;
-  const cards = page.querySelectorAll('.kb-detail-card[data-kb-key]');
-  let ok = 0, fuzzy = 0;
-  cards.forEach((card) => {
-    const s = Number(prog[card.getAttribute('data-kb-key')] || 0);
-    if (s === 2) ok += 1;
-    else if (s === 1) fuzzy += 1;
-  });
-  const rest = Math.max(0, cards.length - ok - fuzzy);
-  stat.textContent = \`已掌握 \${ok} · 模糊 \${fuzzy} · 未学 \${rest}\`;
-}
 function applyKbFilters(page) {
   if (!page) return;
   const activeTypeBtn = page.querySelector('.kb-filter-bar button.on');
   const type = activeTypeBtn ? activeTypeBtn.getAttribute('data-kb-type') : 'all';
-  const activeMBtn = page.querySelector('[data-kb-mfilter].on');
-  const mfilter = activeMBtn ? activeMBtn.getAttribute('data-kb-mfilter') : 'all';
   const activePBtn = page.querySelector('[data-kb-pfilter].on');
   const pfilter = activePBtn ? activePBtn.getAttribute('data-kb-pfilter') : 'all';
   const isDetail = page.classList.contains('kb-detail-page');
@@ -133,11 +106,8 @@ function applyKbFilters(page) {
     }
     let visibleCards = 0;
     item.querySelectorAll('.kb-detail-card[data-kb-key]').forEach((card) => {
-      const s = card.getAttribute('data-kb-status') || '0';
-      const mMatch = mfilter === 'all' || s === mfilter;
       const projs = (card.getAttribute('data-kb-projects') || '').split('|').filter(Boolean);
-      const pMatch = pfilter === 'all' || !projs.length || projs.includes(pfilter);
-      const show = mMatch && pMatch;
+      const show = pfilter === 'all' || !projs.length || projs.includes(pfilter);
       card.hidden = !show;
       if (show) visibleCards += 1;
     });
@@ -156,13 +126,6 @@ function hydrateKnowledgePage(root) {
     const mapped = resolveRetiredKnowledgeRoute(id);
     if (mapped && byId.has(mapped)) a.setAttribute('href', '#/e/' + encodeURIComponent(mapped));
   });
-  const prog = getKbProg();
-  root.querySelectorAll('[data-kb-badge]').forEach((badge) => {
-    const s = Number(prog[badge.getAttribute('data-kb-badge')] || 0);
-    if (s === 2) { badge.textContent = '已掌握'; badge.className = 'kb-board-badge s2'; badge.hidden = false; }
-    else if (s === 1) { badge.textContent = '模糊'; badge.className = 'kb-board-badge s1'; badge.hidden = false; }
-    else { badge.textContent = ''; badge.hidden = true; }
-  });
   const detailPage = root.querySelector('.kb-detail-page');
   if (!detailPage) return;
   const reciteOn = Boolean(store.get('iv8-kb-recite', false));
@@ -173,31 +136,9 @@ function hydrateKnowledgePage(root) {
     reciteBtn.setAttribute('aria-pressed', reciteOn ? 'true' : 'false');
     reciteBtn.textContent = reciteOn ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
   }
-  detailPage.querySelectorAll('.kb-detail-card[data-kb-key]').forEach((card) => {
-    const key = card.getAttribute('data-kb-key');
-    const s = Number(prog[key] || 0);
-    card.setAttribute('data-kb-status', String(s));
-    card.querySelectorAll('[data-kb-mark]').forEach((b) => b.classList.toggle('on', Number(b.getAttribute('data-kb-mark')) === s));
-  });
-  updateKbDetailStat(detailPage, prog);
   applyKbFilters(detailPage);
 }
 document.addEventListener('click', (ev) => {
-  const markBtn = ev.target.closest('[data-kb-mark]');
-  if (markBtn) {
-    const card = markBtn.closest('.kb-detail-card[data-kb-key]');
-    const page = markBtn.closest('.kb-detail-page');
-    if (!card || !page) return;
-    const key = card.getAttribute('data-kb-key');
-    const s = Number(markBtn.getAttribute('data-kb-mark') || 0);
-    const prog = setKbProgStatus(key, s);
-    card.setAttribute('data-kb-status', String(s));
-    card.querySelectorAll('[data-kb-mark]').forEach((b) => b.classList.toggle('on', b === markBtn));
-    updateKbDetailStat(page, prog);
-    applyKbFilters(page);
-    if (s === 2 && typeof toast === 'function') toast('已标记为掌握');
-    return;
-  }
   const revealBtn = ev.target.closest('[data-kb-reveal]');
   if (revealBtn) {
     const card = revealBtn.closest('.kb-detail-card');
@@ -216,14 +157,6 @@ document.addEventListener('click', (ev) => {
     reciteBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
     reciteBtn.textContent = next ? '背诵自测：已遮挡答案' : '背诵自测：遮挡答案';
     if (typeof toast === 'function') toast(next ? '已开启背诵遮挡：先口述再点卡片展开核对' : '已显示全部答案');
-    return;
-  }
-  const mfilterBtn = ev.target.closest('[data-kb-mfilter]');
-  if (mfilterBtn) {
-    const page = mfilterBtn.closest('.kb-detail-page');
-    if (!page) return;
-    page.querySelectorAll('[data-kb-mfilter]').forEach((b) => b.classList.toggle('on', b === mfilterBtn));
-    applyKbFilters(page);
     return;
   }
   const pfilterBtn = ev.target.closest('[data-kb-pfilter]');

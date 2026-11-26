@@ -1,6 +1,6 @@
 # 项目技术栈与中间件八股（三段经历串联）
 
-本专题把三段核心经历（`NoteWeave｜AI 资料研究工作台`、`制造业生产事件可靠触达与智能维修平台`、`TencentDB Agent Memory`）涉及的后端与 AI Agent 技术栈收在一页，结合站内高频考点补齐底层机制、参数边界、系统设计权衡与面试现场口述表达。支持按技术域、关联经历与掌握状态筛选，也可开启背诵遮挡自测。
+本专题把三段核心经历（`NoteWeave｜AI 资料研究工作台`、`制造业生产事件可靠触达与智能维修平台`、`TencentDB Agent Memory`）涉及的后端与 AI Agent 技术栈收在一页，结合站内高频考点补齐底层机制、参数边界、系统设计权衡与面试现场口述表达。支持按技术域与关联经历筛选，也可开启背诵遮挡自测。
 
 围绕简历中的 `Spring Boot / MySQL / Redis / Kafka / RabbitMQ / PostgreSQL（pgvector）/ RAG / MCP / Agent Evaluation / MemoryProxy` 等关键词展开，保留常见后端八股、项目结合和面试追问，不做跨页跳转。
 

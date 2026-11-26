@@ -16,6 +16,7 @@ import {projectExactIntroRuntime} from './exact-intro-runtime.mjs';
 import {projectNoteDisplay,projectNoteDisplayRuntime} from './note-display-cleanup.mjs';
 import {attachCodeTopSprint, attachMySeen, projectAlgoFocusRuntime} from './algo-focus-runtime.mjs';
 import {attachHandwriteBoard, projectHandwriteBoardRuntime} from './algo-handwrite-board.mjs';
+import {projectCleanUiRuntime} from './clean-ui-runtime.mjs';
 import {projectDesignRuntime} from './design-runtime.mjs';
 import {mergeDesignLectures} from './design-lectures.mjs';
 import {mergeKnowledgeLibrary, remapRetiredArchivedRoutes} from './knowledge-library.mjs';
@@ -70,7 +71,7 @@ const bundle = async (dir, files) => {
   const questionBankBlocks = priorityBlocks.map((text,i)=>projectQuestionBankRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}));
   const practiceBlocks = questionBankBlocks.map((text,i)=>projectPracticeBoundaryRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}));
   const comparisonBlocks = practiceBlocks.map((text,i)=>projectComparisonVisibilityRuntime('src/'+dir+'/'+files[i]+'.js',text,comparisonEquivalence,{baselineTest}));
-  const focusBlocks = comparisonBlocks.map((text,i)=>projectHandwriteBoardRuntime('src/'+dir+'/'+files[i]+'.js',projectKnowledgeRuntime('src/'+dir+'/'+files[i]+'.js',projectDesignRuntime('src/'+dir+'/'+files[i]+'.js',projectAlgoFocusRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}),{baselineTest}),{baselineTest}),{baselineTest}));
+  const focusBlocks = comparisonBlocks.map((text,i)=>projectCleanUiRuntime('src/'+dir+'/'+files[i]+'.js',projectHandwriteBoardRuntime('src/'+dir+'/'+files[i]+'.js',projectKnowledgeRuntime('src/'+dir+'/'+files[i]+'.js',projectDesignRuntime('src/'+dir+'/'+files[i]+'.js',projectAlgoFocusRuntime('src/'+dir+'/'+files[i]+'.js',text,{baselineTest}),{baselineTest}),{baselineTest}),{baselineTest}),{baselineTest}));
   const blocks = addReadingPresentationLifecycle(dir, files, focusBlocks, {baselineTest});
   // Original app and visual engine share classic global bindings. Keep this
   // compatibility boundary explicit; modern loading/caching lives in ES modules.
